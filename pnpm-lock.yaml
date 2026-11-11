@@ -1,0 +1,13 @@
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    devDependencies:
+      dsh-superagent:
+        specifier: link:/home/nihao/bioagentforge/tools/dsh-superagent
+        version: link:../dsh-superagent

@@ -1,0 +1,39 @@
+{
+  "name": "wheelchair-agent",
+  "version": "0.1.0",
+  "private": true,
+  "description": "A dsh-superagent Source plugin (`spv`) that lets a local entry session dispatch work through a plain file queue, with no GitHub or Feishu dependency.",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./spv-watch": "./spv-watch.js",
+    "./queue": "./src/queue.js",
+    "./spv": "./src/spv.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "index.js",
+    "spv-watch.js",
+    "src",
+    "scripts",
+    "docs"
+  ],
+  "scripts": {
+    "check": "node --check index.js && node --check spv-watch.js && node --check src/spv.js && node --check src/queue.js"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "peerDependencies": {
+    "dsh-superagent": "0.1.0"
+  },
+  "peerDependenciesMeta": {
+    "dsh-superagent": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "dsh-superagent": "link:/home/nihao/bioagentforge/tools/dsh-superagent"
+  }
+}

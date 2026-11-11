@@ -22,15 +22,29 @@ tools/wheelchair-agent/          # 本项目（独立 git 仓库）
 ├── AGENTS.md                    # 项目版 agent 规则（DSH 靠它做隔离）
 ├── ARCHITECTURE.md              # 本文档
 ├── PROGRESS.md                  # 当前状态
+├── package.json                 # dsh 插件包（纯 ESM，无构建）
+├── index.js                     # 包默认入口，转出 spv-watch.js
+├── spv-watch.js                 # 插件入口：注册 kind + 轮询循环
+├── src/spv.js                   # spv Source kind（Trigger 翻译、Channel、Policy、字段）
+├── src/queue.js                 # 文件队列布局与读写（pending/done/outbox）
+├── src/schema.js                # 极简 schema 校验（代替 zod，见 docs/spv-source.md 6.2）
+├── scripts/spv_send.py          # 入口会话派活
+├── scripts/spv_read.py          # 入口会话收结果
 └── docs/                        # 设计依据与踩坑
+    ├── spv-source.md            # spv Source 的完整设计与踩坑记录
+    └── PITFALLS/                # 由 skill pitfalls-manager 维护
 
 /home/nihao/bioagentforge/
 ├── AGENTS.md                    # 根版规则：cwd=仓库根时加载（用户直连的会话）
 ├── .dsh/state/superagent/       # superagent 的 stateDir（DB、锁、worker 目录）
-│   └── work/<name>-<ticket>/    # 每个 Ticket 一个 worker 目录
+│   ├── work/<name>-<ticket>/    # 每个 Ticket 一个 worker 目录
+│   └── spv/                     # spv Source 的文件队列
+│       ├── pending/             # 待处理任务
+│       ├── done/                # 已消费（rename 即标记）
+│       └── outbox/              # Channel 写回
 └── tools/dsh-superagent/        # superagent 源码（独立仓库，本地构建）
 
-~/.dsh/profiles/superagent/      # DSH profile：加载 dsh-superagent bundle
+~/.dsh/profiles/superagent/      # DSH profile：dsh-superagent bundle + wheelchair-agent 插件 + 模型 provider
 ```
 
 ## 关键机制：AGENTS.md 的隔离靠 `.git`
@@ -79,8 +93,10 @@ Ticket 状态（progress 不转发；ready/blocked/failed 才上浮）
 | 项 | 值 |
 |---|---|
 | GitHub Source | `nihaoWX/bioagentforge`，CLI `/home/nihao/.local/bin/gh`，60s 轮询 |
-| Policy allowed | `nihaoWX`（仅本人可派活） |
-| accept mode | `observe`（默认：只记录"本来会做什么"，不自动接） |
+| spv Source | `<stateDir>/spv/` 文件队列，2s 轮询，健康条目 `spv` |
+| Policy allowed | github=`nihaoWX`；spv=`operator`（`scripts/spv_send.py --actor` 可覆盖） |
+| accept mode | `observe`（只影响 inferred 候选；explicit 请求始终直接接单） |
+| 模型路由 | `commandcode` / `deepseek/deepseek-v4-pro`（profile 的 `agent-default-model`） |
 | executor.directory | `/home/nihao/.dsh/state/superagent/work` |
 | executor.maxWorkers | 2 |
 | executor.prepare | 从 `/home/nihao/bioagentforge/.superagent-project` 读项目名，`git clone --no-hardlinks tools/<项目>` 到 worker 目录 |
@@ -276,4 +292,5 @@ cmd 的 `task_*`、`taste 学习`、`COMMAND_CODE_TASK_LIST_ID` 等都很好用�
 | superagent 设计文档（9 篇） | `docs/repositories/dsh-superagent-prototype/docs/` |
 | DSH 安装与 GOAT 接入 | `docs/setup/dsh-commandcode.md` |
 | superagent 源码 | `tools/dsh-superagent/`（独立仓库） |
+| **spv Source 设计与踩坑** | **`docs/spv-source.md`** |
 | CAO 旧方案（归档） | `tools/cao/ARCHITECTURE.md` |
