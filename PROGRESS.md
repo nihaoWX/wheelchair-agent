@@ -37,7 +37,8 @@ superagent 已在本机跑通并完成配置，**可以接受任务**，但"自�
 
 # Next Steps
 
-1. **写 `spv` Source**（独立于 superagent 核心的插件）：轮询一个本机队列，把自然语言任务转成 Trigger，以 `explicit` 强度投递。
-2. **入口会话的派活工具**：让 cwd=bioagentforge 的 cmd 会话能把任务写进上述队列。
+1. 验证 `spv` Source 端到端（子 agent 正在实现）：本机队列 → Trigger → Ticket → worker → 结果回到队列。
+2. 入口会话的派活工具已随 `spv` Source 一起提供（`scripts/spv_send.py` / `spv_read.py`）。
 3. 验证降噪效果：确认 worker 的 `progress` 不出现在用户面前，只有 `ready`/`blocked` 上浮。
 4. 观察一个真实 Ticket 的 token 消耗，据此决定是否给 worker 指定更便宜的模型。
+5. 稳定后再考虑把 `observe` 改成 `auto`（见 ARCHITECTURE D3 的取舍说明）。
