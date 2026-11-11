@@ -38,7 +38,9 @@ superagent 已在本机跑通并完成配置，`spv` Source 已实现并**端到
 - **`scripts/dsh-superagent start` 会误报** `Startup health check timed out`，但服务实际在跑。用 `curl -H 'x-orchestrator-request: 1' http://127.0.0.1:3082/orchestrator/api/state` 核实。
 - **`scripts/dsh-superagent status/stop/restart` 在 WSL2 下认不出进程**：`ps` 的 `ucomm` 是 `MainThread` 而不是 `node`，脚本报 `pids: []`。`restart` 因此会打印 "existing orchestrator ... refusing duplicate startup" 而实际没重启。按端口找 PID 后 `kill -INT` 才可靠。
 - **主会话会固化第一次的 model 路由**：`initializeRoleModel` 不覆盖已有 `model/selection`。补 provider 后若仍报 `MISSING_CREDENTIAL`，删 `~/.dsh/sessions/--home-nihao-.dsh-state-superagent--/orchestrator-*` 与对应 `session_projcache` 记录让它重建（Ticket 在 SQLite，不丢）。
-- **`executor.prepare` 依赖 `/home/nihao/bioagentforge/.superagent-project`**（一行项目名）。该文件当前**不存在**，所以没有选定项目时 Ticket 会在 prepare 阶段失败。验证 spv 时临时创建后已删除。
+- **`executor.prepare` 按任务自带的项目 clone**：`spv` 的 Trigger 里 `project` 字段经 `DSH_SUPERAGENT_SPV_PROJECT`
+  传给 prepare，`spv_send.py --project tools/<name>` 指定；`/home/nihao/bioagentforge/.superagent-project`
+  仅作非 spv 任务的兜底。**两者都没有时 Ticket 会在 prepare 阶段失败**（这是设计，不是 bug）。
 - **`dsh-tui update` 会把 dsh 升回 `0.2.2-rc.1`**，届时 superagent 加载失败。需手动降回并带 `--allow-scripts` 重装。
 - **额度共享**：superagent 的 Eval + worker 都走 GOAT 额度，与 cmd CLI 共用 5 小时 $20 / 每周 $50 窗口。`maxWorkers=2` 已限制并发。
 - **superagent 是 alpha**（`0.2.1-alpha.2`），README 自述 research prototype。
@@ -47,7 +49,7 @@ superagent 已在本机跑通并完成配置，`spv` Source 已实现并**端到
 
 # Next Steps
 
-1. 在入口会话里实际使用 `scripts/spv_send.py` / `spv_read.py --watch --consume` 派活收结果（`--help` 有用法）。
-2. 确定 `.superagent-project` 的切换方式（当前需手工写文件），否则所有 Ticket 都会在 prepare 阶段失败。
+1. 在入口会话里实际使用 `scripts/spv_send.py --project <项目> ...` 派活、`spv_read.py --watch --consume` 收结果。
+2. 收紧 worker 的目录约束：prompt 未限制它只能在 ticket 目录内改动，冒烟测试时它曾用 `find /home/nihao` 找到真实项目路径。
 3. 观察一个真实 Ticket 的 token 消耗，据此决定是否给 worker 指定更便宜的模型。
 4. 稳定后再考虑把 `observe` 改成 `auto`（见 ARCHITECTURE D3 的取舍说明）。

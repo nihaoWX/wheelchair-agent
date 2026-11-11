@@ -39,6 +39,9 @@ def main():
     )
     parser.add_argument('text', nargs='*', help='the task, in natural language')
     parser.add_argument('--thread', default='main', help='queue thread to file the task under (default: main)')
+    parser.add_argument('--project', default=None,
+                        help='project the task works on, e.g. tools/myproject or research/mytask '
+                             '(the executor prepare command reads it to choose what to clone)')
     parser.add_argument('--actor', default=None, help='identity that sends it (default: the Source configuration)')
     parser.add_argument('--queue', default=None, help='queue root (default: <stateDir>/spv)')
     parser.add_argument('--json', action='store_true', help='print the written record as JSON')
@@ -62,6 +65,8 @@ def main():
         'at': datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
         'source': 'spv_send',
     }
+    if args.project:
+        record['project'] = args.project.strip().strip('/')
     if args.actor:
         record['actor'] = args.actor
 
@@ -73,9 +78,11 @@ def main():
     if args.json:
         print(json.dumps({**record, 'path': str(target)}, ensure_ascii=False))
     else:
-        print(f'id:     {task_id}')
-        print(f'thread: {record["thread"]}')
-        print(f'path:   {target}')
+        print(f'id:      {task_id}')
+        print(f'thread:  {record["thread"]}')
+        if record.get('project'):
+            print(f'project: {record["project"]}')
+        print(f'path:    {target}')
     return 0
 
 

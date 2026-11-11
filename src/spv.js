@@ -220,9 +220,19 @@ export function spvKind(queue) {
             en: 'The queue thread that started the ticket; empty when the ticket did not start on the local queue',
           },
         },
+        {
+          key: 'DSH_SUPERAGENT_SPV_PROJECT',
+          description: {
+            zh: '本工单要操作的项目，取自任务文件的 project 字段（通常是 tools/<name> 或 research/<name>）；' +
+              '执行器的 prepare 命令用它决定把哪个项目 clone 进 worker 目录',
+            en: 'The project this ticket works on, from the task file\'s project field (usually tools/<name> or ' +
+              'research/<name>); the executor prepare command uses it to choose which project to clone into the worker directory',
+          },
+        },
       ],
       values: ({ trigger }) => ({
         DSH_SUPERAGENT_SPV_THREAD: trigger?.source === SOURCE ? String(trigger.meta?.thread ?? trigger.channel?.thread ?? '') : '',
+        DSH_SUPERAGENT_SPV_PROJECT: trigger?.source === SOURCE ? String(trigger.meta?.project ?? '') : '',
       }),
     },
   }
