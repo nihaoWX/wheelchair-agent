@@ -8,6 +8,7 @@
   "exports": {
     ".": "./index.js",
     "./spv-watch": "./spv-watch.js",
+    "./spv-tools": "./spv-tools.js",
     "./queue": "./src/queue.js",
     "./spv": "./src/spv.js",
     "./package.json": "./package.json"
@@ -15,12 +16,14 @@
   "files": [
     "index.js",
     "spv-watch.js",
+    "spv-tools.js",
     "src",
     "scripts",
-    "docs"
+    "docs",
+    "dsh"
   ],
   "scripts": {
-    "check": "node --check index.js && node --check spv-watch.js && node --check src/spv.js && node --check src/queue.js"
+    "check": "node --check index.js && node --check spv-watch.js && node --check spv-tools.js && node --check src/spv.js && node --check src/queue.js && node --check src/paths.js && node --check src/dispatch.js && node --check src/outbox.js"
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0"

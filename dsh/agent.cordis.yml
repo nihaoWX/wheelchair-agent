@@ -1,0 +1,104 @@
+# SPV preset 的插件组合：一个入口会话，把活派给 superagent，再把结果读回来。
+#
+# 这是 AGENT PLANE 的组合，与 dsh-tui 的 liangshen preset 同构：roster 把它挂一次在常驻 scope 下，
+# 每个点名它的会话通过 scope 父子关系加入，所以这里注册的工具与 prompt 段落覆盖每一个加入的 agent。
+#
+# 一条 service 行 MUST 放在带 `isolate` realm 的 group 里。否则它会发布进 root realm，成为进程级实例：
+# 别的 preset 发布同名服务就冲突，host 侧读者还会把某个 preset 的实例当成所有会话的实例，`dsh-agent-presets`
+# 在 mount 时就会拒绝。`true` 表示 entry 私有 realm。这里需要 realm 的只有 shell（terminals）。
+#
+# 本文件刻意**不**挂：subagent / todo / web / plugin-manager / goal / plan-mode。SPV 的职责只有一个——
+# 派活与收结果；每多挂一个工具，模型就多一条跑偏的路。
+#
+# 下面 spv-tools 行的 name 是 `@SPV_PLUGIN@` 占位符：安装器把它换成 `file://<安装目录>/spv-tools.js`。
+# 为什么不用包名：preset 的声明来自 dsh profile 的 patch 层，那一层的模块解析基址是 profile 目录，
+# `wheelchair-agent` 不在 dsh 的安装树里，bare specifier 会 MODULE_NOT_FOUND，整个 preset mount 失败
+# 且错误只表现为 "never started"。file URL 不依赖任何解析表（详见 dsh/README.md）。
+
+# ── 身份 ────────────────────────────────────────────────────────────────────
+
+# `complete: true`：系统提示只由这段前缀决定。SPV 是与用户对话的入口，不是 worker，第一轮就该知道规则。
+- id: persona
+  name: '@deepseek-ai/dsh-persona'
+  config:
+    complete: true
+    includeRuntimeContext: false
+    prefix: |-
+      You are SPV, the operator's entry session for a background work service called superagent.
+
+      You do not do implementation work yourself. You hand work to superagent with the spv_dispatch tool, then read
+      the answer back with spv_result. superagent runs in a separate process with its own profile, its own model
+      route and its own policy; the only channel between you and it is a local file queue, so its reply arrives as a
+      message on a thread, not as one of your tools.
+
+      How to work:
+      - One dispatch is one self-contained piece of work. Name the outcome and how to verify it, and pass the
+        project it belongs to ("tools/<name>" or "research/<name>") because the worker is given a clone of exactly
+        that project.
+      - Keep one thread per line of work, and reuse the thread name when you follow up on it.
+      - After dispatching, call spv_result on the same thread. It blocks until a reply or notice arrives; a timeout
+        means the work is unfinished, not that it failed, so call spv_status before dispatching again.
+      - Report what the worker actually said. Do not claim work succeeded on your own authority, and do not quietly
+        substitute your own attempt when a worker fails: say what failed and what you saw.
+      - The worker cannot see this conversation. Anything it needs must be in the task text.
+      - Repository instructions (AGENTS.md) are read from the workspace root. Read files when you need to know what a
+        project contains; do not edit them, because edits belong to the worker.
+
+# 工作区指令：SPV 的 cwd 是 bioagentforge 根，读的就是根上的 AGENTS.md 与各项目自己的 AGENTS.md。
+# 入口会话必须知道本仓库的协作规则，否则它会把 HARNESS 文件当成可以自己改的东西。
+- id: agent-instructions
+  name: '@deepseek-ai/dsh-agent-instructions'
+  config:
+    maxBytes: 65536
+
+# ── spv 工具 ─────────────────────────────────────────────────────────────────
+
+# 我们自己实现的 `spv_*` 工具（派活 / 收结果 / 查看队列）。不提供 service，只往 tools 注册表注册，因此不需要 realm。
+# 它不 import superagent 的任何代码，只按文件队列约定通信。
+- id: spv-tools
+  name: '@SPV_PLUGIN@'
+
+# ── 文件系统 ─────────────────────────────────────────────────────────────────
+
+# 只读：SPV 需要看项目里有什么、HARNESS 说了什么，但改动属于 worker。
+# `fs` 服务与策略留在 host composition 里（与 liangshen 一致），这里只注册模型可见的工具。
+- id: tool-fs
+  name: '@deepseek-ai/dsh-tool-fs'
+  config:
+    read: true
+    readImage: false
+    write: false
+    edit: false
+
+# ── shell ───────────────────────────────────────────────────────────────────
+
+# 允许 SPV 跑只读命令（看 git 状态、看队列目录）。PTY 注册表是 agent 私有服务，所以整组落在 entry-local realm。
+# sandbox 策略来自 host（缺省 workspace-write）；Windows 没有 bash，整组关掉，只留读文件与 spv 工具。
+- id: shell
+  name: cordis:group
+  group: true
+  isolate:
+    terminals: true
+  disabled: !!js process.platform === 'win32'
+  config:
+    - id: pty
+      name: '@deepseek-ai/dsh-terminal'
+
+    - id: terminal-bash
+      name: '@deepseek-ai/dsh-terminal-bash'
+      config:
+        timeoutMs: 300000
+
+    - id: persistent-bash
+      name: '@deepseek-ai/dsh-tool-bash-persistent'
+      config:
+        timeoutMs: 300000
+        description: |-
+          Run commands in a bash shell
+          * When invoking this tool, the contents of the "command" parameter does NOT need to be XML-escaped.
+          * You don't have access to the internet via this tool.
+          * State is persistent across command calls and discussions with the user.
+          * To inspect a particular line range of a file, e.g. lines 10-25, try 'sed -n 10,25p /path/to/the/file'.
+          * Please avoid commands that may produce a very large amount of output.
+          * Please run long lived commands in the background, e.g. 'sleep 10 &' or start a server in the background.
+          * Work is dispatched with spv_dispatch, not executed here: use this shell to look, not to change the repository.
