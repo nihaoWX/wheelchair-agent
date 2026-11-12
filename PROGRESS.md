@@ -13,7 +13,8 @@
 - **superagent 落地**：clone 到 `tools/dsh-superagent/` 构建；profile `superagent`（stateDir、端口 3082、模型 provider 走 commandcode）。`dsh plugin add` 不写 `bundles`，需手动补。
 - **GitHub Source**：`nihaoWX/bioagentforge`，CLI `~/.local/bin/gh`，60s 轮询。
 - **`spv` Source 插件**（`spv-watch.js` + `src/spv.js`）：文件队列 pending→done（rename 即消费标记，无 cursor）+ outbox；Trigger 满足 explicit 三条件。
-- **SPV preset**（`dsh/` → `~/.dsh/.agent-presets/spv/`）：`agent.cordis.yml` 挂 spv 工具 + `tool-fs` + bash + `agent-instructions`。
+- **SPV preset**（`dsh/` → `~/.dsh/.agent-presets/spv/`）：`agent.cordis.yml` 挂 spv 工具 + `tool-fs` + bash + `agent-instructions` + compaction。
+- **compaction 组**（`compaction-basic` + `command-compact` + `tool-result-pruner`）：TUI 原先告警「本预设既无压缩也不剪枝工具结果」。加上后 `/compact` 可用、达水位自动压缩，超长工具输出按 8192 字符截断（留头 4096 / 尾 1024）。剪枝器必须与 `compaction-basic` 同 realm（后者用 `ctx.get('toolResultPrune')` 读它）；`token-meter` 刻意留在 host plane，否则浏览器的上下文计量投影会随 preset mount/unmount 来去。
 - **SPV 工具**（`spv-tools.js` + `src/{dispatch,outbox,paths}.js`）：`spv_dispatch` / `spv_result` / `spv_status`。`actor` 写死 `operator`，不接受参数。
 - **`superagent-service.py`**：服务启停，不依赖进程名。原先上游脚本用 `ps -o ucomm=` 取进程名，WSL2 上 node 报 `MainThread`，于是 `status` 报 `pids: []`、`restart` 说「已在运行」却不重启、`stop` 停不掉。改为用监听套接字（`ss -lptnH 'sport = :<port>'`）+ `/proc/<pid>/cmdline` 扫 `--profile`，两者都是运行时事实。日志固定写 `$DSH_HOME/.artifacts/<profile>.log`（无 `--log` 时），避免随 cwd 散落。
 - **`install.sh`**：装 preset + 启动器 + 服务管理命令，白名单拷贝、原子替换、幂等、`--check` 只读自检。

@@ -9,6 +9,7 @@
 #
 # 本文件刻意**不**挂：subagent / todo / web / plugin-manager / goal / plan-mode。SPV 的职责只有一个——
 # 派活与收结果；每多挂一个工具，模型就多一条跑偏的路。
+# 唯一破例的是 compaction（见下文）：它不是给模型多一条路，而是让长会话不至于撞上限。
 #
 # 下面 spv-tools 行的 name 是 `@SPV_PLUGIN@` 占位符：安装器把它换成 `file://<安装目录>/spv-tools.js`。
 # 为什么不用包名：preset 的声明来自 dsh profile 的 patch 层，那一层的模块解析基址是 profile 目录，
@@ -69,6 +70,36 @@
     readImage: false
     write: false
     edit: false
+
+# ── compaction ──────────────────────────────────────────────────────────────
+
+# 没有这一组，长会话会撞上下文上限，而 SPV 恰恰是长期在线的入口会话：每次 attach 都接着上一轮。
+#
+# 与 liangshen 同构，两个原因必须照抄：
+#   1. `compaction-basic` 通过 `ctx.get('toolResultPrune')` 读剪枝器，所以剪枝器必须与它同 realm；
+#   2. `tokenMeter` 刻意**不**在这里 —— 它留在 host plane，这里的行解析主机的那一个实例。
+#      放进 realm 会让浏览器读的上下文计量投影随 preset mount/unmount 来去。
+#
+# 用户侧的效果：`/compact` 可用，且达到水位时自动压缩；超长工具输出按 8192 字符截断，留头 4096 / 尾 1024。
+- id: compaction
+  name: cordis:group
+  group: true
+  isolate:
+    compaction: true
+    toolResultPruner: true
+  config:
+    - id: compaction-basic
+      name: '@deepseek-ai/dsh-compaction-basic'
+
+    - id: command-compact
+      name: '@deepseek-ai/dsh-command-compact'
+
+    - id: tool-result-pruner
+      name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+      config:
+        thresholdChars: 8192
+        headChars: 4096
+        tailChars: 1024
 
 # ── shell ───────────────────────────────────────────────────────────────────
 
