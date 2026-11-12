@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Install the SPV preset and its launcher for the current user.
 #
-# Installs two things (this project is not an agent tool, so there is no SKILL.md to copy):
-#   1. the dsh agent preset -> $DSH_HOME/.agent-presets/spv/
-#   2. the launcher         -> ~/.local/bin/spv
+# Installs three things (this project is not an agent tool, so there is no SKILL.md to copy):
+#   1. the dsh agent preset  -> $DSH_HOME/.agent-presets/spv/
+#   2. the launcher          -> ~/.local/bin/spv
+#   3. the service manager   -> ~/.local/bin/superagent-service
 #
 # Design rules (references/tool-install.md):
 #   - nothing is hard-coded to one machine: paths derive from $HOME and this script's own directory;
@@ -22,6 +23,7 @@ PRESET_ROOT=$DSH_HOME_DIR/.agent-presets
 PRESET_DIR=$PRESET_ROOT/$PRESET_ID
 BIN_DIR=${SPV_BIN_DIR:-$HOME/.local/bin}
 LAUNCHER=$BIN_DIR/spv
+SERVICE=$BIN_DIR/superagent-service
 TARGET_PLUGIN_URL="file://$PRESET_DIR/spv-tools.js"
 
 CHECK=0
@@ -98,6 +100,13 @@ render_launcher() {
   chmod 0755 "$dest"
 }
 
+# Render the service manager into $1: a straight copy, because it takes no substitutions.
+render_service() {
+  local dest=$1
+  cp "$SELF_DIR/scripts/superagent-service.py" "$dest" || return 1
+  chmod 0755 "$dest"
+}
+
 # ----------------------------------------------------------------- - check mode
 
 check_preset() {
@@ -165,6 +174,29 @@ check_launcher() {
   esac
 }
 
+check_service() {
+  if [ ! -f "$SERVICE" ]; then
+    fail "the service manager is not installed at $SERVICE"
+    fix 'run: bash tools/wheelchair-agent/install.sh'
+    return
+  fi
+  if [ ! -x "$SERVICE" ]; then
+    fail "the service manager at $SERVICE is not executable"
+    fix "run: chmod 0755 $SERVICE"
+    return
+  fi
+  if cmp -s "$SELF_DIR/scripts/superagent-service.py" "$SERVICE"; then
+    ok "service manager matches its source ($SERVICE)"
+  else
+    fail "the service manager at $SERVICE differs from this checkout"
+    fix 'run: bash tools/wheelchair-agent/install.sh'
+  fi
+  case ":$PATH:" in
+    *":$BIN_DIR:"*) ok "$BIN_DIR is on PATH, so \"superagent-service\" resolves" ;;
+    *) note "$BIN_DIR is not on PATH; add it to use the \"superagent-service\" command" ;;
+  esac
+}
+
 check_prerequisites() {
   require_node || true
   require_dsh_tui || true
@@ -224,12 +256,36 @@ install_launcher() {
   return 1
 }
 
+install_service() {
+  local staged
+  mkdir -p "$BIN_DIR" || { fail "cannot create $BIN_DIR"; return 1; }
+  staged="$BIN_DIR/.superagent-service.staged.$$"
+  if ! render_service "$staged"; then
+    rm -f "$staged"
+    fail 'could not render the service manager'
+    return 1
+  fi
+  if [ -f "$SERVICE" ] && cmp -s "$staged" "$SERVICE"; then
+    rm -f "$staged"
+    ok "up to date: $SERVICE"
+    return 0
+  fi
+  if mv -f "$staged" "$SERVICE"; then
+    ok "installed service manager: $SERVICE"
+    return 0
+  fi
+  rm -f "$staged"
+  fail "cannot move the staged service manager into $SERVICE"
+  return 1
+}
+
 # --------------------------------------------------------------------------- main
 
 if [ "$CHECK" -eq 1 ]; then
   check_prerequisites
   check_preset
   check_launcher
+  check_service
   if [ "$PROBLEMS" -gt 0 ]; then
     printf '\n%d check(s) failed.\n' "$PROBLEMS"
     exit 2
@@ -249,11 +305,13 @@ fi
 
 install_preset
 install_launcher
+install_service
 
 if [ "$PROBLEMS" -gt 0 ]; then
   printf '\n%d step(s) failed.\n' "$PROBLEMS"
   exit 1
 fi
 
-printf '\nDone. Start the SPV session with:\n  spv\n'
-printf 'The superagent service must be running for dispatched tasks to be picked up.\n'
+printf '\nDone. Start the superagent service, then the SPV session:\n'
+printf '  superagent-service start   # the backend that executes tickets\n'
+printf '  spv                        # the agent you talk to\n'

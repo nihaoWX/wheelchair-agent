@@ -15,7 +15,8 @@
 - **`spv` Source 插件**（`spv-watch.js` + `src/spv.js`）：文件队列 pending→done（rename 即消费标记，无 cursor）+ outbox；Trigger 满足 explicit 三条件。
 - **SPV preset**（`dsh/` → `~/.dsh/.agent-presets/spv/`）：`agent.cordis.yml` 挂 spv 工具 + `tool-fs` + bash + `agent-instructions`。
 - **SPV 工具**（`spv-tools.js` + `src/{dispatch,outbox,paths}.js`）：`spv_dispatch` / `spv_result` / `spv_status`。`actor` 写死 `operator`，不接受参数。
-- **`install.sh`**：装 preset + 启动器，白名单拷贝、原子替换、幂等、`--check` 只读自检。
+- **`superagent-service.py`**：服务启停，不依赖进程名。原先上游脚本用 `ps -o ucomm=` 取进程名，WSL2 上 node 报 `MainThread`，于是 `status` 报 `pids: []`、`restart` 说「已在运行」却不重启、`stop` 停不掉。改为用监听套接字（`ss -lptnH 'sport = :<port>'`）+ `/proc/<pid>/cmdline` 扫 `--profile`，两者都是运行时事实。日志固定写 `$DSH_HOME/.artifacts/<profile>.log`（无 `--log` 时），避免随 cwd 散落。
+- **`install.sh`**：装 preset + 启动器 + 服务管理命令，白名单拷贝、原子替换、幂等、`--check` 只读自检。
 - **`tools/` 拆分 21 个独立仓库**：10 个 `git subtree split` 保留历史（tree 哈希逐一比对），9 个新建，2 个原有。零失败、零文件丢失。
 - **端到端验证**：`spv_dispatch` 投递 → ack → worker 在项目 clone 内执行 → reply "已完成：…"，全程无残留。
 - **防冒充验证**：superagent 源码与其 `cordis.patch.yml` 中均无 `spv_*`；两个 superagent preset 都不含 `spv-tools`。
@@ -27,7 +28,6 @@
 
 # Known Issues
 
-- **`scripts/dsh-superagent status/stop/restart` 在 WSL2 下失效**：脚本用 `ps ucomm` 判进程名，node 的 comm 是 `MainThread`。按端口取 PID 再 `kill -INT`。这也是它「start 误报健康检查超时」的同一根因。
 - **主会话固化第一次的 model 路由**：`initializeRoleModel` 不覆盖已有 `model/selection`。换 provider 后需删 `~/.dsh/sessions/--home-nihao-.dsh-state-superagent--/orchestrator-*` 与对应 `session_projcache`。
 - **`dsh-tui update` 会把 dsh 升回 `0.2.2-rc.1`**，superagent 加载失败。需手动降回并带 `--allow-scripts`。
 - **worker 的目录约束靠自觉**：prompt 未限制它只能在 ticket 目录内改动，冒烟测试时它曾 `find /home/nihao` 找到真实项目路径。
@@ -40,6 +40,15 @@
 # Next Steps
 
 1. 在真实 SPV 会话里跑一次完整任务（`spv` 启动 → 派活 → `spv_result`），观察 token 消耗。
+
+日常命令：
+
+```bash
+superagent-service start     # 起后端（幂等；已在跑则直接报告）
+superagent-service status    # exit 0 正常 / 1 未跑或异常 / 2 组件报错 / 3 等 setup
+superagent-service restart   # 改过 spv Source 或 provider 配置后
+spv                          # 起 SPV 会话
+```
 2. 收紧 worker 的目录约束（prompt 层或项目 `AGENTS.md`）。
 3. 视消耗决定是否给 worker 换更便宜的模型。
 4. 稳定后再考虑 `observe` → `auto`。
