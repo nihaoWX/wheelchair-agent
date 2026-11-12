@@ -29,6 +29,7 @@ import argparse
 import json
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
@@ -177,10 +178,32 @@ def outcome(pids, current, profile):
     return PART_ERROR if part_errors(current) else 0
 
 
-def report(pids, current, url, profile, manually_stopped):
+def panel_url(log_path, url):
+    """Return the tokenised panel URL printed at startup, or None.
+
+    `dsh web` mints a fresh token on every boot and prints the only URL that carries it;
+    it has no flag to pin one, so the log is the single source of truth. Without this, the
+    bare `url:` line is useless for a browser - opening it answers
+    "dsh web authentication required" and nothing else.
+    """
+    try:
+        text = Path(log_path).read_text(encoding='utf-8', errors='replace')
+    except OSError:
+        return None
+    matches = re.findall(r'https?://[^\s]*[?&]token=[A-Za-z0-9._-]+', text)
+    return matches[-1] if matches else None
+
+
+def report(pids, current, url, profile, manually_stopped, log_path=None):
     """Print a one-screen summary and return the exit code."""
     print(f'profile: {profile}')
     print(f'url:     {url}')
+    if pids and log_path is not None:
+        panel = panel_url(log_path, url)
+        if panel:
+            print(f'panel:   {panel}')
+        else:
+            print('panel:   no token found in the log; open the printed URL from a fresh start')
     print(f'pids:    {", ".join(str(pid) for pid in pids) if pids else "(none)"}')
     if manually_stopped:
         print('note:    an intentional stop is recorded; automatic recovery stays off until start/restart')
@@ -206,10 +229,56 @@ def report(pids, current, url, profile, manually_stopped):
     return outcome(pids, current, profile)
 
 
+def open_command(url):
+    """Return the argv that hands one URL to the operator's browser, or None if none applies.
+
+    WSL is the reason this is not just "xdg-open": the service listens on the WSL loopback, and a
+    browser started inside WSL usually does not exist. The Windows host reaches the same port
+    through its own loopback interface, so Start-Process is the route that actually shows a panel.
+    Deliberately no shell and no quoting: argv is passed as a list, so a token containing shell
+    metacharacters cannot become part of a command line.
+    """
+    powershell = Path('/mnt/c/Windows/System32/WindowsPowerShell/v1.0/powershell.exe')
+    if powershell.exists():
+        return [str(powershell), '-NoProfile', '-Command', 'Start-Process', url]
+    for candidate in ('xdg-open', 'open'):
+        found = shutil.which(candidate)
+        if found:
+            return [found, url]
+    return None
+
+
+def cmd_open(args):
+    """Open the tokenised panel URL in the operator's browser."""
+    pids = service_pids(args.profile, args.port)
+    if not pids:
+        return fail(
+            f'the superagent service is not running for profile {args.profile}, so there is no panel to open',
+            'start it with: superagent-service start')
+    panel = panel_url(args.log, args.url)
+    if panel is None:
+        return fail(
+            f'no panel token in {args.log}',
+            'the token is printed once at startup; run "superagent-service restart", then this command again')
+    argv = open_command(panel)
+    if argv is None:
+        print(panel)
+        return fail(
+            'no browser launcher found (tried powershell.exe, xdg-open, open)',
+            'open the URL printed above by hand')
+    try:
+        subprocess.run(argv, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except (OSError, subprocess.SubprocessError) as error:
+        print(panel)
+        return fail(f'could not launch a browser ({error})', 'open the URL printed above by hand')
+    print(f'opened: {panel}')
+    return 0
+
+
 def cmd_status(args):
     pids = service_pids(args.profile, args.port)
     current = read_state(args.url) if pids else None
-    return report(pids, current, args.url, args.profile, False)
+    return report(pids, current, args.url, args.profile, False, args.log)
 
 
 def wait_ready(args, deadline):
@@ -239,7 +308,7 @@ def cmd_start(args):
         current = read_state(args.url)
         if runtime_up(current):
             print(f'OK: already running (pid {pids[0]}); nothing started')
-            return report(pids, current, args.url, args.profile, False)
+            return report(pids, current, args.url, args.profile, False, args.log)
         return fail(f'pid {pids[0]} is running but not serving {args.url}',
                     'wait a few seconds and retry, or restart: superagent-service restart')
 
@@ -271,7 +340,7 @@ def cmd_start(args):
         print(f'note: waiting for setup — {current["setup"].get("detail", "")}')
     if code == 0:
         print('OK: running')
-    return report(pids, current, args.url, args.profile, False)
+    return report(pids, current, args.url, args.profile, False, args.log)
 
 
 def cmd_stop(args):
@@ -308,7 +377,7 @@ def cmd_restart(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument('action', choices=['start', 'stop', 'restart', 'status'])
+    parser.add_argument('action', choices=['start', 'stop', 'restart', 'status', 'open'])
     parser.add_argument('--profile', default=os.environ.get('DSH_SUPERAGENT_PROFILE') or DEFAULT_PROFILE,
                         help=f'DSH profile that loads dsh-superagent (default: {DEFAULT_PROFILE})')
     parser.add_argument('--url', default=os.environ.get('DSH_SUPERAGENT_URL') or DEFAULT_URL,
@@ -340,7 +409,8 @@ def main():
     if args.timeout <= 0 or args.stop_timeout <= 0:
         return fail('--timeout and --stop-timeout must be positive', 'omit them to use the defaults')
 
-    handlers = {'status': cmd_status, 'start': cmd_start, 'stop': cmd_stop, 'restart': cmd_restart}
+    handlers = {'status': cmd_status, 'start': cmd_start, 'stop': cmd_stop, 'restart': cmd_restart,
+                'open': cmd_open}
     try:
         return handlers[args.action](args)
     except KeyboardInterrupt:

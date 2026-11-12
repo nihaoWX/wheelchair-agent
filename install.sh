@@ -87,7 +87,7 @@ render_into() {
   fi
   cp "$SELF_DIR/spv-tools.js" "$dest/spv-tools.js" || return 1
   local file
-  for file in queue.js paths.js dispatch.js outbox.js; do
+  for file in queue.js paths.js dispatch.js outbox.js health.js; do
     cp "$SELF_DIR/src/$file" "$dest/src/$file" || return 1
   done
   return 0
@@ -132,7 +132,7 @@ check_preset() {
     fix 'run: bash tools/wheelchair-agent/install.sh'
   fi
   actual=$(find "$PRESET_DIR" -type f | sed "s|^$PRESET_DIR/||" | sort | tr '\n' ' ')
-  local expected="agent.cordis.yml package.json preset-default.patch.yml preset.yml spv-tools.js src/dispatch.js src/outbox.js src/paths.js src/queue.js "
+  local expected="agent.cordis.yml package.json preset-default.patch.yml preset.yml spv-tools.js src/dispatch.js src/health.js src/outbox.js src/paths.js src/queue.js "
   if [ "$actual" = "$expected" ]; then
     ok 'the installed preset holds only the whitelisted files'
   else

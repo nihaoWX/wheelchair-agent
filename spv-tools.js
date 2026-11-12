@@ -20,6 +20,7 @@
  */
 import { dirsOf } from './src/queue.js'
 import { checkProject, checkTask, checkThread, submitTask } from './src/dispatch.js'
+import { probe, serviceDown } from './src/health.js'
 import { pendingTasks, unreadMessages, waitForResult } from './src/outbox.js'
 import { missingQueue, resolveRoot } from './src/paths.js'
 
@@ -67,7 +68,8 @@ export function defineSpvTools(root) {
         'outside this conversation - a code change, a test run, a repository inspection - so you stay responsive ' +
         'while it runs. The task is a single natural-language instruction; the worker has its own filesystem ' +
         'access and reports once. The project argument selects which project the worker gets: "tools/<name>" or ' +
-        '"research/<name>". Afterwards call spv_result on the same thread to read the answer.',
+        '"research/<name>". Afterwards call spv_result on the same thread to read the answer. Fails instead of ' +
+        'queuing when the service is not running, because a queued task with no reader looks dispatched but never runs.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -108,6 +110,8 @@ export function defineSpvTools(root) {
         const project = checkProject(args.project)
         const task = checkTask(args.task)
         const thread = checkThread(args.thread)
+        const health = await probe()
+        if (!health.alive) throw serviceDown(health)
         try {
           const record = await submitTask(dirs, { project, task, thread })
           return { id: record.id, thread: record.thread, project: record.project }

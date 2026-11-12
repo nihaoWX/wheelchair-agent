@@ -41,6 +41,9 @@
 # Next Steps
 
 1. 在真实 SPV 会话里跑一次完整任务（`spv` 启动 → 派活 → `spv_result`），观察 token 消耗。
+2. 收紧 worker 的目录约束（prompt 层或项目 `AGENTS.md`）。
+3. 视消耗决定是否给 worker 换更便宜的模型。
+4. 稳定后再考虑 `observe` → `auto`。
 
 日常命令：
 
@@ -48,8 +51,9 @@
 superagent-service start     # 起后端（幂等；已在跑则直接报告）
 superagent-service status    # exit 0 正常 / 1 未跑或异常 / 2 组件报错 / 3 等 setup
 superagent-service restart   # 改过 spv Source 或 provider 配置后
-spv                          # 起 SPV 会话
+superagent-service open      # 在浏览器打开带 token 的面板（token 每次启动都变，别复制旧的）
+spv                          # 起 SPV 会话（会自动拉起后端）
 ```
-2. 收紧 worker 的目录约束（prompt 层或项目 `AGENTS.md`）。
-3. 视消耗决定是否给 worker 换更便宜的模型。
-4. 稳定后再考虑 `observe` → `auto`。
+
+**面板的 token 每次启动都变**，且 `dsh web` 没有固定 token 的开关。裸 `url:` 打开只会得到
+`dsh web authentication required`。用 `superagent-service open`，或从 `status` 的 `panel:` 行取当前地址。

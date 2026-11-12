@@ -1,13 +1,18 @@
 #!/bin/sh
-# SPV 启动器：用 SPV preset 起动 dsh-tui。
+# SPV 启动器：确保 superagent 服务在跑，然后用 SPV preset 起动 dsh-tui。
 #
-# 三件事，缺一不可：
-#   1. --patch 传入 preset 声明：dsh-tui 0.19 的 preset 由 agent-preset registry 声明，
+# 四件事：
+#   1. 拉起 superagent 服务（幂等）：它不会自己启动，也不会跟随 dsh-tui 启动，而 SPV 派出的每个任务都靠它执行。
+#      已在运行时 `start` 立刻返回，所以每次启动都调它是安全的。
+#   2. --patch 传入 preset 声明：dsh-tui 0.19 的 preset 由 agent-preset registry 声明，
 #      `~/.dsh/.agent-presets/spv/` 只是元数据目录，不会被自动发现。
-#   2. DSH_TUI_PRESET=spv：新会话的 preset 优先级是「本次启动指令 > 持久化的 /preset 选择 > 部署默认 >
+#   3. DSH_TUI_PRESET=spv：新会话的 preset 优先级是「本次启动指令 > 持久化的 /preset 选择 > 部署默认 >
 #      roster 默认」，而 registry 的 default 只能被 deployment 层设置。导出这个变量才能压过用户之前
 #      在 /preset 里选过的别的 preset。
-#   3. "$@" 透传：`spv --resume`、`spv /some/path` 等参数照常用。
+#   4. "$@" 透传：`spv --resume`、`spv /some/path` 等参数照常用。
+#
+# 服务起不来时**不**阻止会话打开：SPV 仍然可以查队列、看状态，而且报错信息在会话里更容易看清。
+# 但一定会往 stderr 喊一声，绝不静默——一个没有后端的 SPV 看起来正常，派出去的任务却永远不执行。
 #
 # SPV_PRESET_HOME 的值由安装器烧进来（占位符替换），所以这个脚本可以放在 PATH 上任意位置，
 # 也可以在没有 bioagentforge 源码树的机器上运行。
@@ -21,6 +26,33 @@ if [ ! -f "$SPV_PATCH" ]; then
   echo "fix: reinstall the preset with: bash <bioagentforge>/tools/wheelchair-agent/install.sh" >&2
   exit 1
 fi
+
+# 确保后端在跑。status 的退出码语义：0 正常、1 未运行或不健康、2 组件报错、3 等 setup。
+# 只有 0 才跳过 start；其余都试一次 start，让脚本自己决定能不能救回来。
+ensure_service() {
+  if ! command -v superagent-service >/dev/null 2>&1; then
+    echo 'warning: superagent-service is not on PATH, so the backend was not started.' >&2
+    echo 'warning: tasks dispatched from this session will fail until it is running.' >&2
+    echo 'warning: install it with: bash <bioagentforge>/tools/wheelchair-agent/install.sh' >&2
+    return 0
+  fi
+
+  if superagent-service status >/dev/null 2>&1; then
+    return 0
+  fi
+
+  echo 'superagent: starting the backend...' >&2
+  if superagent-service start >/dev/null 2>&1; then
+    echo 'superagent: ready' >&2
+    return 0
+  fi
+
+  echo 'warning: superagent did not start, so no task dispatched here would run.' >&2
+  echo 'warning: diagnose with "superagent-service status", then restart this session.' >&2
+  return 0
+}
+
+ensure_service
 
 DSH_TUI_PRESET=spv
 export DSH_TUI_PRESET

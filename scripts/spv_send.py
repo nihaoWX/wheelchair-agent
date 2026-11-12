@@ -4,7 +4,7 @@
 Writes `<queue>/pending/<uuid>.json`. The `spv` Source moves the file to `done/` once superagent has taken it in, so a
 task that still sits in `pending/` has not been read yet: either the service is down or its Source is off.
 
-Exit codes: 0 written, 1 the queue is missing (start the service), 2 bad usage.
+Exit codes: 0 written, 1 the queue is missing or the service is down (start it), 2 bad usage.
 """
 
 import argparse
@@ -14,8 +14,16 @@ import sys
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.request import urlopen
 
 STATE_DIR = Path.home() / '.dsh' / 'state' / 'superagent'
+
+# Health endpoint of the superagent runtime: the only evidence that something will read pending/.
+# Checking the queue directory is not enough - it survives a stop, so a task written into it looks
+# dispatched but nobody consumes it.
+HEALTH_PATH = '/orchestrator/api/state'
+PROBE_TIMEOUT = 2.5
 
 
 def queue_root(explicit):
@@ -23,11 +31,45 @@ def queue_root(explicit):
     return Path(explicit or os.environ.get('SPV_QUEUE_DIR') or (STATE_DIR / 'spv')).expanduser()
 
 
+def service_url():
+    """Return the runtime base URL: $SPV_SUPERAGENT_URL, else localhost on $SPV_SUPERAGENT_PORT/3082."""
+    explicit = os.environ.get('SPV_SUPERAGENT_URL', '').strip()
+    if explicit:
+        return explicit.rstrip('/')
+    port = os.environ.get('SPV_SUPERAGENT_PORT', '').strip() or '3082'
+    return f'http://127.0.0.1:{port}'
+
+
+def service_alive():
+    """Return (alive, reason). Any HTTP answer means the runtime is listening enough to consume the queue."""
+    url = f'{service_url()}{HEALTH_PATH}'
+    try:
+        with urlopen(url, timeout=PROBE_TIMEOUT) as response:
+            response.read(1)
+            return True, ''
+    except HTTPError:
+        return True, ''
+    except URLError as error:
+        reason = getattr(error, 'reason', error)
+        return False, f'{url} unreachable ({reason})'
+    except Exception as error:  # noqa: BLE001 - probe must never mask the real dispatch path
+        return False, f'{url} unreachable ({error})'
+
+
+def fail_service(reason):
+    """Explain that the task would never be read, and exit 1."""
+    print(f'error: superagent is not running: {reason}', file=sys.stderr)
+    print('The queue directory survives a stop, so writing into it would look dispatched but never run.', file=sys.stderr)
+    print('Start the service, wait for runtime ready, then retry:', file=sys.stderr)
+    print('  superagent-service start', file=sys.stderr)
+    return 1
+
+
 def fail_missing(root):
     """Explain how to get a queue directory, and exit 1."""
     print(f'error: no queue at {root}', file=sys.stderr)
     print('The spv Source creates pending/, done/ and outbox/ when it starts. Start the service first:', file=sys.stderr)
-    print('  python3 tools/dsh-superagent/scripts/dsh-superagent start', file=sys.stderr)
+    print('  python3 tools/dsh-superagent/scripts/dsh-superagent status', file=sys.stderr)
     print('and make sure the spv Source is enabled in the superagent profile; then retry.', file=sys.stderr)
     return 1
 
@@ -56,6 +98,10 @@ def main():
     pending = root / 'pending'
     if not pending.is_dir():
         return fail_missing(root)
+
+    alive, reason = service_alive()
+    if not alive:
+        return fail_service(reason)
 
     task_id = uuid.uuid4().hex
     record = {
