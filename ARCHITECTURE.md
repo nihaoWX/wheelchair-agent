@@ -17,34 +17,56 @@
 
 # Structure
 
+**两个东西，严格分开，互不 import**——这是本项目最容易混淆的地方：
+
+| | 我们的 SPV | superagent |
+|---|---|---|
+| 是什么 | 我们自己定义的 dsh **agent preset** | 另一个 dsh profile 里的**常驻服务** |
+| 谁对话 | **用户** | 无人（后台进程） |
+| profile | `dsh-tui` | `superagent` |
+| preset | `spv`（`~/.dsh/.agent-presets/spv/`） | `dsh-superagent-router` / `-worker`（它 bundle 自带） |
+| cwd | `bioagentforge`（读根版 AGENTS.md） | 独立 stateDir |
+| 工具前缀 | `spv_*` | `orchestrator_*` |
+| 职责 | 听懂用户、派任务、报结果 | 准入判断、建 Ticket、路由、派工 |
+| 唯一的接口 | **文件队列**（写 `pending/`、读 `outbox/`） | 同一个队列（反向） |
+
+**不要把它们当成一个系统的两层。** 它们是两个独立程序，共享的只有队列文件格式。SPV 不读 superagent 的代码，superagent 不知道 SPV 存在。
+
 ```
 tools/wheelchair-agent/          # 本项目（独立 git 仓库）
 ├── AGENTS.md                    # 项目版 agent 规则（DSH 靠它做隔离）
 ├── ARCHITECTURE.md              # 本文档
 ├── PROGRESS.md                  # 当前状态
-├── package.json                 # dsh 插件包（纯 ESM，无构建）
+├── package.json                 # 两个入口：superagent Source 插件 + SPV 工具插件
 ├── index.js                     # 包默认入口，转出 spv-watch.js
-├── spv-watch.js                 # 插件入口：注册 kind + 轮询循环
-├── src/spv.js                   # spv Source kind（Trigger 翻译、Channel、Policy、字段）
-├── src/queue.js                 # 文件队列布局与读写（pending/done/outbox）
-├── src/schema.js                # 极简 schema 校验（代替 zod，见 docs/spv-source.md 6.2）
-├── scripts/spv_send.py          # 入口会话派活
-├── scripts/spv_read.py          # 入口会话收结果
+├── spv-watch.js                 # 【superagent 侧】插件入口：注册 kind + 轮询循环
+├── src/spv.js                   # 【superagent 侧】spv Source kind（Trigger/Channel/Policy）
+├── src/queue.js                 # 共用：文件队列布局与读写（pending/done/outbox）
+├── src/schema.js                # 共用：极简 schema 校验
+├── src/tools.js                 # 【SPV 侧】spv_dispatch / spv_result / spv_status
+├── dsh/                         # 【SPV 侧】agent preset 定义（装到 ~/.dsh/.agent-presets/spv/）
+│   ├── preset.yml
+│   ├── agent.cordis.yml
+│   └── preset-default.patch.yml # 让新会话默认用 spv preset
+├── install.sh                   # 装 preset + 启动器，带 --check
+├── scripts/spv_send.py          # 过渡用 CLI（保留兼容，SPV 工具是正路）
+├── scripts/spv_read.py          # 过渡用 CLI
 └── docs/                        # 设计依据与踩坑
-    ├── spv-source.md            # spv Source 的完整设计与踩坑记录
-    └── PITFALLS/                # 由 skill pitfalls-manager 维护
 
 /home/nihao/bioagentforge/
-├── AGENTS.md                    # 根版规则：cwd=仓库根时加载（用户直连的会话）
+├── AGENTS.md                    # 根版规则：SPV 会话（cwd=仓库根）加载它
 ├── .dsh/state/superagent/       # superagent 的 stateDir（DB、锁、worker 目录）
-│   ├── work/<name>-<ticket>/    # 每个 Ticket 一个 worker 目录
-│   └── spv/                     # spv Source 的文件队列
-│       ├── pending/             # 待处理任务
-│       ├── done/                # 已消费（rename 即标记）
-│       └── outbox/              # Channel 写回
+│   ├── work/<name>-<ticket>/    # 每个 Ticket 一个 worker 目录（项目 clone）
+│   └── spv/                     # 两边唯一的接口
+│       ├── pending/             # SPV 写，superagent 读（rename 到 done/ 即消费）
+│       ├── done/                # 已消费
+│       └── outbox/              # superagent 写，SPV 读
 └── tools/dsh-superagent/        # superagent 源码（独立仓库，本地构建）
 
 ~/.dsh/profiles/superagent/      # DSH profile：dsh-superagent bundle + wheelchair-agent 插件 + 模型 provider
+~/.dsh/.agent-presets/spv/       # DSH 用户级 preset：定义 SPV 是什么（install.sh 装）
+~/.local/bin/spv                 # 启动器（install.sh 装）
+```
 ```
 
 ## 关键机制：AGENTS.md 的隔离靠 `.git`
@@ -284,6 +306,22 @@ superagent 的 `guard` 目的**不是省资源，也不是防越权**，而是�
 cmd 的 `task_*`、`taste 学习`、`COMMAND_CODE_TASK_LIST_ID` 等都很好用，但**把它们当架构基础就等于绑死 harness**。能够依赖的只有标准化的东西（文件、SQLite、HTTP、git）。
 
 `tools/cao` 里给 cmd 打的 taste 补丁是例外——它是**运维便利**，不是架构依赖，丢了不影响系统运行（`status.sh` 会报 FAIL 提醒重打）。
+
+## D14 派任务的入口必须是 agent 工具，不能是 CLI 脚本
+
+`spv_send.py` 这类脚本**可以被任何有 bash 的 agent 调用**，而它投递的任务默认以 `operator` 身份进入 superagent——**worker 跑一下脚本就能伪造成用户派活**，整个授权模型失效。
+
+因此入口必须是 **agent preset 里的工具**，且该 preset 只存在于 SPV 会话：
+
+| | 有 `spv_dispatch` | 能否投递 |
+|---|---|---|
+| SPV（`dsh-tui` profile + `spv` preset） | ✅ | ✅ |
+| superagent 主会话 | ❌ | 只能读 outbox |
+| superagent worker | ❌ | 只能读 outbox |
+
+**双保险**：`spv_dispatch` 的 `actor` 由代码写死为 `operator`，**不接受参数**；这样即便有人绕过工具直接写队列文件，superagent 的 Policy（`spv.allowed = [operator]`）也只认这一个身份。
+
+CLI 脚本保留但降级为"过渡/调试"，正路是工具。
 
 ## 参考索引
 
