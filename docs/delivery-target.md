@@ -3,6 +3,10 @@
 **这份文档记录一个还没实现的方向，以及为什么它不能靠配置解决。** 后续在 dsh 那边接手的 agent
 读这一份就能明白现状，不必重新推导。
 
+**状态（2026-11-14）**：方向已定、实现未开始。账本 `R2-F1`（`deferred`，2026-11-14 复核）记的就是这个状态——
+不是"待调查"，而是"结论已定、等实现"。实现要动 `src/spv.js`、面板的 prepare 命令与 `install.sh`，
+不在本仓库当前范围内。
+
 ## 问题
 
 `spv` 派发的任务自带项目路径（`project`，如 `tools/pitfalls-manager`），但 worker 环境里的
@@ -117,7 +121,7 @@ worker 不会去开 PR。**但默认值仍是 PR**：任务没写清时，worker
 
 | 资料 | 位置 |
 |---|---|
-| 完整调查（现象、6 组复现步骤、全部实测数字） | `docs/PITFALLS/wheelchair-agent-建议-仓库随项目走.md` |
+| 完整调查（现象、6 组复现步骤、全部实测数字） | `docs/PITFALLS/wheelchair-agent-建议-仓库随项目走.md`（按操作者 2026-11-13 的判定**保留在工作树里**，不是待处理报告；账本条目 `R2-F1`） |
 | 项目开发类 AGENTS.md 模板 | `docs/agentsmd-examples/proj-dev-agentsmd.md` |
 | 研究任务类 AGENTS.md 模板 | `docs/agentsmd-examples/research-task-agentsmd.md` |
 | superagent 的交付契约与合并规则 | `tools/dsh-superagent/prompts/work.md`、`prompts/team/delivery.md` |

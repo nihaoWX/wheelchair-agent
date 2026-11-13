@@ -29,7 +29,7 @@
 
 **长任务不留在 worker 会话里**：worker 回合结束后其 shell job 最多再跑 30 分钟即被杀（`src/executor/dsh.ts` 的 `BACKGROUND_LIMIT_MS`）。长时间分析交给 systemd user manager 持有（`jobctl`），下一阶段的触发器是**作业自己的结束事件**（`ExecStopPost` 写队列），不依赖 worker 自觉、全局 goal 状态或定时轮询。`/spv-cron` 每小时机械检查一次，漏挂的作业顶多一小时内被发现。
 
-**SPV 的重试能力取决于错误 code，不是"有没有重试"**：`dsh-llm-retry` 已挂载，commandcode provider 也实现了 `providerRetryPolicy`（`maxRetries: 1000`，白名单 `EMPTY_RESPONSE / RATE_LIMIT / THROTTLED / SERVER / TIMEOUT / TRANSPORT`）。所以遇到上游报错直接停下，大概率是**该错误的 code 不在白名单**，或**错误发生在 agent 轮次之外**（`ctx.llm.stream()` 的直接消费方没有重试边界）。排查时先确认实际 code，再决定是补白名单、还是在 SPV profile 层把 `retryPolicy` 调成 `always`——后者会让永久性失败（无效 key、配额耗尽）也一直重试，需明确取舍。worker 侧不受影响是因为 superagent 自带独立重试（`TRANSIENT_TRIES = 3`、15s 退避、认 408/429/5xx 与 ECONNRESET 等）。
+**SPV 遇上游 API error 停下的根因已确认（2026-11-14 复核确认，账本 `R1-F1`）**：不是"没接上重试"，也不是"code 不在白名单"。实测 SPV 会话里真实报错的 code 是 `TRANSPORT`——它**在** provider 白名单里（`EMPTY_RESPONSE / RATE_LIMIT / THROTTLED / SERVER / TIMEOUT / TRANSPORT`，`maxRetries: 1000`）。真正先动手的是 provider 自己注册的 `agent/request-error` 监听器：它用一份**独立的 transport 预算**（`transportMaxRetries`，默认 5、上限 50）吸收前 5 次失败（实测 6 次尝试、间隔约 770ms），第 6 次抛出一个**普通 `Error`**；普通 Error 不是 `HarnessError`，`dsh-llm` 只能把它的 code 记成 `UNKNOWN`，于是轮次以 `turn/end reason=error` 结束。59 份会话日志里**没有任何 `llm/retry` 事件**，说明 `dsh-llm-retry` 从未被轮到——provider 的监听器抢在它前面。这是上游的**刻意设计**（issue #39：把 transport 宽限压到约 15.5s，避免整轮卡死几分钟），本仓库没有任何代码参与，故按外部/上游限制处理、不改代码。**绕行**：① 在启动 DSH 的 shell 里导出 `HTTPS_PROXY`/`HTTP_PROXY`（DSH 只读环境变量，不读 Windows 系统代理/PAC）——报错文案本身就这么说；② 调高 `llm-commandcode` 的 `transportMaxRetries`（0–50），代价是网络真断时轮次会卡更久。**注意**：旧结论里"把 `retryPolicy` 调成 `always`"对这条失败**无效**，因为 provider 的监听器在策略被查询之前就抛了。worker 侧不受影响是因为 superagent 自带独立重试（`TRANSIENT_TRIES = 3`、15s 退避、认 408/429/5xx 与 ECONNRESET 等）。
 
 # Structure
 

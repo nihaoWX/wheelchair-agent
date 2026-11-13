@@ -60,10 +60,12 @@
   曾因此把 `tools/pitfalls-manager` 的 PR 开到 `nihaoWX/bioagentforge`（PR #1）。
   三条配置绕行路已实测堵死，**已定方向：给 worker 一份它读得到的 `AGENTS.md`**，模板已备。
   详见 `docs/delivery-target.md`。
-- **SPV 遇上游 API error 不重试**（已入账 `R1`，`deferred`）：`dsh-llm-retry` 已挂载、provider 也
-  实现了 `providerRetryPolicy`，所以问题更可能是**该错误的 code 不在白名单**，或**错误发生在 agent
-  轮次之外**。等真实报错的 code 才能判断。worker 侧不受影响（superagent 自带 `TRANSIENT_TRIES=3`、
-  15s 退避、认 408/429/5xx 与 ECONNRESET 等）。
+- **SPV 遇上游 API error 停下**（已入账 `R1`，2026-11-14 复核确认根因，仍 `deferred`）：
+  真实报错的 code 是 `TRANSPORT`，**在** provider 白名单里；先动手的是 provider 自己的
+  `agent/request-error` 监听器——它用独立的 `transportMaxRetries`（默认 5）吸收前 5 次失败，第 6 次
+  抛普通 `Error`，被 `dsh-llm` 记成 `UNKNOWN`，轮次结束。59 份会话日志里没有任何 `llm/retry` 事件。
+  这是上游刻意设计（issue #39），本仓库不改代码；绕行＝导出 `HTTPS_PROXY`/`HTTP_PROXY`，或调高
+  `transportMaxRetries`。详见 `ARCHITECTURE.md` 的重试段。
 - **主会话固化第一次的 model 路由**：`initializeRoleModel` 不覆盖已有 `model/selection`。换 provider
   后需删 `~/.dsh/sessions/--home-nihao-.dsh-state-superagent--/orchestrator-*` 与对应
   `session_projcache`。
