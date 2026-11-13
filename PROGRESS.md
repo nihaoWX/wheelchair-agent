@@ -60,7 +60,7 @@
   曾因此把 `tools/pitfalls-manager` 的 PR 开到 `nihaoWX/bioagentforge`（PR #1）。
   三条配置绕行路已实测堵死，**已定方向：给 worker 一份它读得到的 `AGENTS.md`**，模板已备。
   详见 `docs/delivery-target.md`。
-- **SPV 遇上游 API error 停下**（已入账 `R1`，2026-11-14 复核确认根因，仍 `deferred`）：
+- **SPV 遇上游 API error 停下**（`R1` 记了现象，2026-11-14 由 `R3-F1` 确认根因并裁决 `wontfix`）：
   真实报错的 code 是 `TRANSPORT`，**在** provider 白名单里；先动手的是 provider 自己的
   `agent/request-error` 监听器——它用独立的 `transportMaxRetries`（默认 5）吸收前 5 次失败，第 6 次
   抛普通 `Error`，被 `dsh-llm` 记成 `UNKNOWN`，轮次结束。59 份会话日志里没有任何 `llm/retry` 事件。
