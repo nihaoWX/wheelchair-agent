@@ -1,0 +1,16 @@
+# R2 的 round-data —— 「交付目标随项目走」这一轮**实测过**的项目分布与三条堵死的绕行路
+# 字段含义的唯一来源：tools/pitfalls-manager/references/02_consume.md §4.3（本文件不复述）
+id = "R2"
+verdict = "新领土"          # R2-F1 的 where 是 docs/delivery-target.md，账本里没有更早轮次用过这个位置，related 为空
+family = ["交付目标不随项目走：项目路径推不出 GitHub 仓库，且配置层无法消除这个单值"]
+closures = [ { finding = "R2-F1", tier = "规则" } ]   # 规则 | 检查 | 默认 | 代码 | wontfix
+run_before = []             # 首轮，没有更早的可跑证据
+touched = []                # 本轮没有改写任何旧轮断言的期望值
+note = """
+为什么认定同类：首轮（新领土）——R2-F1 的 where 是 docs/delivery-target.md，账本里没有更早轮次用过这个位置，related 为空。
+根因与建议修法：已证——面板仓库是必填单值（deployment.ts 的 repositoryUnset）、编排器 API 锁死一个仓库、环境变量按来源并排渲染而不覆盖，所以配置层消不掉这个冲突；方向已定（给 worker 一份受管的 AGENTS.md），未实现。
+怎么修才不弄坏前面：实现受管 AGENTS.md 时先跑本目录 test.py；族1 断言的是**规则**（tools/ 每个目录都有自己的 .git、research/ 没有 GitHub remote），实测计数只出现在族名里、不参与断言——建仓让计数变了不会变红，只有规则被破坏才会。
+"""
+how_to_run = """
+cd <此目录> && python3 test.py         # rc=0 = 全过；失败会打出族名与差在哪
+"""
