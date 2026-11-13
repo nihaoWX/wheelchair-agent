@@ -116,7 +116,7 @@ def family1():
     label = (f"族1 project distribution: tools {len(tools)} dirs, {len(tools) - len(no_git)} with .git, "
              f"{len(tools_github)} GitHub / {len(tools_local)} local-path / {len(tools_none)} no remote; "
              f"research {len(research)} dirs, {len(research) - len(research_no_git)} with .git, "
-             f"0 GitHub remote, {len(research_no_agents)} without AGENTS.md (R2-F1)")
+             f"{len(research_github)} GitHub remote, {len(research_no_agents)} without AGENTS.md (R2-F1)")
     return "PASS", label
 
 
