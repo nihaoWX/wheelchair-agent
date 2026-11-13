@@ -24,7 +24,9 @@ PRESET_DIR=$PRESET_ROOT/$PRESET_ID
 BIN_DIR=${SPV_BIN_DIR:-$HOME/.local/bin}
 LAUNCHER=$BIN_DIR/spv
 SERVICE=$BIN_DIR/superagent-service
+JOBCTL=$BIN_DIR/jobctl
 TARGET_PLUGIN_URL="file://$PRESET_DIR/spv-tools.js"
+TARGET_CRON_URL="file://$PRESET_DIR/spv-cron-plugin.js"
 
 CHECK=0
 for arg in "$@"; do
@@ -80,14 +82,15 @@ require_dsh_tui() {
 render_into() {
   local dest=$1
   mkdir -p "$dest/src" || return 1
-  if ! node "$SELF_DIR/scripts/render-preset.mjs" "$SELF_DIR/dsh" "$TARGET_PLUGIN_URL" "$dest" >/dev/null; then
+  if ! node "$SELF_DIR/scripts/render-preset.mjs" "$SELF_DIR/dsh" "$TARGET_PLUGIN_URL" "$TARGET_CRON_URL" "$dest" >/dev/null; then
     fail 'could not render the preset (scripts/render-preset.mjs failed)'
-    fix 'run "node tools/wheelchair-agent/scripts/render-preset.mjs dsh file://<dir>/spv-tools.js <dir>" to see the error'
+    fix 'run "node tools/wheelchair-agent/scripts/render-preset.mjs dsh file://<dir>/spv-tools.js file://<dir>/spv-cron-plugin.js <dir>" to see the error'
     return 1
   fi
   cp "$SELF_DIR/spv-tools.js" "$dest/spv-tools.js" || return 1
+  cp "$SELF_DIR/spv-cron-plugin.js" "$dest/spv-cron-plugin.js" || return 1
   local file
-  for file in queue.js paths.js dispatch.js outbox.js health.js; do
+  for file in queue.js paths.js dispatch.js outbox.js health.js spv-cron.js; do
     cp "$SELF_DIR/src/$file" "$dest/src/$file" || return 1
   done
   return 0
@@ -104,6 +107,13 @@ render_launcher() {
 render_service() {
   local dest=$1
   cp "$SELF_DIR/scripts/superagent-service.py" "$dest" || return 1
+  chmod 0755 "$dest"
+}
+
+# Render jobctl into $1: also a straight copy.
+render_jobctl() {
+  local dest=$1
+  cp "$SELF_DIR/scripts/jobctl.py" "$dest" || return 1
   chmod 0755 "$dest"
 }
 
@@ -132,7 +142,7 @@ check_preset() {
     fix 'run: bash tools/wheelchair-agent/install.sh'
   fi
   actual=$(find "$PRESET_DIR" -type f | sed "s|^$PRESET_DIR/||" | sort | tr '\n' ' ')
-  local expected="agent.cordis.yml package.json preset-default.patch.yml preset.yml spv-tools.js src/dispatch.js src/health.js src/outbox.js src/paths.js src/queue.js "
+  local expected="agent.cordis.yml package.json preset-default.patch.yml preset.yml spv-cron-plugin.js spv-tools.js src/dispatch.js src/health.js src/outbox.js src/paths.js src/queue.js src/spv-cron.js "
   if [ "$actual" = "$expected" ]; then
     ok 'the installed preset holds only the whitelisted files'
   else
@@ -195,6 +205,25 @@ check_service() {
     *":$BIN_DIR:"*) ok "$BIN_DIR is on PATH, so \"superagent-service\" resolves" ;;
     *) note "$BIN_DIR is not on PATH; add it to use the \"superagent-service\" command" ;;
   esac
+}
+
+check_jobctl() {
+  if [ ! -f "$JOBCTL" ]; then
+    fail "jobctl is not installed at $JOBCTL"
+    fix 'run: bash tools/wheelchair-agent/install.sh'
+    return
+  fi
+  if [ ! -x "$JOBCTL" ]; then
+    fail "jobctl at $JOBCTL is not executable"
+    fix "run: chmod 0755 $JOBCTL"
+    return
+  fi
+  if cmp -s "$SELF_DIR/scripts/jobctl.py" "$JOBCTL"; then
+    ok "jobctl matches its source ($JOBCTL)"
+  else
+    fail "jobctl at $JOBCTL differs from this checkout"
+    fix 'run: bash tools/wheelchair-agent/install.sh'
+  fi
 }
 
 check_prerequisites() {
@@ -279,6 +308,29 @@ install_service() {
   return 1
 }
 
+install_jobctl() {
+  local staged
+  mkdir -p "$BIN_DIR" || { fail "cannot create $BIN_DIR"; return 1; }
+  staged="$BIN_DIR/.jobctl.staged.$$"
+  if ! render_jobctl "$staged"; then
+    rm -f "$staged"
+    fail 'could not render jobctl'
+    return 1
+  fi
+  if [ -f "$JOBCTL" ] && cmp -s "$staged" "$JOBCTL"; then
+    rm -f "$staged"
+    ok "up to date: $JOBCTL"
+    return 0
+  fi
+  if mv -f "$staged" "$JOBCTL"; then
+    ok "installed jobctl: $JOBCTL"
+    return 0
+  fi
+  rm -f "$staged"
+  fail "cannot move the staged jobctl into $JOBCTL"
+  return 1
+}
+
 # --------------------------------------------------------------------------- main
 
 if [ "$CHECK" -eq 1 ]; then
@@ -286,6 +338,7 @@ if [ "$CHECK" -eq 1 ]; then
   check_preset
   check_launcher
   check_service
+  check_jobctl
   if [ "$PROBLEMS" -gt 0 ]; then
     printf '\n%d check(s) failed.\n' "$PROBLEMS"
     exit 2
@@ -306,6 +359,7 @@ fi
 install_preset
 install_launcher
 install_service
+install_jobctl
 
 if [ "$PROBLEMS" -gt 0 ]; then
   printf '\n%d step(s) failed.\n' "$PROBLEMS"

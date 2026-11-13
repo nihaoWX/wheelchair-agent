@@ -38,6 +38,46 @@
 - 每个拆出的子仓库用 `.git/info/exclude` 复制忽略规则，不改项目内 `.gitignore`。
 - `tools/svg_grid/docs/PITFALLS/round-data/R22/meta.toml` 有一处 11-07 既有未提交修改，未触碰。
 
+# 长任务
+
+worker 的回合结束后，它留下的 shell job 最多再跑 30 分钟就被杀（`src/executor/dsh.ts` 的
+`BACKGROUND_LIMIT_MS`），所以长时间分析不能留在 worker 会话里。
+
+`jobctl` 把作业交给 systemd 的 user manager 持有：
+
+```bash
+jobctl submit --name md-001 --project research/xxx --thread md-001 \
+              --next "读 results/md.log，分析稳定性并写报告" -- ./run_md.sh
+jobctl status [unit...]
+jobctl log md-001
+jobctl verify --ticket <id>     # 机械证伪「worker 说它提交了」
+jobctl cancel md-001
+```
+
+**下一阶段的触发器是作业自己的结束事件**，不是 worker 的自觉、不是全局 goal 状态、也不是定时轮询：
+`ExecStopPost` 由 systemd 在 unit 停下时执行，写一条任务到 spv 队列。整个交接没有任何 agent 参与，
+所以 worker 忘记、会话关闭、agent 重启都不影响它。
+
+`jobctl` 自己记 `~/.local/state/jobctl/ledger.jsonl`，因为 `--collect` 会让结束的 unit 从 systemd 消失；
+`verify` 同时查 systemd（机械事实）与账本（跨越 collect）。
+
+## `/spv-cron`
+
+每小时给 SPV 递一份简报（斜杠命令，模型与 worker 都碰不到）：
+
+```
+/spv-cron              # 开启，默认 60 分钟
+/spv-cron every 30     # 改频率（5–1440）
+/spv-cron status
+/spv-cron off
+```
+
+两档简报：
+- **无异常** → 轻推「推进用户任务」，不报警
+- **有异常** → 点名具体的失败/停住的 unit，要求派子 agent 用 `jobctl status` / `log` 检查
+
+因此「worker 压根没把作业挂上去」这种情况，顶多一小时内会被发现。
+
 # Next Steps
 
 1. 在真实 SPV 会话里跑一次完整任务（`spv` 启动 → 派活 → `spv_result`），观察 token 消耗。
