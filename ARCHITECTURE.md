@@ -27,6 +27,10 @@
 
 **派任务入口必须是 agent 工具，不能是 CLI 脚本**：`spv_send.py` 这类脚本可被任何有 bash 的 agent 调用，而它投递的任务默认以 `operator` 身份进入 superagent——worker 跑一下脚本就能伪造成用户派活，授权模型失效。所以入口必须是 SPV preset 里的工具（superagent 侧没有），且 `actor` 由代码写死为 `operator`、不接受参数。CLI 脚本保留但降级为过渡/调试。
 
+**长任务不留在 worker 会话里**：worker 回合结束后其 shell job 最多再跑 30 分钟即被杀（`src/executor/dsh.ts` 的 `BACKGROUND_LIMIT_MS`）。长时间分析交给 systemd user manager 持有（`jobctl`），下一阶段的触发器是**作业自己的结束事件**（`ExecStopPost` 写队列），不依赖 worker 自觉、全局 goal 状态或定时轮询。`/spv-cron` 每小时机械检查一次，漏挂的作业顶多一小时内被发现。
+
+**SPV 的重试能力取决于错误 code，不是"有没有重试"**：`dsh-llm-retry` 已挂载，commandcode provider 也实现了 `providerRetryPolicy`（`maxRetries: 1000`，白名单 `EMPTY_RESPONSE / RATE_LIMIT / THROTTLED / SERVER / TIMEOUT / TRANSPORT`）。所以遇到上游报错直接停下，大概率是**该错误的 code 不在白名单**，或**错误发生在 agent 轮次之外**（`ctx.llm.stream()` 的直接消费方没有重试边界）。排查时先确认实际 code，再决定是补白名单、还是在 SPV profile 层把 `retryPolicy` 调成 `always`——后者会让永久性失败（无效 key、配额耗尽）也一直重试，需明确取舍。worker 侧不受影响是因为 superagent 自带独立重试（`TRANSIENT_TRIES = 3`、15s 退避、认 408/429/5xx 与 ECONNRESET 等）。
+
 # Structure
 
 **两个东西，严格分开，互不 import**——这是本项目最容易混淆的地方：
