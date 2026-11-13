@@ -2,7 +2,7 @@
 
 场景与环境：Ubuntu 24.04.3 LTS（WSL2，内核 6.18.33.2-microsoft-standard-WSL2）；git 2.43.0；dsh 0.2.1-rc.3；
 wheelchair-agent 0.1.0；superagent 面板的 GitHub Source 仓库为 `nihaoWX/bioagentforge`（首次保存于
-2026-11-11，`settings-version:6` 仍为该值）。命令均逐字执行。
+2026-11-11，`settings-version:6` 仍为该值）。命令均逐字执行。（2026-11-13 更新：补入后续调查结论。）
 
 ## 现象
 
@@ -17,9 +17,15 @@ wheelchair-agent 0.1.0；superagent 面板的 GitHub Source 仓库为 `nihaoWX/b
 - 面板仓库是单值且必填：GitHub Source 只有一个 repository 字段；为空时运行时不启动（setup 错误
   `repositoryUnset`）。所以任务正文里写仓库名也改不了环境里的那一条——worker 提示词明说执行环境
   “优先于这些指令里别处提到的任何仓库或账号”。
-- 编排器自己的 GitHub API 调用也被限制在配置的那一个仓库：路径以 `/` 开头、带 scheme 或含 `..` 时直接报
-  `GitHub calls are restricted to the configured repository`。也就是说，即使 worker 想改投别的仓库，
-  编排器这一侧也没有出口。
+- **信息流其实已经是一跳，修复点就在本仓库。** `spv` 把任务文件变成 Trigger 时就把 `project` 放进了
+  `trigger.meta`（`src/spv.js` 的 `triggerOf`，`meta: { ...rest, queueId, thread, file, actor }`），同一个
+  文件也已经按工单声明了 `DSH_SUPERAGENT_SPV_PROJECT`（`environment` 块）。也就是说，知道“这张工单做哪个
+  项目”的组件，正是能顺手告诉 worker“该往哪个仓库交付”的组件；这件事不需要改上游 dsh-superagent 一行源码。
+- **这个单值不能靠配置绕开**（2026-11-13 补查，三条路都堵，证据见复现步骤 D）：关掉 github Source 会让注入
+  停下，但 setup 仍无条件要求仓库非空，服务停在 `setupPending`，连 `spv` 一起不工作；让 `spv` 声明同名变量
+  不会覆盖，只会并排渲染成两行，worker 无从判断哪行算数；编排器自己的 GitHub API 通道也锁死在那一个仓库，
+  即使 worker 侧拿到正确仓库，编排器也无法去盯第二个。结论：冲突不能靠配置消除，只能靠“另给一个可分辨的
+  值 + 明确说明谁覆盖谁”来解决。
 - 20 个 `tools/` 目录里只有 3 个有 GitHub remote（`manuscripts_skills`、`pitfalls-manager`、`svg_grid`）；
   16 个完全没有 remote，1 个（`dsh-superagent`）的 remote 是本机路径而非 GitHub。即 17/20 的项目路径
   推不出 GitHub 仓库。
@@ -79,6 +85,53 @@ git -C /home/nihao/bioagentforge/tools/pitfalls-manager log --oneline -1
 # 实测：79908d7 feat(pitfalls-manager): install.sh 支持把 skill 装进 dsh（--harness dsh|commandcode|both）
 ```
 
+### D. 三条绕行路都不通
+
+```bash
+cd /home/nihao/bioagentforge/tools/dsh-superagent
+
+# D1. 关掉 github Source：注入会停，但 setup 仍要求仓库非空
+grep -n "instance.enabled" src/sources/registry.ts
+# 实测：3 行（79 / 88 / 130），其中与注入有关的是
+#   88:      return kind.environment && instance.enabled ? [{ kind, environment: kind.environment, config: instance.config }] : []
+grep -n "resolveDeployment(machine" src/app/setup.ts
+# 实测：64 行（checkAccounts）与 79 行（resolve）都无条件调用，不看 github Source 是否 enabled
+grep -n "repositoryUnset" src/deployment.ts src/setup.ts
+# 实测：src/deployment.ts:91:  if (!remote) throw new SetupError('repositoryUnset')
+#       src/setup.ts:9:  repositoryUnset: ['github', 'The GitHub Source names no repository.']
+# 运行时确认（编译产物调用 resolveDeployment，仓库传空串）：抛 SetupError，code 为 repositoryUnset。
+# 即服务停在 setupPending，连 spv 也一起不工作。
+
+# D2. 让 spv 声明同名变量：不覆盖，只并排出现两行
+node --input-type=module -e "
+import { environmentOf, environmentLines } from './src/app/execution-environment.ts'
+const kind = (k, values) => ({ kind: k, environment: { variables: [{ key: 'DSH_SUPERAGENT_GITHUB_REPOSITORY', description: { zh: 'x', en: k } }], values: () => values }, config: {}, enabled: true })
+const sources = { environments: () => [
+  kind('github', { DSH_SUPERAGENT_GITHUB_REPOSITORY: 'nihaoWX/bioagentforge' }),
+  kind('spv', { DSH_SUPERAGENT_GITHUB_REPOSITORY: 'nihaoWX/wheelchair-agent' })] }
+const vars = environmentOf({ deployment: { repository: 'nihaoWX/bioagentforge' }, sources, settings: { executor: { blockedCommands: [] } }, ticket: { id: 't', name: 'n', directory: '/d' } })
+console.log(environmentLines(vars))
+"
+# 实测：最后两行是
+#   - DSH_SUPERAGENT_GITHUB_REPOSITORY = "nihaoWX/bioagentforge": github.
+#   - DSH_SUPERAGENT_GITHUB_REPOSITORY = "nihaoWX/wheelchair-agent": spv.
+#   同名两行并存，没有覆盖，也没有提示哪一行算数。
+
+# D3. 编排器的 GitHub API 通道
+grep -n "restricted to the configured repository" src/infra/commands.ts
+# 实测：96:    if (outside) throw new Error('GitHub calls are restricted to the configured repository')
+```
+
+### E. 工单工作副本的默认推送目标
+
+```bash
+cd /home/nihao/.dsh/state/superagent/work/wheelchair-pitfall-report-11821f08b06f
+git remote -v
+# 实测：origin /home/nihao/bioagentforge/tools/wheelchair-agent (fetch)
+#       origin /home/nihao/bioagentforge/tools/wheelchair-agent (push)
+#       即默认推送目标是本机路径，不是任何 GitHub 仓库。
+```
+
 ## 建议
 
 - 派发的任务应当能自己指明它属于哪个 GitHub 仓库，并且这个信息来自任务已经携带的项目路径，不需要操作者
@@ -89,3 +142,7 @@ git -C /home/nihao/bioagentforge/tools/pitfalls-manager log --oneline -1
   环境里分辨“这个仓库是任务自己的”还是“这是兜底值”。
 - 兜底发生时，这次派发的结果里应当留下可追溯的痕迹（哪个仓库是兜底来的），而不是让 worker 以为它就是
   任务的仓库。
+- 任务自带的仓库必须对 worker 有明确的权威性：它非空时就是这张工单的仓库，并且这一点要在 worker 看得到的
+  地方讲清楚。兜底值与真实答案不能以同一种形式出现——否则 worker 只能猜该信哪一个。
+- 工单的工作副本应当已经指向正确的仓库，这样 worker 什么都不做、直接推送时，默认目标就是对的；而不是要它
+  先自己判断、再自己改。
