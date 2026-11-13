@@ -26,9 +26,24 @@ wheelchair-agent 0.1.0；superagent 面板的 GitHub Source 仓库为 `nihaoWX/b
   不会覆盖，只会并排渲染成两行，worker 无从判断哪行算数；编排器自己的 GitHub API 通道也锁死在那一个仓库，
   即使 worker 侧拿到正确仓库，编排器也无法去盯第二个。结论：冲突不能靠配置消除，只能靠“另给一个可分辨的
   值 + 明确说明谁覆盖谁”来解决。
-- 20 个 `tools/` 目录里只有 3 个有 GitHub remote（`manuscripts_skills`、`pitfalls-manager`、`svg_grid`）；
-  16 个完全没有 remote，1 个（`dsh-superagent`）的 remote 是本机路径而非 GitHub。即 17/20 的项目路径
-  推不出 GitHub 仓库。
+- **“没有 `.git`”与“有 `.git` 但没有 remote”是两种不同情况，不能合并处理。** 实测本机（2026-11-13 复核，
+  `BioDatabaseDownloader` 已从 `tools/` 移除，故总数由 20 变 19）：`tools/` 下 19 个目录**全部**已有 `.git`，
+  其中只有 3 个有 GitHub remote（`manuscripts_skills`、`pitfalls-manager`、`svg_grid`）、15 个完全没有
+  remote、1 个（`dsh-superagent`）的 remote 是本机路径而非 GitHub——即 16/19 的项目路径推不出 GitHub 仓库。
+  而 `research/` 下 11 个目录里有 6 个连 `.git` 都没有。也就是说，真正缺 remote 的是 `tools/` 里那 15 个
+  “有版本库、没有远端”的项目，而不是“没有 `.git`”的项目。
+- **`research/` 被明文规定为 local-only。** 根 `AGENTS.md` 写着 `research/` 的任务仓库
+  “is local-only — never push/upload it”。所以对 `research/` 下的项目自动建远端并配 remote，是**违反现有
+  规定**的，不能作为默认行为。
+- **worker 的交付契约默认是 PR，但可以被任务显式改写。** `prompts/work.md` 写着
+  “A code change without a PR is not ready unless the assignment explicitly requests a different
+  deliverable”。所以对没有远端、也不该有远端的项目（如 `research/`），只要任务写明交付物是本地 commit，
+  worker 就不会去开 PR——本仓库这两轮报告任务就是这么完成的（两个 commit 落在本地 `main`，没有 PR）。
+  但**默认值仍是 PR**：任务没写清时，worker 要么报 blocked，要么拿环境里那个仓库去推，后者正是 PR #1 的成因。
+- **`research/` 下 11 个目录一个 `AGENTS.md` 都没有**，而 local-only 这条约束只写在根 `AGENTS.md`。
+  worker 的 cwd 是 `research/<task>/`，读的是该目录下的 `AGENTS.md`，因此**读不到**根目录那条约束。
+  同理，`tools/` 下 19 个目录里 18 个有 `AGENTS.md`（内容完全相同），只有 `dsh-superagent` 没有。
+  也就是说，“这个项目该不该有远端”这条信息，目前既不在 worker 能读到的地方，也没有统一来源。
 - 已发生的后果：2026-11-12 一个 `project: tools/pitfalls-manager` 的任务要求开 PR，worker 把分支
   `agent/pitfalls-dsh-install-5638cec0eeee` 推到 `nihaoWX/bioagentforge` 并在那里开了 PR #1
   （`createdAt` 2026-11-12T17:36:46Z，`closedAt` 2026-11-13T04:55:48Z，`mergedAt` 为 null），PR 的 4 个
@@ -70,8 +85,8 @@ PY
 ```bash
 cd /home/nihao/bioagentforge
 for d in tools/*/; do printf '%-26s %s\n' "$(basename $d)" "$(git -C $d remote get-url origin 2>/dev/null || echo '(no remote)')"; done
-# 实测：20 行里只有 manuscripts_skills / pitfalls-manager / svg_grid 是 https://github.com/...；
-#       16 个 (no remote)；dsh-superagent 是本机路径。
+# 实测：19 行里只有 manuscripts_skills / pitfalls-manager / svg_grid 是 https://github.com/...；
+#       15 个 (no remote)；dsh-superagent 是本机路径。
 ```
 
 ### C. 已发生的错仓 PR
@@ -132,11 +147,57 @@ git remote -v
 #       即默认推送目标是本机路径，不是任何 GitHub 仓库。
 ```
 
+### F. “没有 `.git`”与“有 `.git` 但没 remote”的分布
+
+```bash
+cd /home/nihao/bioagentforge
+
+# F1. tools/：全部有 .git，但只有 3 个有 GitHub remote
+for d in tools/*/; do
+  n=$(basename "$d"); r=$(git -C "$d" remote get-url origin 2>/dev/null)
+  [ -z "$r" ] && echo "no-remote: $n"
+done | wc -l
+# 实测：15（另有 1 个 remote 是本机路径、3 个是 GitHub；目录总数 19）
+
+# F2. research/：6 个连 .git 都没有
+for d in research/*/; do [ -d "$d/.git" ] || echo "no-git: $(basename "$d")"; done
+# 实测：2026_08_16组图 / GSE279876 / gromacs-tests / tests / 姜黄素TNBC / 瘤内菌群组图
+
+# F3. 而 research/ 是 local-only，不该被配上远端
+grep -n "local-only" AGENTS.md
+# 实测：71:- `research/` ... This repo is local-only — never push/upload it.
+```
+
+### G. worker 的交付契约与 AGENTS.md 的覆盖情况
+
+```bash
+cd /home/nihao/bioagentforge/tools/dsh-superagent
+
+# G1. 默认要 PR，但任务可以显式要求别的交付物
+grep -n "unless the assignment explicitly requests a different deliverable" prompts/work.md
+# 实测：35:A code change without a PR is not ready unless the assignment explicitly requests a different deliverable.
+
+# G2. research/ 一个 AGENTS.md 都没有
+cd /home/nihao/bioagentforge
+for d in research/*/; do [ -f "$d/AGENTS.md" ] && echo "has: $(basename "$d")"; done | wc -l
+# 实测：0（research/ 共 11 个目录）
+
+# G3. tools/ 里 18 个有、1 个没有，且 18 个内容完全相同
+for d in tools/*/; do [ -f "$d/AGENTS.md" ] || echo "missing: $(basename "$d")"; done
+# 实测：missing: dsh-superagent
+md5sum tools/*/AGENTS.md | awk '{print $1}' | sort -u | wc -l
+# 实测：1（18 份内容一致）
+
+# G4. local-only 只写在根 AGENTS.md，worker 读不到
+grep -n "local-only" AGENTS.md
+# 实测：71（根 AGENTS.md；research/<task>/ 下没有任何副本）
+```
+
 ## 建议
 
 - 派发的任务应当能自己指明它属于哪个 GitHub 仓库，并且这个信息来自任务已经携带的项目路径，不需要操作者
   把仓库名手写进每个任务正文。
-- 当项目路径推不出仓库时（本机 20 个项目里有 17 个如此），系统应当明确地报出来，而不是静默退回面板那一个
+- 当项目路径推不出仓库时（本机 19 个项目里有 16 个如此），系统应当明确地报出来，而不是静默退回面板那一个
   仓库——静默退回正是这次推错仓库的原因。
 - 面板里的仓库仍有实际职责（它决定监听哪个仓库的 Issues/PR），两者不应当互相静默覆盖；worker 应当能从
   环境里分辨“这个仓库是任务自己的”还是“这是兜底值”。
@@ -146,3 +207,18 @@ git remote -v
   地方讲清楚。兜底值与真实答案不能以同一种形式出现——否则 worker 只能猜该信哪一个。
 - 工单的工作副本应当已经指向正确的仓库，这样 worker 什么都不做、直接推送时，默认目标就是对的；而不是要它
   先自己判断、再自己改。
+- 当项目确实需要远端、而当前没有时，系统应当能把它补齐——包括项目连版本库都还没有的情况——而不是让 worker
+  在“没有出口”和“推到错误的仓库”之间二选一。补齐由派发侧自动完成即可，不必要求人先手工建好；但**只能建
+  私有仓库**，不得创建任何公开可见的远端。
+- 补齐远端会创建**外部状态**（一个真实存在的远端仓库），因此必须可追溯：仓库名、可见性、归属都要有确定的
+  来源，失败时要说清是哪一步没成。
+- 补齐必须尊重项目自身的性质：本机 `research/` 下的任务仓库被规定为只存在于本地、永不推送，这类项目
+  **不应该**被自动配上远端。系统需要能区分“这个项目该有远端”和“这个项目不该有远端”，而不是对所有缺
+  remote 的项目一视同仁。
+- **每个工单的工作副本都应当自带一份与项目类型匹配的 `AGENTS.md`**，因为 worker 只读自己目录下的那一份，
+  读不到工作区根目录的约定。项目类型不同，规则就不同（例如研究类项目只提交本地 commit、永不推送），所以
+  不能只放一份通用文本。
+- 这份 `AGENTS.md` 应当是**受管**的：缺失时自动补上，内容过期时自动更新为当前版本，而不是“有就不管”。
+  否则旧副本会长期压过新规则，而 worker 无从知道自己读到的是过期的。
+- 这份 `AGENTS.md` 的权威来源必须随工具一起安装到用户级位置，让派发侧能稳定找到它，而不是把某个开发树里
+  的路径写死在派发逻辑里——否则换机器、换目录就会失效。

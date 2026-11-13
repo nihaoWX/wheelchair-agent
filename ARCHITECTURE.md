@@ -53,21 +53,35 @@ tools/wheelchair-agent/          # 本项目（独立 git 仓库）
 ├── AGENTS.md                    # 项目版 agent 规则（DSH 靠它做隔离）
 ├── ARCHITECTURE.md              # 本文档
 ├── PROGRESS.md                  # 当前状态
-├── package.json                 # 两个入口：superagent Source 插件 + SPV 工具插件
+├── package.json                 # 两个入口：superagent Source 插件 + SPV 插件
 ├── index.js                     # 包默认入口，转出 spv-watch.js
 ├── spv-watch.js                 # 【superagent 侧】插件入口：注册 kind + 轮询循环
+├── spv-tools.js                 # 【SPV 侧】spv_dispatch / spv_result / spv_status
+├── spv-cron-plugin.js           # 【SPV 侧】`/spv-cron` 插件入口（薄壳，逻辑在 src/spv-cron.js）
 ├── src/spv.js                   # 【superagent 侧】spv Source kind（Trigger/Channel/Policy）
 ├── src/queue.js                 # 共用：文件队列布局与读写（pending/done/outbox）
 ├── src/schema.js                # 共用：极简 schema 校验
-├── src/tools.js                 # 【SPV 侧】spv_dispatch / spv_result / spv_status
+├── src/paths.js                 # 【SPV 侧】队列根解析（config > env > stateDir）
+├── src/dispatch.js              # 【SPV 侧】写 pending/，actor 写死 operator
+├── src/outbox.js                # 【SPV 侧】读 outbox/，等 reply/notice
+├── src/health.js                # 【SPV 侧】探健康端点，服务没跑就拒绝派活
+├── src/spv-cron.js              # 【SPV 侧】`/spv-cron` 逻辑（纯逻辑，注入依赖）
 ├── dsh/                         # 【SPV 侧】agent preset 定义（装到 ~/.dsh/.agent-presets/spv/）
 │   ├── preset.yml
-│   ├── agent.cordis.yml
-│   └── preset-default.patch.yml # 让新会话默认用 spv preset
-├── install.sh                   # 装 preset + 启动器，带 --check
-├── scripts/spv_send.py          # 过渡用 CLI（保留兼容，SPV 工具是正路）
-├── scripts/spv_read.py          # 过渡用 CLI
-└── docs/                        # 设计依据与踩坑
+│   ├── agent.cordis.yml         # 工具面 + compaction 组
+│   └── spv-launcher.sh          # 启动器模板（先拉起服务，再开 TUI）
+├── install.sh                   # 装 preset + spv 启动器 + superagent-service + jobctl；带 --check
+├── scripts/
+│   ├── superagent-service.py    # 服务启停（不依赖进程名）+ open 面板
+│   ├── jobctl.py                # 长任务交给 systemd 持有（submit/status/log/verify/cancel）
+│   ├── render-preset.mjs        # 渲染 preset 与 patch
+│   ├── spv_send.py              # 过渡用 CLI（正路是 SPV 工具）
+│   └── spv_read.py              # 过渡用 CLI
+└── docs/
+    ├── spv-source.md            # spv Source 设计与踩坑
+    ├── delivery-target.md       # 交付目标随项目走（未实现的方向与约束）
+    ├── agentsmd-examples/       # worker 用的两份 AGENTS.md 模板
+    └── PITFALLS/                # 报告（消费完即删，原文在 git）
 
 /home/nihao/bioagentforge/
 ├── AGENTS.md                    # 根版规则：SPV 会话（cwd=仓库根）加载它
@@ -81,7 +95,10 @@ tools/wheelchair-agent/          # 本项目（独立 git 仓库）
 
 ~/.dsh/profiles/superagent/      # DSH profile：dsh-superagent bundle + wheelchair-agent 插件 + 模型 provider
 ~/.dsh/.agent-presets/spv/       # DSH 用户级 preset：定义 SPV 是什么（install.sh 装）
-~/.local/bin/spv                 # 启动器（install.sh 装）
+~/.local/bin/spv                 # SPV 启动器（install.sh 装）
+~/.local/bin/superagent-service   # 服务管理（install.sh 装）
+~/.local/bin/jobctl              # 长任务管理（install.sh 装）
+~/.local/state/jobctl/ledger.jsonl # jobctl 的账本（--collect 会删掉结束的 unit，账本跨越它）
 ```
 
 ## 关键机制：AGENTS.md 的隔离靠 `.git`
@@ -149,3 +166,18 @@ Ticket 状态（progress 不转发；ready/blocked/failed 才上浮）
 | DSH 安装与 GOAT 接入 | `docs/setup/dsh-commandcode.md` |
 | superagent 源码 | `tools/dsh-superagent/`（独立仓库） |
 | **spv Source 设计与踩坑** | **`docs/spv-source.md`** |
+| **交付目标：仓库随项目走（未实现）** | **`docs/delivery-target.md`** |
+| AGENTS.md 模板（项目开发 / 研究任务） | `docs/agentsmd-examples/` |
+
+## 未实现：交付目标随项目走
+
+worker 环境里的 `DSH_SUPERAGENT_GITHUB_REPOSITORY` 永远是面板那一个单值，而任务自带 `project`，
+两者可以指向不同项目且无任何标记。**曾因此把一个 `tools/pitfalls-manager` 的 PR 开到了
+`nihaoWX/bioagentforge`。**
+
+三条配置绕行路已实测堵死（关 github Source 会停在 `setupPending`；`spv` 声明同名变量只是并排渲染
+两行；编排器 API 锁死在配置仓库）。**已定方向：不与环境变量对抗，改为给 worker 一份它读得到的
+`AGENTS.md`，说明这个项目该不该推送。** 详见 `docs/delivery-target.md`，模板在
+`docs/agentsmd-examples/`。
+
+**尚未实现**——本节只是把结论和约束固定下来，避免下一个 agent 重新推导。
