@@ -51,7 +51,7 @@
 - **交付目标随项目走**（2026-11-14）：`install.sh` 把 `dsh/prepare.sh` 与两份 `AGENTS.md` 模板装进
   `~/.dsh/.agent-presets/spv/`（白名单与 `--check` 同步）；面板 prepare 命令改为指向它（已通过管理
   API 保存，revision 4）。脚本行为：clone → 受管 `AGENTS.md`（缺失装、过期覆盖、不进 `git status`）
-  → `tools/` 私有远端与工单 `origin`；`research/` 永不配远端。`scripts/test-prepare.sh` 51 条断言全过。
+  → `tools/` 私有远端与工单 `origin`；`research/` 永不配远端。`scripts/test-prepare.sh` 71 条断言全过。
 
 # In Progress
 
@@ -60,9 +60,9 @@
 # Known Issues
 
 - **交付目标随项目走已实现（2026-11-14）**：`dsh/prepare.sh` 由 `install.sh` 装进 preset 目录，
-  面板的 prepare 命令已改为 `sh "$HOME/.dsh/.agent-presets/spv/prepare.sh"`。它 clone 项目、按项目
+  面板的 prepare 命令已改为 `sh "${DSH_HOME:-$HOME/.dsh}/.agent-presets/spv/prepare.sh"`。它 clone 项目、按项目
   类型装受管 `AGENTS.md`、给 `tools/` 项目建私有 GitHub 远端并把工单 `origin` 指过去；`research/`
-  永不配远端。证据：`scripts/test-prepare.sh`（51 条断言，假 `gh` + 本地裸仓库）。
+  永不配远端。证据：`scripts/test-prepare.sh`（71 条断言，假 `gh` + 本地裸仓库）。
   详见 `docs/delivery-target.md`。
 - **`tools/` 下 14 个项目会在第一次派活时被自动建私有仓库**：这是设计如此（约束 1/2），但意味着
   第一次派活会创建外部状态。创建/接管/推送都写 `~/.dsh/state/superagent/prepare.log`。

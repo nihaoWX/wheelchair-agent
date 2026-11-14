@@ -3,7 +3,8 @@
 **这份文档记录这个方向的结论与实现。** 后续接手的 agent 读这一份就能明白现状，不必重新推导。
 
 **状态（2026-11-14）**：**已实现**。三部分：`install.sh` 把两份模板与 `prepare.sh` 装到
-`~/.dsh/.agent-presets/spv/`；面板的 prepare 命令改为 `sh "$HOME/.dsh/.agent-presets/spv/prepare.sh"`；
+`~/.dsh/.agent-presets/spv/`；面板的 prepare 命令改为
+`sh "${DSH_HOME:-$HOME/.dsh}/.agent-presets/spv/prepare.sh"`；
 该脚本负责 clone、受管 `AGENTS.md`、以及 `tools/` 项目的私有 GitHub 远端。账本 `R2-F1` 的
 `deferred` 到此关闭。
 
@@ -112,9 +113,9 @@ worker 不会去开 PR。**但默认值仍是 PR**：任务没写清时，worker
 | 部分 | 位置 | 做什么 |
 |---|---|---|
 | 模板与脚本的安装 | `install.sh` 的 `render_into` | 把 `dsh/prepare.sh` 与 `docs/agentsmd-examples/*.md` 拷进 `~/.dsh/.agent-presets/spv/`（`prepare.sh` 与 `agentsmd-examples/`）；白名单与 `--check` 同步更新 |
-| 面板的 prepare 命令 | 面板 Settings → Execution | `sh "$HOME/.dsh/.agent-presets/spv/prepare.sh"`（`install.sh` 结束时打印这一行） |
+| 面板的 prepare 命令 | 面板 Settings → Execution | `sh "${DSH_HOME:-$HOME/.dsh}/.agent-presets/spv/prepare.sh"`（`install.sh` 结束时打印这一行；已通过管理 API 保存） |
 | 脚本本体 | `dsh/prepare.sh` | clone → 受管 `AGENTS.md` → `tools/` 的私有远端与工单 origin |
-| 可跑证据 | `scripts/test-prepare.sh` | 51 条断言，用假 `gh` + 本地裸仓库，不碰 github.com |
+| 可跑证据 | `scripts/test-prepare.sh` | 71 条断言，用假 `gh` + 本地裸仓库，不碰 github.com |
 
 `prepare.sh` 的行为，按顺序：
 
