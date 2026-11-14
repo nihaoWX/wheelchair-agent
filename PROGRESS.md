@@ -60,7 +60,8 @@
 # Known Issues
 
 - **交付目标随项目走已实现（2026-11-14）**：`dsh/prepare.sh` 由 `install.sh` 装进 preset 目录，
-  面板的 prepare 命令已改为 `sh "${DSH_HOME:-$HOME/.dsh}/.agent-presets/spv/prepare.sh"`。它 clone 项目、按项目
+  面板的 prepare 命令已改为 `sh /home/nihao/.dsh/.agent-presets/spv/prepare.sh`（绝对路径：`DSH_*` 变量
+  会被子进程环境剥掉，写 `$DSH_HOME` 会静默退回）。它 clone 项目、按项目
   类型装受管 `AGENTS.md`、给 `tools/` 项目建私有 GitHub 远端并把工单 `origin` 指过去；`research/`
   永不配远端。证据：`scripts/test-prepare.sh`（71 条断言，假 `gh` + 本地裸仓库）。
   详见 `docs/delivery-target.md`。
