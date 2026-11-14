@@ -8,7 +8,7 @@
 |---|---|---|
 | 是什么 | dsh agent preset（`dsh-tui` profile 里的一个会话组合） | 另一个 profile 里常驻的后台服务 |
 | 谁对话 | 用户 | 无人 |
-| 工具前缀 | `spv_*` | `orchestrator_*` |
+| 工具集 | 普通 dsh 会话的全套工具 + `spv_*` | `orchestrator_*` |
 | 通道 | 只有文件队列 `~/.dsh/state/superagent/spv/` | |
 
 SPV 侧不 import superagent 的任何代码。两侧唯一的接口是队列里的 JSON 文件：SPV 写 `pending/`，superagent 的
@@ -63,7 +63,13 @@ DSH_TUI_PRESET=spv dsh-tui --patch ~/.dsh/.agent-presets/spv/preset-default.patc
 
 ## 用
 
-会话里让 agent 干活即它自己会调两个工具：
+SPV 挂的是**普通 dsh 会话的全套工具**再加两个自己的：文件（`read` / `write` / `edit` / `glob` / `grep` /
+`str_replace_editor`）、`bash`、`subagent` / `subagent_fork`、`todo_write`、`web_search`、`goal`、
+`ask_user_question`、后台作业、skills、plan mode、`/compact`。写文件与跑命令都能用，但**交付**仍然只有一条路：
+改代码并需要 PR 的活走 `spv_dispatch`，派给 worker；`subagent` 用于不落盘、不出 PR 的研究与查询。
+这个分工写在 preset 的 persona 里，不靠少给工具来约束。
+
+会话里让 agent 干活即它自己会调两个 spv 工具：
 
 | 工具 | 参数 | 行为 |
 |---|---|---|
@@ -96,6 +102,20 @@ wheelchair-agent dispatch --project tools/foo --task "..." --thread t1
 wheelchair-agent status [--thread t1]
 wheelchair-agent check          # 运行时健康：服务 / preset / 面板 prepare 值 / prepare dry run
 ```
+
+## 标准工具从哪来
+
+`agent.cordis.yml` 里的标准行照抄 dsh-tui 的 `liangshen` preset（同一个 dsh 版本的参考组合），连
+`disabled: !!js` 条件与 `isolate` realm 一起抄——那些条件按平台、按已安装的包决定某一行挂不挂，写错会让
+preset mount 失败，而失败只表现为 "never started"。
+
+刻意没有抄的四个 preset 本地插件（`tool-bootstrap.mjs` / `instruction-hint.mjs` / `skill-search.mjs` /
+`custom-bash.mjs`）：它们是 dsh-tui 包里的 `.mjs` 文件，不是 dsh 包。要挂就得 vendor **6 个**文件进本仓库——
+这 4 个加 `compaction-epoch.mjs` 与 `session-events.mjs`（`tool-bootstrap.mjs` 引 `compaction-epoch.mjs`，
+`instruction-hint.mjs` 引两者，`compaction-epoch.mjs` 又引 `session-events.mjs`）。
+而且前两个与 SPV 的既定行为冲突：`tool-bootstrap` 把首轮工具表压成 `bash` + `str_replace_editor`（首轮就没有
+`spv_dispatch`），`instruction-hint` 替换掉完整的 AGENTS.md 注入。skill 用 dsh 包
+（`skill-filesystem` + `tool-skill`），不用 `skill-search`。
 
 ## 模块解析（改这个 preset 前必读）
 

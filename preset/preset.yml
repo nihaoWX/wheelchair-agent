@@ -1,3 +1,3 @@
 name: SPV
-description: 独立于 superagent 的入口会话：只挂 spv 工具（派活 / 收结果 / 看队列）、读文件与 bash，工作目录是 bioagentforge 根。
+description: 独立于 superagent 的入口会话：普通 dsh 会话的全套标准工具（文件 / shell / subagent / web / todo / goal / plan-mode / skills）外加 spv 工具（派活 / 看队列 / 结果自动回到会话），工作目录是 bioagentforge 根。
 order: 50
