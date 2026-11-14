@@ -4,8 +4,10 @@
 `spv_dispatch` → 文件队列 → superagent Ticket → worker（项目 clone 内执行）→ `outbox`；结果由会话内的
 后台注入器（`src/spv/injector.js`）消费后作为一条新消息推进对话，没有 `spv_result`、也没有超时。
 
-- **SPV 会话**：`spv` 命令启动（会自动拉起后端），preset `spv`，cwd = `bioagentforge`，
-  工具 `spv_dispatch` / `spv_status`（外加自动投递结果的注入器），斜杠命令 `/spv-cron`。
+- **SPV 会话**：`spv` 命令启动（会自动拉起后端），preset `spv`，cwd = `bioagentforge`。
+  工具集 = **普通 dsh 会话的全套标准工具**（文件 / shell / subagent / web / todo / goal / plan-mode /
+  skills）**外加** `spv_dispatch` / `spv_status` 与自动投递结果的注入器，斜杠命令 `/spv-cron`。
+  `subagent` 用于不需要 PR 的调研；要交付 PR 的代码活仍走 `spv_dispatch`（分工写在 persona 里）。
 - **superagent**：常驻服务 `:3082`，`runtime / spv / github` 三处 `ready`，`setup.problem=null`。
 
 **入口**：`wheelchair-agent` 是唯一命令入口（`spv` / `prepare` / `service` / `jobctl` / `dispatch` /
@@ -31,8 +33,10 @@
 - **GitHub Source**：`nihaoWX/bioagentforge`，CLI `~/.local/bin/gh`，60s 轮询。
 - **`spv` Source 插件**（`src/superagent/watch.js` + `src/superagent/spv.js`）：文件队列 pending→done（rename 即消费
   标记，无 cursor）+ outbox；Trigger 满足 explicit 三条件。
-- **SPV preset**（`preset/` → `~/.dsh/.agent-presets/spv/`）：`agent.cordis.yml` 挂 spv 工具 +
-  `tool-fs` + bash + `agent-instructions` + compaction + `/spv-cron`。
+- **SPV preset**（`preset/` → `~/.dsh/.agent-presets/spv/`）：普通 dsh 会话的全套标准工具 +
+  `spv` 工具（`spv_dispatch` / `spv_status` / 注入器 / `/spv-cron`）。标准行逐字照抄 dsh-tui 的
+  liangshen preset；不 vendor 它的本地 `.mjs`（`tool-bootstrap` 等），理由见
+  `ARCHITECTURE/decisions.md`。
 - **compaction 组**（`compaction-basic` + `command-compact` + `tool-result-pruner`）：TUI 原先
   告警「本预设既无压缩也不剪枝工具结果」。加上后 `/compact` 可用、达水位自动压缩，超长工具输出
   按 8192 字符截断（留头 4096 / 尾 1024）。剪枝器必须与 `compaction-basic` 同 realm（后者用
@@ -86,13 +90,18 @@
   `gh pr list` 轮询、评论→`inbox-<pr>` 任务、跨进程 item 锁）、`inbox` / `inbox watch` CLI、
   `commands/open-url.py` 复用 `open_command()`、`install.sh` 的 profile 包安装与加载器行。面板是
   `wheelchair-agent` UI 主页，收件箱是第一个 `SECTIONS` 区块；页面骨架不随区块增加而改。
+- **SPV preset 纯增量**（2026-11-14，分支 `agent/spv-standard-tools`）：`preset/agent.cordis.yml` 补齐
+  liangshen 的全套标准工具行（`tool-fs-search`、`bootstrap-filesystem`、`tool-jobs`、`tool-goal`、
+  `planning`、`delegation`（含 `subagent`）、`tool-ask-user`、`tool-todo`、`tool-web`），`tool-fs` 不再
+  只读，persona 写明「subagent 做调研、要交付 PR 的活走 `spv_dispatch`」；并补回 skill 两行
+  （`skill-filesystem` + `tool-skill`，内容来自从未进过 `main` 的 PR #3 commit `6f38eef`）。行数
+  `^- id:` / `^    - id:` 13 → 37；`install.sh` / `--check` exit 0，`dsh --dump-config` 里新行都落在
+  `preset-spv` 块内，三个测试套件与 `npm run check` 全绿。
 
 # In Progress
 
-- **审查收件箱 / `wheelchair-agent` UI 主页**（PR #8，`agent/webui-inbox`）：实现与验证完成，等合并。
-  合并后重启 superagent 服务才在 :3082 的左侧栏出现；`wheelchair-agent inbox` 同一条代码可立即使用。
-- **CLI 化 + 目录重组**（PR #2，`agent/cli-restructure`）：实现完成、9 项验证全过，等合并。
-  见 `ARCHITECTURE/layout.md`、`ARCHITECTURE/cli.md`。
+- **SPV preset 纯增量**（分支 `agent/spv-standard-tools`）：实现、安装与全套验证完成，PR 待开/待合。
+  见 `ARCHITECTURE/decisions.md` 的「SPV preset：普通 dsh 会话 + `spv_*`」。
 
 # Known Issues
 
@@ -105,11 +114,6 @@
   `bash install.sh` 即恢复。
 - **收件箱里 `nihaoWX-wheelchair-agent-1` 有一条端到端测试评论**（22:40）并派生了 ticket
   `ae0c851…`（thread `inbox-1`，worker 回复“收到。”）。这是验证留下的真实数据，不是缺陷。
-- **PR #1 未合并**（`https://github.com/nihaoWX/wheelchair-agent/pull/1`）：`mergeable: MERGEABLE`，
-  分支 `agent/delivery-target-prepare-42ac195d0dc6`，+832/-32，7 文件。没有 merge CLI，需要人合。
-  **风险**：面板已经指向已安装的 `prepare.sh`，但 `main` 里没有 `commands/prepare.sh`——谁从 `main`
-  重跑 `install.sh`，preset 就会丢掉 `prepare.sh`，每个工单的 prepare 都失败。PR #2 的分支包含 PR #1
-  的全部内容，合并 PR #2 即消掉这个风险。
 - **探针仓 `nihaoWX/zzz-prepare-probe` 未删**（空、私有）：`gh repo delete` 需要 `delete_repo` scope，
   `gh auth refresh` 要操作者在浏览器里走 device code。
 - **`docs/PITFALLS/` 里没有待处理报告**：R1/R2 已消费入账（`R1-F1` / `R2-F1`，裁决见 `R3-F1` /
@@ -136,16 +140,15 @@
 
 # Next Steps
 
-1. **合并 PR #8**（审查收件箱 / `wheelchair-agent` UI 主页），然后重启一次 superagent 服务
-   （`wheelchair-agent service restart`），确认 :3082 左侧栏出现 `wheelchair-agent` 并打开面板。
-2. **合并 PR #2**（CLI 化 + 目录重组）与 **PR #1**（交付目标随项目走）：PR #2 的分支已包含 PR #1 的
-   全部内容，所以合并 PR #2 就同时消掉 `main` 缺 `prepare.sh` 的风险；PR #1 随后可关。
-2. **面板的 prepare 值已改成 `wheelchair-agent prepare`**（2026-11-14，经管理 API 保存，revision 8）。
+1. **合并 SPV preset 纯增量那个 PR**（分支 `agent/spv-standard-tools`）；合并后重启 SPV 会话即生效。
+2. **重启一次 superagent 服务**（`wheelchair-agent service restart`），确认 :3082 左侧栏出现
+   `wheelchair-agent` 并打开面板（PR #8 已合并）。
+3. **面板的 prepare 值已改成 `wheelchair-agent prepare`**（2026-11-14，经管理 API 保存，revision 8）。
    换机器或换 `DSH_HOME` 后重跑 `wheelchair-agent check` 确认它仍然正确。
-3. 给 `tools/` 下缺远端的那 15 个项目建私有 GitHub 仓库（操作者自己的事，不是 agent 的）。
-4. 收缩 worker 的目录约束（prompt 层或项目 `AGENTS.md`）。
-5. 视消耗决定是否给 worker 换更便宜的模型。
-6. 稳定后再考虑 `accept mode` 从 `observe` → `auto`。
+4. 给 `tools/` 下缺远端的那 15 个项目建私有 GitHub 仓库（操作者自己的事，不是 agent 的）。
+5. 收缩 worker 的目录约束（prompt 层或项目 `AGENTS.md`）。
+6. 视消耗决定是否给 worker 换更便宜的模型。
+7. 稳定后再考虑 `accept mode` 从 `observe` → `auto`。
 
 日常命令：
 

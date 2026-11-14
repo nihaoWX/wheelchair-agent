@@ -104,3 +104,26 @@ worker 环境里的 `DSH_SUPERAGENT_GITHUB_REPOSITORY` 永远是面板那一个�
   下次重启就会 mount 失败。现在的包不依赖 preset 也能加载。
 - **每个 PR item 的 read-modify-write 走跨进程锁**：watcher 与评论 POST 是两个进程，单靠原子 rename
   只能防半文件，防不了丢更新；锁文件 + `randomUUID` 临时名同时解决两者。
+
+## SPV preset：普通 dsh 会话 + `spv_*`，纯增量（2026-11-14）
+
+**结论**：SPV 就是一个普通 dsh 会话，只是额外有 `spv_*` 工具。`preset/agent.cordis.yml` 里那句
+「本文件刻意不挂 subagent / todo / web / plugin-manager / goal / plan-mode」作废。现在照 dsh-tui 的
+liangshen preset 原样挂全套标准工具行（`tool-fs-search`、`bootstrap-filesystem`、`tool-jobs`、
+`tool-goal`、`planning`、`delegation`（含 `subagent`）、`tool-ask-user`、`tool-todo`、`tool-web`），
+`tool-fs` 不再只读。`subagent` 用于不需要 PR 的调研，要交付 PR 的代码活仍走 `spv_dispatch`——
+这条分工写在 persona 里，不靠少挂工具来实现。
+
+**不照抄 liangshen 的 preset 本地插件**：`tool-bootstrap.mjs` / `instruction-hint.mjs` /
+`skill-search.mjs` / `custom-bash.mjs` 是 dsh-tui 包内的本地文件，不是 dsh 包。挂它们要把 **6 个**
+`.mjs` vendor 进本仓库——那 4 个加 `compaction-epoch.mjs` 与 `session-events.mjs`
+（`tool-bootstrap.mjs` 引 `compaction-epoch.mjs`；`instruction-hint.mjs` 引两者；`compaction-epoch.mjs`
+又引 `session-events.mjs`）；而且 `tool-bootstrap` 把首轮工具面砍到
+`[bash, str_replace_editor]`（首轮没有 `spv_dispatch`）并抑制 `agent-instructions` 与 skill
+catalog，`instruction-hint` 则是**替换** `dsh-agent-instructions`，而 SPV 要保留真注入。
+skill 改用 dsh 包 `skill-filesystem` + `tool-skill`（内容来自 PR #3 的 commit `6f38eef`；那条 PR 的
+base 是 `agent/cli-restructure`，从未进过 `main`）。
+
+**验证**：`install.sh` 与 `install.sh --check` exit 0；`dsh --dump-config --patch …` exit 0 且新行
+都落在 `preset-spv` 块内；`tests/test-layout.sh` / `tests/test-prepare.sh` /
+`tests/test-injector.mjs` / `npm run check` 全绿。
