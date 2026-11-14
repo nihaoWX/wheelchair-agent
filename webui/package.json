@@ -1,0 +1,28 @@
+{
+  "name": "wheelchair-agent-webui",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The wheelchair-agent UI home for the dsh `superagent` profile: sectioned page, with the review inbox as its first section.",
+  "type": "module",
+  "main": "./lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./client": "./lib/client.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "README.md",
+    "package.json"
+  ],
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-sidebar"
+      ]
+    }
+  }
+}

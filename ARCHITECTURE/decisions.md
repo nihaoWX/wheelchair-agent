@@ -90,3 +90,17 @@ worker 环境里的 `DSH_SUPERAGENT_GITHUB_REPOSITORY` 永远是面板那一个�
 三条配置绕行路已实测堵死（关 github Source 会停在 `setupPending`；`spv` 声明同名变量只是并排渲染两行；
 编排器 API 锁死在配置仓库）。**已定方向：不与环境变量对抗，改为给 worker 一份它读得到的 `AGENTS.md`，
 说明这个项目该不该推送。** 实现见 `docs/delivery-target.md`。
+
+## UI 主页：独立包 + 区块数组 + 自包含 core（2026-11-14）
+
+- **面板叫 `wheelchair-agent`，不叫"审查收件箱"**：它是 UI 主页，收件箱只是第一个 section。`PANEL_ID`、
+  左侧栏 label、页面 `<title>`/`<h1>` 都是 `wheelchair-agent`；包名仍是 `wheelchair-agent-webui`
+  （`dsh-client-modules` 只扫裸包名，而 `wheelchair-agent` 已被主包占用且以子路径挂载）。
+- **页面骨架由 `SECTIONS` 数组驱动**：`{ id, label, render }`；加 section = 一个数组项 + 一个
+  `render(container)`，不改 rail/tab/body 骨架。不引入插件系统。
+- **安装后的包必须自包含**：`install.sh` 把 `src/spv/inbox.js`、`dispatch.js`、`paths.js`、
+  `src/shared/queue.js` 拷进包的 `lib/core/`、`lib/shared/`。理由（实测）：22:55 另一个 worktree 的
+  `install.sh` 覆盖了共享 preset，删掉了 `src/spv/inbox.js`；若包用 `file://<preset>/...` import，
+  下次重启就会 mount 失败。现在的包不依赖 preset 也能加载。
+- **每个 PR item 的 read-modify-write 走跨进程锁**：watcher 与评论 POST 是两个进程，单靠原子 rename
+  只能防半文件，防不了丢更新；锁文件 + `randomUUID` 临时名同时解决两者。

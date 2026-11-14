@@ -9,8 +9,14 @@
 - **superagent**：常驻服务 `:3082`，`runtime / spv / github` 三处 `ready`，`setup.problem=null`。
 
 **入口**：`wheelchair-agent` 是唯一命令入口（`spv` / `prepare` / `service` / `jobctl` / `dispatch` /
-`status` / `check`），`spv`、`superagent-service`、`jobctl` 保留为它的兼容名。
+`status` / `inbox` / `check`），`spv`、`superagent-service`、`jobctl` 保留为它的兼容名。
 `src/` 已按 `shared/` `superagent/` `spv/` 三分，三条边界规则由 `tests/test-layout.sh` 机械断言。
+
+**审查收件箱 / `wheelchair-agent` UI 主页**：`webui/` 是独立 dsh client 包 `wheelchair-agent-webui`
+（superagent profile 左侧栏一行 `wheelchair-agent`）；核心只有一份 `src/spv/inbox.js`，CLI 与面板共用。
+`wheelchair-agent inbox` 起 127.0.0.1 独立页，`wheelchair-agent inbox watch` 轮询五个工具仓的
+`gh pr list` 写 `~/.dsh/state/superagent/inbox/`；评论追加进 item 并派 `inbox-<pr>` 任务。
+**面板要在 :3082 出现需重启 superagent 服务**（本次未重启）。
 
 **CI**：`.github/workflows/ci.yml` 在 push 到 `main` 和所有 PR 上跑 `npm run check`、
 `bash tests/test-layout.sh`、`sh tests/test-prepare.sh`（无 secret、无安装步）。`main` 分支保护要求
@@ -75,16 +81,30 @@
   `install.sh` / `--check` exit 0；CLI 无 `result`；工具表只剩两个；**真实 SPV 会话派真实工单、
   派完不调任何工具，reply 由注入器消费并作为 user 消息进入会话**（`outbox/` → `outbox/read/`）；
   `node --check` 与三个测试套件全绿。
+- **审查收件箱 / `wheelchair-agent` UI 主页**（2026-11-14，PR #8 `agent/webui-inbox`）：`webui/`
+  独立包（手写预构建 bundle、`dsh.client`、paired slots）、`src/spv/inbox.js` 核心（item 存储、
+  `gh pr list` 轮询、评论→`inbox-<pr>` 任务、跨进程 item 锁）、`inbox` / `inbox watch` CLI、
+  `commands/open-url.py` 复用 `open_command()`、`install.sh` 的 profile 包安装与加载器行。面板是
+  `wheelchair-agent` UI 主页，收件箱是第一个 `SECTIONS` 区块；页面骨架不随区块增加而改。
 
 # In Progress
 
-- **结果自动注入**（PR #4，`agent/spv-result-injection`）：实现与端到端验证完成，已 rebase 到
-  `main`（单一 commit），PR diff 只含本次功能改动，等合并。
+- **审查收件箱 / `wheelchair-agent` UI 主页**（PR #8，`agent/webui-inbox`）：实现与验证完成，等合并。
+  合并后重启 superagent 服务才在 :3082 的左侧栏出现；`wheelchair-agent inbox` 同一条代码可立即使用。
 - **CLI 化 + 目录重组**（PR #2，`agent/cli-restructure`）：实现完成、9 项验证全过，等合并。
   见 `ARCHITECTURE/layout.md`、`ARCHITECTURE/cli.md`。
 
 # Known Issues
 
+- **inbox 面板要重启 superagent 服务才出现在 :3082**：本次按要求没有重启（会杀掉执行中的 worker）。
+  `--dump-config` 已证明加载器行在；`wheelchair-agent inbox` 是同一条代码的即时入口。重启不是安装步骤
+  的一部分，操作者下次重启服务即生效。
+- **共享 preset 会被并发 worker 的 `install.sh` 覆盖**（2026-11-14 22:55 实测）：另一个 worktree 把
+  `~/.dsh/.agent-presets/spv/` 换成不含 inbox 的版本，`wheelchair-agent inbox` 暂时消失。webui 包已
+  自包含（core 文件拷进 profile 包，不依赖 preset），但 CLI 仍来自 preset；从本 checkout 重跑
+  `bash install.sh` 即恢复。
+- **收件箱里 `nihaoWX-wheelchair-agent-1` 有一条端到端测试评论**（22:40）并派生了 ticket
+  `ae0c851…`（thread `inbox-1`，worker 回复“收到。”）。这是验证留下的真实数据，不是缺陷。
 - **PR #1 未合并**（`https://github.com/nihaoWX/wheelchair-agent/pull/1`）：`mergeable: MERGEABLE`，
   分支 `agent/delivery-target-prepare-42ac195d0dc6`，+832/-32，7 文件。没有 merge CLI，需要人合。
   **风险**：面板已经指向已安装的 `prepare.sh`，但 `main` 里没有 `commands/prepare.sh`——谁从 `main`
@@ -116,7 +136,9 @@
 
 # Next Steps
 
-1. **合并 PR #2**（CLI 化 + 目录重组）与 **PR #1**（交付目标随项目走）：PR #2 的分支已包含 PR #1 的
+1. **合并 PR #8**（审查收件箱 / `wheelchair-agent` UI 主页），然后重启一次 superagent 服务
+   （`wheelchair-agent service restart`），确认 :3082 左侧栏出现 `wheelchair-agent` 并打开面板。
+2. **合并 PR #2**（CLI 化 + 目录重组）与 **PR #1**（交付目标随项目走）：PR #2 的分支已包含 PR #1 的
    全部内容，所以合并 PR #2 就同时消掉 `main` 缺 `prepare.sh` 的风险；PR #1 随后可关。
 2. **面板的 prepare 值已改成 `wheelchair-agent prepare`**（2026-11-14，经管理 API 保存，revision 8）。
    换机器或换 `DSH_HOME` 后重跑 `wheelchair-agent check` 确认它仍然正确。

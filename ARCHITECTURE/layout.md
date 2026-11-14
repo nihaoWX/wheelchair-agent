@@ -30,9 +30,15 @@ wheelchair-agent/
 │       ├── outbox.js             # 读/消费 outbox/ 的原语（没有阻塞读取器）
 │       ├── injector.js           # 后台注入器：新 reply/notice 消费后注入会话
 │       ├── health.js             # 探健康端点，服务没跑就拒绝派活
+│       ├── inbox.js              # 收件箱：item 存储、gh 轮询、评论→队列、面板 HTTP/页面
 │       ├── cron.js               # `/spv-cron` 逻辑（纯逻辑，注入依赖）
 │       ├── tools.js              # 插件入口：spv_dispatch / spv_status + 持有注入器
 │       └── cron-plugin.js        # 插件入口：`/spv-cron` 薄壳
+├── webui/                        # 独立 dsh web client 包 wheelchair-agent-webui
+│   ├── package.json              # dsh.client + exports ".", "./client", "./package.json"
+│   ├── lib/index.js              # host 半身：三个 /wheelchair-inbox/* 路由
+│   ├── lib/client.js             # 手写预构建 bundle（prebuilt；不能用 JSX）
+│   └── README.md                 # 为什么独立、怎么加载、怎么加 section
 ├── preset/                       # 原 dsh/：装到 ~/.dsh/.agent-presets/spv/
 │   ├── preset.yml
 │   ├── agent.cordis.yml          # 工具面 + compaction 组
@@ -88,7 +94,9 @@ wheelchair-agent/
 | 装什么 | 装到哪 |
 |---|---|
 | preset（`preset.yml`、`agent.cordis.yml`、`preset-default.patch.yml`、`package.json`） | `~/.dsh/.agent-presets/spv/` |
-| SPV 侧 JS（`src/spv/*`、`src/shared/*`）+ `cli.js` + `agentsmd-examples/` + `prepare.sh` | `~/.dsh/.agent-presets/spv/` |
+| SPV 侧 JS（`src/spv/*`、`src/shared/*`）+ `cli.js` + `agentsmd-examples/` + `prepare.sh` + `commands/` | `~/.dsh/.agent-presets/spv/` |
+| **webui 包**（`package.json`、`lib/index.js`、`lib/client.js` + 拷进去的 inbox core） | **`~/.dsh/profiles/superagent/node_modules/wheelchair-agent-webui/`（新增）** |
+| **webui loader 行**（`- insert: id: wheelchair-webui`） | **`~/.dsh/profiles/superagent/cordis.patch.yml`（append-only）** |
 | **`wheelchair-agent` CLI 薄壳** | **`~/.local/bin/wheelchair-agent`（新增）** |
 | `spv` 启动器 | `~/.local/bin/spv` |
 | `superagent-service` | `~/.local/bin/superagent-service` |
@@ -100,6 +108,13 @@ CLI 薄壳把 preset 目录路径烧进去（和 `spv` 启动器同样的 `sed s
 **为什么不另建 `~/.local/lib/wheelchair-agent/`**：那样 SPV 侧代码会有两份（preset 目录一份、lib 一份），
 或者 preset 目录只剩 4 个 yml 而 `file://` URL 指向 lib。两种都比现在多一个概念，收益只是"preset 目录
 里不放 CLI"。preset 目录实际上就是"SPV 侧的已安装包"，放 CLI 不违和。
+
+**`webui/` 是第四种安装目标，不是第五个 CLI 子命令包。** 它必须落在 profile 的 `node_modules` 里，因为
+`dsh-client-modules` 从 profile 的 module 解析基址找 `dsh.client`；preset 目录不在那条解析链上。它的
+`lib/client.js` 是**预构建 bundle**（`window.__ModuleLoader__.load(...)`），本仓库没有 TS/构建链，所以手写。
+host 半身 `lib/index.js` 在 profile 里运行，**可以** import dsh 服务；`src/` 与 `bin/` 的规则 3 不适用于它。
+`install.sh` 把 `src/spv/inbox.js` + `dispatch.js` + `paths.js` + `src/shared/queue.js` 拷进包的
+`lib/core/`、`lib/shared/`，让面板不依赖共享 preset。
 
 ## 顺手清掉的死东西
 
