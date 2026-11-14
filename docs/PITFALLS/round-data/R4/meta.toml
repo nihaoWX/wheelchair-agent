@@ -1,0 +1,20 @@
+# R4 的 round-data —— 「单一 CLI 入口 + src/ 三分」这一轮**实际跑过**的边界与入口契约
+# 字段含义的唯一来源：tools/pitfalls-manager/references/02_consume.md §4.3（本文件不复述）
+id = "R4"
+verdict = "混合"            # 新领土（CLI 与三分目录）+ 复发（R4-F5 是 R1 证据的路径失效）
+family = ["布局没画出代码里已存在的边界", "同一份队列格式有两份实现", "机器相关的绝对路径写进面板状态"]
+closures = [ { finding = "R4-F1", tier = "检查" },
+             { finding = "R4-F2", tier = "检查" },
+             { finding = "R4-F3", tier = "代码" },
+             { finding = "R4-F4", tier = "规则" },
+             { finding = "R4-F5", tier = "检查" } ]   # 规则 | 检查 | 默认 | 代码 | wontfix
+run_before = ["R1", "R2"]   # 动了 preset 渲染与 docs/，先跑这两轮
+touched = ["R1"]            # 本轮有意改写了 R1 的 test.py 路径（期望值未变），见 note
+note = """
+为什么认定同类：R4-F5 的 related 指向 R1-F1，且 R1 的 test.py 因目录重组从 PASS 变 SKIP——同一份证据第二次因路径漂移失效。
+根因与建议修法：已证——证据脚本把源码路径写死（scripts/render-preset.mjs、dsh/），目录一改就静默 SKIP；本轮改成 build/render-preset.mjs 与 preset/，并由族1 断言「渲染脚本存在」而不是跳过。
+怎么修才不弄坏前面：改 preset 渲染、install.sh 白名单或 src/ 布局之前先跑本目录 test.py；族1/族2 断言的是**规则**（三条边界规则、exports 键名不变），不是文件清单，所以新增文件不会变红，只有边界被破坏才会。
+"""
+how_to_run = """
+cd <此目录> && python3 test.py         # rc=0 = 全过；失败会打出族名与差在哪
+"""

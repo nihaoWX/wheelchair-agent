@@ -1,7 +1,8 @@
 /**
  * 往 `<queue>/pending/` 写一个任务文件：SPV agent 让 superagent 侧开始干活的唯一方式。
  *
- * 记录形状就是 `src/spv.js:triggerOf` 读的那个，与 `scripts/spv_send.py` 写出来的完全一致，Source 无法分辨是谁写的。
+ * 记录形状就是 `src/superagent/spv.js:triggerOf` 读的那个；`spv_dispatch` 工具与 `wheelchair-agent dispatch` 都走这里，
+ * 所以队列格式只有一份实现。
  * `project` 会进入 Trigger 的 meta，最终以 `$DSH_SUPERAGENT_SPV_PROJECT` 交给 executor 的 prepare 命令，用来决定 clone
  * 哪个项目。
  */

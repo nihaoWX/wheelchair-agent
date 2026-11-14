@@ -4,7 +4,7 @@
 R1 的结论是「链路是通的，根因未证」，所以这里只冻结**已证**的三段，不冻结根因：
 
 族1 SPV 组合里 `dsh-llm-retry` 已挂载且未被 disabled（R1-F1）。
-    做法：用本仓库的 `scripts/render-preset.mjs` 把 `dsh/` 渲染进临时目录，再
+    做法：用本仓库的 `build/render-preset.mjs` 把 `preset/` 渲染进临时目录，再
     `dsh --profile dsh-tui --patch <渲染出的 patch> --dump-config`，在组合树里找 `- id: llm-retry`。
     同时断言同一份 dump 里有 `spv-tools`——否则 patch 没生效，这条断言就是空的（拿普通 profile 的
     dump 也能绿）。
@@ -90,12 +90,12 @@ def family1():
     dsh, node = shutil.which("dsh"), shutil.which("node")
     if not dsh or not node:
         return "SKIP", "dsh 或 node 不在 PATH 上（这条断言要跑 `dsh --dump-config`）"
-    if not (REPO / "scripts" / "render-preset.mjs").is_file():
-        return "SKIP", f"渲染脚本不存在：{REPO / 'scripts' / 'render-preset.mjs'}"
+    if not (REPO / "build" / "render-preset.mjs").is_file():
+        return "SKIP", f"渲染脚本不存在：{REPO / 'build' / 'render-preset.mjs'}"
     root = tempfile.mkdtemp(prefix="r1-f1-")
     try:
         out = Path(root) / "preset"
-        render = run([node, str(REPO / "scripts" / "render-preset.mjs"), str(REPO / "dsh"),
+        render = run([node, str(REPO / "build" / "render-preset.mjs"), str(REPO / "preset"),
                       "file:///dev/null/spv-tools.js", "file:///dev/null/spv-cron-plugin.js", str(out)])
         need(render.returncode == 0,
              f"`render-preset.mjs` expected rc=0, got rc={render.returncode}: {render.stderr.strip()[:400]}")

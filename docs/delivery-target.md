@@ -1,11 +1,12 @@
 # 交付目标：仓库随项目走
 
-**这份文档记录一个还没实现的方向，以及为什么它不能靠配置解决。** 后续在 dsh 那边接手的 agent
-读这一份就能明白现状，不必重新推导。
+**这份文档记录这个方向的结论与实现。** 后续接手的 agent 读这一份就能明白现状，不必重新推导。
 
-**状态（2026-11-14）**：方向已定、实现未开始。账本 `R2-F1`（`deferred`，2026-11-14 复核）记的就是这个状态——
-不是"待调查"，而是"结论已定、等实现"。实现要动 `src/spv.js`、面板的 prepare 命令与 `install.sh`，
-不在本仓库当前范围内。
+**状态（2026-11-14）**：**已实现**。三部分：`install.sh` 把两份模板与 `prepare.sh` 装到
+`~/.dsh/.agent-presets/spv/`；面板的 prepare 命令改为 `wheelchair-agent prepare`（命令名，不是绝对
+路径——绝对路径是机器相关状态，换 `DSH_HOME` 后会静默失效，见 `ARCHITECTURE/cli.md`）；
+该脚本负责 clone、受管 `AGENTS.md`、以及 `tools/` 项目的私有 GitHub 远端。账本 `R2-F1` 的
+`deferred` 到此关闭。
 
 ## 问题
 
@@ -107,6 +108,45 @@ worker 不会去开 PR。**但默认值仍是 PR**：任务没写清时，worker
 6. **权威来源必须随工具安装到用户级位置**，让派发侧能稳定找到它，而不是把某个开发树路径写死
    在派发逻辑里。
 
+## 实现（2026-11-14）
+
+| 部分 | 位置 | 做什么 |
+|---|---|---|
+| 模板与脚本的安装 | `install.sh` 的 `render_into` | 把 `commands/prepare.sh` 与 `docs/agentsmd-examples/*.md` 拷进 `~/.dsh/.agent-presets/spv/`（`prepare.sh` 与 `agentsmd-examples/`）；白名单与 `--check` 同步更新 |
+| 面板的 prepare 命令 | 面板 Settings → Execution | `wheelchair-agent prepare`（**命令名，不是绝对路径**；2026-11-14 经管理 API 保存，revision 8）。绝对路径是机器相关状态，换 `DSH_HOME` / 换用户名后会静默失效；命令名由服务进程的 PATH 解析，`install.sh --check` 读 `/proc/<pid>/environ` 验证它 |
+| 脚本本体 | `commands/prepare.sh` | clone → 受管 `AGENTS.md` → `tools/` 的私有远端与工单 origin |
+| 可跑证据 | `tests/test-prepare.sh` | 77 条断言，用假 `gh` + 本地裸仓库，不碰 github.com |
+
+`prepare.sh` 的行为，按顺序：
+
+1. **项目来源**：`$DSH_SUPERAGENT_SPV_PROJECT`；为空时退回 `$SPV_PROJECTS_ROOT/.superagent-project`
+   （默认根 `$HOME/bioagentforge`），与旧 prepare 命令的兜底一致。两者都没有 ⇒ 失败并点名。
+2. **`tools/` 且没有 `.git`** ⇒ `git init -b main` 并把现有文件提交为初始 commit（作者是 gh 账号，
+   邮箱用 `<id>+<login>@users.noreply.github.com`）。`research/` 永不 init。
+3. **clone**：有 `.git` 用 `git clone --no-hardlinks`，没有就 `rsync -a --exclude .git`（没有 rsync
+   时退回 `cp -a`）。
+   目录已存在且非空 ⇒ 不重复 clone（与 superagent「已存在即视为已准备」一致）。
+4. **`AGENTS.md`**：`tools/*` → `proj-dev-agentsmd.md`，`research/*` → `research-task-agentsmd.md`。
+   缺失就装，内容不同就覆盖（模板是唯一真源）。受管文件不进入 `git status`：未跟踪的写进
+   `.git/info/exclude`，已跟踪的用 `skip-worktree`（代价：上游改了 `AGENTS.md` 时 rebase/merge
+   会以 "local changes would be overwritten" 停下——响亮且可恢复，好过它悄悄进 PR）。
+5. **`tools/` 的远端**：项目已有 GitHub remote ⇒ 直接用（若它是 PUBLIC，打一行 WARNING——约束 1
+   禁止**创建**公开仓库，不禁止使用项目本来就有的）；没有 ⇒ 用 `gh repo create <owner>/<name>
+   --private` 建私有仓库、加 remote、推当前分支。名字已被占用时：私有且仍为空 ⇒ 接管（上次跑到一半
+   失败可恢复）；公开或已有分支 ⇒ 拒绝并让人处理。`research/` 完全不进这一段。
+6. **工单 origin**：`git remote set-url origin <github url>`（没有就 `add`），并回读
+   `remote.origin.url` 校验。读配置值而不是 `remote get-url`，因为后者会应用
+   `url.<base>.insteadOf` 改写。
+
+可追溯性：每次创建/接管/推送/改 origin 都写一行到
+`<DSH_HOME>/state/superagent/prepare.log`（UTC 时间 + 仓库名 + 归属 + 可见性；路径由脚本自身位置推出，
+不读 `$DSH_HOME`——子进程环境里 `DSH_*` 会被剥掉），同时往 stderr 打
+`prepare: ...`；失败打 `prepare: FAILED at <step>: <原因>` 并以 1 退出，superagent 会把这段输出
+附在失败的工单上。
+
+测试开关（只给测试用，面板命令不带）：`SPV_PREPARE_DRY_RUN=1` 不写项目、不碰 GitHub，只打印
+将要做什么；`SPV_PROJECTS_ROOT`、`SPV_PREPARE_TEMPLATES`、`SPV_PREPARE_LOG` 可改路径。
+
 ## 与已有约束的关系
 
 这份文档不推翻 `ARCHITECTURE.md` 里任何一条已定型的决定。它补的是：
@@ -124,4 +164,6 @@ worker 不会去开 PR。**但默认值仍是 PR**：任务没写清时，worker
 | 完整调查（现象、7 组复现步骤、全部实测数字） | 报告已按流程消费后删除，原文取回：`git show 7dae586:docs/PITFALLS/wheelchair-agent-建议-仓库随项目走.md`（账本条目 `R2-F1` / `R3-F2`） |
 | 项目开发类 AGENTS.md 模板 | `docs/agentsmd-examples/proj-dev-agentsmd.md` |
 | 研究任务类 AGENTS.md 模板 | `docs/agentsmd-examples/research-task-agentsmd.md` |
+| prepare 命令本体 | `commands/prepare.sh` |
+| prepare 命令的可跑证据 | `tests/test-prepare.sh`（`sh tests/test-prepare.sh`，77 条断言） |
 | superagent 的交付契约与合并规则 | `tools/dsh-superagent/prompts/work.md`、`prompts/team/delivery.md` |

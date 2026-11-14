@@ -15,9 +15,9 @@
 
 关键约束：**`tools/dsh-superagent/src/` 一个字节都不能改**。所以：
 
-- 需要的 helper（`health`、`key`、`threadKey`）在 `src/spv.js` 里重写了等价的小函数。
+- 需要的 helper（`health`、`key`、`threadKey`）在 `src/superagent/spv.js` 里重写了等价的小函数。
 - `SourceContext` 用 `ctx.orchestrator.context(kind)` 拿，不导入 `sourceContext`（`lib/` 没导出它）。
-- schema 用自己写的 `src/schema.js`（只实现 `parse`/`safeParse`），**故意不依赖 zod**。理由见第 6 节。
+- schema 用自己写的 `src/shared/schema.js`（只实现 `parse`/`safeParse`），**故意不依赖 zod**。理由见第 6 节。
 
 ## 2. 队列布局与"无 cursor"的消费标记
 
@@ -26,7 +26,7 @@
 <stateDir>/spv/done/         # 已消费；rename 到这里即"标记已读"
 <stateDir>/spv/done/*.bad    # 解析失败的任务，移到这里不再重试
 <stateDir>/spv/outbox/       # Channel 写回，一条消息一个 .json
-<stateDir>/spv/outbox/read/  # spv_read.py --consume 移到这里
+<stateDir>/spv/outbox/read/  # 被 result/status 消费的消息移到这里
 ```
 
 `stateDir` = `/home/nihao/.dsh/state/superagent`（`ctx.deployment.stateDir`，只在 setup 完成后可读）。
@@ -67,31 +67,38 @@ worker 的 `progress` 在 `app/notices.ts:reportRelay()` 里 `return undefined`�
 - `outbox/` 只有 2 个文件：`acknowledgement` 和 `reply`
 - SQLite `outbox` 表 4 条 receipt，全部是 ack/reply
 
-## 5. 两个 CLI
+## 5. 命令行入口
+
+队列的读写只有一份实现（`src/shared/queue.js` + `src/spv/{dispatch,outbox}.js`），`spv_dispatch` 工具与
+`wheelchair-agent` 的 `dispatch` / `result` / `status` 子命令都 import 它。**曾经有两个 Python 脚本
+（`scripts/spv_send.py` / `spv_read.py`）各写一份，已删除**：两份实现必须永远保持字节兼容，是个真隐患。
 
 ```bash
-scripts/spv_send.py "任务正文" [--thread main] [--actor operator] [--json]
-scripts/spv_read.py [--consume] [--watch] [--interval 1] [--timeout N] [--json]
+wheelchair-agent dispatch --project tools/foo --task "任务正文" [--thread main]
+wheelchair-agent result --thread main [--timeout 300]
+wheelchair-agent status [--thread main]
 ```
 
-两者都支持 `--queue` 与 `SPV_QUEUE_DIR` 覆盖队列根。队列不存在时退出 1 并提示先启动服务；
-`spv_send.py` 无参数时打印 help 并退出 2；`spv_read.py --watch --timeout` 超时无新消息退出 3。
-
-`spv_read.py` 输出格式：`[kind] thread: text`，第二行缩进给出 `at=` 与 `ticket=`。
+`SPV_QUEUE_DIR` 覆盖队列根（与插件自身的 `queueDir` 设置同一优先级规则）。队列不存在时退出 1 并提示
+先启动服务；`result` 超时退出 1 并说明还剩什么没到。
 
 ## 6. 踩过的坑
 
 ### 6.1 插件入口的相对路径
 
-`spv-watch.js` 在包根，源码在 `src/`。第一版写 `from './spv.js'`，服务日志里
-`ERR_MODULE_NOT_FOUND` 直接让 entry 不激活（`dsh: warning: 1 entry did not activate`）——但进程照样起来，
-health 里只是**没有** `spv` 条目。排查方式：`health` 列表缺条目就去 `tools/dsh-superagent/.artifacts/*.log` 找。
+插件入口是 `src/superagent/watch.js`，Source kind 在 `src/superagent/spv.js`，队列在 `src/shared/`。
+第一版把入口放在包根、源码放在 `src/`，写成 `from './spv.js'`，服务日志里 `ERR_MODULE_NOT_FOUND` 直接让
+entry 不激活（`dsh: warning: 1 entry did not activate`）——但进程照样起来，health 里只是**没有** `spv` 条目。
+排查方式：`health` 列表缺条目就去 `tools/dsh-superagent/.artifacts/*.log` 找。
+
+`package.json` 的 exports 键（`./spv-watch` 等）是公开 API，`~/.dsh/profiles/superagent/cordis.patch.yml`
+用 bare specifier 引用它们；键名不能改，只能改它指向的文件。
 
 ### 6.2 不要导入 zod
 
 dsh-superagent 自带一份 zod。插件如果 import 另一个副本的 zod，抛出的 `ZodError` 在它的
 `failure()`（`app/http.ts:82`）里 `instanceof` 判定失败，一个"设置值非法"的 400 会变成 500。
-`src/schema.js` 用自定义 `SchemaError` 绕开这个问题，同时省掉一个依赖。
+`src/shared/schema.js` 用自定义 `SchemaError` 绕开这个问题，同时省掉一个依赖。
 
 ### 6.3 `pids: []` 但服务在跑
 

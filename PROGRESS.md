@@ -7,8 +7,9 @@
   工具 `spv_dispatch` / `spv_result` / `spv_status`，斜杠命令 `/spv-cron`。
 - **superagent**：常驻服务 `:3082`，`runtime / spv / github` 三处 `ready`，`setup.problem=null`。
 
-**正在做**：把 `wheelchair-agent` 收成单一 CLI 入口，并按 `shared/` `superagent/` `spv/` 三分目录。
-契约已定案在 `ARCHITECTURE/layout.md` 与 `ARCHITECTURE/cli.md`，实现待派。
+**入口**：`wheelchair-agent` 是唯一命令入口（`spv` / `prepare` / `service` / `jobctl` / `dispatch` /
+`result` / `status` / `check`），`spv`、`superagent-service`、`jobctl` 保留为它的兼容名。
+`src/` 已按 `shared/` `superagent/` `spv/` 三分，三条边界规则由 `tests/test-layout.sh` 机械断言。
 
 # Completed
 
@@ -19,7 +20,7 @@
 - **GitHub Source**：`nihaoWX/bioagentforge`，CLI `~/.local/bin/gh`，60s 轮询。
 - **`spv` Source 插件**（`spv-watch.js` + `src/spv.js`）：文件队列 pending→done（rename 即消费
   标记，无 cursor）+ outbox；Trigger 满足 explicit 三条件。
-- **SPV preset**（`dsh/` → `~/.dsh/.agent-presets/spv/`）：`agent.cordis.yml` 挂 spv 工具 +
+- **SPV preset**（`preset/` → `~/.dsh/.agent-presets/spv/`）：`agent.cordis.yml` 挂 spv 工具 +
   `tool-fs` + bash + `agent-instructions` + compaction + `/spv-cron`。
 - **compaction 组**（`compaction-basic` + `command-compact` + `tool-result-pruner`）：TUI 原先
   告警「本预设既无压缩也不剪枝工具结果」。加上后 `/compact` 可用、达水位自动压缩，超长工具输出
@@ -37,8 +38,8 @@
 - **`jobctl`**：长任务交给 systemd user manager 持有。`submit` 用 `ExecStopPost` 让 systemd 在
   unit 停下时写一条任务进 spv 队列，所以下一阶段的触发器是作业自己的结束事件。
 - **`/spv-cron`**：每小时递简报的斜杠命令。
-- **`install.sh`**：装 preset + `spv` 启动器 + `superagent-service` + `jobctl`，白名单拷贝、
-  原子替换、幂等、`--check` 只读自检。
+- **`install.sh`**：装 preset + `wheelchair-agent` CLI 薄壳 + `spv` / `superagent-service` / `jobctl`
+  三个兼容名，白名单拷贝、原子替换、幂等、`--check` 只读自检（含**服务进程**的 PATH 校验）。
 - **`tools/` 拆分 21 个独立仓库**：10 个 `git subtree split` 保留历史（tree 哈希逐一比对），
   9 个新建，2 个原有。零失败、零文件丢失。
 - **端到端验证**：`spv_dispatch` 投递 → ack → worker 在项目 clone 内执行 → reply "已完成：…"。
@@ -46,22 +47,28 @@
   都不含 `spv-tools`。
 - **install 验收**：首次装、重跑幂等（`up to date`）、改源后 `--check` = exit 2、还原后 = exit 0、
   已装目录无开发侧文件。
-- **交付目标随项目走**（2026-11-14，PR #1 待合并）：`install.sh` 把 `dsh/prepare.sh` 与两份
+- **交付目标随项目走**（2026-11-14，PR #1 待合并）：`install.sh` 把 `commands/prepare.sh` 与两份
   `AGENTS.md` 模板装进 preset 目录；`prepare.sh` 做 clone → 受管 `AGENTS.md`（缺则加、旧则覆盖）
-  → `tools/` 私有远端与工单 `origin`；`research/` 永不配远端。`scripts/test-prepare.sh` 77 条断言全过。
+  → `tools/` 私有远端与工单 `origin`；`research/` 永不配远端。`tests/test-prepare.sh` 77 条断言全过。
 - **HARNESS 按架构拆分**（2026-11-14）：`ARCHITECTURE/` 从空目录变成三份分册
   （`decisions.md` / `layout.md` / `cli.md`），`ARCHITECTURE.md` 收缩为概览 + 索引。
+- **CLI 化 + 目录重组**（2026-11-14，PR #2）：`bin/wheelchair-agent.mjs` 十个入口；`src/` 三分
+  `shared/` `superagent/` `spv/`；`dsh/` → `preset/`、`scripts/` → `commands/` + `build/` + `tests/`；
+  删 `index.js` 与两个 Python 队列脚本（队列格式从两份实现变一份）；`install.sh` 装 CLI 薄壳并读
+  `/proc/<pid>/environ` 验证服务进程的 PATH；`tests/test-layout.sh` 机械断言三条边界规则。
 
 # In Progress
 
-- **CLI 化 + 目录重组**：契约已定案，实现待派。见 `ARCHITECTURE/layout.md`、`ARCHITECTURE/cli.md`。
+- **CLI 化 + 目录重组**（PR #2，`agent/cli-restructure`）：实现完成、9 项验证全过，等合并。
+  见 `ARCHITECTURE/layout.md`、`ARCHITECTURE/cli.md`。
 
 # Known Issues
 
 - **PR #1 未合并**（`https://github.com/nihaoWX/wheelchair-agent/pull/1`）：`mergeable: MERGEABLE`，
   分支 `agent/delivery-target-prepare-42ac195d0dc6`，+832/-32，7 文件。没有 merge CLI，需要人合。
-  **风险**：面板已经指向已安装的 `prepare.sh`，但 `main` 里没有 `dsh/prepare.sh`——谁从 `main`
-  重跑 `install.sh`，preset 就会丢掉 `prepare.sh`，每个工单的 prepare 都失败。
+  **风险**：面板已经指向已安装的 `prepare.sh`，但 `main` 里没有 `commands/prepare.sh`——谁从 `main`
+  重跑 `install.sh`，preset 就会丢掉 `prepare.sh`，每个工单的 prepare 都失败。PR #2 的分支包含 PR #1
+  的全部内容，合并 PR #2 即消掉这个风险。
 - **探针仓 `nihaoWX/zzz-prepare-probe` 未删**（空、私有）：`gh repo delete` 需要 `delete_repo` scope，
   `gh auth refresh` 要操作者在浏览器里走 device code。
 - **`docs/PITFALLS/` 里没有待处理报告**：R1/R2 已消费入账（`R1-F1` / `R2-F1`，裁决见 `R3-F1` /
@@ -84,10 +91,10 @@
 
 # Next Steps
 
-1. **实现 CLI 化 + 目录重组**（`ARCHITECTURE/layout.md` + `ARCHITECTURE/cli.md`）：
-   按 `shared/` `superagent/` `spv/` 三分目录、加 `bin/wheelchair-agent.mjs`、加 `tests/test-layout.sh`、
-   删 `index.js` 与 `scripts/spv_send.py`/`spv_read.py`、`install.sh` 装 CLI 薄壳并验证**服务进程**的 PATH。
-2. **合并 PR #1**（操作者的事），消掉 `main` 缺 `prepare.sh` 的风险。
+1. **合并 PR #2**（CLI 化 + 目录重组）与 **PR #1**（交付目标随项目走）：PR #2 的分支已包含 PR #1 的
+   全部内容，所以合并 PR #2 就同时消掉 `main` 缺 `prepare.sh` 的风险；PR #1 随后可关。
+2. **面板的 prepare 值已改成 `wheelchair-agent prepare`**（2026-11-14，经管理 API 保存，revision 8）。
+   换机器或换 `DSH_HOME` 后重跑 `wheelchair-agent check` 确认它仍然正确。
 3. 给 `tools/` 下缺远端的那 15 个项目建私有 GitHub 仓库（操作者自己的事，不是 agent 的）。
 4. 收缩 worker 的目录约束（prompt 层或项目 `AGENTS.md`）。
 5. 视消耗决定是否给 worker 换更便宜的模型。
@@ -96,18 +103,21 @@
 日常命令：
 
 ```bash
-superagent-service start     # 起后端（幂等；已在跑则直接报告）
-superagent-service status    # exit 0 正常 / 1 未跑或异常 / 2 组件报错 / 3 等 setup
-superagent-service restart   # 改过 spv Source 或 provider 配置后
-superagent-service open      # 在浏览器打开带 token 的面板（token 每次启动都变，别复制旧的）
-spv                          # 起 SPV 会话（会自动拉起后端）
+wheelchair-agent service start     # 起后端（幂等；已在跑则直接报告）
+wheelchair-agent service status    # exit 0 正常 / 1 未跑或异常 / 2 组件报错 / 3 等 setup
+wheelchair-agent service restart   # 改过 spv Source 或 provider 配置后
+wheelchair-agent service open      # 在浏览器打开带 token 的面板（token 每次启动都变，别复制旧的）
+wheelchair-agent spv               # 起 SPV 会话（会自动拉起后端）
+wheelchair-agent check             # 运行时健康：服务 / preset / 面板 prepare 值 / prepare dry run
 ```
+
+`spv`、`superagent-service`、`jobctl` 仍然可用：它们是 `wheelchair-agent <子命令>` 的兼容名。
 
 **面板的 token 每次启动都变**，且 `dsh web` 没有固定 token 的开关。裸 `url:` 打开只会得到
 `dsh web authentication required`。用 `superagent-service open`，或从 `status` 的 `panel:` 行取当前地址。
 
-改 `provider/`、`src/`、`dsh/` 之后：重跑 `bash install.sh`（幂等）；改 `dsh-superagent/` 之后：
-`pnpm build` + `superagent-service restart`。
+改 `provider/`、`src/`、`preset/`、`commands/`、`bin/` 之后：重跑 `bash install.sh`（幂等）；
+改 `dsh-superagent/` 之后：`pnpm build` + `wheelchair-agent service restart`。
 
 # 长任务
 

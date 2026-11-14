@@ -83,8 +83,8 @@ JSON Schema 与 render 只出现在插件入口。
 
 ## 目录布局
 
-**目标布局见 `ARCHITECTURE/layout.md`（含三条机械可查的规则与验收方式）。** 现状是平铺的 `src/`，
-边界在代码里成立但布局没画出来，正在按 `shared/` `superagent/` `spv/` 三分。
+**布局与三条机械可查的规则见 `ARCHITECTURE/layout.md`（`tests/test-layout.sh` 逐条断言）。**
+`src/` 已按 `shared/` `superagent/` `spv/` 三分，边界在布局上一眼可见。
 
 ```
 wheelchair-agent/
@@ -92,13 +92,17 @@ wheelchair-agent/
 ├── src/shared/                   # 两侧共用，唯一的契约（queue.js, schema.js）
 ├── src/superagent/               # 只被 superagent profile 加载（spv.js, watch.js）
 ├── src/spv/                      # 只被 SPV preset 与 CLI 加载（paths, dispatch, outbox, health, cron, tools, cron-plugin）
-├── preset/                       # 装到 ~/.dsh/.agent-presets/spv/（preset.yml, agent.cordis.yml, spv-launcher.sh, README.md）
+├── preset/                       # 装到 ~/.dsh/.agent-presets/spv/（preset.yml, agent.cordis.yml, spv-launcher.sh, wheelchair-agent.sh, README.md）
 ├── commands/                     # 会被装成独立命令的实现（prepare.sh, jobctl.py, superagent-service.py）
 ├── build/render-preset.mjs       # 构建步骤，不是命令
 ├── tests/                        # test-prepare.sh, test-layout.sh
 ├── install.sh                    # 只负责安装
 └── docs/
 ```
+
+安装布局：preset 目录是「SPV 侧的已安装包」（含 `cli.js`、`src/{shared,spv}/`、`commands/`、`prepare.sh`），
+`~/.local/bin/wheelchair-agent` 是薄壳，`spv` / `superagent-service` / `jobctl` 是它的兼容名。
+superagent 侧的 `src/superagent/` **从不进 preset 目录**：那个 profile 用自己的 `node_modules` 软链加载它。
 
 ## CLI
 

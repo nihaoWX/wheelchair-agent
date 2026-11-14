@@ -1,4 +1,4 @@
-# CLI 契约（2026-11-14 定案，待实现）
+# CLI 契约（2026-11-14 定案，已实现）
 
 `wheelchair-agent` 是操作者与 worker 的**唯一命令入口**。`install.sh` 只负责把它装进电脑，没有别的功能。
 
@@ -40,6 +40,10 @@
 | `wheelchair-agent --help` / `--version` | 用法与版本 | — |
 
 `install.sh --check` 是**另一件事**：装进去的东西 == checkout。两个 check 不重叠，都保留。
+
+实现位置：`bin/wheelchair-agent.mjs`（argv 解析 + `process.exit`），`check` 的四项在
+`src/spv/check.js`（纯函数，返回结构化结果，不结束进程）。`dispatch` / `result` / `status` 直接 import
+`src/spv/{dispatch,outbox}.js`；`spv` / `prepare` / `service` / `jobctl` 用 `exec` 换进程。
 
 ## `prepare` 怎么拿到项目路径
 
@@ -97,8 +101,8 @@ superagent 的 sqlite**，而 `install.sh` 管不到它——它只 `printf` 一
 
 ## 语言：node
 
-队列格式现在有两份实现（`src/shared/queue.js` 和 `scripts/spv_send.py`），这是个真隐患——两份实现必须
-永远保持字节兼容。CLI 用 node 就能直接 import `src/shared/queue.js`，然后删掉那两个 Python 脚本，
+队列格式曾经有两份实现（`src/shared/queue.js` 和 `scripts/spv_send.py`），这是个真隐患——两份实现必须
+永远保持字节兼容。CLI 用 node 直接 import `src/shared/queue.js`，那两个 Python 脚本已删除，
 **实现从两份变一份**。
 
 代价是 CLI 要 `spawn` python 跑 `jobctl`/`superagent-service`、`exec` sh 跑 `prepare.sh`。这不是缺点：

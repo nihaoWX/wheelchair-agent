@@ -2,10 +2,10 @@
  * File-queue layout of the `spv` Source and the small helpers that read and write it.
  *
  * Layout under one root directory:
- *   pending/   one .json per task, written by `scripts/spv_send.py`
+ *   pending/   one .json per task, written by `src/spv/dispatch.js` (the `spv_dispatch` tool and the CLI)
  *   done/      a task moved here by an atomic rename is consumed; also `<name>.json.bad` for unparsable files
- *   outbox/    one .json per Channel message, written by the plugin, read by `scripts/spv_read.py`
- *   outbox/read/  messages the reader consumed (`--consume`)
+ *   outbox/    one .json per Channel message, written by the plugin, read by `src/spv/outbox.js`
+ *   outbox/read/  messages the reader consumed (an atomic rename out of `outbox/`)
  *
  * There is no cursor: the rename out of `pending/` is the consumed marker, so a crash replays at most the task that
  * was in flight and a task is never taken in twice.

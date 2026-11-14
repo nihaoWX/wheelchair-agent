@@ -5,24 +5,24 @@
  * 模型的工具表里，由模型决定何时调用。
  *
  * 与 superagent 侧严格分开：本文件不 import `tools/dsh-superagent/` 的任何东西，只按下文描述的文件布局与它对话。
- * 唯一的接口是 `<queue>/{pending,done,outbox}/` 里的 JSON 文件（见 `src/queue.js` 与 `docs/spv-source.md`）。
+ * 唯一的接口是 `<queue>/{pending,done,outbox}/` 里的 JSON 文件（见 `src/shared/queue.js` 与 `docs/spv-source.md`）。
  *
  * 三个工具：
  *   spv_dispatch  写 pending/，立刻返回 id/thread/project
  *   spv_result    阻塞轮询 outbox/ 直到该 thread 出现 reply/notice，返回 text（同一条消息只消费一次）
  *   spv_status    非阻塞：pending 里还没取走的任务 + 已到但未读的消息
  *
- * 读 outbox/pending 在 `src/outbox.js`，写任务在 `src/dispatch.js`，路径规则在 `src/paths.js`。
+ * 读 outbox/pending 在 `src/spv/outbox.js`，写任务在 `src/spv/dispatch.js`，路径规则在 `src/spv/paths.js`。
  *
  * 为什么不 `import { defineTool } from '@deepseek-ai/dsh-tools'`：本包是用户级 preset 引用的普通目录，不在 dsh 的
  * 安装树里，`@deepseek-ai/dsh-tools` 这个 bare specifier 从本包位置解析不到，preset 会整个 mount 失败。
  * 用原始 JSON Schema 直接注册就没有任何 dsh 包依赖：参数校验由各 `execute` 自己做（校验文案本来也该写在这里）。
  */
-import { dirsOf } from './src/queue.js'
-import { checkProject, checkTask, checkThread, submitTask } from './src/dispatch.js'
-import { probe, serviceDown } from './src/health.js'
-import { pendingTasks, unreadMessages, waitForResult } from './src/outbox.js'
-import { missingQueue, resolveRoot } from './src/paths.js'
+import { dirsOf } from '../shared/queue.js'
+import { checkProject, checkTask, checkThread, submitTask } from './dispatch.js'
+import { probe, serviceDown } from './health.js'
+import { pendingTasks, unreadMessages, waitForResult } from './outbox.js'
+import { missingQueue, resolveRoot } from './paths.js'
 
 /** 插件名（Loader 诊断里显示的名字）。 */
 export const name = 'spv-tools'

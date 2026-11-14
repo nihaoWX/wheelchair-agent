@@ -6,12 +6,12 @@
  * Trigger ids make even that replay a `duplicate` rather than a second Ticket.
  */
 import { join } from 'node:path'
-import { Queue, SOURCE, health, spvKind, triggerOf } from './src/spv.js'
-import { consumeTask, ensureDirs, pendingNames, quarantineTask, readTask } from './src/queue.js'
+import { Queue, SOURCE, health, spvKind, triggerOf } from './spv.js'
+import { consumeTask, ensureDirs, pendingNames, quarantineTask, readTask } from '../shared/queue.js'
 
 export const name = 'wheelchair-agent-spv'
 export const inject = ['orchestrator']
-export { SOURCE, channelFor, spvKind, triggerOf } from './src/spv.js'
+export { SOURCE, channelFor, spvKind, triggerOf } from './spv.js'
 
 /** Consecutive failed rounds tolerated before the Source reports an error; one bad round retries quietly. */
 const FAILURES_BEFORE_ERROR = 3
