@@ -25,7 +25,7 @@
 #   SPV_PROJECTS_ROOT           where the projects live; default $HOME/bioagentforge
 #   SPV_PREPARE_TEMPLATES       template directory; default <this script's directory>/agentsmd-examples
 #   SPV_PREPARE_DRY_RUN=1       do not mutate the project or GitHub; print what would be done (for tests)
-#   SPV_PREPARE_LOG             traceability log; default $DSH_HOME/state/superagent/prepare.log
+#   SPV_PREPARE_LOG             traceability log; default <DSH_HOME>/state/superagent/prepare.log
 #
 # Exit status: 0 when the Ticket is ready, 1 with a "FAILED at <step>" line otherwise.
 set -eu
@@ -35,8 +35,12 @@ step() { printf 'prepare: %s\n' "$*" >&2; }
 die() { printf 'prepare: FAILED at %s: %s\n' "$STEP" "$*" >&2; exit 1; }
 dry_run() { [ "${SPV_PREPARE_DRY_RUN:-0}" = 1 ]; }
 
-DSH_HOME_DIR=${DSH_HOME:-$HOME/.dsh}
-LOG=${SPV_PREPARE_LOG:-$DSH_HOME_DIR/state/superagent/prepare.log}
+# The script is installed at <DSH_HOME>/.agent-presets/spv/prepare.sh, so its own location names the state
+# directory. Do not read $DSH_HOME: the prepare command runs as a child process, and DSH_* names are
+# stripped from a child environment, so the variable would always look unset here.
+SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || { printf 'prepare: FAILED at start: cannot resolve the script directory\n' >&2; exit 1; }
+STATE_DIR=$(CDPATH= cd -- "$SELF_DIR/../.." 2>/dev/null && pwd -P) || STATE_DIR=$HOME/.dsh
+LOG=${SPV_PREPARE_LOG:-$STATE_DIR/state/superagent/prepare.log}
 log() {
   mkdir -p "$(dirname "$LOG")" 2>/dev/null || return 0
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG" 2>/dev/null || return 0
@@ -98,7 +102,6 @@ case $NAME in
 esac
 SRC=$ROOT/$PROJECT
 [ -d "$SRC" ] || die "the project directory does not exist: $SRC"
-SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || die "cannot resolve the script's own directory"
 TEMPLATES=${SPV_PREPARE_TEMPLATES:-$SELF_DIR/agentsmd-examples}
 
 # ------------------------------------------------- tools: a project needs a repo

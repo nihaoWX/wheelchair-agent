@@ -138,7 +138,8 @@ worker 不会去开 PR。**但默认值仍是 PR**：任务没写清时，worker
    `url.<base>.insteadOf` 改写。
 
 可追溯性：每次创建/接管/推送/改 origin 都写一行到
-`$DSH_HOME/state/superagent/prepare.log`（UTC 时间 + 仓库名 + 归属 + 可见性），同时往 stderr 打
+`<DSH_HOME>/state/superagent/prepare.log`（UTC 时间 + 仓库名 + 归属 + 可见性；路径由脚本自身位置推出，
+不读 `$DSH_HOME`——子进程环境里 `DSH_*` 会被剥掉），同时往 stderr 打
 `prepare: ...`；失败打 `prepare: FAILED at <step>: <原因>` 并以 1 退出，superagent 会把这段输出
 附在失败的工单上。
 
