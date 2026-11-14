@@ -1,0 +1,38 @@
+# Minimal CI: no secrets and no install step.
+#
+# Every check here is the same command an operator runs by hand from a clean clone. The `check` script
+# only parses JS with `node --check`, and the two test scripts run against throwaway sandboxes (the
+# prepare test fakes `gh` and redirects github.com to local bare repositories), so none of them needs a
+# credential or reaches github.com. `npm ci` is neither needed nor possible: package.json's
+# devDependency is a machine-local `link:` path.
+#
+# The job id is deliberately `ci`: it is the required status check context configured on `main`, so
+# renaming it silently un-gates auto-merge.
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - name: Syntax-check every JS file
+        run: npm run check
+
+      - name: Layout boundary rules
+        run: bash tests/test-layout.sh
+
+      - name: prepare.sh sandbox test
+        run: sh tests/test-prepare.sh
