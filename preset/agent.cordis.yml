@@ -52,6 +52,23 @@
   config:
     maxBytes: 65536
 
+# ── skills ───────────────────────────────────────────────────────────────────
+
+# 和普通 dsh 会话一样使用本地 skill。`skill-filesystem` 提供本地根目录发现
+# （`<project-root>/.dsh/skills`、`<project-root>/.agents/skills`、`~/.dsh/skills`、`~/.agents/skills`），
+# `tool-skill` 注册模型可见的 skill 工具，并把 `<available_skills>` 目录注入每一轮请求。
+#
+# skill registry 在 host composition 里按 scope 分层；这两行注册进本 preset 的那一层，所以不需要 realm
+# （与 liangshen 的 skill 行同构）。
+#
+# 没有照抄 liangshen 的 `skill-search`：那是为了避开约 9KB 的目录注入而做的替代方案。SPV 的 skill 不多，
+# 全量目录可以接受，直接挂 `tool-skill` 更简单，行为也与普通 dsh 会话一致。
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
+
 # ── spv 工具 ─────────────────────────────────────────────────────────────────
 
 # 我们自己实现的 `spv_*` 工具（派活 / 收结果 / 查看队列）。不提供 service，只往 tools 注册表注册，因此不需要 realm。
