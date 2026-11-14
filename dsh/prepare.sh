@@ -56,9 +56,8 @@ normalize_url() {
 # Reads the configured URL with `git config`, not `git remote get-url`: the latter applies
 # `url.<base>.insteadOf` rewriting, so a GitHub URL can come back as a local path and be missed.
 github_remote() {
-  local repo=$1 url remote
-  for remote in origin $(git -C "$repo" remote 2>/dev/null || true); do
-    url=$(git -C "$repo" config --get "remote.$remote.url" 2>/dev/null || true)
+  for remote in origin $(git -C "$1" remote 2>/dev/null || true); do
+    url=$(git -C "$1" config --get "remote.$remote.url" 2>/dev/null || true)
     case $url in *github.com*) normalize_url "$url"; return 0 ;; esac
   done
   return 0
@@ -73,9 +72,8 @@ has_own_repo() { [ -d "$1/.git" ] || [ -f "$1/.git" ]; }
 
 # Print the exclude file git actually reads for $1, which differs for a linked worktree.
 exclude_file() {
-  local dir=$1 path
-  path=$(git -C "$dir" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || true)
-  if [ -n "$path" ]; then printf '%s\n' "$path"; else printf '%s\n' "$dir/.git/info/exclude"; fi
+  path=$(git -C "$1" rev-parse --path-format=absolute --git-path info/exclude 2>/dev/null || true)
+  if [ -n "$path" ]; then printf '%s\n' "$path"; else printf '%s\n' "$1/.git/info/exclude"; fi
 }
 
 # ------------------------------------------------------------------ arguments
