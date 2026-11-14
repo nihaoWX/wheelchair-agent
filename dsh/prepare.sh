@@ -64,8 +64,12 @@ github_remote() {
   return 0
 }
 
-# True when $1 is a git checkout, including a linked worktree whose .git is a file.
-is_checkout() { git -C "$1" rev-parse --git-dir >/dev/null 2>&1; }
+# True when $1 is the root of its own git repository, including a linked worktree whose .git is a file.
+#
+# Deliberately not `git -C "$1" rev-parse --git-dir`: a project directory without its own .git still
+# resolves to the enclosing repository (bioagentforge/.git), and treating that as the project's repo
+# would clone the whole workspace instead of the project.
+has_own_repo() { [ -d "$1/.git" ] || [ -f "$1/.git" ]; }
 
 # Print the exclude file git actually reads for $1, which differs for a linked worktree.
 exclude_file() {
@@ -103,7 +107,7 @@ TEMPLATES=${SPV_PREPARE_TEMPLATES:-$SELF_DIR/agentsmd-examples}
 
 # A tools project without .git cannot be cloned, cannot be pushed and cannot carry a PR. The operator's
 # instruction is to configure it automatically rather than fail, so initialise it and commit what is there.
-if [ "$KIND" = tools ] && [ ! -d "$SRC/.git" ]; then
+if [ "$KIND" = tools ] && ! has_own_repo "$SRC"; then
   STEP=git-init
   if dry_run; then
     step "dry run: would git init $SRC and commit its files"
@@ -131,13 +135,13 @@ fi
 # ---------------------------------------------------------------------- clone
 
 STEP=clone
-if is_checkout "$DIR"; then
+if has_own_repo "$DIR"; then
   step "the Ticket directory already holds a git checkout; not cloning again"
 elif [ -d "$DIR" ] && [ -n "$(ls -A "$DIR" 2>/dev/null || true)" ]; then
   step "the Ticket directory already exists and is not empty; not cloning again"
 else
   mkdir -p "$(dirname "$DIR")" || die "cannot create $(dirname "$DIR")"
-  if [ -d "$SRC/.git" ]; then
+  if has_own_repo "$SRC"; then
     git clone --quiet --no-hardlinks "$SRC" "$DIR" || die "git clone $SRC $DIR failed"
     step "cloned $SRC"
   else
@@ -175,7 +179,7 @@ else
   # skip-worktree, because an exclude entry does not apply to tracked files. The cost is that a later
   # rebase or merge whose upstream changed AGENTS.md stops with "local changes would be overwritten";
   # that is loud and recoverable, unlike a managed file silently landing in a PR.
-  if is_checkout "$DIR"; then
+  if has_own_repo "$DIR"; then
     if git -C "$DIR" ls-files --error-unmatch AGENTS.md >/dev/null 2>&1; then
       git -C "$DIR" update-index --skip-worktree AGENTS.md \
         || die "cannot mark the tracked AGENTS.md as skip-worktree in $DIR"
@@ -244,7 +248,7 @@ if [ "$KIND" = tools ]; then
     step "dry run: would point the Ticket's origin at $URL"
     log "dry run: would point $DIR origin at $URL"
   else
-    is_checkout "$DIR" || die "the Ticket directory has no git checkout, so its origin cannot point at $URL"
+    has_own_repo "$DIR" || die "the Ticket directory has no git checkout, so its origin cannot point at $URL"
     if git -C "$DIR" remote get-url origin >/dev/null 2>&1; then
       git -C "$DIR" remote set-url origin "$URL" || die "cannot point the Ticket's origin at $URL"
     else

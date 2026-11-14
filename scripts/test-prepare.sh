@@ -250,6 +250,25 @@ run '' j
 check '(j) the fallback project is used' "$(origin_of "$SB/work/j")" https://github.com/testowner/with-remote.git
 rm -f "$SB/projects/.superagent-project"
 
+# (l) a project directory that sits inside another repository but has no .git of its own is treated as
+# having no repository: it must not be cloned as part of the enclosing repository.
+mkdir -p "$SB/enclosing/tools/nested"
+git init -q -b main "$SB/enclosing"
+printf 'j\n' > "$SB/enclosing/tools/nested/j.txt"
+git -C "$SB/enclosing" add -A
+git -C "$SB/enclosing" -c user.name=t -c user.email=t@t commit -qm init
+run tools/nested l SPV_PROJECTS_ROOT="$SB/enclosing" SPV_PREPARE_DRY_RUN=1
+check '(l) exit status' "$?" 0
+check '(l) the enclosing repository was not cloned' "$([ -d "$SB/work/l/.git" ] && echo present || echo absent)" absent
+check '(l) the project was copied, not cloned' "$(grep -c 'copied .*tools/nested' "$SB/stderr")" 1
+
+# (m) a linked worktree is recognised as a checkout, so it is not cloned again.
+git -C "$SB/projects/tools/with-remote" worktree add -q "$SB/work/m" -b ticket-branch
+run tools/with-remote m
+check '(m) exit status' "$?" 0
+check '(m) the worktree was not cloned again' "$(grep -c 'not cloning again' "$SB/stderr")" 1
+check '(m) the worktree origin is the GitHub URL' "$(origin_of "$SB/work/m")" https://github.com/testowner/with-remote.git
+
 # (k) a missing template fails at agentsmd instead of leaving the Ticket without rules.
 run tools/with-remote k SPV_PREPARE_TEMPLATES=/nonexistent
 check '(k) exit status' "$?" 1
