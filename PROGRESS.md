@@ -100,8 +100,8 @@
 
 # In Progress
 
-- **SPV preset 纯增量**（分支 `agent/spv-standard-tools`）：实现、安装与全套验证完成，PR 待开/待合。
-  见 `ARCHITECTURE/decisions.md` 的「SPV preset：普通 dsh 会话 + `spv_*`」。
+- **SPV preset 纯增量**（PR #9，分支 `agent/spv-standard-tools`）：实现、安装与全套验证完成，CI 已过，
+  等合并。见 `ARCHITECTURE/decisions.md` 的「SPV preset：普通 dsh 会话 + `spv_*`」。
 
 # Known Issues
 
@@ -140,7 +140,7 @@
 
 # Next Steps
 
-1. **合并 SPV preset 纯增量那个 PR**（分支 `agent/spv-standard-tools`）；合并后重启 SPV 会话即生效。
+1. **合并 PR #9**（SPV preset 纯增量，`agent/spv-standard-tools`）；合并后重启 SPV 会话即生效。
 2. **重启一次 superagent 服务**（`wheelchair-agent service restart`），确认 :3082 左侧栏出现
    `wheelchair-agent` 并打开面板（PR #8 已合并）。
 3. **面板的 prepare 值已改成 `wheelchair-agent prepare`**（2026-11-14，经管理 API 保存，revision 8）。
