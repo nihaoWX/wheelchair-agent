@@ -269,6 +269,22 @@ check '(m) exit status' "$?" 0
 check '(m) the worktree was not cloned again' "$(grep -c 'not cloning again' "$SB/stderr")" 1
 check '(m) the worktree origin is the GitHub URL' "$(origin_of "$SB/work/m")" https://github.com/testowner/with-remote.git
 
+# (n) the copy path works without rsync on PATH.
+mkdir -p "$SB/no-rsync"
+for tool in git sh cp mkdir rm ls grep cmp cat date dirname basename tr head cut env mktemp sleep; do
+  real=$(command -v "$tool" 2>/dev/null) && ln -sf "$real" "$SB/no-rsync/$tool"
+done
+(
+  export PATH="$SB/no-rsync"
+  export GIT_CONFIG_GLOBAL="$SB/gitconfig" SPV_PROJECTS_ROOT="$SB/projects" \
+    SPV_PREPARE_LOG="$SB/prepare.log" SPV_PREPARE_TEMPLATES="$TEMPLATES" \
+    DSH_SUPERAGENT_SPV_PROJECT=research/no-git-task DSH_SUPERAGENT_DIR="$SB/work/n"
+  sh "$PREPARE"
+) 2>"$SB/stderr"
+check '(n) exit status without rsync' "$?" 0
+check '(n) the project was copied without rsync' "$(grep -c 'copied .*no-git-task' "$SB/stderr")" 1
+check '(n) the ticket has the project file' "$(cat "$SB/work/n/f.txt" 2>/dev/null)" f
+
 # (k) a missing template fails at agentsmd instead of leaving the Ticket without rules.
 run tools/with-remote k SPV_PREPARE_TEMPLATES=/nonexistent
 check '(k) exit status' "$?" 1
