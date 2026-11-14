@@ -150,5 +150,8 @@ rule1
 rule2
 rule3
 
+# Deliberate failure for the auto-merge gate test; this branch is never merged.
+bad 'deliberate failure' 'this branch exists only to prove that auto-merge waits for ci'
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ] || exit 1
