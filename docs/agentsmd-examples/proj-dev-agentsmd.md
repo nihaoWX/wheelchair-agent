@@ -50,6 +50,11 @@ WHEN AGENT READ THIS, YOU ARE WORKER.
 - Must keep the git environment clean both before and after completing the task.
 - Before executing, review the necessary authoritative sources to constrain the scope of the TODO list.
 
+# worker workflow
+- 1. Load skill: `pitfalls-manager`
+- 2. Worker acts as Arranger, break down complex task and delegated Executor.
+- 3. Use `pitfalls-manager` to complete the task. If worker encounter any bugs or identify areas for optimization, submit an issue at `nihaoWX/pitfalls-manager`.
+
 # Environment
 ## python
 - Small scripts and non-bioinformatics tasks: `~/.venv/`.
