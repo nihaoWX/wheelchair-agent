@@ -11,6 +11,10 @@
 `result` / `status` / `check`），`spv`、`superagent-service`、`jobctl` 保留为它的兼容名。
 `src/` 已按 `shared/` `superagent/` `spv/` 三分，三条边界规则由 `tests/test-layout.sh` 机械断言。
 
+**CI**：`.github/workflows/ci.yml` 在 push 到 `main` 和所有 PR 上跑 `npm run check`、
+`bash tests/test-layout.sh`、`sh tests/test-prepare.sh`（无 secret、无安装步）。`main` 分支保护要求
+`ci` 检查通过，所以 `gh pr merge --auto` 现在真的会等 CI，不再立刻合并。
+
 # Completed
 
 - **dsh 锁 `0.2.1-rc.3`**：superagent 的 `engines.dsh` 不满足 `0.2.2-rc.1`；`dsh-tui@0.19.0`
@@ -56,6 +60,10 @@
   `shared/` `superagent/` `spv/`；`dsh/` → `preset/`、`scripts/` → `commands/` + `build/` + `tests/`；
   删 `index.js` 与两个 Python 队列脚本（队列格式从两份实现变一份）；`install.sh` 装 CLI 薄壳并读
   `/proc/<pid>/environ` 验证服务进程的 PATH；`tests/test-layout.sh` 机械断言三条边界规则。
+- **最小 CI + `main` 分支保护**（2026-11-14，PR #5）：`.github/workflows/ci.yml` 的 `ci` job 在
+  push 到 `main` 与所有 PR 上跑 `npm run check`、`tests/test-layout.sh`、`tests/test-prepare.sh`
+  （无 secret、无安装步）；`main` 要求 `ci` 通过。负向 PR 实测 `--auto` 卡住不合，正常 PR 实测等
+  CI 变绿后才由 auto-merge 合入。
 
 # In Progress
 
