@@ -146,7 +146,12 @@ else
     step "cloned $SRC"
   else
     mkdir -p "$DIR"
-    rsync -a --exclude .git "$SRC"/ "$DIR"/ || die "rsync $SRC/ $DIR/ failed"
+    if command -v rsync >/dev/null 2>&1; then
+      rsync -a --exclude .git "$SRC"/ "$DIR"/ || die "rsync $SRC/ $DIR/ failed"
+    else
+      # rsync is not installed everywhere; cp -a is enough because the project has no .git to exclude.
+      (cd "$SRC" && cp -a . "$DIR"/) || die "cp -a $SRC/. $DIR/ failed"
+    fi
     step "copied $SRC (the project has no .git)"
   fi
 fi
