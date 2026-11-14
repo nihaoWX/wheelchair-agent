@@ -85,23 +85,45 @@ require_dsh_tui() {
 # prepare.sh and the two AGENTS.md templates are installed here because the panel's prepare command runs
 # from a user-level path, not from this development tree (docs/delivery-target.md, constraint 6).
 render_into() {
-  local dest=$1
-  mkdir -p "$dest/src" "$dest/agentsmd-examples" || return 1
+  local dest=$1 file
+  if ! mkdir -p "$dest/src" "$dest/agentsmd-examples"; then
+    fail "cannot create the staging directories under $dest"
+    fix 'check that the temporary directory is writable, then rerun this script'
+    return 1
+  fi
   if ! node "$SELF_DIR/scripts/render-preset.mjs" "$SELF_DIR/dsh" "$TARGET_PLUGIN_URL" "$TARGET_CRON_URL" "$dest" >/dev/null; then
     fail 'could not render the preset (scripts/render-preset.mjs failed)'
     fix 'run "node tools/wheelchair-agent/scripts/render-preset.mjs dsh file://<dir>/spv-tools.js file://<dir>/spv-cron-plugin.js <dir>" to see the error'
     return 1
   fi
-  cp "$SELF_DIR/spv-tools.js" "$dest/spv-tools.js" || return 1
-  cp "$SELF_DIR/spv-cron-plugin.js" "$dest/spv-cron-plugin.js" || return 1
-  local file
-  for file in queue.js paths.js dispatch.js outbox.js health.js spv-cron.js; do
-    cp "$SELF_DIR/src/$file" "$dest/src/$file" || return 1
+  # Every copy reports its own failure: a missing source file must not leave a half-installed preset that
+  # the panel's prepare command then cannot run.
+  for file in spv-tools.js spv-cron-plugin.js; do
+    if ! cp "$SELF_DIR/$file" "$dest/$file"; then
+      fail "cannot copy $file from this checkout"
+      fix "check that $SELF_DIR/$file exists and is readable, then rerun this script"
+      return 1
+    fi
   done
-  cp "$SELF_DIR/dsh/prepare.sh" "$dest/prepare.sh" || return 1
-  chmod 0755 "$dest/prepare.sh"
+  for file in queue.js paths.js dispatch.js outbox.js health.js spv-cron.js; do
+    if ! cp "$SELF_DIR/src/$file" "$dest/src/$file"; then
+      fail "cannot copy src/$file from this checkout"
+      fix "check that $SELF_DIR/src/$file exists and is readable, then rerun this script"
+      return 1
+    fi
+  done
+  if ! cp "$SELF_DIR/dsh/prepare.sh" "$dest/prepare.sh"; then
+    fail 'cannot copy dsh/prepare.sh from this checkout'
+    fix "check that $SELF_DIR/dsh/prepare.sh exists and is readable, then rerun this script"
+    return 1
+  fi
+  chmod 0755 "$dest/prepare.sh" || { fail "cannot make $dest/prepare.sh executable"; return 1; }
   for file in proj-dev-agentsmd.md research-task-agentsmd.md; do
-    cp "$SELF_DIR/docs/agentsmd-examples/$file" "$dest/agentsmd-examples/$file" || return 1
+    if ! cp "$SELF_DIR/docs/agentsmd-examples/$file" "$dest/agentsmd-examples/$file"; then
+      fail "cannot copy docs/agentsmd-examples/$file from this checkout"
+      fix "check that $SELF_DIR/docs/agentsmd-examples/$file exists and is readable, then rerun this script"
+      return 1
+    fi
   done
   return 0
 }
@@ -276,6 +298,8 @@ install_preset() {
   staged=$(mktemp -d) || { fail 'could not create a staging directory'; return 1; }
   if ! render_into "$staged"; then
     rm -rf "$staged"
+    # render_into already reported the specific failure; this keeps the exit status honest even if it did not.
+    [ "$PROBLEMS" -gt 0 ] || fail 'the preset could not be rendered'
     return 1
   fi
   mkdir -p "$PRESET_ROOT" || { rm -rf "$staged"; fail "cannot create $PRESET_ROOT"; return 1; }
@@ -408,7 +432,11 @@ fi
 printf '\nDone. Start the superagent service, then the SPV session:\n'
 printf '  superagent-service start   # the backend that executes tickets\n'
 printf '  spv                        # the agent you talk to\n'
-# The absolute path, not $DSH_HOME: the prepare command runs with the execution environment's variables,
-# and DSH_* names are stripped from a child environment, so a $DSH_HOME reference would silently fall back.
-printf '\nPaste this into the panel (Settings -> Execution -> Prepare command):\n'
-printf '  sh %s/prepare.sh\n' "$PRESET_DIR"
+# Only when the preset really landed: printing a command for a file that is not there would send the
+# operator to a prepare command that fails on every ticket.
+if [ -f "$PRESET_DIR/prepare.sh" ]; then
+  # The absolute path, not $DSH_HOME: the prepare command runs with the execution environment's variables,
+  # and DSH_* names are stripped from a child environment, so a $DSH_HOME reference would silently fall back.
+  printf '\nPaste this into the panel (Settings -> Execution -> Prepare command):\n'
+  printf '  sh %s/prepare.sh\n' "$PRESET_DIR"
+fi
