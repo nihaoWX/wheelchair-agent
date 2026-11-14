@@ -8,6 +8,11 @@
 # Usage: sh scripts/test-prepare.sh [--keep]
 #   --keep   leave the sandbox in place and print its path
 # Exit status: 0 when every case passes, 1 otherwise.
+#
+# The assertions are checked against mutations of dsh/prepare.sh: dropping the stale-AGENTS.md overwrite,
+# creating the repository --public, skipping the origin rewrite, giving research/ a remote, skipping the
+# AGENTS.md install, skipping the collision checks, and dropping the traceability log each turn at least
+# one case red. A case that cannot fail is not evidence.
 set -u
 
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
