@@ -1,16 +1,14 @@
-# 当前状态
+# Current State
 
-**本项目已交接。** 2026-11-13 起由用户直接在 **dsh 那边的会话**里接手继续开发。
-本仓库不再是主要工作现场——`tools/wheelchair-agent/` 只是源码位置。
-
-**可用**：SPV 会话与 superagent 服务都已跑通并端到端验证。
+**可用**：SPV 会话与 superagent 服务都已跑通并端到端验证。派活链路
+`spv_dispatch` → 文件队列 → superagent Ticket → worker（项目 clone 内执行）→ `outbox` → `spv_result` 取回。
 
 - **SPV 会话**：`spv` 命令启动（会自动拉起后端），preset `spv`，cwd = `bioagentforge`，
   工具 `spv_dispatch` / `spv_result` / `spv_status`，斜杠命令 `/spv-cron`。
 - **superagent**：常驻服务 `:3082`，`runtime / spv / github` 三处 `ready`，`setup.problem=null`。
 
-派活链路：`spv_dispatch` → 文件队列 → superagent Ticket → worker（项目 clone 内执行）→
-`outbox` → `spv_result` 取回。
+**正在做**：把 `wheelchair-agent` 收成单一 CLI 入口，并按 `shared/` `superagent/` `spv/` 三分目录。
+契约已定案在 `ARCHITECTURE/layout.md` 与 `ARCHITECTURE/cli.md`，实现待派。
 
 # Completed
 
@@ -29,7 +27,7 @@
   `ctx.get('toolResultPrune')` 读它）；`token-meter` 刻意留在 host plane，否则浏览器的上下文
   计量投影会随 preset mount/unmount 来去。
 - **SPV 工具**（`spv-tools.js` + `src/{dispatch,outbox,paths,health}.js`）：`spv_dispatch` /
-  `spv_result` / `spv_status`。`actor` 写死 `operator`，不接受参数（防 worker 冒充）。
+  `spv_result` / `spv_status`。`actor` 写死 `operator`，不接受参数。
   `spv_dispatch` 派活前探健康端点——队列目录在服务停止后仍然存在，只查目录会让任务写进没人读的地方。
 - **`superagent-service.py`**：服务启停，不依赖进程名。原先上游脚本用 `ps -o ucomm=` 取进程名，
   WSL2 上 node 报 `MainThread`，于是 `status` 报 `pids: []`、`restart` 说「已在运行」却不重启、
@@ -37,8 +35,8 @@
   `--profile`。日志固定写 `$DSH_HOME/.artifacts/<profile>.log`。`open` 子命令从日志取当前 token
   并调浏览器（WSL 下走 Windows 的 `Start-Process`）。
 - **`jobctl`**：长任务交给 systemd user manager 持有。`submit` 用 `ExecStopPost` 让 systemd 在
-  unit 停下时写一条任务进 spv 队列，所以下一阶段的触发器是作业自己的结束事件。详见下文「长任务」。
-- **`/spv-cron`**：每小时递简报的斜杠命令。详见下文。
+  unit 停下时写一条任务进 spv 队列，所以下一阶段的触发器是作业自己的结束事件。
+- **`/spv-cron`**：每小时递简报的斜杠命令。
 - **`install.sh`**：装 preset + `spv` 启动器 + `superagent-service` + `jobctl`，白名单拷贝、
   原子替换、幂等、`--check` 只读自检。
 - **`tools/` 拆分 21 个独立仓库**：10 个 `git subtree split` 保留历史（tree 哈希逐一比对），
@@ -48,24 +46,24 @@
   都不含 `spv-tools`。
 - **install 验收**：首次装、重跑幂等（`up to date`）、改源后 `--check` = exit 2、还原后 = exit 0、
   已装目录无开发侧文件。
+- **交付目标随项目走**（2026-11-14，PR #1 待合并）：`install.sh` 把 `dsh/prepare.sh` 与两份
+  `AGENTS.md` 模板装进 preset 目录；`prepare.sh` 做 clone → 受管 `AGENTS.md`（缺则加、旧则覆盖）
+  → `tools/` 私有远端与工单 `origin`；`research/` 永不配远端。`scripts/test-prepare.sh` 77 条断言全过。
+- **HARNESS 按架构拆分**（2026-11-14）：`ARCHITECTURE/` 从空目录变成三份分册
+  （`decisions.md` / `layout.md` / `cli.md`），`ARCHITECTURE.md` 收缩为概览 + 索引。
 
 # In Progress
 
-（无）
+- **CLI 化 + 目录重组**：契约已定案，实现待派。见 `ARCHITECTURE/layout.md`、`ARCHITECTURE/cli.md`。
 
 # Known Issues
 
-- **交付目标不随项目走**（**下一个接手者最该先处理这个**）：worker 环境里的
-  `DSH_SUPERAGENT_GITHUB_REPOSITORY` 永远是面板那一个单值，与任务自带的 `project` 可以矛盾且无标记。
-  曾因此把 `tools/pitfalls-manager` 的 PR 开到 `nihaoWX/bioagentforge`（PR #1）。
-  三条配置绕行路已实测堵死，**已定方向：给 worker 一份它读得到的 `AGENTS.md`**，模板已备。
-  详见 `docs/delivery-target.md`。
-- **SPV 遇上游 API error 停下**（`R1` 记了现象，2026-11-14 由 `R3-F1` 确认根因并裁决 `wontfix`）：
-  真实报错的 code 是 `TRANSPORT`，**在** provider 白名单里；先动手的是 provider 自己的
-  `agent/request-error` 监听器——它用独立的 `transportMaxRetries`（默认 5）吸收前 5 次失败，第 6 次
-  抛普通 `Error`，被 `dsh-llm` 记成 `UNKNOWN`，轮次结束。59 份会话日志里没有任何 `llm/retry` 事件。
-  这是上游刻意设计（issue #39），本仓库不改代码；绕行＝导出 `HTTPS_PROXY`/`HTTP_PROXY`，或调高
-  `transportMaxRetries`。详见 `ARCHITECTURE.md` 的重试段。
+- **PR #1 未合并**（`https://github.com/nihaoWX/wheelchair-agent/pull/1`）：`mergeable: MERGEABLE`，
+  分支 `agent/delivery-target-prepare-42ac195d0dc6`，+832/-32，7 文件。没有 merge CLI，需要人合。
+  **风险**：面板已经指向已安装的 `prepare.sh`，但 `main` 里没有 `dsh/prepare.sh`——谁从 `main`
+  重跑 `install.sh`，preset 就会丢掉 `prepare.sh`，每个工单的 prepare 都失败。
+- **探针仓 `nihaoWX/zzz-prepare-probe` 未删**（空、私有）：`gh repo delete` 需要 `delete_repo` scope，
+  `gh auth refresh` 要操作者在浏览器里走 device code。
 - **`docs/PITFALLS/` 里没有待处理报告**：R1/R2 已消费入账（`R1-F1` / `R2-F1`，裁决见 `R3-F1` /
   `R3-F2`），报告按流程删掉了。原文随时可取回：
   `git show 7dae586:docs/PITFALLS/wheelchair-agent-建议-仓库随项目走.md`。
@@ -81,6 +79,35 @@
 - **额度共享**：Eval + worker 都走 GOAT，与 cmd CLI 共用 5 小时 $20 / 每周 $50 窗口；`maxWorkers=2`。
 - 每个拆出的子仓库用 `.git/info/exclude` 复制忽略规则，不改项目内 `.gitignore`。
 - `tools/svg_grid/docs/PITFALLS/round-data/R22/meta.toml` 有一处 11-07 既有未提交修改，未触碰。
+- **`~/.dsh/profiles/dsh-tui/node_modules/wheelchair-agent` 是 11-12 的真实目录副本**（不是软链，
+  只有 4 个文件），无任何 yml 引用它。仓库外，由 SPV 处理。
+
+# Next Steps
+
+1. **实现 CLI 化 + 目录重组**（`ARCHITECTURE/layout.md` + `ARCHITECTURE/cli.md`）：
+   按 `shared/` `superagent/` `spv/` 三分目录、加 `bin/wheelchair-agent.mjs`、加 `tests/test-layout.sh`、
+   删 `index.js` 与 `scripts/spv_send.py`/`spv_read.py`、`install.sh` 装 CLI 薄壳并验证**服务进程**的 PATH。
+2. **合并 PR #1**（操作者的事），消掉 `main` 缺 `prepare.sh` 的风险。
+3. 给 `tools/` 下缺远端的那 15 个项目建私有 GitHub 仓库（操作者自己的事，不是 agent 的）。
+4. 收缩 worker 的目录约束（prompt 层或项目 `AGENTS.md`）。
+5. 视消耗决定是否给 worker 换更便宜的模型。
+6. 稳定后再考虑 `accept mode` 从 `observe` → `auto`。
+
+日常命令：
+
+```bash
+superagent-service start     # 起后端（幂等；已在跑则直接报告）
+superagent-service status    # exit 0 正常 / 1 未跑或异常 / 2 组件报错 / 3 等 setup
+superagent-service restart   # 改过 spv Source 或 provider 配置后
+superagent-service open      # 在浏览器打开带 token 的面板（token 每次启动都变，别复制旧的）
+spv                          # 起 SPV 会话（会自动拉起后端）
+```
+
+**面板的 token 每次启动都变**，且 `dsh web` 没有固定 token 的开关。裸 `url:` 打开只会得到
+`dsh web authentication required`。用 `superagent-service open`，或从 `status` 的 `panel:` 行取当前地址。
+
+改 `provider/`、`src/`、`dsh/` 之后：重跑 `bash install.sh`（幂等）；改 `dsh-superagent/` 之后：
+`pnpm build` + `superagent-service restart`。
 
 # 长任务
 
@@ -125,31 +152,3 @@ jobctl cancel md-001
 定时器由插件自己持有，不用 `dsh-schedule`——后者需要 Web 组合的 Session controller，文档明说不能
 在仅 SDK/headless 下单独挂载，而 SPV 跑在 dsh-tui 下。**代价**：会话关掉巡检就停（可以接受，
 因为没有会话就没人接收简报）。
-
-# Next Steps
-
-接手后的推荐顺序：
-
-1. **实现交付目标随项目走**（`docs/delivery-target.md`）：先把两份 `AGENTS.md` 模板铺到
-   `tools/*/` 与 `research/*/`，再让派发侧受管地维护它们。注意模板里已写明的 6 条约束，
-   特别是「只能建私有仓库」和「`research/` 不该被配上远端」。
-2. 给 `tools/` 下缺远端的那 15 个项目建私有 GitHub 仓库（用户自己的事，不是 agent 的）。
-3. 收缩 worker 的目录约束（prompt 层或项目 `AGENTS.md`）。
-4. 视消耗决定是否给 worker 换更便宜的模型。
-5. 稳定后再考虑 `accept mode` 从 `observe` → `auto`。
-
-日常命令：
-
-```bash
-superagent-service start     # 起后端（幂等；已在跑则直接报告）
-superagent-service status    # exit 0 正常 / 1 未跑或异常 / 2 组件报错 / 3 等 setup
-superagent-service restart   # 改过 spv Source 或 provider 配置后
-superagent-service open      # 在浏览器打开带 token 的面板（token 每次启动都变，别复制旧的）
-spv                          # 起 SPV 会话（会自动拉起后端）
-```
-
-**面板的 token 每次启动都变**，且 `dsh web` 没有固定 token 的开关。裸 `url:` 打开只会得到
-`dsh web authentication required`。用 `superagent-service open`，或从 `status` 的 `panel:` 行取当前地址。
-
-改 `provider/`、`src/`、`dsh/` 之后：重跑 `bash install.sh`（幂等）；改 `dsh-superagent/` 之后：
-`pnpm build` + `superagent-service restart`。
