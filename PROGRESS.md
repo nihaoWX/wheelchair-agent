@@ -66,9 +66,9 @@
   抛普通 `Error`，被 `dsh-llm` 记成 `UNKNOWN`，轮次结束。59 份会话日志里没有任何 `llm/retry` 事件。
   这是上游刻意设计（issue #39），本仓库不改代码；绕行＝导出 `HTTPS_PROXY`/`HTTP_PROXY`，或调高
   `transportMaxRetries`。详见 `ARCHITECTURE.md` 的重试段。
-- **`docs/PITFALLS/` 里那份建议报告是操作者要求保留的，不是待处理信号**：
-  `wheelchair-agent-建议-仓库随项目走.md` 按操作者 2026-11-13 的判定留在工作树里（内容不动），
-  账本条目是 `R2-F1` / `R3-F2`。别按「目录里还剩报告＝还没消费」去删它。
+- **`docs/PITFALLS/` 里没有待处理报告**：R1/R2 已消费入账（`R1-F1` / `R2-F1`，裁决见 `R3-F1` /
+  `R3-F2`），报告按流程删掉了。原文随时可取回：
+  `git show 7dae586:docs/PITFALLS/wheelchair-agent-建议-仓库随项目走.md`。
 - **主会话固化第一次的 model 路由**：`initializeRoleModel` 不覆盖已有 `model/selection`。换 provider
   后需删 `~/.dsh/sessions/--home-nihao-.dsh-state-superagent--/orchestrator-*` 与对应
   `session_projcache`。
