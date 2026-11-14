@@ -59,7 +59,7 @@
 | 入口（`package.json` exports 键） | 注册什么 | 挂在哪个 profile |
 |---|---|---|
 | `wheelchair-agent/spv-watch` | `spv` Source kind（Trigger/Channel/Policy） | `superagent` |
-| `wheelchair-agent/spv-tools` | `spv_dispatch` / `spv_result` / `spv_status` | `dsh-tui` 的 SPV preset |
+| `wheelchair-agent/spv-tools` | `spv_dispatch` / `spv_status`（插件内的注入器把 reply/notice 推进会话） | `dsh-tui` 的 SPV preset |
 | `wheelchair-agent/spv-cron-plugin` | `/spv-cron` 斜杠命令 | `dsh-tui` 的 SPV preset |
 
 **exports 的键是公开 API**：`~/.dsh/profiles/superagent/cordis.patch.yml` 用 bare specifier
@@ -91,11 +91,11 @@ wheelchair-agent/
 ├── bin/wheelchair-agent.mjs      # CLI 入口：argv 解析 + process.exit，仅此
 ├── src/shared/                   # 两侧共用，唯一的契约（queue.js, schema.js）
 ├── src/superagent/               # 只被 superagent profile 加载（spv.js, watch.js）
-├── src/spv/                      # 只被 SPV preset 与 CLI 加载（paths, dispatch, outbox, health, cron, tools, cron-plugin）
+├── src/spv/                      # 只被 SPV preset 与 CLI 加载（paths, dispatch, outbox, injector, health, cron, tools, cron-plugin）
 ├── preset/                       # 装到 ~/.dsh/.agent-presets/spv/（preset.yml, agent.cordis.yml, spv-launcher.sh, wheelchair-agent.sh, README.md）
 ├── commands/                     # 会被装成独立命令的实现（prepare.sh, jobctl.py, superagent-service.py）
 ├── build/render-preset.mjs       # 构建步骤，不是命令
-├── tests/                        # test-prepare.sh, test-layout.sh
+├── tests/                        # test-prepare.sh, test-layout.sh, test-injector.mjs
 ├── install.sh                    # 只负责安装
 └── docs/
 ```
@@ -106,7 +106,7 @@ superagent 侧的 `src/superagent/` **从不进 preset 目录**：那个 profile
 
 ## CLI
 
-**契约见 `ARCHITECTURE/cli.md`。** 子命令：`spv` / `prepare` / `service` / `jobctl` / `dispatch` / `result` /
+**契约见 `ARCHITECTURE/cli.md`。** 子命令：`spv` / `prepare` / `service` / `jobctl` / `dispatch` /
 `status` / `check`。`install.sh --check` 查"装进去的东西 == checkout"，`wheelchair-agent check` 查运行时
 健康，两个不重叠。
 

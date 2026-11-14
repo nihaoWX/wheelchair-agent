@@ -34,15 +34,17 @@
 | `wheelchair-agent service <start\|stop\|restart\|status\|open>` | 服务启停与面板 | `exec python3 commands/superagent-service.py "$@"` |
 | `wheelchair-agent jobctl <submit\|status\|log\|verify\|cancel>` | 长任务交给 systemd | `exec python3 commands/jobctl.py "$@"` |
 | `wheelchair-agent dispatch --project <p> --task <t> [--thread <n>]` | 往队列写一个任务 | `import src/spv/dispatch.js` |
-| `wheelchair-agent result --thread <n> [--timeout <s>]` | 等一条回复 | `import src/spv/outbox.js` |
 | `wheelchair-agent status [--thread <n>]` | 非阻塞看队列 | `import src/spv/outbox.js` |
 | `wheelchair-agent check` | **运行时**健康：服务在跑吗、preset 能加载吗、`prepare` 在假环境里能跑通吗 | 见下 |
 | `wheelchair-agent --help` / `--version` | 用法与版本 | — |
 
+**没有 `result` 子命令**：worker 的 `reply` / `notice` 由 SPV 会话里的后台注入器
+（`src/spv/injector.js`）消费并作为一条新消息推进对话；CLI 只负责派活与看队列，不读结果。
+
 `install.sh --check` 是**另一件事**：装进去的东西 == checkout。两个 check 不重叠，都保留。
 
 实现位置：`bin/wheelchair-agent.mjs`（argv 解析 + `process.exit`），`check` 的四项在
-`src/spv/check.js`（纯函数，返回结构化结果，不结束进程）。`dispatch` / `result` / `status` 直接 import
+`src/spv/check.js`（纯函数，返回结构化结果，不结束进程）。`dispatch` / `status` 直接 import
 `src/spv/{dispatch,outbox}.js`；`spv` / `prepare` / `service` / `jobctl` 用 `exec` 换进程。
 
 ## `prepare` 怎么拿到项目路径
@@ -87,7 +89,7 @@ superagent 的 sqlite**，而 `install.sh` 管不到它——它只 `printf` 一
 | 项 | 判据 |
 |---|---|
 | 服务在跑 | `superagent-service status` exit 0 |
-| preset 能被 dsh 加载 | `~/.dsh/.agent-presets/spv/` 里 15 个文件齐全且 `agent.cordis.yml` 的 `file://` URL 指向存在的文件 |
+| preset 能被 dsh 加载 | `~/.dsh/.agent-presets/spv/` 里 `PRESET_FILES` 列出的文件齐全且 `agent.cordis.yml` 的 `file://` URL 指向存在的文件 |
 | 面板 prepare 值正确 | 读 `orchestrator.sqlite` 的 `settings-version:<N>`，`executor.prepare` 应为 `wheelchair-agent prepare` |
 | `prepare` 能跑 | `SPV_PREPARE_DRY_RUN=1` 跑一次，exit 0 |
 

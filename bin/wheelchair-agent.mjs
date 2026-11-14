@@ -8,7 +8,7 @@
  * 子命令的实现分三类：
  *   - `spv` / `prepare` / `service` / `jobctl`：`exec` 一个异构实现（sh / python3）。CLI 是门面，
  *     门面后面挂异构工具是正常的；`prepare.sh` 刻意保持 POSIX sh，不重写（`ARCHITECTURE/layout.md`）。
- *   - `dispatch` / `result` / `status`：直接 import `src/spv/*.js`，**不 spawn 子进程**——队列格式只有
+ *   - `dispatch` / `status`：直接 import `src/spv/*.js`，**不 spawn 子进程**——队列格式只有
  *     一份实现，`spv_dispatch` 工具与这里走同一个 `submitTask`。
  *   - `check`：`src/spv/check.js` 的四项运行时检查。
  *
@@ -54,8 +54,6 @@ commands:
                                hand a long job to systemd so it outlives the worker's turn
   dispatch --project <p> --task <t> [--thread <n>]
                                write one task into the queue and return
-  result --thread <n> [--timeout <s>]
-                               wait for one reply on a thread
   status [--thread <n>]        show the queue without waiting
   check                        runtime health: service, preset, panel prepare value, prepare dry run
   --help                       this text
@@ -250,33 +248,6 @@ async function commandDispatch(argv) {
   }
 }
 
-/** `result`：等该线程的一条 reply/notice。 */
-async function commandResult(argv) {
-  const parsed = options(argv, {
-    command: 'result',
-    usage: 'usage: wheelchair-agent result --thread <name> [--timeout <seconds>]',
-    flags: { '--thread': 'thread', '--timeout': 'timeout' },
-  })
-  if (parsed.thread === undefined) throw new UsageError('result needs --thread <name>')
-  const { waitForResult } = await load('src', 'spv', 'outbox.js')
-  const { checkThread } = await load('src', 'spv', 'dispatch.js')
-  const { missingQueue, resolveRoot } = await load('src', 'spv', 'paths.js')
-  const { dirsOf } = await load('src', 'shared', 'queue.js')
-  const root = resolveRoot()
-  const thread = checkThread(parsed.thread)
-  const timeoutSeconds = parsed.timeout === undefined ? 300 : Number(parsed.timeout)
-  if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
-    throw new UsageError(`--timeout must be a positive number of seconds, got ${JSON.stringify(parsed.timeout)}`)
-  }
-  try {
-    const reply = await waitForResult(dirsOf(root), { thread, timeoutSeconds })
-    process.stdout.write(reply.text === '' ? `[${reply.kind}] (empty message)\n` : `${reply.text}\n`)
-  } catch (error) {
-    if (error.code === 'ENOENT') throw missingQueue(root)
-    throw error
-  }
-}
-
 /** `status`：非阻塞看队列。 */
 async function commandStatus(argv) {
   const parsed = options(argv, {
@@ -365,9 +336,6 @@ try {
       break
     case 'dispatch':
       await commandDispatch(rest)
-      break
-    case 'result':
-      await commandResult(rest)
       break
     case 'status':
       await commandStatus(rest)

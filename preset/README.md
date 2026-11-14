@@ -1,6 +1,6 @@
 # SPV preset
 
-一个独立于 superagent 的 dsh agent preset：你在终端里和它对话，它把活派给后台的 superagent，再把结果读回来。
+一个独立于 superagent 的 dsh agent preset：你在终端里和它对话，它把活派给后台的 superagent，worker 的结果会自己回到对话里。
 
 两套东西**严格分开**：
 
@@ -12,7 +12,7 @@
 | 通道 | 只有文件队列 `~/.dsh/state/superagent/spv/` | |
 
 SPV 侧不 import superagent 的任何代码。两侧唯一的接口是队列里的 JSON 文件：SPV 写 `pending/`，superagent 的
-`spv` Source 取走并写 `outbox/`，SPV 从 `outbox/` 读回。
+`spv` Source 取走并写 `outbox/`，SPV 会话内的注入器（`src/spv/injector.js`）从 `outbox/` 取走并推进对话。
 
 ## 装
 
@@ -63,23 +63,36 @@ DSH_TUI_PRESET=spv dsh-tui --patch ~/.dsh/.agent-presets/spv/preset-default.patc
 
 ## 用
 
-会话里让 agent 干活即它自己会调三个工具：
+会话里让 agent 干活即它自己会调两个工具：
 
 | 工具 | 参数 | 行为 |
 |---|---|---|
-| `spv_dispatch` | `project`（`tools/<name>` 或 `research/<name>`）、`task`、`thread?`（默认 `main`） | 写 `pending/`，立刻返回 `{id, thread, project}` |
-| `spv_result` | `thread`、`timeout?`（秒，默认 300） | 阻塞到该 thread 出现 `reply`/`notice`，返回其 `text`；同一条消息只消费一次 |
+| `spv_dispatch` | `project`（`tools/<name>` 或 `research/<name>`）、`task`、`thread?`（默认 `main`） | 写 `pending/`，立刻返回 `{id, thread, project}`；worker 的答复稍后自己回到该 thread |
 | `spv_status` | `thread?` | 非阻塞：`pending/` 里没被取走的任务 + 已到未读的消息 |
 
 任务文件里的 `actor` 固定是 `operator`，**不是** `spv_dispatch` 的参数 —— 见 `src/spv/dispatch.js` 里
 `ACTOR` 的注释。
 
-同样的三件事在命令行上也有，供手动调试与脚本使用（`dispatch` / `result` / `status` 直接 import
+### 结果怎么回来
+
+**结果不是工具调出来的：模型没有任何「读结果」的动作，也没有超时。** 结果由 `src/spv/injector.js` 在后台推回来：
+
+- 插件每个 tick 扫一次 `outbox/`，把**挂载之后**才出现的 `reply` / `notice` 各注入成一条新的 user 消息，
+  所以它出现在当前这条对话里，模型与用户都看得到；
+- 注入前先用 `consumeMessage` 把消息 rename 进 `outbox/read/`。只有真正搬走文件的那次调用拿到 `id`，被别的
+  读者抢先的调用拿到 `undefined` 并跳过；同一个 `id` 被重发（`outbox/read/` 里已有同名副本）时只消费、
+  不再注入——所以一条结果只注入一次；
+- `reply` 是结果（worker 完成了），`notice` 是 worker 停了或需要决策，两种都会注入；
+- **没有超时**：插件挂着就一直等，只有会话关闭（插件卸载）才停，模型不需要、也无法轮询；
+- 正文超过 12000 字符会截断，注入文本末尾给出 `outbox/read/` 里那条消息的完整文件路径；
+- 挂载前就在 `outbox/` 里的旧结果**不会**被注入（否则新会话会重放一堆积压），它们仍留在磁盘上，
+  `spv_status` 能看到。
+
+同样的两个子命令在命令行上也有，供手动调试与脚本使用（`dispatch` / `status` 直接 import
 `src/spv/*.js`，不 spawn 子进程，所以队列格式只有一份实现）：
 
 ```sh
 wheelchair-agent dispatch --project tools/foo --task "..." --thread t1
-wheelchair-agent result --thread t1 --timeout 300
 wheelchair-agent status [--thread t1]
 wheelchair-agent check          # 运行时健康：服务 / preset / 面板 prepare 值 / prepare dry run
 ```

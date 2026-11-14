@@ -27,10 +27,11 @@ wheelchair-agent/
 │   └── spv/                      # 只被 SPV preset 与 CLI 加载
 │       ├── paths.js              # 队列根解析（config > env > stateDir）
 │       ├── dispatch.js           # 写 pending/，ACTOR 写死 operator
-│       ├── outbox.js             # 读 outbox/，等 reply/notice
+│       ├── outbox.js             # 读/消费 outbox/ 的原语（没有阻塞读取器）
+│       ├── injector.js           # 后台注入器：新 reply/notice 消费后注入会话
 │       ├── health.js             # 探健康端点，服务没跑就拒绝派活
 │       ├── cron.js               # `/spv-cron` 逻辑（纯逻辑，注入依赖）
-│       ├── tools.js              # 插件入口：spv_dispatch / spv_result / spv_status
+│       ├── tools.js              # 插件入口：spv_dispatch / spv_status + 持有注入器
 │       └── cron-plugin.js        # 插件入口：`/spv-cron` 薄壳
 ├── preset/                       # 原 dsh/：装到 ~/.dsh/.agent-presets/spv/
 │   ├── preset.yml
@@ -42,7 +43,7 @@ wheelchair-agent/
 │   ├── jobctl.py
 │   └── superagent-service.py
 ├── build/render-preset.mjs       # 构建步骤，不是命令
-├── tests/test-prepare.sh         # prepare.sh 的可跑证据
+├── tests/                        # test-prepare.sh、test-layout.sh、test-injector.mjs 的可跑证据
 ├── install.sh                    # 只负责安装
 ├── AGENTS.md / ARCHITECTURE.md / PROGRESS.md / ARCHITECTURE/
 └── docs/

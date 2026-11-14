@@ -41,6 +41,7 @@ export const PRESET_FILES = [
   'src/spv/cron.js',
   'src/spv/dispatch.js',
   'src/spv/health.js',
+  'src/spv/injector.js',
   'src/spv/outbox.js',
   'src/spv/paths.js',
   'src/spv/tools.js',

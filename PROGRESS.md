@@ -1,14 +1,15 @@
 # Current State
 
 **可用**：SPV 会话与 superagent 服务都已跑通并端到端验证。派活链路
-`spv_dispatch` → 文件队列 → superagent Ticket → worker（项目 clone 内执行）→ `outbox` → `spv_result` 取回。
+`spv_dispatch` → 文件队列 → superagent Ticket → worker（项目 clone 内执行）→ `outbox`；结果由会话内的
+后台注入器（`src/spv/injector.js`）消费后作为一条新消息推进对话，没有 `spv_result`、也没有超时。
 
 - **SPV 会话**：`spv` 命令启动（会自动拉起后端），preset `spv`，cwd = `bioagentforge`，
-  工具 `spv_dispatch` / `spv_result` / `spv_status`，斜杠命令 `/spv-cron`。
+  工具 `spv_dispatch` / `spv_status`（外加自动投递结果的注入器），斜杠命令 `/spv-cron`。
 - **superagent**：常驻服务 `:3082`，`runtime / spv / github` 三处 `ready`，`setup.problem=null`。
 
 **入口**：`wheelchair-agent` 是唯一命令入口（`spv` / `prepare` / `service` / `jobctl` / `dispatch` /
-`result` / `status` / `check`），`spv`、`superagent-service`、`jobctl` 保留为它的兼容名。
+`status` / `check`），`spv`、`superagent-service`、`jobctl` 保留为它的兼容名。
 `src/` 已按 `shared/` `superagent/` `spv/` 三分，三条边界规则由 `tests/test-layout.sh` 机械断言。
 
 **CI**：`.github/workflows/ci.yml` 在 push 到 `main` 和所有 PR 上跑 `npm run check`、
@@ -22,7 +23,7 @@
 - **superagent 落地**：clone 到 `tools/dsh-superagent/` 构建；profile `superagent`（stateDir、
   端口 3082、模型 provider 走 commandcode）。`dsh plugin add` 不写 `bundles`，需手动补。
 - **GitHub Source**：`nihaoWX/bioagentforge`，CLI `~/.local/bin/gh`，60s 轮询。
-- **`spv` Source 插件**（`spv-watch.js` + `src/spv.js`）：文件队列 pending→done（rename 即消费
+- **`spv` Source 插件**（`src/superagent/watch.js` + `src/superagent/spv.js`）：文件队列 pending→done（rename 即消费
   标记，无 cursor）+ outbox；Trigger 满足 explicit 三条件。
 - **SPV preset**（`preset/` → `~/.dsh/.agent-presets/spv/`）：`agent.cordis.yml` 挂 spv 工具 +
   `tool-fs` + bash + `agent-instructions` + compaction + `/spv-cron`。
@@ -31,8 +32,9 @@
   按 8192 字符截断（留头 4096 / 尾 1024）。剪枝器必须与 `compaction-basic` 同 realm（后者用
   `ctx.get('toolResultPrune')` 读它）；`token-meter` 刻意留在 host plane，否则浏览器的上下文
   计量投影会随 preset mount/unmount 来去。
-- **SPV 工具**（`spv-tools.js` + `src/{dispatch,outbox,paths,health}.js`）：`spv_dispatch` /
-  `spv_result` / `spv_status`。`actor` 写死 `operator`，不接受参数。
+- **SPV 工具**（`src/spv/{dispatch,outbox,paths,health,tools}.js`）：`spv_dispatch` / `spv_status`。
+  `actor` 写死 `operator`，不接受参数。`spv_dispatch` 用 `exec.agent` 记住本会话的 agent，
+  `spv_status` 非阻塞地列 pending 与未读消息。
   `spv_dispatch` 派活前探健康端点——队列目录在服务停止后仍然存在，只查目录会让任务写进没人读的地方。
 - **`superagent-service.py`**：服务启停，不依赖进程名。原先上游脚本用 `ps -o ucomm=` 取进程名，
   WSL2 上 node 报 `MainThread`，于是 `status` 报 `pids: []`、`restart` 说「已在运行」却不重启、
@@ -64,9 +66,20 @@
   push 到 `main` 与所有 PR 上跑 `npm run check`、`tests/test-layout.sh`、`tests/test-prepare.sh`
   （无 secret、无安装步）；`main` 要求 `ci` 通过。负向 PR 实测 `--auto` 卡住不合，正常 PR 实测等
   CI 变绿后才由 auto-merge 合入。
+- **结果自动注入**（2026-11-14，PR #4）：删除阻塞式 `spv_result`（工具与 `wheelchair-agent result`
+  子命令一并删），新增 `src/spv/injector.js`：`ctx.effect` 持有 1s 轮询，任意 thread 新出现的
+  `reply` / `notice` 先用 `consumeMessage` 原子消费、再 `agent.followup` 注入会话；没有超时，
+  成功与失败都注入。agent 引用来自 `spv_dispatch` 的 `exec.agent`。挂载前的旧结果不注入
+  （`spv_status` 仍可见），避免新会话重放积压。`tests/test-injector.mjs` 覆盖基线跳过、
+  并发读者只注入一次、同 id 重投不重注入、截断、stop 等在途行为。6 项验收全过：
+  `install.sh` / `--check` exit 0；CLI 无 `result`；工具表只剩两个；**真实 SPV 会话派真实工单、
+  派完不调任何工具，reply 由注入器消费并作为 user 消息进入会话**（`outbox/` → `outbox/read/`）；
+  `node --check` 与三个测试套件全绿。
 
 # In Progress
 
+- **结果自动注入**（PR #4，`agent/spv-result-injection`）：实现与端到端验证完成，已 rebase 到
+  `main`（单一 commit），PR diff 只含本次功能改动，等合并。
 - **CLI 化 + 目录重组**（PR #2，`agent/cli-restructure`）：实现完成、9 项验证全过，等合并。
   见 `ARCHITECTURE/layout.md`、`ARCHITECTURE/cli.md`。
 
@@ -91,6 +104,10 @@
   `find /home/nihao` 找到真实项目路径。
 - **压缩时机仍未解决**：需要「已用 20% + 小阶段完成」的判断，要模型介入。
 - **`spv` Source 的 `scope()` 未实现**：默认接收自己产生的全部 Trigger，够用于 explicit。
+- **注入器只投递「挂载之后」的结果**：会话启动时已在 `outbox/` 里的旧 reply/notice 不注入、不消费
+  （否则新会话重放积压）；`spv_status` 能看到它们，但没有工具把它们推进对话。若两个 SPV 会话同时
+  在线，两边注入器会争同一条新消息：`consumeMessage` 的 rename 只有一个成功，失败的一方不注入，
+  所以不会重复；但哪个会话拿到结果是先到先得——仍按「一次只开一个入口会话」使用。
 - **额度共享**：Eval + worker 都走 GOAT，与 cmd CLI 共用 5 小时 $20 / 每周 $50 窗口；`maxWorkers=2`。
 - 每个拆出的子仓库用 `.git/info/exclude` 复制忽略规则，不改项目内 `.gitignore`。
 - `tools/svg_grid/docs/PITFALLS/round-data/R22/meta.toml` 有一处 11-07 既有未提交修改，未触碰。
