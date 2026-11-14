@@ -267,7 +267,11 @@ loader_row_present() {
 # (lib/core/*.js, lib/shared/queue.js) match the checkout they were generated from.
 check_webui() {
   local staged patch=$PROFILE_DIR/cordis.patch.yml
-  staged=$(mktemp -d) || { fail 'could not create a temporary directory'; return; }
+  staged=$(mktemp -d) || {
+    fail 'could not create a temporary directory for the webui check'
+    fix 'check that $TMPDIR (or /tmp) is writable, then rerun: bash install.sh --check'
+    return
+  }
   if ! render_webui_into "$staged" >/dev/null 2>&1; then
     fail 'the webui package cannot be rendered from this checkout'
     fix "run: bash $SELF_DIR/install.sh"

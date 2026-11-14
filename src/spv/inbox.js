@@ -169,7 +169,15 @@ async function withItemLock(root, id, fn) {
         throw statError
       }
       if (Date.now() - info.mtimeMs > LOCK_STALE_MS) {
-        await unlink(lock).catch(() => {})
+        // Reap by atomic rename: only the rename winner can remove the abandoned lock, so we never
+        // delete a fresh lock that another process acquired between stat() and unlink().
+        const reaped = `${lock}.reap.${randomUUID()}`
+        try {
+          await rename(lock, reaped)
+          await unlink(reaped).catch(() => {})
+        } catch (reapError) {
+          if (reapError.code !== 'ENOENT') throw reapError
+        }
         continue
       }
       if (Date.now() >= deadline) {
@@ -591,7 +599,9 @@ async function handleReview(root, req, res) {
         sendJson(res, 503, { ok: false, code: 'locked', message: messageOf(error) })
         return
       case 'INBOX_INCONSISTENT':
-        sendJson(res, 500, { ok: false, code: 'inconsistent-item', message: messageOf(error) })
+        // The stored item is corrupt (its id disagrees with its filename), not a bad request from the
+        // panel: 409 tells the operator to fix/delete the item rather than retry the same comment.
+        sendJson(res, 409, { ok: false, code: 'inconsistent-item', message: messageOf(error) })
         return
       case 'INBOX_DISPATCH':
         sendJson(res, 502, { ok: false, code: 'dispatch-failed', message: messageOf(error), item: error.item })
