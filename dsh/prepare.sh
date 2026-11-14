@@ -233,7 +233,13 @@ if [ "$KIND" = tools ]; then
       if git -C "$SRC" remote get-url origin >/dev/null 2>&1; then REMOTE=github; else REMOTE=origin; fi
       git -C "$SRC" remote add "$REMOTE" "$URL" || die "cannot add the remote $REMOTE to $SRC"
       if [ "$HAS_COMMITS" = 1 ] && [ -n "$BRANCH" ]; then
-        git -C "$SRC" push --quiet "$REMOTE" "HEAD:refs/heads/$BRANCH" || die "git push to $REPO failed"
+        # A freshly created repository can take a moment to accept a push, so retry briefly before failing.
+        attempt=1
+        until git -C "$SRC" push --quiet "$REMOTE" "HEAD:refs/heads/$BRANCH"; do
+          [ "$attempt" -lt 3 ] || die "git push to $REPO failed after $attempt attempts"
+          attempt=$((attempt + 1))
+          sleep 2
+        done
         step "pushed $BRANCH to $REPO"
         log "pushed $BRANCH to $REPO"
       else
