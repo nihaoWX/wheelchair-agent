@@ -91,9 +91,10 @@ wheelchair-agent/
 ├── bin/wheelchair-agent.mjs      # CLI 入口：argv 解析 + process.exit，仅此
 ├── src/shared/                   # 两侧共用，唯一的契约（queue.js, schema.js）
 ├── src/superagent/               # 只被 superagent profile 加载（spv.js, watch.js）
-├── src/spv/                      # 只被 SPV preset 与 CLI 加载（paths, dispatch, outbox, injector, health, cron, tools, cron-plugin）
+├── src/spv/                      # 只被 SPV preset 与 CLI 加载（paths, dispatch, outbox, injector, health, inbox, cron, tools, cron-plugin）
 ├── preset/                       # 装到 ~/.dsh/.agent-presets/spv/（preset.yml, agent.cordis.yml, spv-launcher.sh, wheelchair-agent.sh, README.md）
-├── commands/                     # 会被装成独立命令的实现（prepare.sh, jobctl.py, superagent-service.py）
+├── commands/                     # 会被装成独立命令的实现（prepare.sh, jobctl.py, superagent-service.py, open-url.py）
+├── webui/                        # 独立 dsh web client 包 wheelchair-agent-webui（装进 superagent profile，见下）
 ├── build/render-preset.mjs       # 构建步骤，不是命令
 ├── tests/                        # test-prepare.sh, test-layout.sh, test-injector.mjs
 ├── install.sh                    # 只负责安装
@@ -103,11 +104,29 @@ wheelchair-agent/
 安装布局：preset 目录是「SPV 侧的已安装包」（含 `cli.js`、`src/{shared,spv}/`、`commands/`、`prepare.sh`），
 `~/.local/bin/wheelchair-agent` 是薄壳，`spv` / `superagent-service` / `jobctl` 是它的兼容名。
 superagent 侧的 `src/superagent/` **从不进 preset 目录**：那个 profile 用自己的 `node_modules` 软链加载它。
+`webui/` 是**第四种安装目标**：`install.sh` 把包拷进 `~/.dsh/profiles/superagent/node_modules/wheelchair-agent-webui/`，
+并往该 profile 的 `cordis.patch.yml` 追加一行 loader（见下）。
+
+## 审查收件箱 / `wheelchair-agent` UI 主页（2026-11-14）
+
+面板不是"一个 PR 列表页"，而是 **`wheelchair-agent` 的 UI 主页**；收件箱只是它当前的第一个 section。
+页面骨架由内联 JS 的一个 `SECTIONS` 数组驱动（`{ id, label, render }`），rail、顶部 tab 条、内容区都从它生成；
+加第二个 section = 加一个数组项 + 一个 `render(container)` 函数，不改骨架。详见 `webui/README.md`。
+
+为什么是**独立包**：`dsh-client-modules` 的 `exactPackageSpecifier()` 只认裸包名，`wheelchair-agent/webui`
+这种子路径不会成为 loader 行、扫不到 `dsh.client`。所以包名 `wheelchair-agent-webui`、自己的 `package.json`
+与自己的 loader 行。面板 id、左侧栏标签、页面标题都是 `wheelchair-agent`，包名只是内部实现细节。
+
+同一个实现两面用：`install.sh` 把 `src/spv/inbox.js`、`dispatch.js`、`paths.js`、`src/shared/queue.js`
+拷进已安装包（`lib/core/`、`lib/shared/`），CLI（`wheelchair-agent inbox`）与面板都从这一份源生成。面板因此
+**不依赖共享的 preset 目录**——另一个 worktree 的 `install.sh` 覆盖 preset 时，面板不会被带坏。
+`webui/lib/client.js` 是手写的预构建 bundle（本仓库无 TS/构建链，不能用 JSX），
+host 半身用 `ctx.webServer.register` 注册三个 `/wheelchair-inbox/*` 精确路由，client 用 `fetch()` 调。
 
 ## CLI
 
 **契约见 `ARCHITECTURE/cli.md`。** 子命令：`spv` / `prepare` / `service` / `jobctl` / `dispatch` /
-`status` / `check`。`install.sh --check` 查"装进去的东西 == checkout"，`wheelchair-agent check` 查运行时
+`status` / `inbox [watch]` / `check`。`install.sh --check` 查"装进去的东西 == checkout"，`wheelchair-agent check` 查运行时
 健康，两个不重叠。
 
 `spv`、`superagent-service`、`jobctl` 继续作为独立命令存在（薄 wrapper），因为 worker 的 prompt 与
@@ -180,6 +199,7 @@ Ticket 状态（progress 不转发；ready/blocked/failed 才上浮）
 | **已定型的约束（勿重复推导）** | **`ARCHITECTURE/decisions.md`** |
 | **目标目录布局与三条规则** | **`ARCHITECTURE/layout.md`** |
 | **CLI 契约** | **`ARCHITECTURE/cli.md`** |
+| **审查收件箱 / UI 主页** | **`webui/README.md`** |
 | superagent 设计文档（9 篇） | `docs/repositories/dsh-superagent-prototype/docs/` |
 | DSH 安装与 GOAT 接入 | `docs/setup/dsh-commandcode.md` |
 | superagent 源码 | `tools/dsh-superagent/`（独立仓库） |

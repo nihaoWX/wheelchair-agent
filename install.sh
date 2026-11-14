@@ -4,8 +4,11 @@
 # Installs (this project is not an agent tool, so there is no SKILL.md to copy):
 #   1. the dsh agent preset  -> $DSH_HOME/.agent-presets/spv/
 #      (the preset ymls, the SPV-side JS, cli.js, prepare.sh, commands/ and agentsmd-examples/)
-#   2. the CLI               -> ~/.local/bin/wheelchair-agent   (the one entry point)
-#   3. compatibility names   -> ~/.local/bin/{spv,superagent-service,jobctl}
+#   2. the webui package     -> $DSH_HOME/profiles/superagent/node_modules/wheelchair-agent-webui/
+#      (an independent dsh web client plugin whose inbox core is copied in, so a preset replacement
+#       by another worktree cannot break it; its loader row is appended to the profile patch)
+#   3. the CLI               -> ~/.local/bin/wheelchair-agent   (the one entry point)
+#   4. compatibility names   -> ~/.local/bin/{spv,superagent-service,jobctl}
 #      (thin wrappers: `exec wheelchair-agent <subcommand> "$@"`)
 #
 # Design rules (references/tool-install.md):
@@ -30,6 +33,8 @@ SERVICE=$BIN_DIR/superagent-service
 JOBCTL=$BIN_DIR/jobctl
 TARGET_PLUGIN_URL="file://$PRESET_DIR/src/spv/tools.js"
 TARGET_CRON_URL="file://$PRESET_DIR/src/spv/cron-plugin.js"
+PROFILE_DIR=$DSH_HOME_DIR/profiles/superagent
+WEBUI_TARGET=$PROFILE_DIR/node_modules/wheelchair-agent-webui
 SERVICE_PORT=${SPV_SERVICE_PORT:-3082}
 
 CHECK=0
@@ -110,14 +115,14 @@ render_into() {
     fix "check that $SELF_DIR/bin/wheelchair-agent.mjs exists and is readable, then rerun this script"
     return 1
   fi
-  for file in shared/queue.js shared/schema.js spv/check.js spv/cron-plugin.js spv/cron.js spv/dispatch.js spv/health.js spv/injector.js spv/outbox.js spv/paths.js spv/tools.js; do
+  for file in shared/queue.js shared/schema.js spv/check.js spv/cron-plugin.js spv/cron.js spv/dispatch.js spv/health.js spv/inbox.js spv/injector.js spv/outbox.js spv/paths.js spv/tools.js; do
     if ! cp "$SELF_DIR/src/$file" "$dest/src/$file"; then
       fail "cannot copy src/$file from this checkout"
       fix "check that $SELF_DIR/src/$file exists and is readable, then rerun this script"
       return 1
     fi
   done
-  for file in jobctl.py superagent-service.py; do
+  for file in jobctl.py open-url.py superagent-service.py; do
     if ! cp "$SELF_DIR/commands/$file" "$dest/commands/$file"; then
       fail "cannot copy commands/$file from this checkout"
       fix "check that $SELF_DIR/commands/$file exists and is readable, then rerun this script"
@@ -175,6 +180,43 @@ render_wrapper() {
   chmod 0755 "$dest"
 }
 
+# Render the webui package into $1: the package's own files plus the core modules it imports.
+#
+# The installed package must be self-contained: another worktree running its own install.sh can
+# replace the shared preset at any time, and a panel that imported the preset's inbox core would
+# then fail to load on the next service restart. The copies below are generated here from this
+# checkout and are never edited by hand, so there is still one implementation (webui/README.md).
+render_webui_into() {
+  local dest=$1 file src target pair
+  if ! mkdir -p "$dest/lib/core" "$dest/lib/shared"; then
+    fail "cannot create the staging directories under $dest"
+    fix 'check that the staging directory is writable, then rerun this script'
+    return 1
+  fi
+  if ! cp "$SELF_DIR/webui/package.json" "$dest/package.json"; then
+    fail 'cannot copy webui/package.json from this checkout'
+    fix "check that $SELF_DIR/webui/package.json exists and is readable, then rerun this script"
+    return 1
+  fi
+  for file in index.js client.js; do
+    if ! cp "$SELF_DIR/webui/lib/$file" "$dest/lib/$file"; then
+      fail "cannot copy webui/lib/$file from this checkout"
+      fix "check that $SELF_DIR/webui/lib/$file exists and is readable, then rerun this script"
+      return 1
+    fi
+  done
+  for pair in "spv/inbox.js:lib/core/inbox.js" "spv/dispatch.js:lib/core/dispatch.js" "spv/paths.js:lib/core/paths.js" "shared/queue.js:lib/shared/queue.js"; do
+    src=${pair%%:*}
+    target=${pair##*:}
+    if ! cp "$SELF_DIR/src/$src" "$dest/$target"; then
+      fail "cannot copy src/$src into the webui package"
+      fix "check that $SELF_DIR/src/$src exists and is readable, then rerun this script"
+      return 1
+    fi
+  done
+  return 0
+}
+
 # ----------------------------------------------------------------- - check mode
 
 check_preset() {
@@ -200,7 +242,7 @@ check_preset() {
     fix 'run: bash tools/wheelchair-agent/install.sh'
   fi
   actual=$(find "$PRESET_DIR" -type f | sed "s|^$PRESET_DIR/||" | sort | tr '\n' ' ')
-  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/queue.js src/shared/schema.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/dispatch.js src/spv/health.js src/spv/injector.js src/spv/outbox.js src/spv/paths.js src/spv/tools.js "
+  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/open-url.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/queue.js src/shared/schema.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/dispatch.js src/spv/health.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/paths.js src/spv/tools.js "
   if [ "$actual" = "$expected" ]; then
     ok 'the installed preset holds only the whitelisted files'
   else
@@ -208,6 +250,54 @@ check_preset() {
     fix 'delete them, or rerun: bash tools/wheelchair-agent/install.sh'
   fi
   rm -rf "$staged"
+}
+
+# The loader row must be a real `name:` line, not a comment that happens to mention the package.
+#
+# This is a grep, not a YAML parse: a `name:` line under some unrelated block still passes, and a
+# duplicate id is not detected. That residual is acceptable for a one-line append; dsh's own config
+# validation is the authority on the composed tree.
+loader_row_present() {
+  local patch=$1
+  [ -f "$patch" ] && grep -qE "^[[:space:]]*name:[[:space:]]*['\"]wheelchair-agent-webui['\"]" "$patch"
+}
+
+# Compare the installed webui package with what this checkout would write, and prove the loader row
+# without which dsh would never mount it. The `diff -r` also proves the self-contained core copies
+# (lib/core/*.js, lib/shared/queue.js) match the checkout they were generated from.
+check_webui() {
+  local staged patch=$PROFILE_DIR/cordis.patch.yml
+  staged=$(mktemp -d) || {
+    fail 'could not create a temporary directory for the webui check'
+    fix 'check that $TMPDIR (or /tmp) is writable, then rerun: bash install.sh --check'
+    return
+  }
+  if ! render_webui_into "$staged" >/dev/null 2>&1; then
+    fail 'the webui package cannot be rendered from this checkout'
+    fix "run: bash $SELF_DIR/install.sh"
+    rm -rf "$staged"
+    return
+  fi
+  if [ ! -d "$WEBUI_TARGET" ]; then
+    fail "the webui package is not installed at $WEBUI_TARGET"
+    fix 'run: bash install.sh'
+    rm -rf "$staged"
+    return
+  fi
+  if diff -r "$staged" "$WEBUI_TARGET" >/dev/null 2>&1; then
+    ok "webui package matches its sources ($WEBUI_TARGET)"
+  else
+    fail "the installed webui package at $WEBUI_TARGET differs from this checkout"
+    diff -r "$staged" "$WEBUI_TARGET" 2>&1 | sed -n '1,8p' | sed 's/^/     /'
+    fix 'run: bash install.sh'
+  fi
+  rm -rf "$staged"
+  if loader_row_present "$patch"; then
+    ok "the webui loader row is present in $patch"
+  else
+    fail "the webui loader row is missing from $patch, so dsh never mounts the package"
+    fix 'run: bash install.sh'
+  fi
 }
 
 # Compare one installed file with what this checkout would write there.
@@ -375,11 +465,98 @@ install_bin() {
   return 1
 }
 
+# Install the webui package into the superagent profile, atomically and idempotently.
+#
+# The profile is operator state created by dsh: if it is missing we refuse rather than invent one,
+# because a node_modules directory without the profile's own manifests would not boot. The package is
+# copied into node_modules and the profile's package.json is deliberately untouched, so a pnpm install
+# against the profile may prune it; `--check` detects that and rerunning this script restores it.
+install_webui() {
+  local staged backup
+  if [ ! -d "$PROFILE_DIR" ]; then
+    fail "the dsh profile superagent is not installed at $PROFILE_DIR"
+    fix 'start the superagent profile once ("wheelchair-agent service start") so dsh creates it, then rerun this script'
+    return 1
+  fi
+  if ! mkdir -p "$PROFILE_DIR/node_modules"; then
+    fail "cannot create $PROFILE_DIR/node_modules"
+    fix "check that $PROFILE_DIR is writable, then rerun this script"
+    return 1
+  fi
+  # Stage next to the target (same filesystem), so the final move is an atomic rename rather than a copy
+  # that could leave a half-written package behind.
+  staged=$(mktemp -d "$PROFILE_DIR/node_modules/.wheelchair-agent-webui.stage.XXXXXX") || {
+    fail "could not create a staging directory under $PROFILE_DIR/node_modules"
+    fix "check that $PROFILE_DIR/node_modules is writable, then rerun this script"
+    return 1
+  }
+  if ! render_webui_into "$staged"; then
+    rm -rf "$staged"
+    [ "$PROBLEMS" -gt 0 ] || fail 'the webui package could not be rendered'
+    return 1
+  fi
+  if [ -d "$WEBUI_TARGET" ] && diff -r "$staged" "$WEBUI_TARGET" >/dev/null 2>&1; then
+    ok "up to date: $WEBUI_TARGET"
+    rm -rf "$staged"
+    return 0
+  fi
+  backup="$PROFILE_DIR/node_modules/.wheelchair-agent-webui.previous.$$"
+  if [ -d "$WEBUI_TARGET" ]; then
+    mv "$WEBUI_TARGET" "$backup" || {
+      rm -rf "$staged"
+      fail "cannot move $WEBUI_TARGET aside"
+      fix "check that $PROFILE_DIR/node_modules is writable and no other process is installing, then rerun this script"
+      return 1
+    }
+  fi
+  if mv "$staged" "$WEBUI_TARGET"; then
+    rm -rf "$backup"
+    ok "installed webui package: $WEBUI_TARGET"
+    return 0
+  fi
+  [ -d "$backup" ] && mv "$backup" "$WEBUI_TARGET"
+  rm -rf "$staged"
+  fail "cannot move the staged webui package into $WEBUI_TARGET"
+  fix "check that $PROFILE_DIR/node_modules is writable and no other process is installing, then rerun this script"
+  return 1
+}
+
+# Append the loader row that makes dsh mount the package. dsh-client-modules only scans bare package
+# specifiers for `dsh.client`, so the row is the only way the browser bundle is discovered.
+#
+# Idempotent: `loader_row_present` makes a re-run a no-op, and appending (never rewriting) keeps the
+# operator's existing patch intact.
+ensure_webui_loader() {
+  local patch=$PROFILE_DIR/cordis.patch.yml
+  if [ ! -d "$PROFILE_DIR" ]; then
+    fail "cannot add the webui loader row: $PROFILE_DIR does not exist"
+    fix 'start the superagent profile once, then rerun this script'
+    return 1
+  fi
+  if loader_row_present "$patch"; then
+    ok "webui loader row present: $patch"
+    return 0
+  fi
+  {
+    printf '\n# Review inbox panel (webui/): an independent package because dsh-client-modules only\n'
+    printf '# scans bare package specifiers for dsh.client declarations.\n'
+    printf -- '- insert:\n'
+    printf '    - id: wheelchair-webui\n'
+    printf "      name: 'wheelchair-agent-webui'\n"
+  } >> "$patch" || {
+    fail "cannot append the webui loader row to $patch"
+    fix "check that $patch is writable (or delete a stale lock file), then rerun this script"
+    return 1
+  }
+  ok "added the webui loader row to $patch"
+}
+
 # --------------------------------------------------------------------------- main
 
 if [ "$CHECK" -eq 1 ]; then
   check_prerequisites
   check_preset
+  check_webui
   check_cli
   check_launcher
   check_service
@@ -403,6 +580,8 @@ if ! require_dsh_tui; then
 fi
 
 install_preset
+install_webui
+ensure_webui_loader
 install_bin "$CLI" render_cli
 install_bin "$LAUNCHER" render_launcher
 install_bin "$SERVICE" render_service_wrapper
