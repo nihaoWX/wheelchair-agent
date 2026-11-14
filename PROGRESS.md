@@ -4,7 +4,8 @@
 `spv_dispatch` → 文件队列 → superagent Ticket → worker（项目 clone 内执行）→ `outbox` → `spv_result` 取回。
 
 - **SPV 会话**：`spv` 命令启动（会自动拉起后端），preset `spv`，cwd = `bioagentforge`，
-  工具 `spv_dispatch` / `spv_result` / `spv_status`，斜杠命令 `/spv-cron`。
+  工具 `spv_dispatch` / `spv_result` / `spv_status`，斜杠命令 `/spv-cron`；本地 skill
+  （`~/.dsh/skills/`）与普通 dsh 会话一样可见、可加载。
 - **superagent**：常驻服务 `:3082`，`runtime / spv / github` 三处 `ready`，`setup.problem=null`。
 
 **入口**：`wheelchair-agent` 是唯一命令入口（`spv` / `prepare` / `service` / `jobctl` / `dispatch` /
@@ -21,7 +22,8 @@
 - **`spv` Source 插件**（`spv-watch.js` + `src/spv.js`）：文件队列 pending→done（rename 即消费
   标记，无 cursor）+ outbox；Trigger 满足 explicit 三条件。
 - **SPV preset**（`preset/` → `~/.dsh/.agent-presets/spv/`）：`agent.cordis.yml` 挂 spv 工具 +
-  `tool-fs` + bash + `agent-instructions` + compaction + `/spv-cron`。
+  `tool-fs` + bash + `agent-instructions` + compaction + `/spv-cron` + skill
+  （`skill-filesystem` 与 `tool-skill`，不挂 liangshen 的 `skill-search`）。
 - **compaction 组**（`compaction-basic` + `command-compact` + `tool-result-pruner`）：TUI 原先
   告警「本预设既无压缩也不剪枝工具结果」。加上后 `/compact` 可用、达水位自动压缩，超长工具输出
   按 8192 字符截断（留头 4096 / 尾 1024）。剪枝器必须与 `compaction-basic` 同 realm（后者用
@@ -56,11 +58,17 @@
   `shared/` `superagent/` `spv/`；`dsh/` → `preset/`、`scripts/` → `commands/` + `build/` + `tests/`；
   删 `index.js` 与两个 Python 队列脚本（队列格式从两份实现变一份）；`install.sh` 装 CLI 薄壳并读
   `/proc/<pid>/environ` 验证服务进程的 PATH；`tests/test-layout.sh` 机械断言三条边界规则。
+- **SPV preset 加载 skill**（2026-11-14，PR #3）：`preset/agent.cordis.yml` 加 `skill-filesystem` +
+  `tool-skill` 两行（`dsh-tui` 的 host 层把这两行 `disabled: true`，因为主归 preset 所有）。
+  端到端：真实 SPV 会话的首个请求注入 `<available_skills>`，含 `agent-tool-design` /
+  `pitfalls-manager`（以及 bundled `dsh-tui-guide`），模型可见工具含 `skill`。
 
 # In Progress
 
 - **CLI 化 + 目录重组**（PR #2，`agent/cli-restructure`）：实现完成、9 项验证全过，等合并。
   见 `ARCHITECTURE/layout.md`、`ARCHITECTURE/cli.md`。
+- **SPV preset 加载 skill**（PR #3，`agent/spv-skills`）：`https://github.com/nihaoWX/wheelchair-agent/pull/3`，
+  基于 `agent/cli-restructure`（PR #2 必须先进 `main`），4 项验证全过，等合并。
 
 # Known Issues
 
