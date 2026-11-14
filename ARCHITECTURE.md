@@ -1,39 +1,40 @@
 # Definition
 
-`wheelchair-agent` 是一个依赖superagent的轮椅流agent，用户取这个名字就是因为它的运行方式对用户很友好，用户只需要与spv一个agent对话，spv管多项目长期大目标，spv代替用户监督/跟进多个worker，近乎全自动运行，当然用户也可以具体下场到worker具体跟进。
+`wheelchair-agent` 是一个依赖 superagent 的轮椅流 agent。用户取这个名字就是因为它的运行方式对用户很友好：
+用户只需要与 spv 一个 agent 对话，spv 管多项目长期大目标，spv 代替用户监督/跟进多个 worker，近乎全自动运行，
+当然用户也可以具体下场到 worker 具体跟进。
 
 用户期望：
-- **`superagent` 的流程原封不动**：用户认为superagent的原生机制已经很适合上面提到的轮椅流理念，就只是差一个外层触发superagent流程的入口，这个入口就是spv。
-- **用户自然语言对话spv**：用户在一个 dsh 会话（这个agent身份就是spv）（cwd = `/home/nihao/bioagentforge`）里打字，由它派活；不再由用户直接对 worker 说话，但是用户也可以具体下场跟进某个worker。
-- **每个 worker 只管相应项目**：例如管某个工具，那么那个worker的cwd就是`tools/<a tool>`，推进某个研究任务，那这个worker的cwd就是`research/<a task>`。靠"目录内有无 `.git`"让 DSH 的 `ancestorChain` 停在项目根，从而只加载该项目的 `AGENTS.md`。
 
-## 关键约束（讨论已定型，勿重复推导）
+- **`superagent` 的流程原封不动**：superagent 的原生机制已经很适合轮椅流理念，只差一个外层触发 superagent
+  流程的入口，这个入口就是 spv。
+- **用户自然语言对话 spv**：用户在一个 dsh 会话（这个 agent 身份就是 spv）（cwd = `/home/nihao/bioagentforge`）
+  里打字，由它派活；不再由用户直接对 worker 说话，但用户也可以具体下场跟进某个 worker。
+- **每个 worker 只管相应项目**：管某个工具则 worker 的 cwd 是 `tools/<a tool>`，推进某个研究任务则是
+  `research/<a task>`。靠"目录内有无 `.git`"让 DSH 的 `ancestorChain` 停在项目根，从而只加载该项目的
+  `AGENTS.md`。
+- **一个命令入口**：`wheelchair-agent`。`install.sh` 只负责把它装进电脑，没有别的功能。
 
-**压缩成本**：原规划是单会话worker持续长期推进，靠上下文压缩节省token，但是superagent是一次性worker。因此发出疑问新开一次性worker会不会省一次压缩的成本？
+## 已定型的约束
 
-一次性worker可能会把 `ARCHITECTURE.md`、`PROGRESS.md`等等再读一遍。所以两种方案不一定谁成本更低，用户最终选择适配superagent的管理方式，superagent是一次性worker。
-而且在实际测试里，一次性或者单会话，不干预的话一个任务上下文窗口占用都可以到90%以上，所以它们都避免不了压缩。
-所以既然避免不了还不如直接顺着superagent来做一次性worker。
+讨论已经结束的结论全部移到 **`ARCHITECTURE/decisions.md`**，每条附证据或实测结果。**不要重新推导。**
 
-结论：新开一次性worker和单会话worker成本可能是相近的，但是它们都无法避免压缩问题。压缩时机是：上下文窗口已用 20% 左右 + 小阶段目标完成。但是这个判断需要模型介入，目前还没有解决这个问题。
-
-**降噪靠架构，不靠规则**：用户的痛点是「spv 和 worker 间收发消息会淹没我的跟 spv 的交流」。根因不是消息太多，而是"消息承担了状态的职责"。信息过滤具体来自 superagent 的 worker 权限（使用的时候 worker 就是不会有任何信息外发）和它们自带的机会触发的 orchestrator（第二层过滤）。
-
-因此不要在本项目里加任何"消息分级规则"——那是在架构之上叠规则，反而更脆。
-
-**dsh 版本锁 `0.2.1-rc.3`**：superagent 的 `engines.dsh = ^0.2.1-alpha.2`，semver 对 `0.x` 预发布版的规则使 `0.2.2-rc.1` 不满足。`dsh-tui@0.19.0` 的 peer 列表含 `0.2.1-rc.3`，两个 profile 共用同一个全局 dsh。**`dsh-tui update` 会升回 `0.2.2-rc.1`**，届时须手动降回并带 `--allow-scripts`（否则 `node-pty` 不编译）。
-
-**GOAT 套餐可驱动任意 harness**：`BYOK` 是"key 进 Command Code"（不耗额度），`Provider API` 是"key 出去"（耗额度）。我们要的是后者，官方原文 *"any client or agent can use them. No lock-in. Use it anywhere."*，已实测 `/provider/v1/{models,messages}` 均 200。**CLI 与 API 共用同一份额度**（5 小时 $20 / 每周 $50），所以 `maxWorkers=2`。
-
-**派任务入口必须是 agent 工具，不能是 CLI 脚本**：`spv_send.py` 这类脚本可被任何有 bash 的 agent 调用，而它投递的任务默认以 `operator` 身份进入 superagent——worker 跑一下脚本就能伪造成用户派活，授权模型失效。所以入口必须是 SPV preset 里的工具（superagent 侧没有），且 `actor` 由代码写死为 `operator`、不接受参数。CLI 脚本保留但降级为过渡/调试。
-
-**长任务不留在 worker 会话里**：worker 回合结束后其 shell job 最多再跑 30 分钟即被杀（`src/executor/dsh.ts` 的 `BACKGROUND_LIMIT_MS`）。长时间分析交给 systemd user manager 持有（`jobctl`），下一阶段的触发器是**作业自己的结束事件**（`ExecStopPost` 写队列），不依赖 worker 自觉、全局 goal 状态或定时轮询。`/spv-cron` 每小时机械检查一次，漏挂的作业顶多一小时内被发现。
-
-**SPV 遇上游 API error 停下的根因已确认（2026-11-14 复核确认，账本 `R1-F1`）**：不是"没接上重试"，也不是"code 不在白名单"。实测 SPV 会话里真实报错的 code 是 `TRANSPORT`——它**在** provider 白名单里（`EMPTY_RESPONSE / RATE_LIMIT / THROTTLED / SERVER / TIMEOUT / TRANSPORT`，`maxRetries: 1000`）。真正先动手的是 provider 自己注册的 `agent/request-error` 监听器：它用一份**独立的 transport 预算**（`transportMaxRetries`，默认 5、上限 50）吸收前 5 次失败（实测 6 次尝试、间隔约 770ms），第 6 次抛出一个**普通 `Error`**；普通 Error 不是 `HarnessError`，`dsh-llm` 只能把它的 code 记成 `UNKNOWN`，于是轮次以 `turn/end reason=error` 结束。59 份会话日志里**没有任何 `llm/retry` 事件**，说明 `dsh-llm-retry` 从未被轮到——provider 的监听器抢在它前面。这是上游的**刻意设计**（issue #39：把 transport 宽限压到约 15.5s，避免整轮卡死几分钟），本仓库没有任何代码参与，故按外部/上游限制处理、不改代码。**绕行**：① 在启动 DSH 的 shell 里导出 `HTTPS_PROXY`/`HTTP_PROXY`（DSH 只读环境变量，不读 Windows 系统代理/PAC）——报错文案本身就这么说；② 调高 `llm-commandcode` 的 `transportMaxRetries`（0–50），代价是网络真断时轮次会卡更久。**注意**：旧结论里"把 `retryPolicy` 调成 `always`"对这条失败**无效**，因为 provider 的监听器在策略被查询之前就抛了。worker 侧不受影响是因为 superagent 自带独立重试（`TRANSIENT_TRIES = 3`、15s 退避、认 408/429/5xx 与 ECONNRESET 等）。
+| 结论 | 一句话 |
+|---|---|
+| 压缩成本 | 一次性 worker 与单会话 worker 成本相近，都避免不了压缩；压缩时机仍未解决 |
+| 降噪 | 靠架构（worker 权限 + orchestrator 过滤），**不**在本项目加消息分级规则 |
+| dsh 版本 | 锁 `0.2.1-rc.3`；`dsh-tui update` 会升回 `0.2.2-rc.1` |
+| GOAT 额度 | CLI 与 API 共用 5 小时 $20 / 每周 $50，所以 `maxWorkers=2` |
+| 派任务入口 | **CLI 可以**（2026-11-14 修订，旧结论作废）；`ACTOR` 仍写死 `operator`；**沙箱暂不做** |
+| 长任务 | 交给 systemd（`jobctl`），触发器是作业自己的结束事件，不是轮询 |
+| SPV 遇 API error | `wontfix`（账本 `R3-F1`），上游刻意设计，绕行＝代理或调高 `transportMaxRetries` |
+| 交付目标 | 不与环境变量对抗，改为给 worker 一份受管 `AGENTS.md` |
 
 # Structure
 
-**两个东西，严格分开，互不 import**——这是本项目最容易混淆的地方：
+## 两个东西，严格分开，互不 import
+
+这是本项目最容易混淆的地方：
 
 | | 我们的 SPV | superagent |
 |---|---|---|
@@ -46,62 +47,67 @@
 | 职责 | 听懂用户、派任务、报结果 | 准入判断、建 Ticket、路由、派工 |
 | 唯一的接口 | **文件队列**（写 `pending/`、读 `outbox/`） | 同一个队列（反向） |
 
-**不要把它们当成一个系统的两层。** 它们是两个独立程序，共享的只有队列文件格式。SPV 不读 superagent 的代码，superagent 不知道 SPV 存在。
+**不要把它们当成一个系统的两层。** 它们是两个独立程序，共享的只有队列文件格式。SPV 不读 superagent 的
+代码，superagent 不知道 SPV 存在。
+
+## 一个包，三个 dsh 插件入口
+
+"新增工具必须注入"没有替代方案：模型可见的工具只能靠 `ctx.tools.register`，那只有插件能做。三个入口
+**必须**分开，不能合成一个——前一个必须挂在 superagent profile，后两个必须挂在 dsh-tui，一个插件进不了
+两个 profile。
+
+| 入口（`package.json` exports 键） | 注册什么 | 挂在哪个 profile |
+|---|---|---|
+| `wheelchair-agent/spv-watch` | `spv` Source kind（Trigger/Channel/Policy） | `superagent` |
+| `wheelchair-agent/spv-tools` | `spv_dispatch` / `spv_result` / `spv_status` | `dsh-tui` 的 SPV preset |
+| `wheelchair-agent/spv-cron-plugin` | `/spv-cron` 斜杠命令 | `dsh-tui` 的 SPV preset |
+
+**exports 的键是公开 API**：`~/.dsh/profiles/superagent/cordis.patch.yml` 用 bare specifier
+`wheelchair-agent/spv-watch` 引用它，那是仓库外的操作者状态。只改键指向的文件，不改键名。
+
+## 一个核心 + 两个适配器
 
 ```
-tools/wheelchair-agent/          # 本项目（独立 git 仓库）
-├── AGENTS.md                    # 项目版 agent 规则（DSH 靠它做隔离）
-├── ARCHITECTURE.md              # 本文档
-├── PROGRESS.md                  # 当前状态
-├── package.json                 # 两个入口：superagent Source 插件 + SPV 插件
-├── index.js                     # 包默认入口，转出 spv-watch.js
-├── spv-watch.js                 # 【superagent 侧】插件入口：注册 kind + 轮询循环
-├── spv-tools.js                 # 【SPV 侧】spv_dispatch / spv_result / spv_status
-├── spv-cron-plugin.js           # 【SPV 侧】`/spv-cron` 插件入口（薄壳，逻辑在 src/spv-cron.js）
-├── src/spv.js                   # 【superagent 侧】spv Source kind（Trigger/Channel/Policy）
-├── src/queue.js                 # 共用：文件队列布局与读写（pending/done/outbox）
-├── src/schema.js                # 共用：极简 schema 校验
-├── src/paths.js                 # 【SPV 侧】队列根解析（config > env > stateDir）
-├── src/dispatch.js              # 【SPV 侧】写 pending/，actor 写死 operator
-├── src/outbox.js                # 【SPV 侧】读 outbox/，等 reply/notice
-├── src/health.js                # 【SPV 侧】探健康端点，服务没跑就拒绝派活
-├── src/spv-cron.js              # 【SPV 侧】`/spv-cron` 逻辑（纯逻辑，注入依赖）
-├── dsh/                         # 【SPV 侧】agent preset 定义（装到 ~/.dsh/.agent-presets/spv/）
-│   ├── preset.yml
-│   ├── agent.cordis.yml         # 工具面 + compaction 组
-│   ├── spv-launcher.sh          # 启动器模板（先拉起服务，再开 TUI）
-│   └── prepare.sh               # 面板的 prepare 命令：clone + 受管 AGENTS.md + 私有远端
-├── install.sh                   # 装 preset（含 prepare.sh 与模板）+ spv 启动器 + superagent-service + jobctl；带 --check
-├── scripts/
-│   ├── superagent-service.py    # 服务启停（不依赖进程名）+ open 面板
-│   ├── jobctl.py                # 长任务交给 systemd 持有（submit/status/log/verify/cancel）
-│   ├── render-preset.mjs        # 渲染 preset 与 patch
-│   ├── test-prepare.sh          # prepare.sh 的可跑证据（假 gh + 本地裸仓库，不碰 github.com）
-│   ├── spv_send.py              # 过渡用 CLI（正路是 SPV 工具）
-│   └── spv_read.py              # 过渡用 CLI
+        ┌──────────────┐
+        │  src/ 核心库  │  ← 纯函数，不 import dsh，不 process.exit
+        └──────┬───────┘
+       ┌───────┴────────┐
+   ┌───▼────┐      ┌───▼─────────┐
+   │  CLI   │      │ dsh 插件 ×3 │
+   └────────┘      └─────────────┘
+```
+
+插件和 CLI **不能互相调用，只能共享代码**。逻辑若在 CLI 里，插件想用就得 `spawn` 子进程——多一个进程、
+多一个 PATH 依赖、结构化返回值变成 stderr 文本、错误没法带类型。`process.exit` 只出现在 `bin/`，
+JSON Schema 与 render 只出现在插件入口。
+
+## 目录布局
+
+**目标布局见 `ARCHITECTURE/layout.md`（含三条机械可查的规则与验收方式）。** 现状是平铺的 `src/`，
+边界在代码里成立但布局没画出来，正在按 `shared/` `superagent/` `spv/` 三分。
+
+```
+wheelchair-agent/
+├── bin/wheelchair-agent.mjs      # CLI 入口：argv 解析 + process.exit，仅此
+├── src/shared/                   # 两侧共用，唯一的契约（queue.js, schema.js）
+├── src/superagent/               # 只被 superagent profile 加载（spv.js, watch.js）
+├── src/spv/                      # 只被 SPV preset 与 CLI 加载（paths, dispatch, outbox, health, cron, tools, cron-plugin）
+├── preset/                       # 装到 ~/.dsh/.agent-presets/spv/（preset.yml, agent.cordis.yml, spv-launcher.sh, README.md）
+├── commands/                     # 会被装成独立命令的实现（prepare.sh, jobctl.py, superagent-service.py）
+├── build/render-preset.mjs       # 构建步骤，不是命令
+├── tests/                        # test-prepare.sh, test-layout.sh
+├── install.sh                    # 只负责安装
 └── docs/
-    ├── spv-source.md            # spv Source 设计与踩坑
-    ├── delivery-target.md       # 交付目标随项目走（已实现：约束、行为、测试）
-    ├── agentsmd-examples/       # worker 用的两份 AGENTS.md 模板（install.sh 装到 preset 目录）
-    └── PITFALLS/                # 报告（消费完即删，原文在 git）
-
-/home/nihao/bioagentforge/
-├── AGENTS.md                    # 根版规则：SPV 会话（cwd=仓库根）加载它
-├── .dsh/state/superagent/       # superagent 的 stateDir（DB、锁、worker 目录）
-│   ├── work/<name>-<ticket>/    # 每个 Ticket 一个 worker 目录（项目 clone）
-│   └── spv/                     # 两边唯一的接口
-│       ├── pending/             # SPV 写，superagent 读（rename 到 done/ 即消费）
-│       ├── done/                # 已消费
-│       └── outbox/              # superagent 写，SPV 读
-└── tools/dsh-superagent/        # superagent 源码（独立仓库，本地构建）
-
-~/.dsh/profiles/superagent/      # DSH profile：dsh-superagent bundle + wheelchair-agent 插件 + 模型 provider
-~/.dsh/.agent-presets/spv/       # DSH 用户级 preset：定义 SPV 是什么（install.sh 装）
-~/.local/bin/spv                 # SPV 启动器（install.sh 装）
-~/.local/bin/superagent-service   # 服务管理（install.sh 装）
-~/.local/bin/jobctl              # 长任务管理（install.sh 装）
-~/.local/state/jobctl/ledger.jsonl # jobctl 的账本（--collect 会删掉结束的 unit，账本跨越它）
 ```
+
+## CLI
+
+**契约见 `ARCHITECTURE/cli.md`。** 子命令：`spv` / `prepare` / `service` / `jobctl` / `dispatch` / `result` /
+`status` / `check`。`install.sh --check` 查"装进去的东西 == checkout"，`wheelchair-agent check` 查运行时
+健康，两个不重叠。
+
+`spv`、`superagent-service`、`jobctl` 继续作为独立命令存在（薄 wrapper），因为 worker 的 prompt 与
+`docs/` 里都是按名字引用它们的。
 
 ## 关键机制：AGENTS.md 的隔离靠 `.git`
 
@@ -120,7 +126,8 @@ ancestorChain(projectRoot, cwd)          // 该目录到 cwd 的整条链
 | `bioagentforge/`（根有 `.git`） | 只有根版 |
 | `.../tools/proj/`（自带 `.git`） | **只有 proj 版，根版不加载** |
 
-所以 2026-11-11 把 `tools/` 下 20 个目录全部拆成独立 git 仓库，正是为了让"项目 worker 只读自己项目的规则"成立，而不是靠提示词约定。
+所以 2026-11-11 把 `tools/` 下 20 个目录全部拆成独立 git 仓库，正是为了让"项目 worker 只读自己项目的规则"
+成立，而不是靠提示词约定。
 
 ## 角色与信息流
 
@@ -150,38 +157,28 @@ Ticket 状态（progress 不转发；ready/blocked/failed 才上浮）
 |---|---|
 | GitHub Source | `nihaoWX/bioagentforge`，CLI `/home/nihao/.local/bin/gh`，60s 轮询 |
 | spv Source | `<stateDir>/spv/` 文件队列，2s 轮询，健康条目 `spv` |
-| Policy allowed | github=`nihaoWX`；spv=`operator`（写死在 `spv_dispatch`，不接受参数） |
+| Policy allowed | github=`nihaoWX`；spv=`operator`（写死在 `src/spv/dispatch.js`，不接受参数） |
 | accept mode | `observe`（只影响 inferred 候选；explicit 请求始终直接接单） |
 | 模型路由 | `commandcode` / `deepseek/deepseek-v4-pro`（profile 的 `agent-default-model`） |
 | executor.directory | `/home/nihao/.dsh/state/superagent/work` |
 | executor.maxWorkers | 2 |
-| executor.prepare | `sh /home/nihao/.dsh/.agent-presets/spv/prepare.sh`（绝对路径，`DSH_*` 会被子进程环境剥掉）：clone 项目 → 受管 `AGENTS.md` → `tools/` 的私有 GitHub 远端与工单 origin（见 `docs/delivery-target.md`） |
+| executor.prepare | `wheelchair-agent prepare`（**命令名，不是绝对路径**；见 `ARCHITECTURE/cli.md`） |
 | 面板 | `http://127.0.0.1:3082/?token=<日志里的 token>` |
 
-`prepare` 项目选择：项目名随任务走（`spv_dispatch` 的 `project` 参数 → Trigger 的 `project` → `DSH_SUPERAGENT_SPV_PROJECT`）。`/home/nihao/bioagentforge/.superagent-project` 只作非 spv 任务的兜底；两者都没有时 Ticket 会在 prepare 阶段失败（设计如此）。
+`prepare` 项目选择：项目名随任务走（`spv_dispatch` 的 `project` 参数 → Trigger 的 `project` →
+`DSH_SUPERAGENT_SPV_PROJECT`）。`/home/nihao/bioagentforge/.superagent-project` 只作非 spv 任务的兜底；
+两者都没有时 Ticket 会在 prepare 阶段失败（设计如此）。
 
 ## 参考索引
 
 | 资料 | 位置 |
 |---|---|
+| **已定型的约束（勿重复推导）** | **`ARCHITECTURE/decisions.md`** |
+| **目标目录布局与三条规则** | **`ARCHITECTURE/layout.md`** |
+| **CLI 契约** | **`ARCHITECTURE/cli.md`** |
 | superagent 设计文档（9 篇） | `docs/repositories/dsh-superagent-prototype/docs/` |
 | DSH 安装与 GOAT 接入 | `docs/setup/dsh-commandcode.md` |
 | superagent 源码 | `tools/dsh-superagent/`（独立仓库） |
 | **spv Source 设计与踩坑** | **`docs/spv-source.md`** |
-| **交付目标：仓库随项目走（已实现）** | **`docs/delivery-target.md`** |
+| **交付目标：仓库随项目走** | **`docs/delivery-target.md`** |
 | AGENTS.md 模板（项目开发 / 研究任务） | `docs/agentsmd-examples/` |
-
-## 已实现：交付目标随项目走
-
-worker 环境里的 `DSH_SUPERAGENT_GITHUB_REPOSITORY` 永远是面板那一个单值，而任务自带 `project`，
-两者可以指向不同项目且无任何标记。**曾因此把一个 `tools/pitfalls-manager` 的 PR 开到了
-`nihaoWX/bioagentforge`。**
-
-三条配置绕行路已实测堵死（关 github Source 会停在 `setupPending`；`spv` 声明同名变量只是并排渲染
-两行；编排器 API 锁死在配置仓库）。**已定方向：不与环境变量对抗，改为给 worker 一份它读得到的
-`AGENTS.md`，说明这个项目该不该推送。**
-
-2026-11-14 实现完毕：`dsh/prepare.sh` 由 `install.sh` 装进 preset 目录，面板的 prepare 命令指向它。
-它 clone 项目、按项目类型装受管 `AGENTS.md`、给 `tools/` 项目建私有 GitHub 远端并把工单的 `origin`
-指过去；`research/` 永不配远端。约束、行为与测试见 `docs/delivery-target.md`，
-可跑证据是 `scripts/test-prepare.sh`。
