@@ -155,7 +155,7 @@ Ticket 状态（progress 不转发；ready/blocked/failed 才上浮）
 | 模型路由 | `commandcode` / `deepseek/deepseek-v4-pro`（profile 的 `agent-default-model`） |
 | executor.directory | `/home/nihao/.dsh/state/superagent/work` |
 | executor.maxWorkers | 2 |
-| executor.prepare | `sh "$HOME/.dsh/.agent-presets/spv/prepare.sh"`：clone 项目 → 受管 `AGENTS.md` → `tools/` 的私有 GitHub 远端与工单 origin（见 `docs/delivery-target.md`） |
+| executor.prepare | `sh /home/nihao/.dsh/.agent-presets/spv/prepare.sh`（绝对路径，`DSH_*` 会被子进程环境剥掉）：clone 项目 → 受管 `AGENTS.md` → `tools/` 的私有 GitHub 远端与工单 origin（见 `docs/delivery-target.md`） |
 | 面板 | `http://127.0.0.1:3082/?token=<日志里的 token>` |
 
 `prepare` 项目选择：项目名随任务走（`spv_dispatch` 的 `project` 参数 → Trigger 的 `project` → `DSH_SUPERAGENT_SPV_PROJECT`）。`/home/nihao/bioagentforge/.superagent-project` 只作非 spv 任务的兜底；两者都没有时 Ticket 会在 prepare 阶段失败（设计如此）。
