@@ -3,8 +3,8 @@
 **这份文档记录这个方向的结论与实现。** 后续接手的 agent 读这一份就能明白现状，不必重新推导。
 
 **状态（2026-11-14）**：**已实现**。三部分：`install.sh` 把两份模板与 `prepare.sh` 装到
-`~/.dsh/.agent-presets/spv/`；面板的 prepare 命令改为
-`sh /home/nihao/.dsh/.agent-presets/spv/prepare.sh`（绝对路径）；
+`~/.dsh/.agent-presets/spv/`；面板的 prepare 命令改为 `wheelchair-agent prepare`（命令名，不是绝对
+路径——绝对路径是机器相关状态，换 `DSH_HOME` 后会静默失效，见 `ARCHITECTURE/cli.md`）；
 该脚本负责 clone、受管 `AGENTS.md`、以及 `tools/` 项目的私有 GitHub 远端。账本 `R2-F1` 的
 `deferred` 到此关闭。
 
@@ -112,10 +112,10 @@ worker 不会去开 PR。**但默认值仍是 PR**：任务没写清时，worker
 
 | 部分 | 位置 | 做什么 |
 |---|---|---|
-| 模板与脚本的安装 | `install.sh` 的 `render_into` | 把 `dsh/prepare.sh` 与 `docs/agentsmd-examples/*.md` 拷进 `~/.dsh/.agent-presets/spv/`（`prepare.sh` 与 `agentsmd-examples/`）；白名单与 `--check` 同步更新 |
-| 面板的 prepare 命令 | 面板 Settings → Execution | `sh <preset 目录>/prepare.sh` 的绝对路径（`install.sh` 结束时打印；已通过管理 API 保存）。**不能写 `$DSH_HOME`**：prepare 命令跑在子进程里，`DSH_*` 名字会被剥掉，引用会静默退回 |
-| 脚本本体 | `dsh/prepare.sh` | clone → 受管 `AGENTS.md` → `tools/` 的私有远端与工单 origin |
-| 可跑证据 | `scripts/test-prepare.sh` | 77 条断言，用假 `gh` + 本地裸仓库，不碰 github.com |
+| 模板与脚本的安装 | `install.sh` 的 `render_into` | 把 `commands/prepare.sh` 与 `docs/agentsmd-examples/*.md` 拷进 `~/.dsh/.agent-presets/spv/`（`prepare.sh` 与 `agentsmd-examples/`）；白名单与 `--check` 同步更新 |
+| 面板的 prepare 命令 | 面板 Settings → Execution | `wheelchair-agent prepare`（**命令名，不是绝对路径**；2026-11-14 经管理 API 保存，revision 8）。绝对路径是机器相关状态，换 `DSH_HOME` / 换用户名后会静默失效；命令名由服务进程的 PATH 解析，`install.sh --check` 读 `/proc/<pid>/environ` 验证它 |
+| 脚本本体 | `commands/prepare.sh` | clone → 受管 `AGENTS.md` → `tools/` 的私有远端与工单 origin |
+| 可跑证据 | `tests/test-prepare.sh` | 77 条断言，用假 `gh` + 本地裸仓库，不碰 github.com |
 
 `prepare.sh` 的行为，按顺序：
 
@@ -164,6 +164,6 @@ worker 不会去开 PR。**但默认值仍是 PR**：任务没写清时，worker
 | 完整调查（现象、7 组复现步骤、全部实测数字） | 报告已按流程消费后删除，原文取回：`git show 7dae586:docs/PITFALLS/wheelchair-agent-建议-仓库随项目走.md`（账本条目 `R2-F1` / `R3-F2`） |
 | 项目开发类 AGENTS.md 模板 | `docs/agentsmd-examples/proj-dev-agentsmd.md` |
 | 研究任务类 AGENTS.md 模板 | `docs/agentsmd-examples/research-task-agentsmd.md` |
-| prepare 命令本体 | `dsh/prepare.sh` |
-| prepare 命令的可跑证据 | `scripts/test-prepare.sh`（`sh scripts/test-prepare.sh`，77 条断言） |
+| prepare 命令本体 | `commands/prepare.sh` |
+| prepare 命令的可跑证据 | `tests/test-prepare.sh`（`sh tests/test-prepare.sh`，77 条断言） |
 | superagent 的交付契约与合并规则 | `tools/dsh-superagent/prompts/work.md`、`prompts/team/delivery.md` |

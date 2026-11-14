@@ -64,8 +64,8 @@ export function serviceDown(result) {
   return new Error(
     `the superagent service is not running (${result.reason}), so nothing would read the task you are about to ` +
       'dispatch. Its spv queue directory survives a stop, which is why this is checked against the health ' +
-      `endpoint and not against the directory. Start it with "superagent-service start" (or ` +
+      `endpoint and not against the directory. Start it with "wheelchair-agent service start" (or ` +
       `"python3 <bioagentforge>/tools/dsh-superagent/scripts/dsh-superagent start"), wait until ` +
-      `"superagent-service status" reports runtime ready at ${where}, then dispatch again.`,
+      `"wheelchair-agent service status" reports runtime ready at ${where}, then dispatch again.`,
   )
 }

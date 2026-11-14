@@ -1,7 +1,7 @@
 /**
  * The dsh plugin entry for `/spv-cron`.
  *
- * Separate from `src/spv-cron.js` because that file is pure logic and stays testable: it takes
+ * Separate from `src/spv/cron.js` because that file is pure logic and stays testable: it takes
  * injected functions instead of importing Node APIs. This file supplies the real ones.
  *
  * `isActive` shells out to systemctl rather than reading a state file, because systemd is the one
@@ -13,12 +13,12 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { apply as applyCore, inject as coreInject, name as coreName } from './src/spv-cron.js'
+import { apply as applyCore, inject as coreInject, name as coreName } from './cron.js'
 
 export const name = coreName
 export const inject = coreInject
 
-/** Ledger written by `scripts/jobctl.py`; the same default that script uses. */
+/** Ledger written by `commands/jobctl.py`; the same default that script uses. */
 const LEDGER = join(process.env.JOBCTL_STATE_DIR || join(homedir(), '.local', 'state', 'jobctl'), 'ledger.jsonl')
 
 /**

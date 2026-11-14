@@ -1,12 +1,12 @@
 /**
  * SPV agent 侧的工具从哪个目录读写文件队列。
  *
- * 队列是本包 `spv_*` 工具（SPV agent preset）与 superagent 侧（`src/spv.js`、`spv-watch.js`）之间**唯一**的接口，
- * 两侧必须指同一个目录，所以这里的规则与 `src/spv.js` 刻意保持一致：
+ * 队列是本包 `spv_*` 工具（SPV agent preset）与 superagent 侧（`src/superagent/spv.js`、`src/superagent/watch.js`）
+ * 之间**唯一**的接口，两侧必须指同一个目录，所以这里的规则与 `src/superagent/spv.js` 刻意保持一致：
  *
  *   <stateDir>/spv          stateDir = $DSH_SUPERAGENT_STATE_DIR，缺省 ~/.dsh/state/superagent
  *
- * `$SPV_QUEUE_DIR` 与插件自身的 `queueDir` 设置可覆盖它，与 `scripts/spv_send.py`、`scripts/spv_read.py` 相同。
+ * `$SPV_QUEUE_DIR` 与插件自身的 `queueDir` 设置可覆盖它。
  */
 import { homedir } from 'node:os'
 import { join } from 'node:path'

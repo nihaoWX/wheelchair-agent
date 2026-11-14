@@ -99,6 +99,31 @@ def unit_state(unit):
     return None
 
 
+def cli_path():
+    """Absolute path of the `wheelchair-agent` CLI, or None when it cannot be found.
+
+    The queue write goes through the CLI, not through a second Python implementation of the queue
+    format: two implementations would have to stay byte-compatible forever (ARCHITECTURE/cli.md).
+
+    Resolution order, most specific first:
+      1. $WHEELCHAIR_AGENT_CLI, for a test or a non-standard install;
+      2. <preset>/cli.js, the installed layout (this file is <preset>/commands/jobctl.py);
+      3. <checkout>/bin/wheelchair-agent.mjs, the development layout;
+      4. `wheelchair-agent` on PATH.
+
+    The handoff script runs under systemd, whose PATH is not the operator's shell PATH, so the
+    absolute paths come first: a bare command name would fail there even though it works by hand.
+    """
+    override = os.environ.get('WHEELCHAIR_AGENT_CLI')
+    if override:
+        return override
+    here = Path(__file__).resolve().parent
+    for candidate in (here.parent / 'cli.js', here.parent.parent / 'bin' / 'wheelchair-agent.mjs'):
+        if candidate.is_file():
+            return str(candidate)
+    return shutil.which('wheelchair-agent')
+
+
 def handoff_script(unit, project, thread, next_task):
     """Write the script systemd runs when the unit stops, and return its path.
 
@@ -107,8 +132,12 @@ def handoff_script(unit, project, thread, next_task):
     """
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     path = STATE_DIR / f'{unit}.handoff.sh'
-    send = Path(__file__).resolve().parent / 'spv_send.py'
-    args = ['python3', str(send), next_task, '--project', project, '--thread', thread]
+    cli = cli_path()
+    if cli is None:
+        raise FileNotFoundError(
+            'cannot find the wheelchair-agent CLI (looked for <preset>/cli.js, '
+            '<checkout>/bin/wheelchair-agent.mjs and `wheelchair-agent` on PATH)')
+    args = ['node', cli, 'dispatch', '--project', project, '--task', next_task, '--thread', thread]
     quoted = ' '.join(shlex.quote(part) for part in args)
     body = f"""#!/bin/bash
 # Written by jobctl for unit {unit}; run by systemd when the unit stops.
@@ -143,7 +172,10 @@ def cmd_submit(args):
         if not args.project or not args.thread:
             return fail('--next needs --project and --thread so the follow-up ticket knows where it belongs',
                         'add e.g. --project research/xxx --thread md-001', code=2)
-        script = handoff_script(unit, args.project, args.thread, args.next)
+        try:
+            script = handoff_script(unit, args.project, args.thread, args.next)
+        except FileNotFoundError as error:
+            return fail(str(error), 'reinstall it with: bash <bioagentforge>/tools/wheelchair-agent/install.sh')
         run += ['--property', f'ExecStopPost={script}']
     if args.working_directory:
         run += ['--property', f'WorkingDirectory={args.working_directory}']

@@ -1,6 +1,7 @@
-# 目标目录布局（2026-11-14 定案，待实现）
+# 目标目录布局（2026-11-14 定案，已实现）
 
 本文件是**实现契约**。worker 按此移动文件、改 import、改 `install.sh`；不要重新设计。
+实现落在 `agent/cli-restructure` 分支（PR #2），下面「目标布局」一节即当前布局。
 
 ## 为什么改
 
@@ -53,7 +54,7 @@ wheelchair-agent/
 2. `bin/wheelchair-agent.mjs` 不许 import `src/superagent/`（CLI 是操作者的工具，Source kind 是服务的）。
 3. `src/` 与 `bin/` 里任何文件不许 import `@deepseek-ai/*` 或任何 dsh 包。
 
-规则 3 的由来：`spv-tools.js` 头部注释已写明——本包是用户级 preset 引用的普通目录，不在 dsh 安装树里，
+规则 3 的由来：`src/spv/tools.js` 头部注释已写明——本包是用户级 preset 引用的普通目录，不在 dsh 安装树里，
 `@deepseek-ai/dsh-tools` 这个 bare specifier 从本包位置解析不到，preset 会整个 mount 失败。所以工具用
 原始 JSON Schema 注册，参数校验自己写。
 
@@ -105,6 +106,16 @@ CLI 薄壳把 preset 目录路径烧进去（和 `spv` 启动器同样的 `sed s
 |---|---|
 | `ARCHITECTURE/` | **保留**（操作者 2026-11-14 明确要求），本次按架构拆分内容进去 |
 | `scripts/__pycache__` | 现在靠 `.git/info/exclude` 排除，**不是 `.gitignore`**，新克隆会看到。写进 `.gitignore` |
-| `scripts/spv_send.py` / `spv_read.py` | **删除**。CLI 做出来后队列格式不该有两份实现（JS 一份、Python 一份），必须永远保持字节兼容 |
-| `index.js` | 删除（见上） |
+| `scripts/spv_send.py` / `spv_read.py` | **已删除**。CLI 做出来后队列格式不该有两份实现（JS 一份、Python 一份），必须永远保持字节兼容 |
+| `index.js` | 已删除（见上） |
 | `~/.dsh/profiles/dsh-tui/node_modules/wheelchair-agent` | 11-12 的真实目录副本（不是软链，只有 4 个文件），无任何 yml 引用。**仓库外，worker 不动**，由 SPV 处理 |
+
+## 实现时定下的两件事（契约没写，但必须选一个）
+
+1. **`jobctl` 的 `--next` 交接走 CLI，不再走 `spv_send.py`。** 那个脚本删掉后，`ExecStopPost` 脚本改成
+   `node <cli> dispatch --project … --task … --thread …`。CLI 路径按「`$WHEELCHAIR_AGENT_CLI` →
+   `<preset>/cli.js` → `<checkout>/bin/wheelchair-agent.mjs` → PATH」解析：systemd 的 PATH 不是操作者的
+   登录 shell PATH，所以绝对路径优先。
+2. **`preset/wheelchair-agent.sh` 是 CLI 薄壳的模板**，与 `spv-launcher.sh` 同样用 `@SPV_HOME@` 占位符。
+   安装后它是 `~/.local/bin/wheelchair-agent`，内容是 `exec node <preset>/cli.js "$@"`。不用软链：preset
+   目录是原子替换的，软链会短暂指向不存在的路径。

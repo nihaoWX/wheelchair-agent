@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Install the SPV preset and its launcher for the current user.
+# Install the SPV preset, the `wheelchair-agent` CLI and its compatibility commands for the current user.
 #
-# Installs three things (this project is not an agent tool, so there is no SKILL.md to copy):
+# Installs (this project is not an agent tool, so there is no SKILL.md to copy):
 #   1. the dsh agent preset  -> $DSH_HOME/.agent-presets/spv/
-#      (including prepare.sh and agentsmd-examples/, which the panel's prepare command uses)
-#   2. the launcher          -> ~/.local/bin/spv
-#   3. the service manager   -> ~/.local/bin/superagent-service
+#      (the preset ymls, the SPV-side JS, cli.js, prepare.sh, commands/ and agentsmd-examples/)
+#   2. the CLI               -> ~/.local/bin/wheelchair-agent   (the one entry point)
+#   3. compatibility names   -> ~/.local/bin/{spv,superagent-service,jobctl}
+#      (thin wrappers: `exec wheelchair-agent <subcommand> "$@"`)
 #
 # Design rules (references/tool-install.md):
 #   - nothing is hard-coded to one machine: paths derive from $HOME and this script's own directory;
@@ -23,11 +24,13 @@ DSH_HOME_DIR=${DSH_HOME:-$HOME/.dsh}
 PRESET_ROOT=$DSH_HOME_DIR/.agent-presets
 PRESET_DIR=$PRESET_ROOT/$PRESET_ID
 BIN_DIR=${SPV_BIN_DIR:-$HOME/.local/bin}
+CLI=$BIN_DIR/wheelchair-agent
 LAUNCHER=$BIN_DIR/spv
 SERVICE=$BIN_DIR/superagent-service
 JOBCTL=$BIN_DIR/jobctl
-TARGET_PLUGIN_URL="file://$PRESET_DIR/spv-tools.js"
-TARGET_CRON_URL="file://$PRESET_DIR/spv-cron-plugin.js"
+TARGET_PLUGIN_URL="file://$PRESET_DIR/src/spv/tools.js"
+TARGET_CRON_URL="file://$PRESET_DIR/src/spv/cron-plugin.js"
+SERVICE_PORT=${SPV_SERVICE_PORT:-3082}
 
 CHECK=0
 for arg in "$@"; do
@@ -79,42 +82,52 @@ require_dsh_tui() {
 
 # ------------------------------------------------------------------- rendering
 
-# Render the preset into $1: preset.yml, agent.cordis.yml, preset-default.patch.yml, spv-tools.js, src/,
-# prepare.sh and agentsmd-examples/.
+# Render the preset into $1.
+#
+# The preset directory is the installed SPV-side package: the rendered ymls, the SPV-side JS
+# (src/spv/, src/shared/), cli.js, prepare.sh, commands/ and agentsmd-examples/. The superagent-side
+# JS (src/superagent/) is deliberately absent: that profile loads it through its own node_modules link
+# and it never enters the preset directory (ARCHITECTURE/layout.md).
 #
 # prepare.sh and the two AGENTS.md templates are installed here because the panel's prepare command runs
 # from a user-level path, not from this development tree (docs/delivery-target.md, constraint 6).
 render_into() {
   local dest=$1 file
-  if ! mkdir -p "$dest/src" "$dest/agentsmd-examples"; then
+  if ! mkdir -p "$dest/src/shared" "$dest/src/spv" "$dest/commands" "$dest/agentsmd-examples"; then
     fail "cannot create the staging directories under $dest"
     fix 'check that the temporary directory is writable, then rerun this script'
     return 1
   fi
-  if ! node "$SELF_DIR/scripts/render-preset.mjs" "$SELF_DIR/dsh" "$TARGET_PLUGIN_URL" "$TARGET_CRON_URL" "$dest" >/dev/null; then
-    fail 'could not render the preset (scripts/render-preset.mjs failed)'
-    fix 'run "node tools/wheelchair-agent/scripts/render-preset.mjs dsh file://<dir>/spv-tools.js file://<dir>/spv-cron-plugin.js <dir>" to see the error'
+  if ! node "$SELF_DIR/build/render-preset.mjs" "$SELF_DIR/preset" "$TARGET_PLUGIN_URL" "$TARGET_CRON_URL" "$dest" >/dev/null; then
+    fail 'could not render the preset (build/render-preset.mjs failed)'
+    fix "run: node $SELF_DIR/build/render-preset.mjs $SELF_DIR/preset $TARGET_PLUGIN_URL $TARGET_CRON_URL <dir>"
     return 1
   fi
   # Every copy reports its own failure: a missing source file must not leave a half-installed preset that
   # the panel's prepare command then cannot run.
-  for file in spv-tools.js spv-cron-plugin.js; do
-    if ! cp "$SELF_DIR/$file" "$dest/$file"; then
-      fail "cannot copy $file from this checkout"
-      fix "check that $SELF_DIR/$file exists and is readable, then rerun this script"
-      return 1
-    fi
-  done
-  for file in queue.js paths.js dispatch.js outbox.js health.js spv-cron.js; do
+  if ! cp "$SELF_DIR/bin/wheelchair-agent.mjs" "$dest/cli.js"; then
+    fail 'cannot copy bin/wheelchair-agent.mjs to cli.js'
+    fix "check that $SELF_DIR/bin/wheelchair-agent.mjs exists and is readable, then rerun this script"
+    return 1
+  fi
+  for file in shared/queue.js shared/schema.js spv/check.js spv/cron-plugin.js spv/cron.js spv/dispatch.js spv/health.js spv/outbox.js spv/paths.js spv/tools.js; do
     if ! cp "$SELF_DIR/src/$file" "$dest/src/$file"; then
       fail "cannot copy src/$file from this checkout"
       fix "check that $SELF_DIR/src/$file exists and is readable, then rerun this script"
       return 1
     fi
   done
-  if ! cp "$SELF_DIR/dsh/prepare.sh" "$dest/prepare.sh"; then
-    fail 'cannot copy dsh/prepare.sh from this checkout'
-    fix "check that $SELF_DIR/dsh/prepare.sh exists and is readable, then rerun this script"
+  for file in jobctl.py superagent-service.py; do
+    if ! cp "$SELF_DIR/commands/$file" "$dest/commands/$file"; then
+      fail "cannot copy commands/$file from this checkout"
+      fix "check that $SELF_DIR/commands/$file exists and is readable, then rerun this script"
+      return 1
+    fi
+    chmod 0755 "$dest/commands/$file" || { fail "cannot make $dest/commands/$file executable"; return 1; }
+  done
+  if ! cp "$SELF_DIR/commands/prepare.sh" "$dest/prepare.sh"; then
+    fail 'cannot copy commands/prepare.sh from this checkout'
+    fix "check that $SELF_DIR/commands/prepare.sh exists and is readable, then rerun this script"
     return 1
   fi
   chmod 0755 "$dest/prepare.sh" || { fail "cannot make $dest/prepare.sh executable"; return 1; }
@@ -125,27 +138,40 @@ render_into() {
       return 1
     fi
   done
+  if ! render_launcher "$dest/spv-launcher.sh"; then
+    fail 'cannot render preset/spv-launcher.sh'
+    fix "check that $SELF_DIR/preset/spv-launcher.sh exists and is readable, then rerun this script"
+    return 1
+  fi
   return 0
 }
 
-# Render the launcher into $1 with the preset directory substituted for @SPV_HOME@.
+# Render the SPV launcher into $1 with the preset directory substituted for @SPV_HOME@.
 render_launcher() {
   local dest=$1
-  sed "s|@SPV_HOME@|$PRESET_DIR|g" "$SELF_DIR/dsh/spv-launcher.sh" > "$dest" || return 1
+  sed "s|@SPV_HOME@|$PRESET_DIR|g" "$SELF_DIR/preset/spv-launcher.sh" > "$dest" || return 1
   chmod 0755 "$dest"
 }
 
-# Render the service manager into $1: a straight copy, because it takes no substitutions.
-render_service() {
+# Render the CLI shell into $1: the preset directory is baked in, so the shell needs no lookup of its own.
+render_cli() {
   local dest=$1
-  cp "$SELF_DIR/scripts/superagent-service.py" "$dest" || return 1
+  sed "s|@SPV_HOME@|$PRESET_DIR|g" "$SELF_DIR/preset/wheelchair-agent.sh" > "$dest" || return 1
   chmod 0755 "$dest"
 }
 
-# Render jobctl into $1: also a straight copy.
-render_jobctl() {
-  local dest=$1
-  cp "$SELF_DIR/scripts/jobctl.py" "$dest" || return 1
+# Render one compatibility wrapper into $1: `exec wheelchair-agent <subcommand> "$@"`.
+#
+# The names stay because worker prompts, AGENTS.md and docs/ refer to them; the CLI subcommand is the
+# canonical form and these are the compatibility layer (ARCHITECTURE/cli.md).
+render_wrapper() {
+  local dest=$1 sub=$2
+  {
+    printf '#!/bin/sh\n'
+    printf '# Installed by wheelchair-agent/install.sh: a compatibility name for `wheelchair-agent %s`.\n' "$sub"
+    printf '# The CLI subcommand is the canonical form; this file exists because prompts and docs use the name.\n'
+    printf 'exec wheelchair-agent %s "$@"\n' "$sub"
+  } > "$dest" || return 1
   chmod 0755 "$dest"
 }
 
@@ -156,7 +182,7 @@ check_preset() {
   staged=$(mktemp -d) || { fail 'could not create a temporary directory'; return; }
   if ! render_into "$staged" >/dev/null 2>&1; then
     fail 'the preset sources cannot be rendered'
-    fix "run: node $SELF_DIR/scripts/render-preset.mjs dsh $TARGET_PLUGIN_URL $PRESET_DIR"
+    fix "run: node $SELF_DIR/build/render-preset.mjs $SELF_DIR/preset $TARGET_PLUGIN_URL $TARGET_CRON_URL $PRESET_DIR"
     rm -rf "$staged"
     return
   fi
@@ -174,7 +200,7 @@ check_preset() {
     fix 'run: bash tools/wheelchair-agent/install.sh'
   fi
   actual=$(find "$PRESET_DIR" -type f | sed "s|^$PRESET_DIR/||" | sort | tr '\n' ' ')
-  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md agentsmd-examples/research-task-agentsmd.md package.json prepare.sh preset-default.patch.yml preset.yml spv-cron-plugin.js spv-tools.js src/dispatch.js src/health.js src/outbox.js src/paths.js src/queue.js src/spv-cron.js "
+  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/queue.js src/shared/schema.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/dispatch.js src/spv/health.js src/spv/outbox.js src/spv/paths.js src/spv/tools.js "
   if [ "$actual" = "$expected" ]; then
     ok 'the installed preset holds only the whitelisted files'
   else
@@ -184,105 +210,106 @@ check_preset() {
   rm -rf "$staged"
 }
 
-check_prepare() {
-  local installed=$PRESET_DIR/prepare.sh
+# Compare one installed file with what this checkout would write there.
+check_rendered() {
+  local label=$1 installed=$2 render=$3 staged
   if [ ! -f "$installed" ]; then
-    fail "the prepare command is not installed at $installed"
+    fail "the $label is not installed at $installed"
     fix 'run: bash tools/wheelchair-agent/install.sh'
-  elif [ ! -x "$installed" ]; then
-    fail "the prepare command at $installed is not executable"
+    return
+  fi
+  if [ ! -x "$installed" ]; then
+    fail "the $label at $installed is not executable"
     fix "run: chmod 0755 $installed"
-  elif cmp -s "$SELF_DIR/dsh/prepare.sh" "$installed"; then
-    ok "prepare command matches its source ($installed)"
-  else
-    fail "the prepare command at $installed differs from this checkout"
-    fix 'run: bash tools/wheelchair-agent/install.sh'
-  fi
-  local file
-  for file in proj-dev-agentsmd.md research-task-agentsmd.md; do
-    if [ ! -f "$PRESET_DIR/agentsmd-examples/$file" ]; then
-      fail "the AGENTS.md template $file is not installed at $PRESET_DIR/agentsmd-examples/$file"
-      fix 'run: bash tools/wheelchair-agent/install.sh'
-    elif cmp -s "$SELF_DIR/docs/agentsmd-examples/$file" "$PRESET_DIR/agentsmd-examples/$file"; then
-      ok "AGENTS.md template $file matches its source"
-    else
-      fail "the AGENTS.md template $file at $PRESET_DIR/agentsmd-examples/$file differs from this checkout"
-      fix 'run: bash tools/wheelchair-agent/install.sh'
-    fi
-  done
-}
-
-check_launcher() {
-  if [ ! -f "$LAUNCHER" ]; then
-    fail "the launcher is not installed at $LAUNCHER"
-    fix 'run: bash tools/wheelchair-agent/install.sh'
     return
   fi
-  if [ ! -x "$LAUNCHER" ]; then
-    fail "the launcher at $LAUNCHER is not executable"
-    fix "run: chmod 0755 $LAUNCHER"
-    return
-  fi
-  local staged
   staged=$(mktemp) || { fail 'could not create a temporary file'; return; }
-  if ! render_launcher "$staged"; then
-    fail 'the launcher template cannot be rendered'
-    fix 'check that dsh/spv-launcher.sh exists in this checkout'
+  if ! "$render" "$staged"; then
+    fail "the $label cannot be rendered from this checkout"
     rm -f "$staged"
     return
   fi
-  if cmp -s "$staged" "$LAUNCHER"; then
-    ok "launcher matches its template ($LAUNCHER)"
+  if cmp -s "$staged" "$installed"; then
+    ok "$label matches this checkout ($installed)"
   else
-    fail "the launcher at $LAUNCHER differs from this checkout"
+    fail "the $label at $installed differs from this checkout"
     fix 'run: bash tools/wheelchair-agent/install.sh'
   fi
   rm -f "$staged"
+}
+
+check_cli() {
+  check_rendered 'CLI' "$CLI" render_cli
   case ":$PATH:" in
-    *":$BIN_DIR:"*) ok "$BIN_DIR is on PATH, so \"spv\" resolves" ;;
-    *) note "$BIN_DIR is not on PATH; add it to use the \"spv\" command, or call $LAUNCHER directly" ;;
+    *":$BIN_DIR:"*) ok "$BIN_DIR is on PATH, so \"wheelchair-agent\" resolves" ;;
+    *) note "$BIN_DIR is not on PATH; add it to use the \"wheelchair-agent\" command, or call $CLI directly" ;;
   esac
+}
+
+check_launcher() {
+  check_rendered 'SPV launcher' "$LAUNCHER" render_launcher
 }
 
 check_service() {
-  if [ ! -f "$SERVICE" ]; then
-    fail "the service manager is not installed at $SERVICE"
-    fix 'run: bash tools/wheelchair-agent/install.sh'
-    return
-  fi
-  if [ ! -x "$SERVICE" ]; then
-    fail "the service manager at $SERVICE is not executable"
-    fix "run: chmod 0755 $SERVICE"
-    return
-  fi
-  if cmp -s "$SELF_DIR/scripts/superagent-service.py" "$SERVICE"; then
-    ok "service manager matches its source ($SERVICE)"
-  else
-    fail "the service manager at $SERVICE differs from this checkout"
-    fix 'run: bash tools/wheelchair-agent/install.sh'
-  fi
-  case ":$PATH:" in
-    *":$BIN_DIR:"*) ok "$BIN_DIR is on PATH, so \"superagent-service\" resolves" ;;
-    *) note "$BIN_DIR is not on PATH; add it to use the \"superagent-service\" command" ;;
-  esac
+  check_rendered 'service manager wrapper' "$SERVICE" 'render_service_wrapper'
 }
 
 check_jobctl() {
-  if [ ! -f "$JOBCTL" ]; then
-    fail "jobctl is not installed at $JOBCTL"
-    fix 'run: bash tools/wheelchair-agent/install.sh'
+  check_rendered 'jobctl wrapper' "$JOBCTL" 'render_jobctl_wrapper'
+}
+
+render_service_wrapper() { render_wrapper "$1" service; }
+render_jobctl_wrapper() { render_wrapper "$1" jobctl; }
+
+# The PID of the running superagent service, or empty.
+#
+# Two sources, because neither alone is enough: `superagent-service status` knows the profile and the
+# configured port, while the listening socket is the runtime fact when the status output is unavailable.
+service_pid() {
+  local out pid
+  out=$("$SERVICE" status 2>/dev/null) || true
+  pid=$(printf '%s\n' "$out" | sed -n 's/^pids:[[:space:]]*//p' | tr -d ' ' | cut -d, -f1)
+  case $pid in ''|'(none)') pid='' ;; esac
+  if [ -z "$pid" ] && command -v ss >/dev/null 2>&1; then
+    pid=$(ss -lptnH "sport = :$SERVICE_PORT" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -1)
+  fi
+  printf '%s' "$pid"
+}
+
+# Verify the *service process's* PATH, not this shell's.
+#
+# The panel's prepare command is executed by the superagent service, so `wheelchair-agent` must resolve
+# inside that process. `$PATH` here says nothing about it: the service may have been started from a
+# different shell, or before BIN_DIR was added. /proc/<pid>/environ is the only place that answers it.
+#
+# A stopped service is not a failure: the operator may install before starting it. Say so and move on.
+check_service_path() {
+  local pid path entry found=0
+  pid=$(service_pid)
+  if [ -z "$pid" ]; then
+    note 'the superagent service is not running, so its PATH was not checked; start it and rerun --check'
     return
   fi
-  if [ ! -x "$JOBCTL" ]; then
-    fail "jobctl at $JOBCTL is not executable"
-    fix "run: chmod 0755 $JOBCTL"
+  if [ ! -r "/proc/$pid/environ" ]; then
+    note "cannot read /proc/$pid/environ for pid $pid, so the service PATH was not checked"
     return
   fi
-  if cmp -s "$SELF_DIR/scripts/jobctl.py" "$JOBCTL"; then
-    ok "jobctl matches its source ($JOBCTL)"
+  path=$(tr '\0' '\n' < "/proc/$pid/environ" | sed -n 's/^PATH=//p' | head -1)
+  if [ -z "$path" ]; then
+    fail "the service process (pid $pid) has no PATH in its environment"
+    fix 'restart it from a shell where PATH is set: wheelchair-agent service restart'
+    return
+  fi
+  local IFS=:
+  for entry in $path; do
+    if [ "$entry" = "$BIN_DIR" ]; then found=1; break; fi
+  done
+  unset IFS
+  if [ "$found" -eq 1 ]; then
+    ok "the service process (pid $pid) has $BIN_DIR on its PATH, so \"wheelchair-agent prepare\" resolves"
   else
-    fail "jobctl at $JOBCTL differs from this checkout"
-    fix 'run: bash tools/wheelchair-agent/install.sh'
+    fail "the service process (pid $pid) does not have $BIN_DIR on its PATH, so the panel's \"wheelchair-agent prepare\" would fail with command not found"
+    fix "add $BIN_DIR to the PATH the service is started with, then: wheelchair-agent service restart"
   fi
 }
 
@@ -324,72 +351,27 @@ install_preset() {
   return 1
 }
 
-install_launcher() {
-  local staged
+# Install one rendered file into BIN_DIR atomically; `$2` is the render function, `$3` its extra argument.
+install_bin() {
+  local target=$1 render=$2 extra=${3:-} staged
   mkdir -p "$BIN_DIR" || { fail "cannot create $BIN_DIR"; return 1; }
-  staged="$BIN_DIR/.spv.staged.$$"
-  if ! render_launcher "$staged"; then
+  staged="$BIN_DIR/.$(basename "$target").staged.$$"
+  if ! "$render" "$staged" "$extra"; then
     rm -f "$staged"
-    fail 'could not render the launcher'
+    fail "could not render $(basename "$target")"
     return 1
   fi
-  if [ -f "$LAUNCHER" ] && cmp -s "$staged" "$LAUNCHER"; then
+  if [ -f "$target" ] && cmp -s "$staged" "$target"; then
     rm -f "$staged"
-    ok "up to date: $LAUNCHER"
+    ok "up to date: $target"
     return 0
   fi
-  if mv -f "$staged" "$LAUNCHER"; then
-    ok "installed launcher: $LAUNCHER"
+  if mv -f "$staged" "$target"; then
+    ok "installed: $target"
     return 0
   fi
   rm -f "$staged"
-  fail "cannot move the staged launcher into $LAUNCHER"
-  return 1
-}
-
-install_service() {
-  local staged
-  mkdir -p "$BIN_DIR" || { fail "cannot create $BIN_DIR"; return 1; }
-  staged="$BIN_DIR/.superagent-service.staged.$$"
-  if ! render_service "$staged"; then
-    rm -f "$staged"
-    fail 'could not render the service manager'
-    return 1
-  fi
-  if [ -f "$SERVICE" ] && cmp -s "$staged" "$SERVICE"; then
-    rm -f "$staged"
-    ok "up to date: $SERVICE"
-    return 0
-  fi
-  if mv -f "$staged" "$SERVICE"; then
-    ok "installed service manager: $SERVICE"
-    return 0
-  fi
-  rm -f "$staged"
-  fail "cannot move the staged service manager into $SERVICE"
-  return 1
-}
-
-install_jobctl() {
-  local staged
-  mkdir -p "$BIN_DIR" || { fail "cannot create $BIN_DIR"; return 1; }
-  staged="$BIN_DIR/.jobctl.staged.$$"
-  if ! render_jobctl "$staged"; then
-    rm -f "$staged"
-    fail 'could not render jobctl'
-    return 1
-  fi
-  if [ -f "$JOBCTL" ] && cmp -s "$staged" "$JOBCTL"; then
-    rm -f "$staged"
-    ok "up to date: $JOBCTL"
-    return 0
-  fi
-  if mv -f "$staged" "$JOBCTL"; then
-    ok "installed jobctl: $JOBCTL"
-    return 0
-  fi
-  rm -f "$staged"
-  fail "cannot move the staged jobctl into $JOBCTL"
+  fail "cannot move the staged file into $target"
   return 1
 }
 
@@ -398,10 +380,11 @@ install_jobctl() {
 if [ "$CHECK" -eq 1 ]; then
   check_prerequisites
   check_preset
-  check_prepare
+  check_cli
   check_launcher
   check_service
   check_jobctl
+  check_service_path
   if [ "$PROBLEMS" -gt 0 ]; then
     printf '\n%d check(s) failed.\n' "$PROBLEMS"
     exit 2
@@ -420,9 +403,10 @@ if ! require_dsh_tui; then
 fi
 
 install_preset
-install_launcher
-install_service
-install_jobctl
+install_bin "$CLI" render_cli
+install_bin "$LAUNCHER" render_launcher
+install_bin "$SERVICE" render_service_wrapper
+install_bin "$JOBCTL" render_jobctl_wrapper
 
 if [ "$PROBLEMS" -gt 0 ]; then
   printf '\n%d step(s) failed.\n' "$PROBLEMS"
@@ -430,13 +414,13 @@ if [ "$PROBLEMS" -gt 0 ]; then
 fi
 
 printf '\nDone. Start the superagent service, then the SPV session:\n'
-printf '  superagent-service start   # the backend that executes tickets\n'
-printf '  spv                        # the agent you talk to\n'
+printf '  wheelchair-agent service start   # the backend that executes tickets\n'
+printf '  wheelchair-agent spv             # the agent you talk to\n'
 # Only when the preset really landed: printing a command for a file that is not there would send the
 # operator to a prepare command that fails on every ticket.
 if [ -f "$PRESET_DIR/prepare.sh" ]; then
-  # The absolute path, not $DSH_HOME: the prepare command runs with the execution environment's variables,
-  # and DSH_* names are stripped from a child environment, so a $DSH_HOME reference would silently fall back.
+  # The command name, not an absolute path: the panel value must survive a changed DSH_HOME or user name,
+  # and the service process's PATH is what resolves it (checked by --check).
   printf '\nPaste this into the panel (Settings -> Execution -> Prepare command):\n'
-  printf '  sh %s/prepare.sh\n' "$PRESET_DIR"
+  printf '  wheelchair-agent prepare\n'
 fi

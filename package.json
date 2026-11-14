@@ -4,26 +4,26 @@
   "private": true,
   "description": "A dsh-superagent Source plugin (`spv`) that lets a local entry session dispatch work through a plain file queue, with no GitHub or Feishu dependency.",
   "type": "module",
-  "main": "index.js",
   "exports": {
-    ".": "./index.js",
-    "./spv-watch": "./spv-watch.js",
-    "./spv-tools": "./spv-tools.js",
-    "./queue": "./src/queue.js",
-    "./spv": "./src/spv.js",
+    "./spv-watch": "./src/superagent/watch.js",
+    "./spv-tools": "./src/spv/tools.js",
+    "./spv-cron-plugin": "./src/spv/cron-plugin.js",
+    "./queue": "./src/shared/queue.js",
+    "./spv": "./src/superagent/spv.js",
     "./package.json": "./package.json"
   },
   "files": [
-    "index.js",
-    "spv-watch.js",
-    "spv-tools.js",
+    "bin",
     "src",
-    "scripts",
-    "docs",
-    "dsh"
+    "preset",
+    "commands",
+    "build",
+    "tests",
+    "docs"
   ],
   "scripts": {
-    "check": "node --check index.js && node --check spv-watch.js && node --check spv-tools.js && node --check src/spv.js && node --check src/queue.js && node --check src/paths.js && node --check src/dispatch.js && node --check src/outbox.js"
+    "check": "node --check bin/wheelchair-agent.mjs && node --check src/superagent/watch.js && node --check src/superagent/spv.js && node --check src/spv/tools.js && node --check src/spv/cron-plugin.js && node --check src/spv/cron.js && node --check src/spv/check.js && node --check src/spv/dispatch.js && node --check src/spv/outbox.js && node --check src/spv/paths.js && node --check src/spv/health.js && node --check src/shared/queue.js && node --check src/shared/schema.js && node --check build/render-preset.mjs",
+    "test": "bash tests/test-layout.sh && sh tests/test-prepare.sh"
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0"

@@ -9,13 +9,13 @@
  *   addressed: 'mention'      it addresses the agent
  *   actor.id in policy.allowed
  *
- * The queue holds one JSON task per file; `scripts/spv_send.py` writes it and `src/queue.js` documents the layout.
+ * The queue holds one JSON task per file; `src/spv/dispatch.js` writes it and `src/shared/queue.js` documents the layout.
  */
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
-import { integer, object, records, text } from './schema.js'
-import { dirsOf, writeMessage } from './queue.js'
+import { integer, object, records, text } from '../shared/schema.js'
+import { dirsOf, writeMessage } from '../shared/queue.js'
 
 /** The Source kind id: the trigger `source`, the thread-key prefix, the settings block and the policy key. */
 export const SOURCE = 'spv'

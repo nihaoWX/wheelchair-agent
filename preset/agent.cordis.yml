@@ -11,10 +11,10 @@
 # 派活与收结果；每多挂一个工具，模型就多一条跑偏的路。
 # 唯一破例的是 compaction（见下文）：它不是给模型多一条路，而是让长会话不至于撞上限。
 #
-# 下面 spv-tools 行的 name 是 `@SPV_PLUGIN@` 占位符：安装器把它换成 `file://<安装目录>/spv-tools.js`。
+# 下面 spv-tools 行的 name 是 `@SPV_PLUGIN@` 占位符：安装器把它换成 `file://<安装目录>/src/spv/tools.js`。
 # 为什么不用包名：preset 的声明来自 dsh profile 的 patch 层，那一层的模块解析基址是 profile 目录，
 # `wheelchair-agent` 不在 dsh 的安装树里，bare specifier 会 MODULE_NOT_FOUND，整个 preset mount 失败
-# 且错误只表现为 "never started"。file URL 不依赖任何解析表（详见 dsh/README.md）。
+# 且错误只表现为 "never started"。file URL 不依赖任何解析表（详见 preset/README.md）。
 
 # ── 身份 ────────────────────────────────────────────────────────────────────
 

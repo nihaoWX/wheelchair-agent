@@ -29,26 +29,33 @@ fi
 
 # 确保后端在跑。status 的退出码语义：0 正常、1 未运行或不健康、2 组件报错、3 等 setup。
 # 只有 0 才跳过 start；其余都试一次 start，让脚本自己决定能不能救回来。
+#
+# 优先用 `wheelchair-agent service`（规范形式），退回 `superagent-service`（兼容名）：两者是同一个
+# 实现，但只有前者在 CLI 装好时一定存在，而本脚本也可能被单独调用。
 ensure_service() {
-  if ! command -v superagent-service >/dev/null 2>&1; then
-    echo 'warning: superagent-service is not on PATH, so the backend was not started.' >&2
+  if command -v wheelchair-agent >/dev/null 2>&1; then
+    SERVICE_CMD='wheelchair-agent service'
+  elif command -v superagent-service >/dev/null 2>&1; then
+    SERVICE_CMD='superagent-service'
+  else
+    echo 'warning: neither wheelchair-agent nor superagent-service is on PATH, so the backend was not started.' >&2
     echo 'warning: tasks dispatched from this session will fail until it is running.' >&2
     echo 'warning: install it with: bash <bioagentforge>/tools/wheelchair-agent/install.sh' >&2
     return 0
   fi
 
-  if superagent-service status >/dev/null 2>&1; then
+  if $SERVICE_CMD status >/dev/null 2>&1; then
     return 0
   fi
 
   echo 'superagent: starting the backend...' >&2
-  if superagent-service start >/dev/null 2>&1; then
+  if $SERVICE_CMD start >/dev/null 2>&1; then
     echo 'superagent: ready' >&2
     return 0
   fi
 
   echo 'warning: superagent did not start, so no task dispatched here would run.' >&2
-  echo 'warning: diagnose with "superagent-service status", then restart this session.' >&2
+  echo "warning: diagnose with \"$SERVICE_CMD status\", then restart this session." >&2
   return 0
 }
 

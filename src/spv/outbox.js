@@ -4,7 +4,7 @@
  * 只关心两种 kind：`reply`（含工单结果）与 `notice`。`acknowledgement` 不算结果，它是"接单了"，交给 `spv_status` 展示即可。
  *
  * 消费标记沿用本包既有约定：`rename(outbox/x.json → outbox/read/x.json)` 是原子的"已读"，所以同一条消息不会被读两次，
- * 跨进程也成立（`scripts/spv_read.py --consume` 用的是同一个目录）。
+ * 跨进程也成立（`spv_result` 工具与 `wheelchair-agent result` 用的是同一个目录）。
  */
 import { mkdir, readFile, readdir, rename, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
@@ -90,7 +90,7 @@ export async function waitForResult(dirs, { thread, timeoutSeconds, signal }) {
         `no reply on thread "${thread}" within ${timeoutSeconds}s: the task may still be queued, still running, or ` +
           'failed before answering. Call spv_status (no arguments) to see what is still pending and which messages ' +
           'arrived unclaimed, then call spv_result again with a larger timeout. To inspect the queue yourself: ' +
-          `"python3 tools/wheelchair-agent/scripts/spv_read.py --queue ${dirs.root}".`,
+          `"wheelchair-agent status" (queue root ${dirs.root}).`,
       )
     }
     // 睡到下一个检查点，但不越过 deadline；取消由循环顶部的 signal 检查负责。

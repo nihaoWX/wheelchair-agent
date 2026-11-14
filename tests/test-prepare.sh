@@ -1,15 +1,15 @@
 #!/bin/sh
-# Exercise dsh/prepare.sh end to end in a throwaway sandbox.
+# Exercise commands/prepare.sh end to end in a throwaway sandbox.
 #
 # It never touches github.com: the create path runs against a fake `gh` on PATH and a git
 # `url.<base>.insteadOf` that redirects https://github.com/<owner>/ to local bare repositories. Every
 # case asserts on the resulting git state, not on the script's own output.
 #
-# Usage: sh scripts/test-prepare.sh [--keep]
+# Usage: sh tests/test-prepare.sh [--keep]
 #   --keep   leave the sandbox in place and print its path
 # Exit status: 0 when every case passes, 1 otherwise.
 #
-# The assertions are checked against mutations of dsh/prepare.sh: dropping the stale-AGENTS.md overwrite,
+# The assertions are checked against mutations of commands/prepare.sh: dropping the stale-AGENTS.md overwrite,
 # creating the repository --public, skipping the origin rewrite, giving research/ a remote, skipping the
 # AGENTS.md install, skipping the collision checks, and dropping the traceability log each turn at least
 # one case red. A case that cannot fail is not evidence.
@@ -17,7 +17,7 @@ set -u
 
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)
 REPO=$(CDPATH= cd -- "$SELF_DIR/.." && pwd -P)
-PREPARE=$REPO/dsh/prepare.sh
+PREPARE=$REPO/commands/prepare.sh
 TEMPLATES=$REPO/docs/agentsmd-examples
 KEEP=0
 [ "${1:-}" = "--keep" ] && KEEP=1
