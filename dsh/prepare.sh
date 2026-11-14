@@ -213,6 +213,8 @@ if [ "$KIND" = tools ]; then
     BRANCH=$(git -C "$SRC" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
     HAS_COMMITS=0
     git -C "$SRC" rev-parse --verify HEAD >/dev/null 2>&1 && HAS_COMMITS=1
+    # A detached HEAD still has commits worth pushing; the new repository has no branch to conflict with.
+    if [ "$HAS_COMMITS" = 1 ] && [ -z "$BRANCH" ]; then BRANCH=main; fi
     if gh repo view "$REPO" --json name >/dev/null 2>&1; then
       # A previous run may have created the repository and failed before adding the remote. Adopt it only
       # when it is ours, private and still empty; anything else is a collision the operator must resolve.

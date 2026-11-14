@@ -315,6 +315,17 @@ check '(p) the local origin was kept as a second remote' \
   https://github.com/testowner/local-origin.git
 check '(p) the ticket origin is the GitHub URL' "$(origin_of "$SB/work/p")" https://github.com/testowner/local-origin.git
 
+# (q) a project on a detached HEAD still gets its commits pushed, to main.
+git init -q -b main "$SB/projects/tools/detached"
+printf 'm\n' > "$SB/projects/tools/detached/m.txt"
+git -C "$SB/projects/tools/detached" add -A
+git -C "$SB/projects/tools/detached" -c user.name=t -c user.email=t@t commit -qm init
+git -C "$SB/projects/tools/detached" checkout -q --detach HEAD
+run tools/detached q
+check '(q) exit status' "$?" 0
+check '(q) the detached commits were pushed to main' "$(git -C "$SB/remotes/detached.git" branch --list main)" '  main'
+check '(q) the ticket origin is the GitHub URL' "$(origin_of "$SB/work/q")" https://github.com/testowner/detached.git
+
 # (k) a missing template fails at agentsmd instead of leaving the Ticket without rules.
 run tools/with-remote k SPV_PREPARE_TEMPLATES=/nonexistent
 check '(k) exit status' "$?" 1
