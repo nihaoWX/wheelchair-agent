@@ -48,6 +48,10 @@
   都不含 `spv-tools`。
 - **install 验收**：首次装、重跑幂等（`up to date`）、改源后 `--check` = exit 2、还原后 = exit 0、
   已装目录无开发侧文件。
+- **交付目标随项目走**（2026-11-14）：`install.sh` 把 `dsh/prepare.sh` 与两份 `AGENTS.md` 模板装进
+  `~/.dsh/.agent-presets/spv/`（白名单与 `--check` 同步）；面板 prepare 命令改为指向它（已通过管理
+  API 保存，revision 4）。脚本行为：clone → 受管 `AGENTS.md`（缺失装、过期覆盖、不进 `git status`）
+  → `tools/` 私有远端与工单 `origin`；`research/` 永不配远端。`scripts/test-prepare.sh` 51 条断言全过。
 
 # In Progress
 
@@ -55,11 +59,14 @@
 
 # Known Issues
 
-- **交付目标不随项目走**（**下一个接手者最该先处理这个**）：worker 环境里的
-  `DSH_SUPERAGENT_GITHUB_REPOSITORY` 永远是面板那一个单值，与任务自带的 `project` 可以矛盾且无标记。
-  曾因此把 `tools/pitfalls-manager` 的 PR 开到 `nihaoWX/bioagentforge`（PR #1）。
-  三条配置绕行路已实测堵死，**已定方向：给 worker 一份它读得到的 `AGENTS.md`**，模板已备。
+- **交付目标随项目走已实现（2026-11-14）**：`dsh/prepare.sh` 由 `install.sh` 装进 preset 目录，
+  面板的 prepare 命令已改为 `sh "$HOME/.dsh/.agent-presets/spv/prepare.sh"`。它 clone 项目、按项目
+  类型装受管 `AGENTS.md`、给 `tools/` 项目建私有 GitHub 远端并把工单 `origin` 指过去；`research/`
+  永不配远端。证据：`scripts/test-prepare.sh`（51 条断言，假 `gh` + 本地裸仓库）。
   详见 `docs/delivery-target.md`。
+- **`tools/` 下 14 个项目会在第一次派活时被自动建私有仓库**：这是设计如此（约束 1/2），但意味着
+  第一次派活会创建外部状态。创建/接管/推送都写 `~/.dsh/state/superagent/prepare.log`。
+  名字在 GitHub 上已被占用且非空（或公开）时脚本会拒绝并让人处理，不会擅自接管。
 - **SPV 遇上游 API error 停下**（`R1` 记了现象，2026-11-14 由 `R3-F1` 确认根因并裁决 `wontfix`）：
   真实报错的 code 是 `TRANSPORT`，**在** provider 白名单里；先动手的是 provider 自己的
   `agent/request-error` 监听器——它用独立的 `transportMaxRetries`（默认 5）吸收前 5 次失败，第 6 次
@@ -130,10 +137,9 @@ jobctl cancel md-001
 
 接手后的推荐顺序：
 
-1. **实现交付目标随项目走**（`docs/delivery-target.md`）：先把两份 `AGENTS.md` 模板铺到
-   `tools/*/` 与 `research/*/`，再让派发侧受管地维护它们。注意模板里已写明的 6 条约束，
-   特别是「只能建私有仓库」和「`research/` 不该被配上远端」。
-2. 给 `tools/` 下缺远端的那 15 个项目建私有 GitHub 仓库（用户自己的事，不是 agent 的）。
+1. ~~实现交付目标随项目走~~（2026-11-14 完成，见 `docs/delivery-target.md`）。
+2. 观察第一次真实派活：`tools/` 下缺远端的项目会被自动建私有仓库，检查
+   `~/.dsh/state/superagent/prepare.log` 与工单 `origin` 是否符合预期。
 3. 收缩 worker 的目录约束（prompt 层或项目 `AGENTS.md`）。
 4. 视消耗决定是否给 worker 换更便宜的模型。
 5. 稳定后再考虑 `accept mode` 从 `observe` → `auto`。

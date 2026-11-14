@@ -3,6 +3,7 @@
 #
 # Installs three things (this project is not an agent tool, so there is no SKILL.md to copy):
 #   1. the dsh agent preset  -> $DSH_HOME/.agent-presets/spv/
+#      (including prepare.sh and agentsmd-examples/, which the panel's prepare command uses)
 #   2. the launcher          -> ~/.local/bin/spv
 #   3. the service manager   -> ~/.local/bin/superagent-service
 #
@@ -78,10 +79,14 @@ require_dsh_tui() {
 
 # ------------------------------------------------------------------- rendering
 
-# Render the preset into $1: preset.yml, agent.cordis.yml, preset-default.patch.yml, spv-tools.js, src/.
+# Render the preset into $1: preset.yml, agent.cordis.yml, preset-default.patch.yml, spv-tools.js, src/,
+# prepare.sh and agentsmd-examples/.
+#
+# prepare.sh and the two AGENTS.md templates are installed here because the panel's prepare command runs
+# from a user-level path, not from this development tree (docs/delivery-target.md, constraint 6).
 render_into() {
   local dest=$1
-  mkdir -p "$dest/src" || return 1
+  mkdir -p "$dest/src" "$dest/agentsmd-examples" || return 1
   if ! node "$SELF_DIR/scripts/render-preset.mjs" "$SELF_DIR/dsh" "$TARGET_PLUGIN_URL" "$TARGET_CRON_URL" "$dest" >/dev/null; then
     fail 'could not render the preset (scripts/render-preset.mjs failed)'
     fix 'run "node tools/wheelchair-agent/scripts/render-preset.mjs dsh file://<dir>/spv-tools.js file://<dir>/spv-cron-plugin.js <dir>" to see the error'
@@ -92,6 +97,11 @@ render_into() {
   local file
   for file in queue.js paths.js dispatch.js outbox.js health.js spv-cron.js; do
     cp "$SELF_DIR/src/$file" "$dest/src/$file" || return 1
+  done
+  cp "$SELF_DIR/dsh/prepare.sh" "$dest/prepare.sh" || return 1
+  chmod 0755 "$dest/prepare.sh"
+  for file in proj-dev-agentsmd.md research-task-agentsmd.md; do
+    cp "$SELF_DIR/docs/agentsmd-examples/$file" "$dest/agentsmd-examples/$file" || return 1
   done
   return 0
 }
@@ -142,7 +152,7 @@ check_preset() {
     fix 'run: bash tools/wheelchair-agent/install.sh'
   fi
   actual=$(find "$PRESET_DIR" -type f | sed "s|^$PRESET_DIR/||" | sort | tr '\n' ' ')
-  local expected="agent.cordis.yml package.json preset-default.patch.yml preset.yml spv-cron-plugin.js spv-tools.js src/dispatch.js src/health.js src/outbox.js src/paths.js src/queue.js src/spv-cron.js "
+  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md agentsmd-examples/research-task-agentsmd.md package.json prepare.sh preset-default.patch.yml preset.yml spv-cron-plugin.js spv-tools.js src/dispatch.js src/health.js src/outbox.js src/paths.js src/queue.js src/spv-cron.js "
   if [ "$actual" = "$expected" ]; then
     ok 'the installed preset holds only the whitelisted files'
   else
@@ -150,6 +160,34 @@ check_preset() {
     fix 'delete them, or rerun: bash tools/wheelchair-agent/install.sh'
   fi
   rm -rf "$staged"
+}
+
+check_prepare() {
+  local installed=$PRESET_DIR/prepare.sh
+  if [ ! -f "$installed" ]; then
+    fail "the prepare command is not installed at $installed"
+    fix 'run: bash tools/wheelchair-agent/install.sh'
+  elif [ ! -x "$installed" ]; then
+    fail "the prepare command at $installed is not executable"
+    fix "run: chmod 0755 $installed"
+  elif cmp -s "$SELF_DIR/dsh/prepare.sh" "$installed"; then
+    ok "prepare command matches its source ($installed)"
+  else
+    fail "the prepare command at $installed differs from this checkout"
+    fix 'run: bash tools/wheelchair-agent/install.sh'
+  fi
+  local file
+  for file in proj-dev-agentsmd.md research-task-agentsmd.md; do
+    if [ ! -f "$PRESET_DIR/agentsmd-examples/$file" ]; then
+      fail "the AGENTS.md template $file is not installed at $PRESET_DIR/agentsmd-examples/$file"
+      fix 'run: bash tools/wheelchair-agent/install.sh'
+    elif cmp -s "$SELF_DIR/docs/agentsmd-examples/$file" "$PRESET_DIR/agentsmd-examples/$file"; then
+      ok "AGENTS.md template $file matches its source"
+    else
+      fail "the AGENTS.md template $file at $PRESET_DIR/agentsmd-examples/$file differs from this checkout"
+      fix 'run: bash tools/wheelchair-agent/install.sh'
+    fi
+  done
 }
 
 check_launcher() {
@@ -336,6 +374,7 @@ install_jobctl() {
 if [ "$CHECK" -eq 1 ]; then
   check_prerequisites
   check_preset
+  check_prepare
   check_launcher
   check_service
   check_jobctl
@@ -369,3 +408,5 @@ fi
 printf '\nDone. Start the superagent service, then the SPV session:\n'
 printf '  superagent-service start   # the backend that executes tickets\n'
 printf '  spv                        # the agent you talk to\n'
+printf '\nPaste this into the panel (Settings -> Execution -> Prepare command):\n'
+printf '  sh %s/prepare.sh\n' "$PRESET_DIR"

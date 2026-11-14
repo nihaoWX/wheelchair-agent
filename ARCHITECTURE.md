@@ -69,18 +69,20 @@ tools/wheelchair-agent/          # 本项目（独立 git 仓库）
 ├── dsh/                         # 【SPV 侧】agent preset 定义（装到 ~/.dsh/.agent-presets/spv/）
 │   ├── preset.yml
 │   ├── agent.cordis.yml         # 工具面 + compaction 组
-│   └── spv-launcher.sh          # 启动器模板（先拉起服务，再开 TUI）
-├── install.sh                   # 装 preset + spv 启动器 + superagent-service + jobctl；带 --check
+│   ├── spv-launcher.sh          # 启动器模板（先拉起服务，再开 TUI）
+│   └── prepare.sh               # 面板的 prepare 命令：clone + 受管 AGENTS.md + 私有远端
+├── install.sh                   # 装 preset（含 prepare.sh 与模板）+ spv 启动器 + superagent-service + jobctl；带 --check
 ├── scripts/
 │   ├── superagent-service.py    # 服务启停（不依赖进程名）+ open 面板
 │   ├── jobctl.py                # 长任务交给 systemd 持有（submit/status/log/verify/cancel）
 │   ├── render-preset.mjs        # 渲染 preset 与 patch
+│   ├── test-prepare.sh          # prepare.sh 的可跑证据（假 gh + 本地裸仓库，不碰 github.com）
 │   ├── spv_send.py              # 过渡用 CLI（正路是 SPV 工具）
 │   └── spv_read.py              # 过渡用 CLI
 └── docs/
     ├── spv-source.md            # spv Source 设计与踩坑
-    ├── delivery-target.md       # 交付目标随项目走（未实现的方向与约束）
-    ├── agentsmd-examples/       # worker 用的两份 AGENTS.md 模板
+    ├── delivery-target.md       # 交付目标随项目走（已实现：约束、行为、测试）
+    ├── agentsmd-examples/       # worker 用的两份 AGENTS.md 模板（install.sh 装到 preset 目录）
     └── PITFALLS/                # 报告（消费完即删，原文在 git）
 
 /home/nihao/bioagentforge/
@@ -153,7 +155,7 @@ Ticket 状态（progress 不转发；ready/blocked/failed 才上浮）
 | 模型路由 | `commandcode` / `deepseek/deepseek-v4-pro`（profile 的 `agent-default-model`） |
 | executor.directory | `/home/nihao/.dsh/state/superagent/work` |
 | executor.maxWorkers | 2 |
-| executor.prepare | 读任务自带的 `DSH_SUPERAGENT_SPV_PROJECT`，`git clone --no-hardlinks <项目>` 到 worker 目录 |
+| executor.prepare | `sh "$HOME/.dsh/.agent-presets/spv/prepare.sh"`：clone 项目 → 受管 `AGENTS.md` → `tools/` 的私有 GitHub 远端与工单 origin（见 `docs/delivery-target.md`） |
 | 面板 | `http://127.0.0.1:3082/?token=<日志里的 token>` |
 
 `prepare` 项目选择：项目名随任务走（`spv_dispatch` 的 `project` 参数 → Trigger 的 `project` → `DSH_SUPERAGENT_SPV_PROJECT`）。`/home/nihao/bioagentforge/.superagent-project` 只作非 spv 任务的兜底；两者都没有时 Ticket 会在 prepare 阶段失败（设计如此）。
@@ -166,10 +168,10 @@ Ticket 状态（progress 不转发；ready/blocked/failed 才上浮）
 | DSH 安装与 GOAT 接入 | `docs/setup/dsh-commandcode.md` |
 | superagent 源码 | `tools/dsh-superagent/`（独立仓库） |
 | **spv Source 设计与踩坑** | **`docs/spv-source.md`** |
-| **交付目标：仓库随项目走（未实现）** | **`docs/delivery-target.md`** |
+| **交付目标：仓库随项目走（已实现）** | **`docs/delivery-target.md`** |
 | AGENTS.md 模板（项目开发 / 研究任务） | `docs/agentsmd-examples/` |
 
-## 未实现：交付目标随项目走
+## 已实现：交付目标随项目走
 
 worker 环境里的 `DSH_SUPERAGENT_GITHUB_REPOSITORY` 永远是面板那一个单值，而任务自带 `project`，
 两者可以指向不同项目且无任何标记。**曾因此把一个 `tools/pitfalls-manager` 的 PR 开到了
@@ -177,7 +179,9 @@ worker 环境里的 `DSH_SUPERAGENT_GITHUB_REPOSITORY` 永远是面板那一个�
 
 三条配置绕行路已实测堵死（关 github Source 会停在 `setupPending`；`spv` 声明同名变量只是并排渲染
 两行；编排器 API 锁死在配置仓库）。**已定方向：不与环境变量对抗，改为给 worker 一份它读得到的
-`AGENTS.md`，说明这个项目该不该推送。** 详见 `docs/delivery-target.md`，模板在
-`docs/agentsmd-examples/`。
+`AGENTS.md`，说明这个项目该不该推送。**
 
-**尚未实现**——本节只是把结论和约束固定下来，避免下一个 agent 重新推导。
+2026-11-14 实现完毕：`dsh/prepare.sh` 由 `install.sh` 装进 preset 目录，面板的 prepare 命令指向它。
+它 clone 项目、按项目类型装受管 `AGENTS.md`、给 `tools/` 项目建私有 GitHub 远端并把工单的 `origin`
+指过去；`research/` 永不配远端。约束、行为与测试见 `docs/delivery-target.md`，
+可跑证据是 `scripts/test-prepare.sh`。

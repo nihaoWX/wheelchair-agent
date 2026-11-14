@@ -23,8 +23,19 @@ bash tools/wheelchair-agent/install.sh --check  # 只读自检，任一不满足
 
 装两样东西：
 
-1. `~/.dsh/.agent-presets/spv/` —— `preset.yml`、`agent.cordis.yml`、`preset-default.patch.yml`、`spv-tools.js`、`src/`
+1. `~/.dsh/.agent-presets/spv/` —— `preset.yml`、`agent.cordis.yml`、`preset-default.patch.yml`、`spv-tools.js`、`src/`，
+   以及 `prepare.sh` 与 `agentsmd-examples/`（面板的 prepare 命令用它们）
 2. `~/.local/bin/spv` —— 启动器
+
+装完会打印面板要用的 prepare 命令：
+
+```sh
+sh "$HOME/.dsh/.agent-presets/spv/prepare.sh"
+```
+
+把它填进面板的 Settings → Execution → Prepare command。它负责 clone 项目、按项目类型装受管
+`AGENTS.md`、给 `tools/` 项目建私有 GitHub 远端并把工单的 `origin` 指过去；`research/` 永不配远端。
+行为与约束见 `docs/delivery-target.md`，可跑证据是 `scripts/test-prepare.sh`。
 
 前置：`dsh-tui` 在 `PATH` 上、`node` >= 22。缺了 `install.sh` 会 FAIL 并给获取方式。
 
