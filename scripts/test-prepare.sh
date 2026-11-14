@@ -285,6 +285,36 @@ check '(n) exit status without rsync' "$?" 0
 check '(n) the project was copied without rsync' "$(grep -c 'copied .*no-git-task' "$SB/stderr")" 1
 check '(n) the ticket has the project file' "$(cat "$SB/work/n/f.txt" 2>/dev/null)" f
 
+# (o) a research project that already has a GitHub remote is left completely alone: no push, no change.
+git init -q -b main "$SB/projects/research/has-remote"
+printf 'k\n' > "$SB/projects/research/has-remote/k.txt"
+git -C "$SB/projects/research/has-remote" add -A
+git -C "$SB/projects/research/has-remote" -c user.name=t -c user.email=t@t commit -qm init
+git -C "$SB/projects/research/has-remote" remote add origin https://github.com/testowner/has-remote.git
+before=$(git -C "$SB/projects/research/has-remote" rev-parse HEAD)
+run research/has-remote o
+check '(o) exit status' "$?" 0
+check '(o) the research project keeps its own remote' \
+  "$(git -C "$SB/projects/research/has-remote" config --get remote.origin.url)" \
+  https://github.com/testowner/has-remote.git
+check '(o) the research project was not pushed' "$(git -C "$SB/projects/research/has-remote" rev-parse HEAD)" "$before"
+check '(o) the ticket origin still points at the local project' "$(origin_of "$SB/work/o")" "$SB/projects/research/has-remote"
+check '(o) no repository was created for it' "$(grep -c 'repo create testowner/has-remote' "$SB/gh-calls.log")" 0
+
+# (p) a tools project whose origin is a local path gets a GitHub remote, and the local path is kept as
+# a second remote instead of being overwritten.
+git init -q -b main "$SB/projects/tools/local-origin"
+printf 'l\n' > "$SB/projects/tools/local-origin/l.txt"
+git -C "$SB/projects/tools/local-origin" add -A
+git -C "$SB/projects/tools/local-origin" -c user.name=t -c user.email=t@t commit -qm init
+git -C "$SB/projects/tools/local-origin" remote add origin "$SB/projects/tools/with-remote"
+run tools/local-origin p
+check '(p) exit status' "$?" 0
+check '(p) the local origin was kept as a second remote' \
+  "$(git -C "$SB/projects/tools/local-origin" config --get remote.github.url)" \
+  https://github.com/testowner/local-origin.git
+check '(p) the ticket origin is the GitHub URL' "$(origin_of "$SB/work/p")" https://github.com/testowner/local-origin.git
+
 # (k) a missing template fails at agentsmd instead of leaving the Ticket without rules.
 run tools/with-remote k SPV_PREPARE_TEMPLATES=/nonexistent
 check '(k) exit status' "$?" 1
