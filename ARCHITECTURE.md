@@ -29,6 +29,7 @@
 | 长任务 | 交给 systemd（`jobctl`），触发器是作业自己的结束事件，不是轮询 |
 | SPV 遇 API error | `wontfix`（账本 `R3-F1`），上游刻意设计，绕行＝代理或调高 `transportMaxRetries` |
 | 交付目标 | 不与环境变量对抗，改为给 worker 一份受管 `AGENTS.md` |
+| SPV preset | 普通 dsh 会话 + `spv_*`，纯增量；不 vendor liangshen 的本地 `.mjs` |
 
 # Structure
 
@@ -43,7 +44,7 @@
 | profile | `dsh-tui` | `superagent` |
 | preset | `spv`（`~/.dsh/.agent-presets/spv/`） | `dsh-superagent-router` / `-worker`（它 bundle 自带） |
 | cwd | `bioagentforge`（读根版 AGENTS.md） | 独立 stateDir |
-| 工具前缀 | `spv_*` | `orchestrator_*` |
+| 工具集 | 普通 dsh 会话的全套标准工具 + `spv_*` | `orchestrator_*` |
 | 职责 | 听懂用户、派任务、报结果 | 准入判断、建 Ticket、路由、派工 |
 | 唯一的接口 | **文件队列**（写 `pending/`、读 `outbox/`） | 同一个队列（反向） |
 

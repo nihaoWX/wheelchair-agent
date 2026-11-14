@@ -5,11 +5,29 @@
 #
 # 一条 service 行 MUST 放在带 `isolate` realm 的 group 里。否则它会发布进 root realm，成为进程级实例：
 # 别的 preset 发布同名服务就冲突，host 侧读者还会把某个 preset 的实例当成所有会话的实例，`dsh-agent-presets`
-# 在 mount 时就会拒绝。`true` 表示 entry 私有 realm。这里需要 realm 的只有 shell（terminals）。
+# 在 mount 时就会拒绝。`true` 表示 entry 私有 realm。这里需要 realm 的有 shell（terminals）、
+# bootstrap-filesystem（fs）、planning（planMode）、compaction（compaction / toolResultPruner）与
+# delegation（workflowEngine）。
 #
-# 本文件刻意**不**挂：subagent / todo / web / plugin-manager / goal / plan-mode。SPV 的职责只有一个——
-# 派活与收结果；每多挂一个工具，模型就多一条跑偏的路。
-# 唯一破例的是 compaction（见下文）：它不是给模型多一条路，而是让长会话不至于撞上限。
+# **标准工具是纯增量**：普通 dsh 会话有的工具，SPV 都有；SPV 只多出 `spv_*` 两个。本文件曾刻意不挂
+# subagent / todo / web / plugin-manager / goal / plan-mode，用"少给工具就少跑偏"约束职责——那个取舍已作废。
+# 职责现在写在 persona 里：研究/查资料用 `subagent`（不落盘、不出 PR），改代码并交付 PR 走 `spv_dispatch`。
+#
+# 下面的标准行照抄 dsh-tui 的 liangshen preset（同一个 dsh 版本的参考组合），包括 `disabled: !!js` 条件
+# 与 `isolate` realm 声明：那些条件不是装饰，它们按平台/按已安装的包决定某一行挂不挂，写错会让 preset
+# mount 失败（失败表现只有 "never started"，没有根因）。
+#
+# 没有照抄 liangshen 的 preset 本地插件（`./tool-bootstrap.mjs` / `./instruction-hint.mjs` /
+# `./skill-search.mjs` / `./custom-bash.mjs`）：它们是 dsh-tui 包里的 `.mjs` 文件，不在 dsh 安装树里。
+# 要挂就得 vendor **6 个**文件——这 4 个加 `compaction-epoch.mjs` 与 `session-events.mjs`
+# （`tool-bootstrap.mjs` 引 `compaction-epoch.mjs`；`instruction-hint.mjs` 引两者；`compaction-epoch.mjs`
+# 又引 `session-events.mjs`）。它们是 dsh-tui 的 preset 本地实现，不属于 dsh 包。而且其中两个
+# 与 SPV 的既定行为直接冲突：
+#   - `tool-bootstrap` 把首轮工具表压成 [bash, str_replace_editor]，首轮就没有 `spv_dispatch`，并且会
+#     压掉 `agent-instructions` / `skill-catalog` 的注入；
+#   - `instruction-hint` 是**替换** `dsh-agent-instructions` 的本地实现（只注入一句"去读 AGENTS.md"的
+#     提示），而 SPV 刻意保留完整的 AGENTS.md 注入。
+# skill 用 dsh 包（`skill-filesystem` + `tool-skill`），不用 liangshen 的 `skill-search`。
 #
 # 下面 spv-tools 行的 name 是 `@SPV_PLUGIN@` 占位符：安装器把它换成 `file://<安装目录>/src/spv/tools.js`。
 # 为什么不用包名：preset 的声明来自 dsh profile 的 patch 层，那一层的模块解析基址是 profile 目录，
@@ -32,6 +50,17 @@
       route and its own policy; the only channel between you and it is a local file queue, and its answer comes
       back by itself as a new user message on the thread you dispatched on, not as a tool result.
 
+      You also have the tool set of a normal dsh session — filesystem reads and writes, a shell, subagents, todos,
+      web search, plan mode, goals, background jobs, skills, ask_user_question — and you should use it. The
+      division of duties is about what gets delivered, not about what you are allowed to touch:
+
+      - Use the subagent tool for research and lookups that need no pull request: reading a repository, comparing
+        upstream packages and their docs, checking how an API behaves, gathering facts for a decision. Those
+        findings come back into this conversation and are yours to report.
+      - Work that changes code and must be delivered as a pull request still goes through spv_dispatch. Editing the
+        repository here would leave the change in this workspace with no prepare step, no branch, no PR and no
+        review; the worker owns that path end to end.
+
       How to work:
       - One dispatch is one self-contained piece of work. Name the outcome and how to verify it, and pass the
         project it belongs to ("tools/<name>" or "research/<name>") because the worker is given a clone of exactly
@@ -53,6 +82,23 @@
   name: '@deepseek-ai/dsh-agent-instructions'
   config:
     maxBytes: 65536
+
+# ── skills ───────────────────────────────────────────────────────────────────
+
+# 和普通 dsh 会话一样使用本地 skill。`skill-filesystem` 提供本地根目录发现
+# （`<project-root>/.dsh/skills`、`<project-root>/.agents/skills`、`~/.dsh/skills`、`~/.agents/skills`），
+# `tool-skill` 注册模型可见的 skill 工具，并把 `<available_skills>` 目录注入每一轮请求。
+#
+# skill registry 在 host composition 里按 scope 分层；这两行注册进本 preset 的那一层，所以不需要 realm
+# （与 liangshen 的 skill 行同构）。
+#
+# 没有照抄 liangshen 的 `skill-search`：那是为了避开约 9KB 的目录注入而做的替代方案。SPV 的 skill 不多，
+# 全量目录可以接受，直接挂 `tool-skill` 更简单，行为也与普通 dsh 会话一致。
+- id: skill-filesystem
+  name: '@deepseek-ai/dsh-skill-filesystem'
+
+- id: tool-skill
+  name: '@deepseek-ai/dsh-tool-skill'
 
 # ── spv 工具 ─────────────────────────────────────────────────────────────────
 
@@ -78,15 +124,77 @@
 
 # ── 文件系统 ─────────────────────────────────────────────────────────────────
 
-# 只读：SPV 需要看项目里有什么、HARNESS 说了什么，但改动属于 worker。
-# `fs` 服务与策略留在 host composition 里（与 liangshen 一致），这里只注册模型可见的工具。
+# 与普通 dsh 会话一致：能读、能写、能改。写权限不再关掉——研究和排查常常要落一份临时文件或脚本，而
+# "改动属于 worker" 由 persona 约定（交付走 spv_dispatch），不是靠把工具关成只读。
+#
+# `fs` 服务与策略留在 host composition 里（与 liangshen 一致），这里只注册模型可见的工具，两行都不提供
+# service，所以不需要 realm。
 - id: tool-fs
   name: '@deepseek-ai/dsh-tool-fs'
+
+- id: tool-fs-search
+  name: '@deepseek-ai/dsh-tool-fs-search'
   config:
-    read: true
-    readImage: false
-    write: false
-    edit: false
+    sampleOverCapGlobResults: false
+
+# `str_replace_editor` 这组的 fs 服务遮蔽 host 的 sandboxed `fs` 提供者，只在本 group 内生效，所以标准
+# read/write/edit 仍然走 host 的沙箱 fs，而这个编辑器走本地 fs。`isolate: fs: true` 是必须的：没有它，
+# `fs-local` 会发布进 root realm，与 host 的 `fs` 冲突。
+- id: bootstrap-filesystem
+  name: cordis:group
+  group: true
+  isolate:
+    fs: true
+  config:
+    - id: fs-local
+      name: '@deepseek-ai/dsh-fs-local'
+      config:
+        cwd: !!js process.env.DSH_CWD ?? process.cwd()
+
+    - id: str-replace-editor
+      name: '@deepseek-ai/dsh-tool-str-replace-editor'
+      config:
+        maxOutputChars: 16000
+
+# ── 后台作业 ─────────────────────────────────────────────────────────────────
+
+# 只挂模型可见的作业控制。任务 registry 留在 host plane：它的生产者在这个 preset 的 realm 之外
+# （shell 用 `ctx.get` 解析它），entry-local realm 会让兄弟行看不见它，`run_in_background` 就会报
+# "background jobs unavailable"。
+- id: tool-jobs
+  name: '@deepseek-ai/dsh-tool-jobs'
+
+# ── goal ────────────────────────────────────────────────────────────────────
+
+# 只挂模型可见的工具。goal 服务、它的 session driver 与 `/goal` 命令留在 host plane：Gateway 用生成的
+# descriptor 提供 goal 域，host 才解析得到；registry 本身按 session 键，一个 host 实例服务所有会话。
+- id: tool-goal
+  name: '@deepseek-ai/dsh-tool-goal'
+
+# ── 计划模式 ─────────────────────────────────────────────────────────────────
+
+# plan 状态天然是 per-agent 的，所以 entry-local realm 不是绕行，而是正确的生命周期。
+- id: planning
+  name: cordis:group
+  group: true
+  isolate:
+    planMode: true
+  config:
+    - id: plan-mode
+      name: '@deepseek-ai/dsh-plan-mode'
+      config:
+        section: |
+              You are in plan mode. Stay in plan mode until exit_plan_mode succeeds or the user switches the session mode. Imperative language to implement changes means plan the implementation, not execute it. A user's conversational agreement — including an answer confirming something you asked — approves nothing and does not end plan mode; fold the confirmed decision into the plan and submit it through exit_plan_mode.
+
+              Explore first. Use non-mutating reads, searches, static analysis, and checks to ground the plan in the actual repository. Do not edit or write files, change configuration, run formatters or code generation that rewrites tracked files, commit, or otherwise carry out the plan. Prefer existing functions and patterns over new machinery.
+
+              The tool catalog stays the same across modes for request-cache stability. These plan-mode rules override any later tool description or guidance that suggests using mutation tools; those tools remain listed to keep the tool catalog unchanged. Do not use todo_write to track this planning phase: it tracks implementation after an approved plan, while the plan itself belongs in exit_plan_mode.
+
+              Resolve discoverable facts by inspection. Use ask_user_question only for user-owned choices or material ambiguity that inspection cannot answer. Do not ask the user where code lives or how current behavior works when you can find out.
+
+              Make the plan decision-complete: state the goal and success criteria; group implementation changes by subsystem; identify public API, schema, and data-flow changes; cover edge cases, failure modes, tests, acceptance criteria, and explicit assumptions. Keep it concise enough to review but detailed enough that another engineer can implement it without making design decisions.
+
+              When ready, call exit_plan_mode with the complete plan markdown, starting with a # title. Make exit_plan_mode the only and final tool call in that assistant response: it presents the plan for approval, and implementation begins only in a later step after approval. Do not paste the final plan as a plain reply or ask "should I proceed?" through prose or ask_user_question. If review rejects it, incorporate the feedback and present again. If the review channel is unavailable or aborted, stay in plan mode and ask the user to switch modes manually; do not proceed with implementation.
 
 # ── compaction ──────────────────────────────────────────────────────────────
 
@@ -118,10 +226,119 @@
         headChars: 4096
         tailChars: 1024
 
+# ── 派发与工作流 ─────────────────────────────────────────────────────────────
+
+# subagents registry 与 spawn/fork 后端留在 host composition（provider 名只能注册一次）。本 preset 只贡献
+# 委派工具，它们解析 host 的那个 registry，所以这一组不需要 realm。
+#
+# `workflows` 不同——agent 之外没人读它——所以所有触到它的行共用一个 entry-local realm；漏在外面的消费者
+# 会解析到一个本 preset 从没填充过的 host registry。
+#
+# `tool-subagent-report` 留在 host plane：它注册的是那个单例上的 CONTINUABLE SETUP，不是本 agent 调的
+# 工具，而且 setup 列表不分 scope——每个挂载的 preset 一份会让每个子 agent 每个会话都注一次 `report`，
+# 第二次就抛异常。
+#
+# 两行 codex / claude-code 是保持 disabled 的 host-plane 对位（它们的名字是上游 dsh-tool-subagent 的契约
+# 名）。`workflow-worker-thread` 与 `workflow-ptc` 是二选一：哪个包在 dsh 安装树里就挂哪个，另一个置
+# disabled。这个判断必须留在 `!!js` 里，不能写死——这个 dsh 版本没有
+# `@deepseek-ai/dsh-workflow-worker-thread`。
+- id: delegation
+  name: cordis:group
+  group: true
+  isolate:
+    workflowEngine: true
+  config:
+    - id: tool-subagent-control
+      name: '@deepseek-ai/dsh-tool-subagent-control'
+
+    - id: tool-subagent-list-agents
+      name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+
+    - id: tool-subagent
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: spawn
+        toolName: subagent
+        backgroundMode: continuable
+
+    - id: tool-subagent-fork
+      name: '@deepseek-ai/dsh-tool-subagent'
+      config:
+        provider: fork
+        toolName: subagent_fork
+        backgroundMode: continuable
+
+    - id: tool-subagent-codex
+      name: '@deepseek-ai/dsh-tool-subagent'
+      disabled: true
+      config:
+        provider: codex
+        toolName: subagent_codex
+        enableRunInBackground: false
+        maxDepth: provider-managed
+
+    - id: tool-subagent-claude-code
+      name: '@deepseek-ai/dsh-tool-subagent'
+      disabled: true
+      config:
+        provider: claude-code
+        toolName: subagent_claude_code
+        enableRunInBackground: false
+        maxDepth: provider-managed
+
+    - id: workflow-worker-thread
+      name: '@deepseek-ai/dsh-workflow-worker-thread'
+      disabled: !!js >-
+        (() => {
+          const require = process.getBuiltinModule('node:module').createRequire(ctx.baseUrl)
+          try { require.resolve('@deepseek-ai/dsh-workflow-ptc/package.json'); return true } catch { return false }
+        })()
+      config:
+        provider: spawn
+
+    - id: workflow-ptc
+      name: '@deepseek-ai/dsh-workflow-ptc'
+      disabled: !!js >-
+        (() => {
+          const require = process.getBuiltinModule('node:module').createRequire(ctx.baseUrl)
+          try { require.resolve('@deepseek-ai/dsh-workflow-ptc/package.json'); return false } catch { return true }
+        })()
+      config:
+        provider: spawn
+
+    - id: tool-workflow
+      name: '@deepseek-ai/dsh-tool-workflow'
+
+    - id: tool-ralph
+      name: '@deepseek-ai/dsh-tool-ralph'
+      config:
+        subagentProvider: spawn
+        maxRounds: 64
+
+# ── 其余标准工具 ─────────────────────────────────────────────────────────────
+
+- id: tool-ask-user
+  name: '@deepseek-ai/dsh-tool-ask-user'
+
+# `allowParallelInProgress` 没有 schema 默认值，裸挂会校验失败（与 dsh-tui host 里那一行同值）。
+- id: tool-todo
+  name: '@deepseek-ai/dsh-tool-todo'
+  config:
+    allowParallelInProgress: true
+
+# `web` 服务与搜索 provider 留在 host composition；只有模型可见的工具是 per-session 的。
+# `fetch: false` 是照抄 liangshen 的值：这个 preset 走的是参考组合的行为，不自己发明配置。
+- id: tool-web
+  name: '@deepseek-ai/dsh-tool-web'
+  config:
+    fetch: false
+    searchTimeoutMs: 60000
+
 # ── shell ───────────────────────────────────────────────────────────────────
 
-# 允许 SPV 跑只读命令（看 git 状态、看队列目录）。PTY 注册表是 agent 私有服务，所以整组落在 entry-local realm。
-# sandbox 策略来自 host（缺省 workspace-write）；Windows 没有 bash，整组关掉，只留读文件与 spv 工具。
+# 允许 SPV 跑命令（看 git 状态、看队列目录，以及研究时跑一下检查）。PTY 注册表是 agent 私有服务，
+# 所以整组落在 entry-local realm。sandbox 策略来自 host（缺省 workspace-write）；Windows 没有 bash，
+# 整组关掉，只留文件工具与 spv 工具。
 - id: shell
   name: cordis:group
   group: true
