@@ -115,7 +115,7 @@ worker 不会去开 PR。**但默认值仍是 PR**：任务没写清时，worker
 | 模板与脚本的安装 | `install.sh` 的 `render_into` | 把 `dsh/prepare.sh` 与 `docs/agentsmd-examples/*.md` 拷进 `~/.dsh/.agent-presets/spv/`（`prepare.sh` 与 `agentsmd-examples/`）；白名单与 `--check` 同步更新 |
 | 面板的 prepare 命令 | 面板 Settings → Execution | `sh <preset 目录>/prepare.sh` 的绝对路径（`install.sh` 结束时打印；已通过管理 API 保存）。**不能写 `$DSH_HOME`**：prepare 命令跑在子进程里，`DSH_*` 名字会被剥掉，引用会静默退回 |
 | 脚本本体 | `dsh/prepare.sh` | clone → 受管 `AGENTS.md` → `tools/` 的私有远端与工单 origin |
-| 可跑证据 | `scripts/test-prepare.sh` | 74 条断言，用假 `gh` + 本地裸仓库，不碰 github.com |
+| 可跑证据 | `scripts/test-prepare.sh` | 77 条断言，用假 `gh` + 本地裸仓库，不碰 github.com |
 
 `prepare.sh` 的行为，按顺序：
 
@@ -165,5 +165,5 @@ worker 不会去开 PR。**但默认值仍是 PR**：任务没写清时，worker
 | 项目开发类 AGENTS.md 模板 | `docs/agentsmd-examples/proj-dev-agentsmd.md` |
 | 研究任务类 AGENTS.md 模板 | `docs/agentsmd-examples/research-task-agentsmd.md` |
 | prepare 命令本体 | `dsh/prepare.sh` |
-| prepare 命令的可跑证据 | `scripts/test-prepare.sh`（`sh scripts/test-prepare.sh`，74 条断言） |
+| prepare 命令的可跑证据 | `scripts/test-prepare.sh`（`sh scripts/test-prepare.sh`，77 条断言） |
 | superagent 的交付契约与合并规则 | `tools/dsh-superagent/prompts/work.md`、`prompts/team/delivery.md` |

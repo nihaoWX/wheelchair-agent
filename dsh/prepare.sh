@@ -92,6 +92,8 @@ if [ -z "$PROJECT" ] && [ -f "$ROOT/.superagent-project" ]; then
   PROJECT=$(tr -d '\r\n' < "$ROOT/.superagent-project")
 fi
 [ -n "$PROJECT" ] || die "no project for this Ticket: DSH_SUPERAGENT_SPV_PROJECT is empty and $ROOT/.superagent-project does not name one"
+# Tolerate a trailing slash, which spv_dispatch already strips but a hand-written fallback file may not.
+while [ "${PROJECT%/}" != "$PROJECT" ]; do PROJECT=${PROJECT%/}; done
 case $PROJECT in
   tools/*) KIND=tools; NAME=${PROJECT#tools/} ;;
   research/*) KIND=research; NAME=${PROJECT#research/} ;;

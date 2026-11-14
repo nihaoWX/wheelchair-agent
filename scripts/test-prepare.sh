@@ -342,6 +342,22 @@ check '(r) exit status' "$?" 0
 check '(r) the public remote is used' "$(origin_of "$SB/work/r")" https://github.com/testowner/public-existing.git
 check '(r) the public remote is called out' "$(grep -c 'WARNING: testowner/public-existing is PUBLIC' "$SB/stderr")" 1
 
+# (s) a trailing slash on the project is tolerated, and a relative ticket directory resolves from the cwd.
+run tools/with-remote s1 SPV_PREPARE_DRY_RUN=1
+check '(s1) exit status' "$?" 0
+(
+  cd "$SB/work" || exit 1
+  export PATH="$SB/bin:$PATH" GIT_CONFIG_GLOBAL="$SB/gitconfig" \
+    FAKE_GH_LOG="$SB/gh-calls.log" FAKE_GH_REMOTES="$SB/remotes" \
+    SPV_PROJECTS_ROOT="$SB/projects" SPV_PREPARE_LOG="$SB/prepare.log" \
+    SPV_PREPARE_TEMPLATES="$TEMPLATES" \
+    DSH_SUPERAGENT_SPV_PROJECT=tools/with-remote/ DSH_SUPERAGENT_DIR=relative-ticket
+  sh "$PREPARE"
+) 2>"$SB/stderr"
+check '(s2) a trailing slash is tolerated' "$?" 0
+check '(s2) a relative ticket directory resolves from the cwd' \
+  "$(origin_of "$SB/work/relative-ticket")" https://github.com/testowner/with-remote.git
+
 # (k) a missing template fails at agentsmd instead of leaving the Ticket without rules.
 run tools/with-remote k SPV_PREPARE_TEMPLATES=/nonexistent
 check '(k) exit status' "$?" 1
