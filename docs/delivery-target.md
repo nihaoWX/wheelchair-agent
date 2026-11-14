@@ -123,7 +123,8 @@ worker 不会去开 PR。**但默认值仍是 PR**：任务没写清时，worker
    （默认根 `$HOME/bioagentforge`），与旧 prepare 命令的兜底一致。两者都没有 ⇒ 失败并点名。
 2. **`tools/` 且没有 `.git`** ⇒ `git init -b main` 并把现有文件提交为初始 commit（作者是 gh 账号，
    邮箱用 `<id>+<login>@users.noreply.github.com`）。`research/` 永不 init。
-3. **clone**：有 `.git` 用 `git clone --no-hardlinks`，没有就 `rsync -a --exclude .git`。
+3. **clone**：有 `.git` 用 `git clone --no-hardlinks`，没有就 `rsync -a --exclude .git`（没有 rsync
+   时退回 `cp -a`）。
    目录已存在且非空 ⇒ 不重复 clone（与 superagent「已存在即视为已准备」一致）。
 4. **`AGENTS.md`**：`tools/*` → `proj-dev-agentsmd.md`，`research/*` → `research-task-agentsmd.md`。
    缺失就装，内容不同就覆盖（模板是唯一真源）。受管文件不进入 `git status`：未跟踪的写进
@@ -162,5 +163,5 @@ worker 不会去开 PR。**但默认值仍是 PR**：任务没写清时，worker
 | 项目开发类 AGENTS.md 模板 | `docs/agentsmd-examples/proj-dev-agentsmd.md` |
 | 研究任务类 AGENTS.md 模板 | `docs/agentsmd-examples/research-task-agentsmd.md` |
 | prepare 命令本体 | `dsh/prepare.sh` |
-| prepare 命令的可跑证据 | `scripts/test-prepare.sh`（`sh scripts/test-prepare.sh`，51 条断言） |
+| prepare 命令的可跑证据 | `scripts/test-prepare.sh`（`sh scripts/test-prepare.sh`，71 条断言） |
 | superagent 的交付契约与合并规则 | `tools/dsh-superagent/prompts/work.md`、`prompts/team/delivery.md` |
