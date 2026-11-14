@@ -26,7 +26,7 @@
 <stateDir>/spv/done/         # 已消费；rename 到这里即"标记已读"
 <stateDir>/spv/done/*.bad    # 解析失败的任务，移到这里不再重试
 <stateDir>/spv/outbox/       # Channel 写回，一条消息一个 .json
-<stateDir>/spv/outbox/read/  # 被 result/status 消费的消息移到这里
+<stateDir>/spv/outbox/read/  # 被注入器消费的消息移到这里；spv_status 只读，不移动
 ```
 
 `stateDir` = `/home/nihao/.dsh/state/superagent`（`ctx.deployment.stateDir`，只在 setup 完成后可读）。
@@ -70,17 +70,21 @@ worker 的 `progress` 在 `app/notices.ts:reportRelay()` 里 `return undefined`�
 ## 5. 命令行入口
 
 队列的读写只有一份实现（`src/shared/queue.js` + `src/spv/{dispatch,outbox}.js`），`spv_dispatch` 工具与
-`wheelchair-agent` 的 `dispatch` / `result` / `status` 子命令都 import 它。**曾经有两个 Python 脚本
+`wheelchair-agent` 的 `dispatch` / `status` 子命令都 import 它。**曾经有两个 Python 脚本
 （`scripts/spv_send.py` / `spv_read.py`）各写一份，已删除**：两份实现必须永远保持字节兼容，是个真隐患。
 
 ```bash
 wheelchair-agent dispatch --project tools/foo --task "任务正文" [--thread main]
-wheelchair-agent result --thread main [--timeout 300]
 wheelchair-agent status [--thread main]
 ```
 
-`SPV_QUEUE_DIR` 覆盖队列根（与插件自身的 `queueDir` 设置同一优先级规则）。队列不存在时退出 1 并提示
-先启动服务；`result` 超时退出 1 并说明还剩什么没到。
+**结果不由 CLI 读**：`outbox/` 里的 `reply` / `notice` 由 SPV 会话里的注入器（`src/spv/injector.js`）在后台
+消费，并作为一条新的 user 消息推进对话。所以 CLI 只有 `dispatch` / `status`（外加 `check`），没有、也不需要
+`result` 子命令。
+
+`SPV_QUEUE_DIR` 覆盖队列根（与插件自身的 `queueDir` 设置同一优先级规则）。队列目录不存在时 `status` 不报错：
+`unreadMessages` / `pendingTasks` 把 ENOENT 当成空队列，CLI 打印空列表。`dispatch` 只在 superagent 服务未运行
+时失败（健康探针），队列目录本身不是它的前提——`submitTask` 会自己建 `pending/`。
 
 ## 6. 踩过的坑
 
@@ -130,7 +134,9 @@ zstd -dc ~/.dsh/sessions/--home-nihao-.dsh-state-superagent--/orchestrator-*/ses
 处理：删掉 `~/.dsh/sessions/--home-nihao-.dsh-state-superagent--/orchestrator-*` 与对应的
 `~/.dsh/storages/session_projcache/sessions/orchestrator-*.json`，让它重建。Ticket/Thread 全在 SQLite 里，不丢。
 
-### 6.6 `--consume` 与 `--watch` 的语义
+### 6.6 消费标记只有一个：rename
 
-`--watch` 靠文件名去重，所以**不加 `--consume` 时同一批消息只会打印一次**（进程内 seen 集合），
-下一次调用会再打印一遍（新进程、文件还在）。需要"读走不重复"就必须 `--consume`。
+`outbox/` 的消息靠 `rename(outbox/x.json → outbox/read/x.json)` 标记已读。注入器（`src/spv/injector.js`）
+先 `consumeMessage` 再注入；`consumeMessage` 只在真正搬走文件时返回 id，被别的读者抢先时返回 `undefined`，
+调用方据此跳过，所以同一条结果只会注入一次。`spv_status` 只读，不移动任何文件。`--consume` / `--watch`
+这类旧开关已经不存在了。
