@@ -326,6 +326,17 @@ check '(q) exit status' "$?" 0
 check '(q) the detached commits were pushed to main' "$(git -C "$SB/remotes/detached.git" branch --list main)" '  main'
 check '(q) the ticket origin is the GitHub URL' "$(origin_of "$SB/work/q")" https://github.com/testowner/detached.git
 
+# (r) an existing PUBLIC remote is used (the project already had it) but called out loudly.
+git init -q -b main "$SB/projects/tools/public-existing"
+printf 'n\n' > "$SB/projects/tools/public-existing/n.txt"
+git -C "$SB/projects/tools/public-existing" add -A
+git -C "$SB/projects/tools/public-existing" -c user.name=t -c user.email=t@t commit -qm init
+git -C "$SB/projects/tools/public-existing" remote add origin https://github.com/testowner/public-existing.git
+run tools/public-existing r FAKE_GH_EXISTS=1 FAKE_GH_VISIBILITY=PUBLIC
+check '(r) exit status' "$?" 0
+check '(r) the public remote is used' "$(origin_of "$SB/work/r")" https://github.com/testowner/public-existing.git
+check '(r) the public remote is called out' "$(grep -c 'WARNING: testowner/public-existing is PUBLIC' "$SB/stderr")" 1
+
 # (k) a missing template fails at agentsmd instead of leaving the Ticket without rules.
 run tools/with-remote k SPV_PREPARE_TEMPLATES=/nonexistent
 check '(k) exit status' "$?" 1

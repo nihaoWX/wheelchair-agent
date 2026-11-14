@@ -256,6 +256,20 @@ if [ "$KIND" = tools ]; then
     fi
   else
     step "the project already has a GitHub remote: $URL"
+    # Constraint 1 forbids creating a public repository; it does not forbid using one the project already
+    # has. Say so loudly anyway, because a worker pushing there publishes the work. Best effort: a failed
+    # lookup must not fail the Ticket.
+    if command -v gh >/dev/null 2>&1; then
+      SLUG=$(printf '%s\n' "$URL" | sed -e 's|^https://github.com/||' -e 's|\.git$||')
+      case $SLUG in
+        */*)
+          VIS=$(gh repo view "$SLUG" --json visibility --jq .visibility 2>/dev/null || true)
+          if [ "$VIS" = PUBLIC ]; then
+            step "WARNING: $SLUG is PUBLIC; work pushed from this Ticket becomes public (constraint 1 forbids creating a public repository, not using an existing one)"
+            log "WARNING: $SLUG is PUBLIC; the Ticket's origin points at it"
+          fi ;;
+      esac
+    fi
   fi
   STEP=remote-clone
   if dry_run; then
