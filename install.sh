@@ -409,4 +409,7 @@ printf '\nDone. Start the superagent service, then the SPV session:\n'
 printf '  superagent-service start   # the backend that executes tickets\n'
 printf '  spv                        # the agent you talk to\n'
 printf '\nPaste this into the panel (Settings -> Execution -> Prepare command):\n'
-printf '  sh %s/prepare.sh\n' "$PRESET_DIR"
+printf '  sh "${DSH_HOME:-$HOME/.dsh}/.agent-presets/spv/prepare.sh"\n'
+if [ "$PRESET_DIR" != "$HOME/.dsh/.agent-presets/spv" ]; then
+  note "this install used DSH_HOME=$DSH_HOME_DIR, so the command above resolves to $PRESET_DIR"
+fi
