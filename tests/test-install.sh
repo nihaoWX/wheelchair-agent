@@ -56,12 +56,12 @@ chmod +x "$SB/tools/dsh-tui"
 cat > "$SB/tools/fake-probe" <<'FAKE'
 #!/bin/sh
 if [ -f "$FAKE_PROBE_SERVICE" ]; then
-  printf 'service_pids=4242\n'
+  printf 'service_pids=99999999\n'
 else
   printf 'service_pids=\n'
 fi
 if [ -f "$FAKE_PROBE_SPV" ]; then
-  printf 'spv_pids=4243 4244\n'
+  printf 'spv_pids=99999998 99999997\n'
 else
   printf 'spv_pids=\n'
 fi
@@ -94,8 +94,11 @@ run_install() {
 # A content-and-path hash of every install target; used to prove a call wrote nothing.
 install_snapshot() {
   {
-    find "$SB/dsh" "$SB/local-bin" -print 2>/dev/null | sort
-    find "$SB/dsh" "$SB/local-bin" -type f 2>/dev/null | sort | xargs -r sha256sum
+    find "$SB/dsh" "$SB/local-bin" "$SB/home" -print 2>/dev/null | sort
+    find "$SB/dsh" "$SB/local-bin" "$SB/home" -type f 2>/dev/null | sort | while IFS= read -r file; do
+      sha256sum "$file"
+      stat -c '%a %n' "$file"
+    done
   } | sha256sum | cut -d' ' -f1
 }
 
@@ -116,8 +119,8 @@ set_state both
 run_install
 check '(0) virgin refusal exits 3' "$?" 3
 check '(0) the refusal says it is refusing' "$(grep -c 'FAIL: refusing to install' "$SB/stderr")" 1
-check '(0) the refusal names the service' "$(grep -c 'the superagent service (pid 4242, port 3082)' "$SB/stderr")" 1
-check '(0) the refusal names the SPV session' "$(grep -c 'a live SPV session (pids 4243 4244)' "$SB/stderr")" 1
+check '(0) the refusal names the service' "$(grep -c 'the superagent service (pid 99999999, port 3082)' "$SB/stderr")" 1
+check '(0) the refusal names the SPV session' "$(grep -c 'a live SPV session (pids 99999998 99999997)' "$SB/stderr")" 1
 check '(0) the refusal gives the stop command' "$(grep -c 'wheelchair-agent service stop' "$SB/stderr")" 1
 check '(0) no preset was created' "$([ -e "$SB/dsh/.agent-presets/spv" ] && echo present || echo absent)" absent
 check '(0) no bin directory was created' "$([ -e "$SB/local-bin" ] && echo present || echo absent)" absent
@@ -134,7 +137,11 @@ check '(1) the notice id is derived from the blockers' \
   "$(notice_field id | grep -c '^install-cold-refusal-[0-9][0-9]*$')" 1
 check '(1) the notice says a cold install is required' \
   "$(notice_field text | grep -c 'install.sh performs cold installs only')" 1
-check '(1) the notice gives the stop command' "$(notice_field text | grep -c 'wheelchair-agent service stop')" 1
+check '(1) the notice names the service blocker' \
+  "$(notice_field text | grep -c 'the superagent service (pid 99999999, port 3082)')" 1
+check '(1) the notice names the SPV blocker' \
+  "$(notice_field text | grep -c 'a live SPV session (pids 99999998 99999997)')" 1
+check '(1) the notice gives the stop command' "$(notice_field text | grep -c 'service stop')" 1
 first_id=$(notice_field id)
 run_install
 check '(1) a repeated refusal still exits 3' "$?" 3
@@ -163,8 +170,8 @@ set_state both
 before=$(install_snapshot)
 run_install --check
 check '(3) --check while in use exits 0' "$?" 0
-check '(3) --check reports the service' "$(grep -c 'the superagent service is running (pid 4242, port 3082)' "$SB/stdout")" 1
-check '(3) --check reports the SPV session' "$(grep -c 'a live SPV session holds the preset (pids 4243 4244)' "$SB/stdout")" 1
+check '(3) --check reports the service' "$(grep -c 'the superagent service is running (pid 99999999, port 3082)' "$SB/stdout")" 1
+check '(3) --check reports the SPV session' "$(grep -c 'a live SPV session holds the preset (pids 99999998 99999997)' "$SB/stdout")" 1
 check '(3) --check changed nothing' "$(install_snapshot)" "$before"
 
 # (4) A refused install after the cold install leaves the installed tree byte-identical.
@@ -178,13 +185,49 @@ check '(4) the refusal did not stack a second notice' "$(notice_count)" 1
 set_state service
 run_install
 check '(5) the service-only refusal exits 3' "$?" 3
-check '(5) it names the service' "$(grep -c 'the superagent service (pid 4242' "$SB/stderr")" 1
+check '(5) it names the service' "$(grep -c 'the superagent service (pid 99999999' "$SB/stderr")" 1
 check '(5) it does not invent an SPV session' "$(grep -c 'a live SPV session' "$SB/stderr")" 0
 # A changed blocker set is a new refusal, so it gets its own id and its own notice. The previous notice
 # stays in the outbox: notifications are additive, only retries of the same blockers are deduplicated.
 check '(5) a changed blocker set writes a second notice' "$(notice_count)" 2
 check '(5) the two notices have different ids' \
   "$(find "$SB/queue/outbox" -maxdepth 1 -name 'install-cold-refusal-*.json' -type f | wc -l | tr -d ' ')" 2
+
+# (6) The SPV detection alone must also refuse: an implementation that only checked the service would
+# pass every earlier case.
+set_state spv
+run_install
+check '(6) the SPV-only refusal exits 3' "$?" 3
+check '(6) it names the SPV session' "$(grep -c 'a live SPV session (pids 99999998 99999997)' "$SB/stderr")" 1
+check '(6) it does not invent a service' "$(grep -c 'the superagent service' "$SB/stderr")" 0
+check '(6) it does not print a service stop command' "$(grep -c 'service stop' "$SB/stderr")" 0
+
+# (7) A notification that cannot be written must not change the refusal: still exit 3, still no writes,
+# and one note explains the failed notice. Skipped for root, where the permission fence does not apply.
+if [ "$(id -u)" -ne 0 ]; then
+  chmod 0500 "$SB/queue" "$SB/queue/outbox"
+  before=$(install_snapshot)
+  run_install
+  status=$?
+  chmod 0700 "$SB/queue" "$SB/queue/outbox"
+  check '(7) an unwritable queue still refuses with 3' "$status" 3
+  check '(7) the failed notice is reported in one line' \
+    "$(grep -c '^note: could not queue the SPV refusal notice' "$SB/stdout")" 1
+  check '(7) the failed notice changed nothing' "$(install_snapshot)" "$before"
+fi
+
+# (8) The real probe (no test seam) must not count itself as the service. It is invoked with `--profile`
+# on its own command line, so without the self-PID skip a genuinely cold machine looks occupied. The
+# unused profile and port make the expected answer empty regardless of what runs on this machine.
+real_probe=$(python3 "$REPO/commands/superagent-service.py" probe \
+  --profile spv-install-test-no-such-profile --url http://127.0.0.1:0 \
+  --preset-patch "$SB/no-such-preset-default.patch.yml" 2>&1)
+check '(8) the real probe does not count itself as the service' \
+  "$(printf '%s\n' "$real_probe" | sed -n 's/^service_pids=//p')" ''
+check '(8) the real probe does not count itself as an SPV session' \
+  "$(printf '%s\n' "$real_probe" | sed -n 's/^spv_pids=//p')" ''
+check '(8) the real probe reports the port from the URL' \
+  "$(printf '%s\n' "$real_probe" | sed -n 's/^service_port=//p')" 0
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

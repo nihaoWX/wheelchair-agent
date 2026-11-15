@@ -106,14 +106,22 @@ def pid_on_port(port):
 
 
 def pids_from_proc(profile):
-    """Scan /proc for every process whose argv selects `profile` as the DSH service."""
+    """Scan /proc for every process whose argv selects `profile` as the DSH service.
+
+    The scanning process itself is skipped: `probe` is invoked with `--profile <name>` on its own
+    command line (that is how it is told what to look for), so without this it would report itself as
+    the service and a genuinely cold machine would look occupied.
+    """
     found = []
     for entry in Path('/proc').iterdir():
         if not entry.name.isdigit():
             continue
+        pid = int(entry.name)
+        if pid == os.getpid():
+            continue
         argv = cmdline_of(entry.name)
         if argv and serves(argv, profile):
-            found.append(int(entry.name))
+            found.append(pid)
     return sorted(found)
 
 
@@ -168,9 +176,12 @@ def pids_with_preset(preset_patch):
     for entry in Path('/proc').iterdir():
         if not entry.name.isdigit():
             continue
+        pid = int(entry.name)
+        if pid == os.getpid():
+            continue
         argv = cmdline_of(entry.name)
         if argv and preset_patch_used(argv, preset_patch):
-            found.append(int(entry.name))
+            found.append(pid)
     return sorted(found)
 
 

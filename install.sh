@@ -15,6 +15,10 @@
 # DSH_HOME. A false negative only lets an unsafe install through; refusing on a guess would block a safe
 # cold install.
 #
+# Residual window: this is a pre-flight, not a lock. A service or SPV session started between the probe
+# and the atomic moves is not detected, because the launchers do not take an install-time lock; the next
+# run re-checks. The gate still precedes every write, so a holder that is already up is never half-applied.
+#
 # On a refusal it exits 3 (distinct from 1 install failure and 2 check failure), prints what is in use and
 # the exact stop/install/start commands, writes no file under any install target, and queues exactly one
 # `notice` for the SPV session through src/shared/queue.js. If the queue does not exist (the service has
@@ -25,7 +29,7 @@
 #
 # Exit status:
 #   0  installed, or --check found everything as expected
-#   1  install failed (missing prerequisite or a copy failed)
+#   1  install failed (missing prerequisite, probe failure or a copy failed)
 #   2  --check found problems, or the arguments were invalid
 #   3  refused: something is using the install targets (cold installs only)
 #
@@ -64,7 +68,9 @@ TARGET_PLUGIN_URL="file://$PRESET_DIR/src/spv/tools.js"
 TARGET_CRON_URL="file://$PRESET_DIR/src/spv/cron-plugin.js"
 PROFILE_DIR=$DSH_HOME_DIR/profiles/superagent
 WEBUI_TARGET=$PROFILE_DIR/node_modules/wheelchair-agent-webui
+SERVICE_PROFILE=${DSH_SUPERAGENT_PROFILE:-superagent}
 SERVICE_PORT=${SPV_SERVICE_PORT:-3082}
+SERVICE_URL=${DSH_SUPERAGENT_URL:-http://127.0.0.1:$SERVICE_PORT}
 
 CHECK=0
 for arg in "$@"; do
@@ -115,12 +121,14 @@ probe_in_use() {
       return 1
     fi
   else
+    # The profile and URL default to the same env vars the service manager honours, so a relocated
+    # service is found through the socket and the /proc scan rather than a hardcoded 3082/superagent.
     probe_cmd=(python3 "$SELF_DIR/commands/superagent-service.py" probe
-      --profile superagent --port "$SERVICE_PORT"
+      --profile "$SERVICE_PROFILE" --url "$SERVICE_URL"
       --preset-patch "$PRESET_DIR/preset-default.patch.yml")
     if ! out=$("${probe_cmd[@]}" 2>&1); then
       fail 'the in-use pre-flight failed (commands/superagent-service.py probe)'
-      fix "run: python3 $SELF_DIR/commands/superagent-service.py probe --preset-patch $PRESET_DIR/preset-default.patch.yml"
+      fix "run: python3 $SELF_DIR/commands/superagent-service.py probe --profile $SERVICE_PROFILE --url $SERVICE_URL --preset-patch $PRESET_DIR/preset-default.patch.yml"
       return 1
     fi
   fi
@@ -128,11 +136,16 @@ probe_in_use() {
     *service_pids=*spv_pids=*) ;;
     *)
       fail 'the in-use pre-flight did not print both service_pids and spv_pids, so the targets cannot be proven free'
-      fix "run: python3 $SELF_DIR/commands/superagent-service.py probe --preset-patch $PRESET_DIR/preset-default.patch.yml"
+      fix "run: python3 $SELF_DIR/commands/superagent-service.py probe --profile $SERVICE_PROFILE --url $SERVICE_URL --preset-patch $PRESET_DIR/preset-default.patch.yml"
       return 1 ;;
   esac
   SERVICE_PIDS=$(printf '%s\n' "$out" | sed -n 's/^service_pids=//p' | head -1)
   SPV_PIDS=$(printf '%s\n' "$out" | sed -n 's/^spv_pids=//p' | head -1)
+  # The probe resolves the port from --url; keep the human-readable port in step with it.
+  probe_port=$(printf '%s\n' "$out" | sed -n 's/^service_port=//p' | head -1)
+  if [ -n "$probe_port" ]; then
+    SERVICE_PORT=$probe_port
+  fi
   return 0
 }
 
@@ -507,12 +520,21 @@ in_use_lines() {
 }
 
 # The exact commands that clear the refusal, install and start everything again.
+#
+# Absolute paths (shell-quoted with %q) so the lines still work when BIN_DIR is not on PATH or the
+# checkout path contains spaces, and only the holders actually present are told to stop.
 refusal_commands() {
-  printf '  wheelchair-agent service stop\n'
-  printf '  # exit the SPV session (Ctrl-D); it cannot be stopped from here\n'
-  printf '  bash %s/install.sh\n' "$SELF_DIR"
-  printf '  wheelchair-agent service start\n'
-  printf '  wheelchair-agent spv\n'
+  if [ -n "$SERVICE_PIDS" ]; then
+    printf '  %q service stop\n' "$CLI"
+  fi
+  if [ -n "$SPV_PIDS" ]; then
+    printf '  # exit the SPV session (Ctrl-D); it cannot be stopped from here\n'
+  fi
+  printf '  bash %q\n' "$SELF_DIR/install.sh"
+  if [ -n "$SERVICE_PIDS" ]; then
+    printf '  %q service start\n' "$CLI"
+  fi
+  printf '  %q spv\n' "$CLI"
 }
 
 # The refusal body, shared by the terminal and the SPV notice so both say the same thing.
@@ -709,17 +731,22 @@ ensure_webui_loader() {
 if [ "$CHECK" -eq 1 ]; then
   check_prerequisites
   # Report the in-use holders (the cold-install gate). This is a note, never a refusal: --check is
-  # read-only and must stay usable while everything runs.
-  if probe_in_use; then
-    if [ -n "$SERVICE_PIDS" ]; then
-      note "the superagent service is running (pid $(service_pid), port $SERVICE_PORT); --check is read-only and does not refuse"
+  # read-only and must stay usable while everything runs. When python3 is missing, require_python3
+  # already failed; do not add a second, redundant probe failure.
+  if [ -n "${SPV_INSTALL_PROBE:-}" ] || command -v python3 >/dev/null 2>&1; then
+    if probe_in_use; then
+      if [ -n "$SERVICE_PIDS" ]; then
+        note "the superagent service is running (pid $(service_pid), port $SERVICE_PORT); --check is read-only and does not refuse"
+      fi
+      if [ -n "$SPV_PIDS" ]; then
+        note "a live SPV session holds the preset (pids $SPV_PIDS); a real install would refuse with exit 3 until it exits"
+      fi
+      if [ -z "$SERVICE_PIDS" ] && [ -z "$SPV_PIDS" ]; then
+        note 'no running service or SPV session holds the install targets; a cold install is allowed'
+      fi
     fi
-    if [ -n "$SPV_PIDS" ]; then
-      note "a live SPV session holds the preset (pids $SPV_PIDS); a real install would refuse with exit 3 until it exits"
-    fi
-    if [ -z "$SERVICE_PIDS" ] && [ -z "$SPV_PIDS" ]; then
-      note 'no running service or SPV session holds the install targets; a cold install is allowed'
-    fi
+  else
+    note 'python3 is missing, so the in-use pre-flight was skipped; --check cannot prove a cold install is allowed'
   fi
   check_preset
   check_webui
