@@ -33,8 +33,14 @@ jobs:
       - name: Syntax-check every JS file
         run: npm run check
 
+      - name: SPV result injector header
+        run: node tests/test-injector.mjs
+
       - name: Inbox letter types and review semantics
         run: node tests/test-inbox.mjs
+
+      - name: Inbox auto-refresh and merged-PR pull
+        run: node tests/test-inbox-refresh.mjs
 
       - name: Layout boundary rules
         run: bash tests/test-layout.sh

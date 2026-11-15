@@ -194,8 +194,8 @@ async function testNoticeAndAcknowledgement() {
     await waitFor(() => q.state.injected.length === 1, 'the notice to be injected')
     assert.match(
       q.state.injected[0].text,
-      /^\[spv\] notice on thread "t1" \(ticket tk-2\): the worker stopped or needs a decision$/m,
-      'a notice says the worker stopped or needs a decision',
+      /^\[spv\] notice on thread "t1" \(ticket tk-2\):$/m,
+      'a notice header names the kind and thread, not a cause',
     )
     assert.ok(q.state.injected[0].text.includes('需要操作者决定用哪个端口'), 'a notice carries the body too')
 
@@ -454,7 +454,7 @@ function testFormatResult() {
 
   const noticeNoTicket = formatResult({ kind: 'notice', thread: 't9', text: '停了' })
   assert.ok(!noticeNoTicket.includes('ticket'), 'formatResult omits the ticket parenthetical when absent')
-  assert.match(noticeNoTicket, /^\[spv\] notice on thread "t9": the worker stopped or needs a decision$/m)
+  assert.match(noticeNoTicket, /^\[spv\] notice on thread "t9":$/m)
 
   const long = 'x'.repeat(MAX_BODY_CHARS + 50)
   const truncated = formatResult({ kind: 'reply', thread: 't9', text: long }, { read: '/tmp/spv/outbox/read/big.json' })

@@ -13,8 +13,21 @@
  * `src/shared/queue.js`. Keeping the panel self-contained means a preset replacement (another
  * worktree's install.sh) cannot break this package's import, while still leaving exactly one
  * implementation to maintain (see `webui/README.md`).
+ *
+ * The host half also owns the refresh loop: `startInboxWatcher()` is the same implementation the CLI's
+ * `inbox watch` uses, and `ctx.effect` stops it when the plugin unloads. Its interval is configured by
+ * the plugin config's `intervalSeconds` or `$SPV_INBOX_INTERVAL_SECONDS` (default 60s; 0 disables), so
+ * the inbox data is current while SPV runs unattended without paying a `gh pr list` per repo more often
+ * than the operator wants.
  */
-import { createInboxHandler, resolveInboxRoot } from './core/inbox.js'
+import {
+  INBOX_INTERVAL_DEFAULT,
+  createInboxHandler,
+  defaultProjectsRoot,
+  resolveInboxIntervalSeconds,
+  resolveInboxRoot,
+  startInboxWatcher,
+} from './core/inbox.js'
 
 export const name = 'wheelchair-agent-webui'
 export const inject = ['webServer', 'connection']
@@ -40,7 +53,17 @@ function rejected(ctx, req, res) {
   return true
 }
 
-export function apply(ctx) {
+/** Parse the configured interval, falling back to 60s with a warning rather than failing the whole panel. */
+function intervalOf(ctx, config) {
+  try {
+    return resolveInboxIntervalSeconds(config?.intervalSeconds)
+  } catch (error) {
+    ctx.logger?.warn?.(`wheelchair-agent-webui: invalid inbox interval (${error?.message ?? error}); using ${INBOX_INTERVAL_DEFAULT}s`)
+    return INBOX_INTERVAL_DEFAULT
+  }
+}
+
+export function apply(ctx, config = {}) {
   const root = resolveInboxRoot()
   const handler = createInboxHandler({ root })
   const guarded = async (req, res) => {
@@ -55,4 +78,25 @@ export function apply(ctx) {
     () => ctx.webServer.register({ kind: 'exact', path: REVIEW_PATH, handler: guarded }),
     `wheelchair-agent-webui: POST ${REVIEW_PATH}`,
   )
+
+  const intervalSeconds = intervalOf(ctx, config)
+  if (intervalSeconds > 0) {
+    ctx.effect(() => {
+      const watcher = startInboxWatcher({
+        root,
+        projectsRoot: defaultProjectsRoot(),
+        intervalSeconds,
+        unref: true,
+        log: message => {
+          const line = `wheelchair-inbox: ${message}`
+          if (String(message).startsWith('warning:')) ctx.logger?.warn?.(line)
+          else ctx.logger?.info?.(line)
+        },
+      })
+      ctx.logger?.info?.(`wheelchair-inbox: refreshing every ${intervalSeconds}s`)
+      return watcher.stop
+    }, 'wheelchair-agent-webui: inbox poller')
+  } else {
+    ctx.logger?.info?.('wheelchair-inbox: automatic refresh disabled by intervalSeconds=0')
+  }
 }

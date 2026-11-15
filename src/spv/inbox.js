@@ -48,9 +48,9 @@ const GITHUB_REMOTE = /github\.com[:/]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.
 /** item 里 `repo` 字段的形状；`owner/name`，两段都是普通仓库名字符。 */
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 /** `gh pr list` 要的字段；顺序无关，但一处定义避免两个调用点漂移。 */
-const GH_FIELDS = 'number,title,state,additions,deletions,changedFiles,url,body,createdAt,updatedAt'
+const GH_FIELDS = 'number,title,state,additions,deletions,changedFiles,url,body,createdAt,updatedAt,mergedAt,mergeCommit'
 /** 这些字段变了才重写 item；`review` 与 `at` 从不参与比较。 */
-const ITEM_FIELDS = ['kind', 'title', 'state', 'additions', 'deletions', 'changedFiles', 'url', 'body', 'createdAt', 'updatedAt']
+const ITEM_FIELDS = ['kind', 'title', 'state', 'additions', 'deletions', 'changedFiles', 'url', 'body', 'createdAt', 'updatedAt', 'mergedAt', 'mergeCommit']
 /** review 请求体上限：与 dsh-host-open-in-app 的 64 KiB 约定一致。 */
 const MAX_BODY_BYTES = 64 * 1024
 /** 每 item 一把跨进程锁：重试间隔、持锁上限、过期判定。 */
@@ -59,6 +59,10 @@ const LOCK_TIMEOUT_MS = 5000
 const LOCK_STALE_MS = 30_000
 /** `setTimeout` 的毫秒上限；更长的间隔会溢出成约 1ms 的忙循环。 */
 const MAX_TIMER_MS = 2_147_483_647
+/** 自动轮询的默认间隔（秒）；与 CLI 的 `inbox watch` 相同。 */
+export const INBOX_INTERVAL_DEFAULT = 60
+/** 本仓库自己的目录名：它的合并需要一次冷安装，而不是普通 pull。 */
+const INSTALL_REPO_DEFAULT = 'wheelchair-agent'
 
 const ITEMS_PATH = '/wheelchair-inbox/items'
 const REVIEW_PATH = '/wheelchair-inbox/review'
@@ -530,7 +534,12 @@ export function discoverRepos(projectsRoot = defaultProjectsRoot()) {
   return repos.sort((a, b) => a.name.localeCompare(b.name))
 }
 
-/** 从 `gh` 的一行输出造 item；已有的 review 一律保留，`at` 是写入时刻。 */
+/** `gh --json mergeCommit` 返回对象（`{oid}`）；也接受一个裸 SHA 字符串。 */
+function mergeCommitOf(value) {
+  return typeof value === 'string' ? value : String(value?.oid ?? '')
+}
+
+/** 从 `gh` 的一行输出造 item；已有的 review 与合并处理记录一律保留，`at` 是写入时刻。 */
 function itemOf(repo, pull, existing) {
   return {
     id: `${repo.replaceAll('/', '-')}-${Number(pull.number)}`,
@@ -547,8 +556,232 @@ function itemOf(repo, pull, existing) {
     // PR 自己的时间：时间筛选按 createdAt（PR 的年龄）走，而不是 watcher 碰巧发现它的时刻。
     createdAt: String(pull.createdAt ?? ''),
     updatedAt: String(pull.updatedAt ?? ''),
+    mergedAt: String(pull.mergedAt ?? '') || String(existing?.mergedAt ?? ''),
+    mergeCommit: mergeCommitOf(pull.mergeCommit) || String(existing?.mergeCommit ?? ''),
+    // 合并只处理一次：这些字段由 handleMergedPull() 写入，轮询不得用新 item 覆盖掉。
+    mergeObservedAt: existing?.mergeObservedAt,
+    mergeHandledAt: existing?.mergeHandledAt,
+    pullAt: existing?.pullAt,
+    pulledSha: existing?.pulledSha,
+    pullError: existing?.pullError,
+    noticeAt: existing?.noticeAt,
+    noticeError: existing?.noticeError,
     at: new Date().toISOString(),
     review: Array.isArray(existing?.review) ? existing.review : [],
+  }
+}
+
+/** Shell-quote one path for the notice text; install paths may contain spaces. */
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`
+}
+
+/** `execFile` failure detail: git's stderr is what names a dirty tree or a divergence. */
+function commandFailure(error) {
+  return String(error?.stderr ?? '').trim() || messageOf(error)
+}
+
+/**
+ * Is this local clone the checkout whose files `install.sh` installs?
+ *
+ * `SPV_INSTALL_REPO` accepts either the directory name (`wheelchair-agent`) or `owner/name`; the latter
+ * is what a person naturally copies from the notice, so accepting only the basename would silently
+ * disable the cold-install notice.
+ */
+function isInstallTargetRepo(name, repo) {
+  const configured = String(process.env.SPV_INSTALL_REPO ?? '').trim()
+  const expected = configured || INSTALL_REPO_DEFAULT
+  const expectedName = repoName(expected)
+  return name === expected || name === expectedName || repo === expected || repoName(repo) === expectedName
+}
+
+/** The one notice an install-repo merge queues: facts, the pending cold install, and the exact commands. */
+function mergeNoticeText({ item, repo, localPath, pulledSha }) {
+  return [
+    `PR #${item.pr} merged in ${repo}.`,
+    `The local clone at ${localPath} moved to ${pulledSha}.`,
+    'A cold install is now pending: the running service cannot install itself.',
+    '',
+    'Stop the install holders, install from that checkout, then start again:',
+    '  wheelchair-agent service stop',
+    '  # exit the SPV session (Ctrl-D); it cannot be stopped from here',
+    `  cd ${shellQuote(localPath)} && bash install.sh`,
+    '  wheelchair-agent service start',
+    '  wheelchair-agent spv',
+  ].join('\n')
+}
+
+/**
+ * Handle a PR that just became MERGED: one `git pull --ff-only`, then (only for this repository) one
+ * cold-install notice.
+ *
+ * Never force, never reset, never stash: a dirty or diverged tree makes git fail, and that failure is
+ * recorded on the item instead of thrown. The caller persists the returned fields, so the next poll sees
+ * `mergeHandledAt` and does neither the pull nor the notice again. The notice id is derived from the item
+ * id, so even a retry after a partial write overwrites one outbox file rather than stacking notices.
+ */
+async function handleMergedPull({ item, repo, name, localPath, existing, observedAt, log = () => {} }) {
+  const at = new Date().toISOString()
+  const mergeObservedAt = existing?.mergeObservedAt || observedAt
+  let pulledSha = existing?.pulledSha
+  let pullAt = existing?.pullAt
+  let pullError
+  // A previous pull that succeeded is reused while retrying only the notice: do not move the clone again.
+  const canReusePull = Boolean(existing?.pulledSha && !existing?.pullError && existing?.mergeObservedAt)
+  if (!canReusePull) {
+    try {
+      await execFileAsync('git', ['-C', localPath, 'pull', '--ff-only'], {
+        encoding: 'utf8',
+        maxBuffer: 16 * 1024 * 1024,
+        timeout: 120_000,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      })
+      const { stdout } = await execFileAsync('git', ['-C', localPath, 'rev-parse', 'HEAD'], {
+        encoding: 'utf8',
+        maxBuffer: 16 * 1024 * 1024,
+        timeout: 120_000,
+      })
+      const sha = String(stdout ?? '').trim()
+      if (!/^[0-9a-f]{7,64}$/i.test(sha)) throw new Error(`git rev-parse HEAD returned ${JSON.stringify(sha)}`)
+      pulledSha = sha
+      pullAt = at
+    } catch (error) {
+      pullError = commandFailure(error)
+      pulledSha = undefined
+      pullAt = at
+    }
+  }
+  if (pullError !== undefined) {
+    log(`warning: ${item.id}: --ff-only pull failed: ${pullError}`)
+    return { mergeObservedAt, pullAt, pullError, pulledSha: undefined }
+  }
+
+  let noticeAt = existing?.noticeAt
+  let noticeError
+  if (isInstallTargetRepo(name, repo) && !noticeAt) {
+    try {
+      await writeMessage(dirsOf(resolveRoot()), {
+        id: `inbox-merge-${item.id}`,
+        source: 'spv',
+        thread: 'main',
+        kind: 'notice',
+        text: mergeNoticeText({ item, repo, localPath, pulledSha }),
+        at: new Date().toISOString(),
+        address: { thread: 'main' },
+      })
+      noticeAt = new Date().toISOString()
+      log(`queued cold-install notice for ${item.id}`)
+    } catch (error) {
+      noticeError = commandFailure(error)
+      log(`warning: ${item.id}: could not queue the cold-install notice: ${noticeError}`)
+    }
+  }
+  if (noticeError !== undefined) {
+    // The pull succeeded but the notice did not: keep the merge unhandled so the next poll retries just
+    // the notice (the pulled sha and pullAt are reused), rather than losing the mandated cold-install note.
+    return { mergeObservedAt, pullAt, pulledSha, noticeError }
+  }
+  return {
+    mergeObservedAt,
+    mergeHandledAt: new Date().toISOString(),
+    pullAt,
+    pulledSha,
+    pullError: undefined,
+    noticeError: undefined,
+    ...(noticeAt === undefined ? {} : { noticeAt }),
+  }
+}
+
+/** Parse the interval in seconds; empty means the default, `0` disables the host-side poller. */
+export function resolveInboxIntervalSeconds(configured) {
+  const raw =
+    configured === undefined || configured === null || String(configured).trim() === ''
+      ? process.env.SPV_INBOX_INTERVAL_SECONDS
+      : configured
+  if (raw === undefined || raw === null || String(raw).trim() === '') return INBOX_INTERVAL_DEFAULT
+  const value = Number(raw)
+  if (!Number.isFinite(value) || value < 0) {
+    throw new Error(
+      `intervalSeconds must be a non-negative number, got ${JSON.stringify(raw)}. ` +
+        'Use 0 to disable the automatic inbox poller, or a positive number of seconds.',
+    )
+  }
+  if (value * 1000 > MAX_TIMER_MS) {
+    throw new Error(
+      `intervalSeconds is ${raw}, over setTimeout's ${Math.floor(MAX_TIMER_MS / 1000)}s limit ` +
+        '(larger values overflow into a ~1ms loop). Use a shorter interval.',
+    )
+  }
+  return value
+}
+
+/**
+ * Start the inbox poll loop and return a stop function plus a `done` promise.
+ *
+ * This is the one loop shared by the web host half and `wheelchair-agent inbox watch`: the first poll runs
+ * immediately, then one `setTimeout` chain; a failed round is logged and the next one still runs. `unref`
+ * lets the web plugin's timer stop holding a process open, while the CLI keeps the default (referenced)
+ * timer. The host calls `stop()` from `ctx.effect`, so the poller dies with the plugin.
+ */
+export function startInboxWatcher({
+  root = resolveInboxRoot(),
+  projectsRoot = defaultProjectsRoot(),
+  intervalSeconds = INBOX_INTERVAL_DEFAULT,
+  gh,
+  log = () => {},
+  unref = false,
+  once = false,
+} = {}) {
+  const seconds = Number(intervalSeconds)
+  if (!Number.isFinite(seconds) || seconds <= 0) {
+    throw new Error(`intervalSeconds must be a positive number, got ${JSON.stringify(intervalSeconds)}.`)
+  }
+  if (seconds * 1000 > MAX_TIMER_MS) {
+    throw new Error(
+      `intervalSeconds is ${intervalSeconds}, over setTimeout's ${Math.floor(MAX_TIMER_MS / 1000)}s limit ` +
+        '(larger values overflow into a ~1ms loop). Use a shorter interval.',
+    )
+  }
+  const warn = message => {
+    try {
+      log(message)
+    } catch {
+      // A logging sink must never take the poll loop down.
+    }
+  }
+  let stopped = false
+  let timer
+  let wake
+  const done = new Promise(resolve => { wake = resolve })
+  const poll = async () => {
+    try {
+      await pollOnce({ root, projectsRoot, gh, log: warn })
+    } catch (error) {
+      warn(`warning: poll failed: ${messageOf(error)}`)
+    }
+  }
+  const tick = async () => {
+    if (stopped) {
+      wake()
+      return
+    }
+    await poll()
+    if (stopped || once) {
+      wake()
+      return
+    }
+    timer = setTimeout(() => { void tick() }, seconds * 1000)
+    if (unref) timer.unref?.()
+  }
+  void tick()
+  return {
+    done,
+    stop() {
+      if (stopped) return
+      stopped = true
+      if (timer !== undefined) clearTimeout(timer)
+      wake()
+    },
   }
 }
 
@@ -560,8 +793,8 @@ function itemOf(repo, pull, existing) {
  */
 export async function pollOnce({ root = resolveInboxRoot(), projectsRoot = defaultProjectsRoot(), gh, log = () => {} } = {}) {
   const binary = String(gh ?? '').trim() || String(process.env.SPV_GH ?? '').trim() || 'gh'
-  const counts = { created: 0, updated: 0, failed: 0 }
-  for (const { repo } of discoverRepos(projectsRoot)) {
+  const counts = { created: 0, updated: 0, failed: 0, merged: 0 }
+  for (const { name, repo } of discoverRepos(projectsRoot)) {
     let pullRequests
     try {
       const { stdout } = await execFileAsync(
@@ -595,13 +828,35 @@ export async function pollOnce({ root = resolveInboxRoot(), projectsRoot = defau
             existing = undefined
           }
           const next = itemOf(repo, pull, existing)
+          let handledMerge = false
+          // Only a transition the watcher itself observed counts. An item that was already MERGED before
+          // this feature existed is not a fresh merge: handling it would pull once per historical PR and
+          // queue a notice for every one of them on the first poll after an upgrade. A transition that
+          // failed (pull or notice) stays observed and is retried on the next poll until it is handled.
+          const wasMerged = existing !== undefined && String(existing.state).toUpperCase() === 'MERGED'
+          const observedTransition = existing !== undefined && !wasMerged && String(next.state).toUpperCase() === 'MERGED'
+          const retrying = Boolean(existing?.mergeObservedAt) && String(next.state).toUpperCase() === 'MERGED'
+          if (existing !== undefined && !existing.mergeHandledAt && (observedTransition || retrying)) {
+            const localPath = join(projectsRoot, 'tools', name)
+            const merge = await handleMergedPull({
+              item: next,
+              repo,
+              name,
+              localPath,
+              existing,
+              observedAt: new Date().toISOString(),
+              log,
+            })
+            Object.assign(next, merge)
+            handledMerge = true
+          }
           if (existing === undefined) {
             await writeItem(root, next)
             return 'created'
           }
-          if (ITEM_FIELDS.some(field => existing[field] !== next[field])) {
+          if (handledMerge || ITEM_FIELDS.some(field => existing[field] !== next[field])) {
             await writeItem(root, next)
-            return 'updated'
+            return handledMerge ? 'merged' : 'updated'
           }
           return 'unchanged'
         })
@@ -616,38 +871,24 @@ export async function pollOnce({ root = resolveInboxRoot(), projectsRoot = defau
       } else if (outcome === 'updated') {
         counts.updated += 1
         log(`updated ${id}`)
+      } else if (outcome === 'merged') {
+        counts.merged += 1
+        log(`merged ${id}`)
       }
     }
   }
   return counts
 }
 
-/** 先立刻轮询一轮，然后按间隔循环；`once` 只跑一轮。单轮失败只记日志，循环不停。 */
-export async function watch({ root = resolveInboxRoot(), projectsRoot = defaultProjectsRoot(), intervalSeconds = 60, once = false, log = () => {} } = {}) {
-  const seconds = Number(intervalSeconds)
-  if (!Number.isFinite(seconds) || seconds <= 0) {
-    throw new Error(`intervalSeconds must be a positive number, got ${JSON.stringify(intervalSeconds)}.`)
-  }
-  if (seconds * 1000 > MAX_TIMER_MS) {
-    throw new Error(
-      `intervalSeconds is ${intervalSeconds}, over setTimeout's ${Math.floor(MAX_TIMER_MS / 1000)}s limit ` +
-        '(larger values overflow into a ~1ms loop). Use a shorter interval.',
-    )
-  }
-  const poll = async () => {
-    try {
-      await pollOnce({ root, projectsRoot, log })
-    } catch (error) {
-      // 夜里无人看管的轮询器不能因为一次坏数据就退出。
-      log(`warning: poll failed: ${messageOf(error)}`)
-    }
-  }
-  await poll()
-  if (once) return
-  for (;;) {
-    await new Promise(resolve => setTimeout(resolve, seconds * 1000))
-    await poll()
-  }
+/**
+ * 先立刻轮询一轮，然后按间隔循环；`once` 只跑一轮。单轮失败只记日志，循环不停。
+ *
+ * 与 web host 的自动刷新共用 `startInboxWatcher()`：这里只是把“等它结束”暴露成一个 promise，
+ * CLI 的信号处理仍然直接 `process.exit`，所以行为与旧的 for (;;) 循环一致。
+ */
+export async function watch({ root = resolveInboxRoot(), projectsRoot = defaultProjectsRoot(), intervalSeconds = INBOX_INTERVAL_DEFAULT, once = false, log = () => {} } = {}) {
+  const watcher = startInboxWatcher({ root, projectsRoot, intervalSeconds, once, log })
+  await watcher.done
 }
 
 // ------------------------------------------------------------------- HTTP

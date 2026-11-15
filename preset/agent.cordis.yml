@@ -71,7 +71,8 @@
       - After dispatching, keep the conversation going. Do not wait, do not poll, and do not look for a tool that
         reads the answer: there is no timeout and nothing to call. The result arrives by itself as a new user
         message on the dispatch thread. A "reply" means the worker finished and carries its answer; a "notice"
-        means the worker stopped or needs a decision from the operator.
+        needs the operator's attention: its body says whether a worker stopped, a decision is being questioned, or
+        a cold install is pending.
       - Report what the worker actually said. Do not claim work succeeded on your own authority, and do not quietly
         substitute your own attempt when a worker fails: say what failed and what you saw.
       - The worker cannot see this conversation. Anything it needs must be in the task text.
