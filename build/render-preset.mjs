@@ -2,20 +2,25 @@
 /**
  * 把 `preset/` 里的 preset 源文件渲染成可安装形态。
  *
- * 要做两件事：
- *  1. `agent.cordis.yml` 里的 `@SPV_PLUGIN@` / `@SPV_CRON_PLUGIN@` 占位符换成
- *     `file://<安装目录>/spv-tools.js` 与 `file://<安装目录>/spv-cron-plugin.js`。
+ * 要做三件事：
+ *  1. `agent.cordis.yml` 里的 `@SPV_PLUGIN@` / `@SPV_CRON_PLUGIN@` / `@SPV_RESTART_COMMAND@` 占位符换成
+ *     `file://<安装目录>/spv-tools.js`、`file://<安装目录>/spv-cron-plugin.js` 与
+ *     `file://<安装目录>/restart-command.js`。
  *     为什么是 file URL 而不是包名：preset 的声明来自 dsh profile 的 patch 层，那一层的模块解析基址是
  *     profile 目录，`wheelchair-agent` 不在 dsh 的安装树里，bare specifier 会 MODULE_NOT_FOUND，整个
  *     preset mount 失败（错误只表现为 "never started"）。file URL 不依赖任何解析表。
  *  2. 生成 `preset-default.patch.yml`：dsh-tui 0.19 的 preset 由 registry 声明，`~/.dsh/.agent-presets/<id>/`
  *     只是元数据目录，不会被自动发现；新会话要用某个 preset，必须有一条声明它的 patch，由 `--patch` 传入。
+ *  3. 生成安装后的 `package.json`：把 checkout 的绝对路径写成 `checkout`，已安装的 CLI 才能找到那个持有
+ *     `install.sh` 的目录（`restart-all` 的冷安装步骤需要它）。
  *
- * 用法：node build/render-preset.mjs <presetDir> <pluginUrl> <cronPluginUrl> <outDir>
+ * 用法：node build/render-preset.mjs <presetDir> <pluginUrl> <cronPluginUrl> <outDir> [restartPluginUrl]
+ *       （省略第 5 个参数时从 pluginUrl 推出来：把最后一个路径片段换成 restart-command.js，历史 4 参调用
+ *        仍然可用。）
  * 退出码：0 成功，2 用法错误，1 源文件缺失/无法写出。
  */
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 /** preset 的声明行：`preset.yml` 的 name/description/order 与 `agent.cordis.yml` 的 plugins 合成一条。 */
 const ORDER_FALLBACK = 50
@@ -69,11 +74,17 @@ function buildPatch({ id, name, description, order, plugins }) {
 }
 
 async function main() {
-  const [presetDir, pluginUrl, cronPluginUrl, outDir] = process.argv.slice(2)
+  const [presetDir, pluginUrl, cronPluginUrl, outDir, restartPluginUrlArg] = process.argv.slice(2)
   if (!presetDir || !pluginUrl || !cronPluginUrl || !outDir) {
-    process.stderr.write('usage: node build/render-preset.mjs <presetDir> <pluginUrl> <cronPluginUrl> <outDir>\n')
+    process.stderr.write(
+      'usage: node build/render-preset.mjs <presetDir> <pluginUrl> <cronPluginUrl> <outDir> [restartPluginUrl]\n',
+    )
     return 2
   }
+  // The historical 4-argument call derives the restart URL from the tools URL. Keeping it working matters
+  // because docs/PITFALLS/round-data/R1/test.py renders a preset that way.
+  const restartPluginUrl = restartPluginUrlArg ||
+    pluginUrl.replace(/[^/]*$/, 'restart-command.js')
   const id = 'spv'
   const meta = await readMeta(join(presetDir, 'preset.yml'))
   const name = meta.name || 'SPV'
@@ -83,6 +94,7 @@ async function main() {
   const rendered = source
     .replaceAll('@SPV_PLUGIN@', pluginUrl)
     .replaceAll('@SPV_CRON_PLUGIN@', cronPluginUrl)
+    .replaceAll('@SPV_RESTART_COMMAND@', restartPluginUrl)
   await mkdir(outDir, { recursive: true })
   // Node treats a .js file with no nearby package.json as CommonJS first and re-parses it as ESM, which prints a
   // MODULE_TYPELESS_PACKAGE_JSON warning on every boot. `type: module` removes it.
@@ -97,6 +109,9 @@ async function main() {
     version: typeof identity.version === 'string' ? identity.version : '0.0.0',
     private: true,
     type: 'module',
+    // An installed CLI is <preset>/cli.js and cannot see the checkout that installed it. Recording the
+    // absolute checkout here is what lets `wheelchair-agent restart-all` find install.sh later.
+    checkout: resolve(presetDir, '..'),
   }
   await writeFile(join(outDir, 'package.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
   await writeFile(join(outDir, 'agent.cordis.yml'), rendered, 'utf8')

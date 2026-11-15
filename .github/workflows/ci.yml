@@ -53,3 +53,6 @@ jobs:
 
       - name: install.sh cold-install sandbox test
         run: sh tests/test-install.sh
+
+      - name: restart-all orchestration
+        run: node tests/test-restart.mjs

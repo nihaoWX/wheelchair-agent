@@ -63,6 +63,8 @@ commands:
   work gc [--dry-run] [--keep <n>] [--keep-days <d>]
                                reclaim ticket clones that are clean, unused and fully pushed
   work restored <ticket>       print the commands that rebuild a reclaimed ticket clone
+  restart-all [--dry-run] [--force] [--no-install] [--detach]
+                               restart the superagent service, cold-install the preset and relaunch the SPV TUI
   check                        runtime health: service, preset, panel prepare value, prepare dry run
   --help                       this text
   --version                    the installed version
@@ -147,6 +149,26 @@ const WORK_RESTORED_USAGE = `usage: wheelchair-agent work restored <ticket>
 Print copy-paste commands that rebuild a reclaimed ticket clone from
 <stateDir>/work-reclaimed.jsonl. The directory name is the ticket name, for example
 "agent-tool-dsh-install-0312cf6b4046".`
+
+const RESTART_USAGE = `usage: wheelchair-agent restart-all [--dry-run] [--force] [--no-install] [--detach]
+
+Restart everything this deployment runs: the superagent service, a cold install of the preset, and the SPV TUI
+session. The cold-install guard refuses while the service or a live SPV session holds the install targets, so
+the order is fixed: guard -> service stop -> stop the SPV chain -> install.sh cold -> service start -> relaunch
+the TUI in tmux.
+
+options:
+  --dry-run     print the plan and change nothing (no log, no command, no signal)
+  --force       interrupt running workers and queued tickets instead of refusing; prints what it interrupts
+  --no-install  skip install.sh and only restart the service and the TUI
+  --detach      arm a detached orchestrator and return; this is what /restart-wheelchair-agent uses, and the
+                SPV session you run it from is about to end
+  --run         internal: run the orchestration in this process (used by --detach)
+  --help        this text
+
+The TUI cannot be put back on this terminal from inside the session that must be stopped, so --detach
+relaunches it in tmux session "dsh-spv" and appends every step to <stateDir>/restart-all.log.
+`
 
 /** 用法错误：退出码 2，与「命令失败」（1）分开。 */
 class UsageError extends Error {}
@@ -582,6 +604,47 @@ async function commandWork(argv) {
   throw new UsageError(`unknown option ${JSON.stringify(argv[0])} for "work"`)
 }
 
+/**
+ * `restart-all`：解析布尔开关后交给 `src/spv/restart.js`（服务停止 → SPV 链停止 → 冷安装 → 服务启动 →
+ * tmux 里重开 TUI）。
+ *
+ * 布尔项自己解析（`options()` 只处理带值选项）；任何未知项都在读服务/扫 `/proc` 之前报用法错误。退出码由
+ * 实现返回，这里只写 `process.exitCode`，不结束进程。
+ */
+async function commandRestartAll(argv) {
+  const parsed = { dryRun: false, force: false, noInstall: false, detach: false, run: false }
+  const booleans = {
+    '--dry-run': 'dryRun',
+    '--force': 'force',
+    '--no-install': 'noInstall',
+    '--detach': 'detach',
+    '--run': 'run',
+  }
+  for (const word of argv) {
+    if (word === '--help' || word === '-h') {
+      process.stdout.write(`${RESTART_USAGE}\n`)
+      return
+    }
+    const name = booleans[word]
+    if (name === undefined) throw new UsageError(`unknown option ${JSON.stringify(word)} for "restart-all"`)
+    parsed[name] = true
+  }
+  // --run is the detached child's mode. Combining them would spawn a child that immediately arms another.
+  if (parsed.detach && parsed.run) throw new UsageError('--detach and --run cannot be combined')
+  const { runRestart } = await load('src', 'spv', 'restart.js')
+  const code = await runRestart({
+    root: ROOT,
+    installed: INSTALLED,
+    presetDir: PRESET_DIR,
+    presetPatch: join(PRESET_DIR, 'preset-default.patch.yml'),
+    stateDir: STATE_DIR,
+    env: process.env,
+    cwd: process.cwd(),
+    cliPath: fileURLToPath(import.meta.url),
+  }, parsed)
+  process.exitCode = code
+}
+
 /** `check`：四项运行时健康检查，任一项失败退出 1。 */
 async function commandCheck() {
   const { runChecks } = await load('src', 'spv', 'check.js')
@@ -645,6 +708,9 @@ try {
       break
     case 'work':
       await commandWork(rest)
+      break
+    case 'restart-all':
+      await commandRestartAll(rest)
       break
     case 'check':
       await commandCheck()
