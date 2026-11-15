@@ -53,6 +53,12 @@ const INSTALL_REPO_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9][A-Za-z
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/
 
 /**
+ * 这些名字即使放进 `Object.create(null)` 之外的普通对象也会碰到原型：`__proto__` 会改原型，
+ * `constructor` / `prototype` 会让人误以为能改内置对象。直接大声拒绝，别静默丢一个预设。
+ */
+const RESERVED_PRESET_NAMES = new Set(['__proto__', 'prototype', 'constructor'])
+
+/**
  * 值 schema：键就是 JSON 里的扁平 dotted key，顺序就是面板的行顺序。
  *
  * `env` 是同一旋钮的环境变量（只用于展示 precedence，不写回）；`min`/`max` 对数字与长度生效；
@@ -230,9 +236,9 @@ function describeValue(raw) {
 
 /** 一个键的短标签，用在错误里：只报键名，不把整张表倒出来。 */
 function specOf(key) {
-  const spec = KEY_SPECS[key]
-  if (spec === undefined) throw invalid(`unknown settings key ${JSON.stringify(key)}.`)
-  return spec
+  // own-property：`constructor` / `toString` 会从 Object.prototype 读到「值」，不能当成已知键。
+  if (!has(KEY_SPECS, key)) throw invalid(`unknown settings key ${JSON.stringify(key)}.`)
+  return KEY_SPECS[key]
 }
 
 /**
@@ -298,16 +304,22 @@ function normalizePresetName(name) {
   if (value === 'default') {
     throw invalid('"default" is the built-in preset name; it cannot be created or renamed.')
   }
+  if (RESERVED_PRESET_NAMES.has(value)) {
+    throw invalid(
+      `template preset name ${JSON.stringify(value)} is reserved: ` +
+        `${[...RESERVED_PRESET_NAMES].map(name => JSON.stringify(name)).join(', ')} cannot be used.`,
+    )
+  }
   return value
 }
 
 /** 引号里的模板 id；未知 id 在保存时报错，不静默忽略。 */
 function templateSpec(id) {
-  const spec = TEMPLATE_SPECS[id]
-  if (spec === undefined) {
+  // own-property：`constructor` 之类的名字不能从 Object.prototype 借到一个假 spec。
+  if (!has(TEMPLATE_SPECS, id)) {
     throw invalid(`unknown template id ${JSON.stringify(id)}; known ids are ${TEMPLATE_IDS.join(', ')}.`)
   }
-  return spec
+  return TEMPLATE_SPECS[id]
 }
 
 /**
@@ -366,13 +378,18 @@ function builtinTemplate(id) {
   return { name: 'default', text: TEMPLATE_SPECS[id].default, builtin: true }
 }
 
-/** 内部模板表示：`active` 总是指向 `default` 或 `customs` 里的一个键。 */
+/**
+ * 内部模板表示：`active` 总是指向 `default` 或 `customs` 里的一个键。
+ *
+ * `customs` 用 null 原型：预设名是用户输入，`toString` 这类键在普通对象上会读到继承属性，
+ * 让 `has()` / 读取走偏；null 原型让每个键都只能是自己的。
+ */
 function emptyTemplateState() {
-  return { active: 'default', customs: {} }
+  return { active: 'default', customs: Object.create(null) }
 }
 
 function cloneTemplateState(state) {
-  const customs = {}
+  const customs = Object.create(null)
   for (const [name, text] of Object.entries(state.customs)) customs[name] = text
   return { active: state.active, customs }
 }
@@ -486,13 +503,8 @@ function readStoredTemplates(raw, warnings) {
         for (const [name, preset] of Object.entries(presets)) {
           const clean = String(name).trim()
           if (clean === 'default') {
-            const text = isPlainObject(preset) ? preset.text : undefined
-            if (text !== TEMPLATE_SPECS[id].default) {
-              warnings.push(
-                `ignoring a stored change to the built-in preset of template ${JSON.stringify(id)}; ` +
-                  'the built-in text cannot be modified.',
-              )
-            }
+            // The built-in preset is authoritative; a stored copy is advisory only. Older versions wrote
+            // it, and a future builtin change must not turn every such file into a warning.
             continue
           }
           try {
@@ -744,7 +756,7 @@ function applyTemplates(raw, templates) {
       if (!isPlainObject(entry.presets)) {
         throw invalid(`templates[${JSON.stringify(id)}].presets must be a JSON object of preset name -> {text}.`)
       }
-      const customs = {}
+      const customs = Object.create(null)
       for (const [name, preset] of Object.entries(entry.presets)) {
         const clean = String(name).trim()
         if (clean === 'default') {
@@ -800,7 +812,9 @@ function serializeTemplates(templates) {
   for (const id of TEMPLATE_IDS) {
     const state = templates[id] ?? emptyTemplateState()
     if (state.active === 'default' && Object.keys(state.customs).length === 0) continue
-    const presets = { default: { text: TEMPLATE_SPECS[id].default, builtin: true } }
+    // Only custom presets are persisted: the built-in text comes from TEMPLATE_SPECS, so a future builtin
+    // change applies to old files instead of being shadowed (and warned about) forever.
+    const presets = Object.create(null)
     for (const [name, text] of Object.entries(state.customs)) {
       presets[name] = { text, builtin: false }
     }
@@ -816,7 +830,7 @@ function serializeTemplates(templates) {
  * `values` 是 dotted key -> 值（合并进已有显式覆盖）；`templates` 按模板 id 完整替换自定义预设；
  * `reset` 先执行（删覆盖 / 清空预设并回默认）。
  */
-export function saveSettings({ stateDir, revision, values, templates, reset } = {}) {
+export function saveSettings({ stateDir, revision, values, templates, reset, env = process.env, config = {} } = {}) {
   const stored = readStored(stateDir)
   if (!Number.isInteger(revision) || revision < 0) {
     throw conflict(stored.revision, revision)
@@ -839,7 +853,9 @@ export function saveSettings({ stateDir, revision, values, templates, reset } = 
     values: nextValues,
     templates: serializeTemplates(nextTemplates),
   })
-  return resolveSettings({ stateDir })
+  // 必须带上调用方的 env/config：否则 PUT 响应会丢掉 precedence 层，页面会把一个未被改动的行
+  // 误报成 default/内置值（GET 与 PUT 于是给出两个不同的 effective/source）。
+  return resolveSettings({ stateDir, env, config })
 }
 
 // ---------------------------------------------------------------------- HTTP
@@ -955,6 +971,8 @@ export function createSettingsHandler({ stateDir, config, env = process.env } = 
         values: body.values,
         templates: body.templates,
         reset: body.reset,
+        env,
+        config,
       })
       sendJson(res, 200, snapshot)
     } catch (error) {

@@ -631,7 +631,8 @@ async function testPresetCrudAndReset() {
   assert.deepEqual(created.templates.injection.presets.map(preset => preset.builtin), [true, false, false])
   const stored = await readJson(settingsFile(box.state))
   assert.equal(stored.templates.injection.active, 'terse')
-  assert.equal(stored.templates.injection.presets.default.builtin, true)
+  assert.deepEqual(Object.keys(stored.templates.injection.presets).sort(), ['terse', 'verbose'], 'only custom presets are persisted')
+  assert.equal(stored.templates.injection.presets.default, undefined, 'the built-in text is not copied into the file')
   assert.equal(stored.templates.injection.presets.terse.text, '[spv] {kind} {thread}: {body}')
 
   // 只切 active：presets 省略时自定义预设保留。
@@ -1434,6 +1435,8 @@ async function testPollerDynamicInterval() {
     process.env.FAKE_GH_JSON = box.ghJson
     process.env.FAKE_GH_LOG = box.ghLog
     delete process.env.SPV_INBOX_INTERVAL_SECONDS
+    // pollOnce() reads the settings for merge.installRepo; keep that read out of the operator's state dir.
+    process.env.DSH_SUPERAGENT_STATE_DIR = ISOLATED_STATE
     const watcher = startInboxWatcher({
       root: box.inbox,
       projectsRoot: box.projects,
@@ -1618,6 +1621,180 @@ async function testMountSweepSetting() {
   // A direct reclaim with the same keep floor agrees (the mount pass passes it through, not a hard-coded 0).
   const summary = await reclaimWork({ root: box.work, stateDir: box.state, keep: 2, keepDays: 0 })
   assert.equal(summary.reclaimed, 0)
+}
+
+
+/** A PUT response must carry the same precedence snapshot as GET for rows the PUT did not touch. */
+async function testPutSnapshotKeepsPrecedence() {
+  const box = await sandbox()
+  const rowOf = snapshot => snapshot.rows.find(row => row.key === 'inbox.intervalSeconds')
+  const handler = createSettingsHandler({
+    stateDir: box.state,
+    env: { SPV_INBOX_INTERVAL_SECONDS: '20' },
+    config: { 'inbox.intervalSeconds': 0.02 },
+  })
+  const get = await call(handler)
+  assert.equal(rowOf(get.body).source, 'config')
+  assert.equal(rowOf(get.body).value, 0.02)
+  const put = await call(handler, { method: 'PUT', body: { revision: get.body.revision, values: { 'work.keep': 2 } } })
+  assert.equal(put.status, 200)
+  assert.equal(rowOf(put.body).source, 'config', 'the PUT snapshot keeps the config layer for an untouched row')
+  assert.equal(rowOf(put.body).value, 0.02)
+  assert.deepEqual(rowOf(put.body).overridden, [{ source: 'env', value: 20 }])
+  const again = await call(handler)
+  assert.deepEqual(rowOf(again.body), rowOf(put.body), 'the PUT response and the next GET agree')
+
+  // An env-sourced untouched row survives too.
+  const envBox = await sandbox()
+  const envHandler = createSettingsHandler({ stateDir: envBox.state, env: { SPV_INBOX_INTERVAL_SECONDS: '33' } })
+  const envGet = await call(envHandler)
+  assert.equal(rowOf(envGet.body).source, 'env')
+  assert.equal(rowOf(envGet.body).value, 33)
+  const envPut = await call(envHandler, {
+    method: 'PUT',
+    body: { revision: envGet.body.revision, values: { 'work.keep': 1 } },
+  })
+  assert.equal(rowOf(envPut.body).source, 'env', 'the PUT snapshot keeps the env layer for an untouched row')
+  assert.equal(rowOf(envPut.body).value, 33)
+
+  // The handler's own env must be forwarded; process.env must not leak into the PUT response.
+  const savedEnv = process.env.SPV_INBOX_INTERVAL_SECONDS
+  process.env.SPV_INBOX_INTERVAL_SECONDS = '99'
+  try {
+    const isolatedBox = await sandbox()
+    const isolated = createSettingsHandler({ stateDir: isolatedBox.state, env: {} })
+    const isolatedGet = await call(isolated)
+    const isolatedPut = await call(isolated, {
+      method: 'PUT',
+      body: { revision: isolatedGet.body.revision, values: { 'work.keep': 1 } },
+    })
+    assert.equal(rowOf(isolatedGet.body).source, 'default')
+    assert.equal(rowOf(isolatedPut.body).source, 'default', 'the handler env, not process.env, reaches the PUT snapshot')
+    assert.equal(rowOf(isolatedPut.body).value, 60)
+  } finally {
+    if (savedEnv === undefined) delete process.env.SPV_INBOX_INTERVAL_SECONDS
+    else process.env.SPV_INBOX_INTERVAL_SECONDS = savedEnv
+  }
+
+  // The library call forwards them too (the handler is not the only caller).
+  const directBox = await sandbox()
+  const direct = saveSettings({
+    stateDir: directBox.state,
+    revision: 0,
+    values: { 'work.keep': 1 },
+    config: { 'inbox.intervalSeconds': 0.02 },
+  })
+  assert.equal(rowOf(direct).source, 'config')
+  assert.equal(rowOf(direct).value, 0.02)
+}
+
+/** Prototype-named settings keys / template ids / presets are refused loudly, never silently accepted. */
+async function testPrototypeNamesAndIds() {
+  const box = await sandbox()
+  const handler = createSettingsHandler({ stateDir: box.state, env: {} })
+  const snapshot = () => resolveSettings({ stateDir: box.state, env: {} })
+  const revision = snapshot().revision
+
+  for (const key of ['__proto__', 'constructor', 'prototype', 'toString', 'hasOwnProperty']) {
+    const answer = await call(handler, { method: 'PUT', body: { revision, values: { [key]: 5 } } })
+    assert.equal(answer.status, 400, `the settings key ${JSON.stringify(key)} is refused`)
+    assert.equal(answer.body.code, 'SETTINGS_INVALID')
+    assert.match(answer.body.message, /unknown settings key/)
+  }
+  assert.equal(snapshot().revision, revision, 'no prototype-named key writes anything')
+
+  for (const id of ['__proto__', 'constructor', 'prototype', 'toString', 'hasOwnProperty']) {
+    const answer = await call(handler, { method: 'PUT', body: { revision, templates: { [id]: { active: 'default' } } } })
+    assert.equal(answer.status, 400, `the template id ${JSON.stringify(id)} is refused`)
+    assert.equal(answer.body.code, 'SETTINGS_INVALID')
+  }
+
+  let answer = await call(handler, { method: 'PUT', body: { revision, reset: { templates: ['__proto__'] } } })
+  assert.equal(answer.status, 400)
+  assert.equal(answer.body.code, 'SETTINGS_INVALID')
+  answer = await call(handler, { method: 'PUT', body: { revision, reset: { templates: ['constructor'] } } })
+  assert.equal(answer.status, 400)
+  answer = await call(handler, { method: 'PUT', body: { revision, reset: { values: ['constructor'] } } })
+  assert.equal(answer.status, 400)
+
+  for (const name of ['__proto__', 'prototype', 'constructor']) {
+    answer = await call(handler, {
+      method: 'PUT',
+      body: { revision, templates: { prIssue: { presets: { [name]: { text: '{repo} {pr}\n{comment}' } } } } },
+    })
+    assert.equal(answer.status, 400, `the preset name ${JSON.stringify(name)} is refused`)
+    assert.equal(answer.body.code, 'SETTINGS_INVALID')
+    assert.match(answer.body.message, /reserved/)
+  }
+  assert.throws(() => validateTemplate('constructor', '{comment}'), error => error.code === 'SETTINGS_INVALID')
+  assert.throws(() => validateTemplate('__proto__', '{comment}'), error => error.code === 'SETTINGS_INVALID')
+
+  // A non-reserved prototype-ish name still works: the internal maps are null-prototype + own-checked.
+  answer = await call(handler, {
+    method: 'PUT',
+    body: { revision, templates: { prIssue: { presets: { toString: { text: '{repo} {pr}\n{comment}' } } } } },
+  })
+  assert.equal(answer.status, 200)
+  assert.ok(answer.body.templates.prIssue.presets.some(preset => preset.name === 'toString'))
+  const roundTrip = snapshot()
+  assert.ok(roundTrip.templates.prIssue.presets.some(preset => preset.name === 'toString'), 'a toString preset persists and resolves')
+  const stored = await readJson(settingsFile(box.state))
+  assert.ok(Object.hasOwn(stored.templates.prIssue.presets, 'toString'))
+
+  // A hand-edited file with prototype-named ids/keys is ignored with a warning, never thrown.
+  await writeJson(settingsFile(box.state), {
+    version: 1,
+    revision: 4,
+    values: { constructor: 5 },
+    templates: { constructor: { active: 'default' } },
+  })
+  const edited = resolveSettings({ stateDir: box.state, env: {} })
+  assert.equal(edited.fileState, 'ok')
+  assert.equal(edited.revision, 4)
+  assert.deepEqual(edited.values, {})
+  assert.match(edited.warning, /unknown settings key "constructor"/)
+  assert.match(edited.warning, /unknown template "constructor"/)
+  assert.equal(edited.templates.injection.active, 'default', 'the prototype-named template did not replace a real one')
+}
+
+/** N6: the stored file carries only custom presets; a stored built-in copy is advisory and never warns. */
+async function testStoredTemplatesOmitBuiltinText() {
+  const box = await sandbox()
+  save(box.state, {
+    templates: { injection: { active: 'custom', presets: { custom: { text: '[spv] {kind} {thread}: {body}' } } } },
+  })
+  const stored = await readJson(settingsFile(box.state))
+  assert.deepEqual(Object.keys(stored.templates.injection.presets), ['custom'], 'only custom presets are written')
+  assert.equal(stored.templates.injection.presets.default, undefined, 'the built-in text is not copied into the file')
+
+  // An old file with a stored default equal to the current builtin stays warning-free.
+  await writeJson(settingsFile(box.state), {
+    version: 1,
+    revision: 5,
+    values: {},
+    templates: {
+      injection: {
+        active: 'custom',
+        presets: {
+          default: { text: defaultSettings().templates.injection.defaultText, builtin: true },
+          custom: { text: '[spv] {kind} {thread}: {body}' },
+        },
+      },
+    },
+  })
+  const old = resolveSettings({ stateDir: box.state, env: {} })
+  assert.equal(old.warning, undefined, 'a stored built-in copy is advisory and does not warn')
+  assert.equal(old.templates.injection.active, 'custom')
+  assert.equal(old.templates.injection.text, '[spv] {kind} {thread}: {body}')
+
+  // A stale stored default (an older builtin text) is ignored silently as well.
+  const stale = await readJson(settingsFile(box.state))
+  stale.templates.injection.presets.default.text = 'STALE BUILTIN {kind} {thread} {body}'
+  await writeJson(settingsFile(box.state), stale)
+  const after = resolveSettings({ stateDir: box.state, env: {} })
+  assert.equal(after.warning, undefined, 'a stale stored built-in copy is ignored silently')
+  assert.equal(after.templates.injection.defaultText, defaultSettings().templates.injection.defaultText)
+  assert.equal(after.templates.injection.text, '[spv] {kind} {thread}: {body}')
 }
 
 // --------------------------------------------------------------------- main

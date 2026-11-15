@@ -23,14 +23,17 @@
  */
 import { access } from 'node:fs/promises'
 import { basename, join } from 'node:path'
-import { defaultSettings, renderTemplate, resolveSettings } from '../shared/settings.js'
+import { KEY_SPECS, defaultSettings, renderTemplate, resolveSettings } from '../shared/settings.js'
 import { RESULT_KINDS, consumeMessage, threadOf, unreadMessages } from './outbox.js'
 
-/** 轮询间隔（毫秒）。outbox 是本地目录，1s 足够；结果不是实时数据，再快也没有收益。 */
-export const INJECT_INTERVAL_MS = 1000
+/**
+ * 轮询间隔（毫秒）。outbox 是本地目录，1s 足够；结果不是实时数据，再快也没有收益。
+ * 默认值来自 `src/shared/settings.js` 的 `KEY_SPECS`，面板默认值与消费者不再各写一份。
+ */
+export const INJECT_INTERVAL_MS = KEY_SPECS['injection.intervalMs'].default
 
-/** 注入正文的上限：再长的答复会挤占会话上下文，完整内容留在 outbox/read/ 的文件里。 */
-export const MAX_BODY_CHARS = 12000
+/** 注入正文的上限：再长的答复会挤占会话上下文，完整内容留在 outbox/read/ 的文件里（来源同上）。 */
+export const MAX_BODY_CHARS = KEY_SPECS['injection.maxBodyChars'].default
 
 /** 面板设置里 `injection.intervalMs` 的下限（`setTimeout` 再快只会空转）。 */
 const MIN_INTERVAL_MS = 50

@@ -31,6 +31,13 @@ import { defineSpvTools } from '../src/spv/tools.js'
 const CLI = fileURLToPath(new URL('../bin/wheelchair-agent.mjs', import.meta.url))
 const SANDBOXES = []
 
+// `appendReview` resolves the panel settings from this env var. Pin it to a fresh directory so a real
+// `~/.dsh/state/superagent/panel-settings.json` (for example with custom templates) can never change the
+// task/notice text these cases assert; restore it when the suite ends.
+const HERMETIC_STATE = await mkdtemp(join(tmpdir(), 'wheelchair-agent-inbox-state-'))
+const SAVED_STATE_DIR = process.env.DSH_SUPERAGENT_STATE_DIR
+process.env.DSH_SUPERAGENT_STATE_DIR = HERMETIC_STATE
+
 /** 一个 `mkdtemp` 沙箱；所有测试结束后统一删掉。 */
 async function sandbox() {
   const base = await mkdtemp(join(tmpdir(), 'wheelchair-agent-inbox-test-'))
@@ -469,4 +476,7 @@ try {
   process.exitCode = 1
 } finally {
   for (const base of SANDBOXES) await rm(base, { recursive: true, force: true })
+  if (SAVED_STATE_DIR === undefined) delete process.env.DSH_SUPERAGENT_STATE_DIR
+  else process.env.DSH_SUPERAGENT_STATE_DIR = SAVED_STATE_DIR
+  await rm(HERMETIC_STATE, { recursive: true, force: true })
 }

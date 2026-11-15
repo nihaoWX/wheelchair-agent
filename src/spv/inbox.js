@@ -28,7 +28,7 @@ import { promisify } from 'node:util'
 import { checkProject, checkTask, checkThread, submitTask } from './dispatch.js'
 import { DEFAULT_STATE_DIR, resolveRoot } from './paths.js'
 import { dirsOf, writeMessage } from '../shared/queue.js'
-import { defaultSettings, renderTemplate, resolveSettings } from '../shared/settings.js'
+import { KEY_SPECS, defaultSettings, renderTemplate, resolveSettings } from '../shared/settings.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -60,10 +60,13 @@ const LOCK_TIMEOUT_MS = 5000
 const LOCK_STALE_MS = 30_000
 /** `setTimeout` 的毫秒上限；更长的间隔会溢出成约 1ms 的忙循环。 */
 const MAX_TIMER_MS = 2_147_483_647
-/** 自动轮询的默认间隔（秒）；与 CLI 的 `inbox watch` 相同。 */
-export const INBOX_INTERVAL_DEFAULT = 60
-/** 本仓库自己的目录名：它的合并需要一次冷安装，而不是普通 pull。 */
-const INSTALL_REPO_DEFAULT = 'wheelchair-agent'
+/**
+ * 自动轮询的默认间隔（秒）；与 CLI 的 `inbox watch` 相同。
+ * 单一来源是 `src/shared/settings.js` 的 `KEY_SPECS`，避免面板默认值与消费者各改一份后漂移。
+ */
+export const INBOX_INTERVAL_DEFAULT = KEY_SPECS['inbox.intervalSeconds'].default
+/** 本仓库自己的目录名：它的合并需要一次冷安装，而不是普通 pull（来源同上）。 */
+const INSTALL_REPO_DEFAULT = KEY_SPECS['merge.installRepo'].default
 
 const ITEMS_PATH = '/wheelchair-inbox/items'
 const REVIEW_PATH = '/wheelchair-inbox/review'

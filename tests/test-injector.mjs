@@ -32,6 +32,13 @@ import { MAX_BODY_CHARS, formatResult, startResultInjector } from '../src/spv/in
 const INTERVAL_MS = 20
 const TIMEOUT_MS = 2000
 
+// The injector re-reads the panel settings (default state dir) on every tick. Pin that directory to a
+// fresh one, so a real `~/.dsh/state/superagent/panel-settings.json` with custom templates/limits can
+// never change the injected text these cases assert; restore it when the suite ends.
+const HERMETIC_STATE = await mkdtemp(join(tmpdir(), 'wheelchair-agent-injector-state-'))
+const SAVED_STATE_DIR = process.env.DSH_SUPERAGENT_STATE_DIR
+process.env.DSH_SUPERAGENT_STATE_DIR = HERMETIC_STATE
+
 /**
  * 一套假依赖：outbox 是可变数组，`unread` 记读取次数（证明「真的又跑了一轮」），`consume` 按
  * consumeMessage 的新契约返回 id 或 undefined，`inject` 记录目标 / 文本 / 消息，`events` 记调用顺序。
@@ -515,4 +522,8 @@ try {
 } catch (error) {
   process.stderr.write(`not ok: ${error?.message ?? error}\n`)
   process.exitCode = 1
+} finally {
+  if (SAVED_STATE_DIR === undefined) delete process.env.DSH_SUPERAGENT_STATE_DIR
+  else process.env.DSH_SUPERAGENT_STATE_DIR = SAVED_STATE_DIR
+  await rm(HERMETIC_STATE, { recursive: true, force: true })
 }
