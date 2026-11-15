@@ -32,8 +32,8 @@ export function resolveRoot(config = {}) {
 export function missingQueue(root) {
   return new Error(
     `no spv queue at ${root}: the superagent spv Source creates pending/, done/ and outbox/ when it starts, ` +
-      'and until then a dispatched task would have nobody to read it. Start the service from the bioagentforge ' +
-      'root with "python3 tools/dsh-superagent/scripts/dsh-superagent start", confirm the superagent profile ' +
-      'enables the spv Source, then call this tool again.',
+      'and until then a dispatched task would have nobody to read it. Start it with ' +
+      '"wheelchair-agent service start", run "wheelchair-agent service status" until it reports runtime ' +
+      'ready, confirm the superagent profile enables the spv Source, then call this tool again.',
   )
 }

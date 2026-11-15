@@ -4,7 +4,7 @@
  * 这是**工具插件**（`ctx.tools.register`），不是斜杠命令：用户希望 SPV 这个 agent 自己调用它们来派活，所以它们必须出现在
  * 模型的工具表里，由模型决定何时调用。
  *
- * 与 superagent 侧严格分开：本文件不 import `tools/dsh-superagent/` 的任何东西，只按下文描述的文件布局与它对话。
+ * 与 superagent 侧严格分开：本文件不 import `~/opt/dsh-plugins/dsh-superagent/` 的任何东西，只按下文描述的文件布局与它对话。
  * 唯一的接口是 `<queue>/{pending,done,outbox}/` 里的 JSON 文件（见 `src/shared/queue.js` 与 `docs/spv-source.md`）。
  *
  * 两个工具：

@@ -15,10 +15,10 @@ R1 的结论是「链路是通的，根因未证」，所以这里只冻结**已
     ——多一个码就说明这条结论要重判。
 族3 worker 侧另有自己的重试：`TRANSIENT_TRIES = 3`、15s 退避、认 408/429/5xx 与 ECONNRESET 等
     （R1-F1 里「worker 不受影响」的依据）。
-    做法：调兄弟项目 `tools/dsh-superagent/src/executor/dsh.ts` 导出的 `transient()`，逐个喂
+    做法：调上游规范开发树 `~/opt/dsh-plugins/dsh-superagent/src/executor/dsh.ts` 导出的 `transient()`，逐个喂
     408/429/500/503/ECONNRESET/ETIMEDOUT（应 True）与 400/404/无效凭据（应 False）——这是**行为**
     断言，不是读文本。次数与退避是常量、没有可调用的出口，那两条只能读源码文本（族名已说明）。
-    文件不存在 ⇒ SKIP（兄弟项目可能被移走，那不等于本约束破了）。
+    文件不存在 ⇒ SKIP（上游树可能被移走，工单 clone 里本来就没有它；那不等于本约束破了）。
 
 契约：tools/pitfalls-manager/references/02_consume.md §4.3 —— 无参、退出码即结论、每族一行、
       只有 FAIL 给细节、跳过必须打出来并给原因、幂等、离线、不写仓库（只在 tempfile 里写）。
@@ -37,10 +37,11 @@ REPO = HERE.parents[3]                       # round-data/R1 → PITFALLS → do
 PROFILE = Path.home() / ".dsh" / "profiles" / "dsh-tui"
 PROVIDER = PROFILE / "node_modules" / "@mars-sea" / "dsh-commandcode-provider"
 
-# worker 侧重试的出处：兄弟项目 `tools/dsh-superagent`。工单目录是它的 clone，兄弟项目不在旁边，
-# 所以再退到 superagent profile 里那条 link（它指向同一个开发树）。
+# worker 侧重试的出处：上游规范开发树 `~/opt/dsh-plugins/dsh-superagent`。工单目录是
+# wheelchair-agent 的 clone、旁边没有它，所以再退到 superagent profile 里那条 link（它指向同一个
+# 开发树）；两处都没有 ⇒ 本族 SKIP，这是设计好的降级，不是失败。
 SUPERAGENT_CANDIDATES = [
-    REPO.parent / "dsh-superagent",
+    Path.home() / "opt" / "dsh-plugins" / "dsh-superagent",
     Path.home() / ".dsh" / "profiles" / "superagent" / "node_modules" / "dsh-superagent",
 ]
 
@@ -199,7 +200,7 @@ def family3():
     src = next((p / "src" / "executor" / "dsh.ts" for p in SUPERAGENT_CANDIDATES
                 if (p / "src" / "executor" / "dsh.ts").is_file()), None)
     if src is None:
-        return "SKIP", ("兄弟项目 tools/dsh-superagent 的源码不在（找过 "
+        return "SKIP", ("上游 dsh-superagent 的源码不在（工单 clone 里两处候选都没有；找过 "
                         + "、".join(str(p) for p in SUPERAGENT_CANDIDATES)
                         + "）；worker 侧重试无从断言，不等于本约束破了")
 

@@ -6,8 +6,4 @@ settings:
 
 importers:
 
-  .:
-    devDependencies:
-      dsh-superagent:
-        specifier: link:/home/nihao/bioagentforge/tools/dsh-superagent
-        version: link:../dsh-superagent
+  .: {}
