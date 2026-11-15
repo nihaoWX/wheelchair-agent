@@ -8,6 +8,7 @@
 import { join } from 'node:path'
 import { Queue, SOURCE, health, spvKind, triggerOf } from './spv.js'
 import { consumeTask, ensureDirs, pendingNames, quarantineTask, readTask } from '../shared/queue.js'
+import { megabytes, reclaimWork, resolveWorkRoot } from '../shared/work.js'
 
 export const name = 'wheelchair-agent-spv'
 export const inject = ['orchestrator']
@@ -15,6 +16,9 @@ export { SOURCE, channelFor, spvKind, triggerOf } from './spv.js'
 
 /** Consecutive failed rounds tolerated before the Source reports an error; one bad round retries quietly. */
 const FAILURES_BEFORE_ERROR = 3
+
+/** The reclaim pass belongs to one service start, not to every hot remount of the plugin. */
+let reclaimedAtMount = false
 
 export function apply(ctx) {
   const queue = new Queue()
@@ -29,6 +33,53 @@ export function apply(ctx) {
       .catch(error => { source.report(SOURCE, { state: 'error', detail: String(error) }) })
     return async () => { controller.abort(); await running }
   })
+  // Reclaim once at service start, where the mount path is the only one that can run before workers do. The call is
+  // not awaited: a large directory, a slow disk or a failed gate must never delay or break the Source's own startup.
+  if (!reclaimedAtMount) {
+    reclaimedAtMount = true
+    reclaimAtMount(ctx).catch(error => {
+      ctx.logger?.warn?.(`wheelchair-agent work gc failed: ${error?.message ?? error}`)
+    })
+  }
+}
+
+/**
+ * One-shot reclamation at mount, through the same `src/shared/work.js` implementation as `wheelchair-agent work gc`.
+ *
+ * The orchestrator service is provided before setup runs, and its `machine.stateDir` plus the settings store are
+ * constructed with it. When both are readable, the reclaim happens before setup resumes any worker — the moment the
+ * assignment calls the safe one. If the plugin is mounted later (or the store is not ready), the resolved deployment
+ * after `ctx.ready` is used instead, still under the same gate. Gate 1 (no process cwd inside the directory) is what
+ * keeps a live worker safe, not the mount timing.
+ */
+export async function reclaimAtMount(ctx) {
+  let stateDir = ''
+  let directory = ''
+  let early = false
+  try {
+    stateDir = String(ctx.orchestrator?.machine?.stateDir ?? '')
+    const current = ctx.orchestrator?.settings?.current
+    if (stateDir !== '' && typeof current === 'function') {
+      directory = String(current.call(ctx.orchestrator.settings)?.executor?.directory ?? '')
+      early = true
+    }
+  } catch {
+    // A store that is not ready yet falls through to the resolved deployment below.
+  }
+  if (!early) {
+    await ctx.ready
+    if (!ctx.configured()) return
+    stateDir = ctx.deployment.stateDir
+    try {
+      directory = String(ctx.orchestrator?.settings?.current?.()?.executor?.directory ?? '')
+    } catch {
+      // The default root is correct when the settings block cannot be read.
+    }
+  }
+  const result = await reclaimWork({ root: resolveWorkRoot({ stateDir, directory }), stateDir })
+  ctx.logger?.info?.(
+    `wheelchair-agent work gc: reclaimed ${result.reclaimed}, kept ${result.kept}, freed ${megabytes(result.freedBytes)} MB`,
+  )
 }
 
 /** Resolve after `ms`, or at once when `signal` aborts; the timer is cleared so a stop does not wait. */

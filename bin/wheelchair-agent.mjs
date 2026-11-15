@@ -60,6 +60,9 @@ commands:
                                push one SPV decision letter into the inbox and print its id
   inbox watch [--once] [--interval <seconds>]
                                poll the tools repos and write PR items into the inbox (default 60s)
+  work gc [--dry-run] [--keep <n>] [--keep-days <d>]
+                               reclaim ticket clones that are clean, unused and fully pushed
+  work restored <ticket>       print the commands that rebuild a reclaimed ticket clone
   check                        runtime health: service, preset, panel prepare value, prepare dry run
   --help                       this text
   --version                    the installed version
@@ -99,6 +102,32 @@ Poll the tools/ repos with "gh pr list" and write one item per PR into the inbox
 options:
   --once                 poll once and exit
   --interval <seconds>   seconds between polls (default 60)`
+
+const WORK_USAGE = `usage: wheelchair-agent work <command>
+
+Reclaim ticket clones under the execution root. A clone is reclaimed only when nothing has its cwd
+inside it, its working tree is clean, and every commit is already pushed. The record it leaves in
+<stateDir>/work-reclaimed.jsonl is enough to rebuild it.
+
+commands:
+  gc [--dry-run] [--keep <n>] [--keep-days <d>]
+                               print the plan, or reclaim every directory that passes the gate
+  restored <ticket>            print the commands that clone the source repo at the recorded commit`
+
+const WORK_GC_USAGE = `usage: wheelchair-agent work gc [--dry-run] [--keep <n>] [--keep-days <d>]
+
+Reclaim ticket directories that are reproducible duplicates of their source repository.
+
+options:
+  --dry-run          print every directory and the reason it is kept; delete nothing
+  --keep <n>         never delete the newest n passing directories (default 10; 0 disables the floor)
+  --keep-days <d>    keep passing directories modified less than d days ago (default 0)`
+
+const WORK_RESTORED_USAGE = `usage: wheelchair-agent work restored <ticket>
+
+Print copy-paste commands that rebuild a reclaimed ticket clone from
+<stateDir>/work-reclaimed.jsonl. The directory name is the ticket name, for example
+"agent-tool-dsh-install-0312cf6b4046".`
 
 /** 用法错误：退出码 2，与「命令失败」（1）分开。 */
 class UsageError extends Error {}
@@ -433,6 +462,89 @@ async function commandInbox(argv) {
   throw new UsageError(`unknown option ${JSON.stringify(argv[0])} for "inbox"`)
 }
 
+/**
+ * `work gc`：解析 argv，然后交给 `src/shared/work.js`（挂载时的自动回收走同一个实现）。
+ *
+ * `--dry-run` 是布尔开关，`options()` 只处理「带值」选项，所以这里自己解析；非法值在任何文件系统操作
+ * 之前就报错。
+ */
+async function commandWorkGc(argv) {
+  const parsed = { dryRun: false, keep: undefined, keepDays: undefined }
+  for (let index = 0; index < argv.length; index += 1) {
+    const word = argv[index]
+    if (word === '--help' || word === '-h') {
+      process.stdout.write(`${WORK_GC_USAGE}\n`)
+      return
+    }
+    if (word === '--dry-run') {
+      parsed.dryRun = true
+      continue
+    }
+    const name = { '--keep': 'keep', '--keep-days': 'keepDays' }[word]
+    if (name === undefined) throw new UsageError(`unknown option ${JSON.stringify(word)} for "work gc"`)
+    const value = argv[index + 1]
+    if (value === undefined || !/^\d+$/.test(value)) {
+      throw new UsageError(`${word} needs a non-negative whole number`)
+    }
+    parsed[name] = Number(value)
+    index += 1
+  }
+  const { KEEP_DEFAULT, formatBytes, reclaimWork, resolveWorkRoot } = await load('src', 'shared', 'work.js')
+  const root = resolveWorkRoot({ stateDir: STATE_DIR })
+  const summary = await reclaimWork({
+    root,
+    stateDir: STATE_DIR,
+    keep: parsed.keep ?? KEEP_DEFAULT,
+    ...(parsed.keepDays === undefined ? {} : { keepDays: parsed.keepDays }),
+    dryRun: parsed.dryRun,
+  })
+  const lines = [`work root: ${root}${parsed.dryRun ? ' (dry run; nothing is deleted)' : ''}`]
+  if (summary.entries.length === 0) lines.push('  (no directories)')
+  for (const entry of summary.entries) {
+    const label = entry.action === 'reclaim' ? 'reclaim' : entry.action === 'unknown' ? 'unknown' : 'keep'
+    const reason = entry.reason === undefined ? '' : ` (${entry.reason})`
+    lines.push(`  ${label.padEnd(8)} ${formatBytes(entry.bytes).padStart(10)}  ${entry.name}${reason}`)
+  }
+  const verb = parsed.dryRun ? 'would reclaim' : 'reclaimed'
+  const freedVerb = parsed.dryRun ? 'free' : 'freed'
+  const unknown = summary.unknown > 0 ? ` (${summary.unknown} unknown)` : ''
+  lines.push(
+    `${verb} ${summary.reclaimed}, kept ${summary.kept}${unknown}, ${freedVerb} ${formatBytes(summary.freedBytes)}`,
+  )
+  process.stdout.write(`${lines.join('\n')}\n`)
+}
+
+/** `work restored <ticket>`：只读回收记录，打印可粘贴的重建命令。 */
+async function commandWorkRestored(argv) {
+  if (argv.includes('--help') || argv.includes('-h')) {
+    process.stdout.write(`${WORK_RESTORED_USAGE}\n`)
+    return
+  }
+  if (argv.length !== 1 || argv[0].startsWith('-')) {
+    throw new UsageError('work restored needs exactly one ticket directory name')
+  }
+  const { readReclaimed, restoreCommands, resolveWorkRoot } = await load('src', 'shared', 'work.js')
+  const { record } = await readReclaimed({ stateDir: STATE_DIR, ticket: argv[0] })
+  process.stdout.write(`${restoreCommands(record, { root: resolveWorkRoot({ stateDir: STATE_DIR }) })}\n`)
+}
+
+/** `work`：回收或重建记录；未知子命令是用法错误。 */
+async function commandWork(argv) {
+  if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') {
+    process.stdout.write(`${WORK_USAGE}\n`)
+    return
+  }
+  if (argv[0] === 'gc') {
+    await commandWorkGc(argv.slice(1))
+    return
+  }
+  if (argv[0] === 'restored') {
+    await commandWorkRestored(argv.slice(1))
+    return
+  }
+  throw new UsageError(`unknown option ${JSON.stringify(argv[0])} for "work"`)
+}
+
 /** `check`：四项运行时健康检查，任一项失败退出 1。 */
 async function commandCheck() {
   const { runChecks } = await load('src', 'spv', 'check.js')
@@ -493,6 +605,9 @@ try {
       break
     case 'inbox':
       await commandInbox(rest)
+      break
+    case 'work':
+      await commandWork(rest)
       break
     case 'check':
       await commandCheck()

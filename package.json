@@ -23,8 +23,8 @@
     "webui"
   ],
   "scripts": {
-    "check": "node --check bin/wheelchair-agent.mjs && node --check src/superagent/watch.js && node --check src/superagent/spv.js && node --check src/spv/tools.js && node --check src/spv/cron-plugin.js && node --check src/spv/cron.js && node --check src/spv/check.js && node --check src/spv/dispatch.js && node --check src/spv/inbox.js && node --check src/spv/injector.js && node --check src/spv/outbox.js && node --check src/spv/paths.js && node --check src/spv/health.js && node --check src/shared/queue.js && node --check src/shared/schema.js && node --check webui/lib/index.js && node --check webui/lib/client.js && node --check build/render-preset.mjs && node --check build/refusal-notice.mjs",
-    "test": "node tests/test-injector.mjs && node tests/test-inbox.mjs && node tests/test-inbox-refresh.mjs && bash tests/test-layout.sh && sh tests/test-prepare.sh && sh tests/test-install.sh"
+    "check": "node --check bin/wheelchair-agent.mjs && node --check src/superagent/watch.js && node --check src/superagent/spv.js && node --check src/spv/tools.js && node --check src/spv/cron-plugin.js && node --check src/spv/cron.js && node --check src/spv/check.js && node --check src/spv/dispatch.js && node --check src/spv/inbox.js && node --check src/spv/injector.js && node --check src/spv/outbox.js && node --check src/spv/paths.js && node --check src/spv/health.js && node --check src/shared/work.js && node --check src/shared/queue.js && node --check src/shared/schema.js && node --check webui/lib/index.js && node --check webui/lib/client.js && node --check build/render-preset.mjs && node --check build/refusal-notice.mjs",
+    "test": "node tests/test-injector.mjs && node tests/test-inbox.mjs && node tests/test-inbox-refresh.mjs && node tests/test-work.mjs && bash tests/test-layout.sh && sh tests/test-prepare.sh && sh tests/test-install.sh"
   },
   "engines": {
     "node": "^22.19.0 || >=24.0.0"

@@ -92,6 +92,12 @@ worker preset）。`triggerOf()` 把除 `text` / `thread` / `actor` 之外的字
 `unreadMessages` / `pendingTasks` 把 ENOENT 当成空队列，CLI 打印空列表。`dispatch` 只在 superagent 服务未运行
 时失败（健康探针），队列目录本身不是它的前提——`submitTask` 会自己建 `pending/`。
 
+### 5.1 回收工单克隆
+
+`wheelchair-agent work gc` 删除"未使用、干净、提交全已发布"的 ticket 克隆，并把重建所需字段写进
+`<stateDir>/work-reclaimed.jsonl`；`work restored <ticket>` 从这份记录打印可粘贴的重建命令。挂载时
+`src/superagent/watch.js` 用同一个 `src/shared/work.js` 跑一次。完整说明见 [work-gc.md](work-gc.md)。
+
 ## 6. 收件箱里的 SPV 决策信
 
 操作者的审查收件箱（`src/spv/inbox.js`）不再只装 GitHub PR。每个 item 有 `kind`：
