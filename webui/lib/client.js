@@ -45,8 +45,8 @@ window.__ModuleLoader__.load({
 			"settings.fixErrors": "有字段不合法，先按行内提示修正，再保存。",
 			"settings.conflict": "设置在别处已被改动（当前 revision {revision}）。草稿还在；重新加载后再保存，避免覆盖别人的改动。",
 			"settings.saveFailed": "保存失败：{message}",
-			"settings.fileWarning": "设置警告：{warning} 下面显示的是回退后的值；保存一次会用当前表单覆盖设置文件。",
-			"settings.fileMissing": "还没有设置文件（{file}）：下面显示的是内置默认值，保存一次就会创建它。",
+			"settings.fileWarning": "设置警告：{warning} 下面显示的是回退后的值；保存只写入改动的字段，不会整体重写设置文件。",
+			"settings.fileMissing": "还没有设置文件（{file}）：每行的当前值来自它标注的来源（可能是插件 config、环境变量或内置默认），保存一次就会创建它。",
 			"settings.effective": "当前生效：{value}",
 			"settings.defaultValue": "默认：{value}",
 			"settings.reset": "恢复默认",
@@ -88,10 +88,11 @@ window.__ModuleLoader__.load({
 			"settings.template.error.nameLong": "预设名最多 64 个字符。",
 			"settings.template.error.nameControl": "预设名不能包含控制字符。",
 			"settings.template.error.nameDefault": "“default” 是内置预设名，请换一个。",
+			"settings.template.error.nameReserved": "预设名不能使用保留字 __proto__、prototype 或 constructor。",
 			"settings.template.error.nameExists": "已有同名预设，请换一个名字。",
 			"settings.notes.recovery": "恢复命令文本不参与模板化：冷安装合并通知、install.sh 的拒绝文本、restart-all 的计划文本都保持精确原文。",
 			"settings.notes.scope": "superagent 的面板负责 executor、eval、policy、source:github、source:spv；本页只改因为 wheelchair-agent 存在而存在的旋钮，不镜像、不链接它们。",
-			"settings.notes.live": "设置文件由服务和 SPV 会话在使用时重读，所以保存后立即生效；host 半身（路由与轮询器）的改动要等下一次正常的服务重启，浏览器 bundle 会热重载。",
+			"settings.notes.live": "设置文件由服务和 SPV 会话在使用时重读，所以保存后立即生效；只有 host 半身的代码改动（lib/index.js 与复制进包的 core 文件）才需要等下一次正常的服务重启，浏览器 bundle 会热重载。",
 			"setting.inbox.intervalSeconds.label": "收件箱刷新间隔（秒）",
 			"setting.inbox.intervalSeconds.desc": "每多少秒检查一次各仓库的 PR；每个仓库每轮跑一次 gh pr list。0 暂停自动刷新，改回正数不需要重启。",
 			"setting.merge.installRepo.label": "合并即冷安装的仓库",
@@ -190,8 +191,8 @@ window.__ModuleLoader__.load({
 			"settings.fixErrors": "Some fields are invalid; fix the inline errors before saving.",
 			"settings.conflict": "Settings changed elsewhere (current revision {revision}). Your drafts are kept; reload before saving so you do not overwrite the other change.",
 			"settings.saveFailed": "Could not save: {message}",
-			"settings.fileWarning": "Settings warnings: {warning} The values below are the fallbacks; saving once replaces the settings file with this form.",
-			"settings.fileMissing": "No settings file yet ({file}): the values below are the built-in defaults; saving once creates it.",
+			"settings.fileWarning": "Settings warnings: {warning} The values below are the fallbacks; saving writes only the changed fields, not the whole file.",
+			"settings.fileMissing": "No settings file yet ({file}): each row's current value comes from the source it names (plugin config, environment or the built-in default); saving once creates it.",
 			"settings.effective": "Effective: {value}",
 			"settings.defaultValue": "Default: {value}",
 			"settings.reset": "Reset",
@@ -233,10 +234,11 @@ window.__ModuleLoader__.load({
 			"settings.template.error.nameLong": "A preset name must be at most 64 characters.",
 			"settings.template.error.nameControl": "A preset name cannot contain control characters.",
 			"settings.template.error.nameDefault": "\"default\" is the built-in preset name; pick another.",
+			"settings.template.error.nameReserved": "A preset name cannot be __proto__, prototype or constructor.",
 			"settings.template.error.nameExists": "A preset with that name already exists; pick another.",
 			"settings.notes.recovery": "Recovery-command text is not templated: the cold-install merge notice, the install.sh refusal text and the restart-all plan text stay exact strings.",
 			"settings.notes.scope": "superagent's panel owns executor, eval, policy, source:github and source:spv; this page only edits knobs that exist because wheelchair-agent exists, and does not mirror or link them.",
-			"settings.notes.live": "The settings file is re-read by the service and the SPV session on use, so a save applies immediately; a host-half change (routes and poller) needs the next normal service restart, while the browser bundle hot-reloads.",
+			"settings.notes.live": "The settings file is re-read by the service and the SPV session on use, so a save applies live; only a host-half code change (lib/index.js and the copied core files) needs the next normal service restart, while the browser bundle hot-reloads.",
 			"setting.inbox.intervalSeconds.label": "Inbox refresh interval (seconds)",
 			"setting.inbox.intervalSeconds.desc": "How often each repository is checked for pull requests; every tick costs one gh pr list per repository. 0 pauses automatic refresh; a positive value applies without a restart.",
 			"setting.merge.installRepo.label": "Install-target repository",
@@ -2617,13 +2619,33 @@ window.__ModuleLoader__.load({
 			return typeof text === "string" ? text : String(template?.defaultText ?? "");
 		}
 
-		function templateDraftChanged(template, draft) {
-			if (draft.active !== String(template?.active ?? "default")) return true;
+		/** Whether the draft's active preset differs from the stored one. */
+		function templateActiveChanged(template, draft) {
+			return draft.active !== String(template?.active ?? "default");
+		}
+
+		/** Whether the draft's custom preset set (names or texts) differs from the stored set. */
+		function templateCustomsChanged(template, draft) {
 			const before = customPresetsOf(template);
 			const after = draft.presets ?? {};
 			const names = new Set([...Object.keys(before), ...Object.keys(after)]);
 			for (const name of names) if (before[name] !== after[name]) return true;
 			return false;
+		}
+
+		function templateDraftChanged(template, draft) {
+			return templateActiveChanged(template, draft) || templateCustomsChanged(template, draft);
+		}
+
+		/**
+		* The PUT shape of a custom preset set: `{ name: { text } }`. `builtin` is the server's business and
+		* the built-in `default` preset is always preserved server-side, so neither is sent; sending raw
+		* strings here is the 400 that used to make every preset action dead.
+		*/
+		function presetPayload(presets) {
+			const payload = {};
+			for (const [name, text] of Object.entries(presets ?? {})) payload[name] = { text: String(text) };
+			return payload;
 		}
 
 		/** Mirror validateTemplate(): unknown token, missing required token, then the length limit. */
@@ -2715,8 +2737,16 @@ window.__ModuleLoader__.load({
 				if (template === undefined || draft === undefined) continue;
 				if (!templateDraftChanged(template, draft)) continue;
 				const error = templateSaveError(template, draft, t);
-				if (error !== "") templateErrors[id] = error;
-				else templates[id] = { active: draft.active, presets: { ...draft.presets } };
+				if (error !== "") {
+					templateErrors[id] = error;
+					continue;
+				}
+				// Send only the parts that changed: an activate-only change omits `presets`, so the server
+				// keeps the stored customs; a text/edit/delete change sends the new custom set.
+				const entry = {};
+				if (templateActiveChanged(template, draft)) entry.active = draft.active;
+				if (templateCustomsChanged(template, draft)) entry.presets = presetPayload(draft.presets);
+				templates[id] = entry;
 			}
 			return { values, valueErrors, templates, templateErrors, reset: [...resets] };
 		}
@@ -2727,6 +2757,11 @@ window.__ModuleLoader__.load({
 			if (value.length > 64) return t("settings.template.error.nameLong");
 			if (/[\u0000-\u001f\u007f]/.test(value)) return t("settings.template.error.nameControl");
 			if (value === "default") return t("settings.template.error.nameDefault");
+			// Prototype keys are not safe dictionary entries; refuse them here so the page never stages a
+			// preset the server has to reject (and so a name like __proto__ cannot mutate the draft object).
+			if (value === "__proto__" || value === "prototype" || value === "constructor") {
+				return t("settings.template.error.nameReserved");
+			}
 			if (Object.hasOwn(presets ?? {}, value)) return t("settings.template.error.nameExists");
 			return "";
 		}
@@ -3729,7 +3764,17 @@ window.__ModuleLoader__.load({
 		exports.apply = apply;
 		exports.inject = inject;
 		/* Pure helpers exposed for the offline UI-status test; not a slot/module API. */
-		exports.__test = { statusOf, stateOf, kindOfItem, activePreset, placeholderTokens };
+		exports.__test = {
+			statusOf,
+			stateOf,
+			kindOfItem,
+			activePreset,
+			placeholderTokens,
+			stagedChanges,
+			valueDraftsOf,
+			templateDraftsOf,
+			presetNameError
+		};
 		return module.exports;
 	}
 });

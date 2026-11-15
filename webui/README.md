@@ -232,8 +232,8 @@ keeps working.
 Highest to lowest:
 
 1. `panel-settings.json` (`values`);
-2. the plugin config (`intervalSeconds`) and the environment (`SPV_INBOX_INTERVAL_SECONDS`,
-   `SPV_INSTALL_REPO`);
+2. the plugin config (`intervalSeconds`), then the environment (`SPV_INBOX_INTERVAL_SECONDS`,
+   `SPV_INSTALL_REPO`) — the config is checked before the environment within this tier;
 3. the built-in default.
 
 Every row shows its effective value, its default, and the layer it came from (`Saved` / `Plugin config`
@@ -261,9 +261,12 @@ files); `lib/client.js` hot-reloads through dsh's client-bundle watcher.
 | `work.keepDays` | `0` | Default `work gc --keep-days`: how many days of directories to keep. |
 | `work.sweepOnMount` | `true` | Whether the mount-time reclaim runs at all. |
 
-Explicit `work gc --keep` / `--keep-days` flags still win over the file. File and PUT values are
-strict (whole numbers, JSON booleans); the legacy fractional plugin config (for example `0.02`) is
-accepted only in the config/environment layer, as before.
+Explicit `work gc --keep` / `--keep-days` flags still win over the file. A numeric value may be
+written as a number or as a numeric string (`"5"` is coerced to `5`); a non-numeric string is refused
+on PUT and ignored with a warning when it comes from the file, config or environment. Booleans are
+JSON booleans in the file/PUT (`"true"` is refused there) and `"true"`/`"false"` in config/environment.
+The legacy fractional plugin config (for example `0.02`) is accepted for `inbox.intervalSeconds` only
+in the config/environment layer, as before.
 
 ### Templates and presets
 
@@ -285,8 +288,10 @@ existing message-body limit); the PR review comment itself stays limited to 5000
 Presets are per template:
 
 - `default` is the immutable built-in preset; it is always present and its text cannot be changed.
-- Any number of named presets (trimmed, 1–64 characters, no control characters, not `default`) are
-  stored with their text. Exactly one is active at a time.
+- Any number of named presets (trimmed, 1–64 characters, no control characters, not `default`, and
+  not a prototype key — `__proto__`, `prototype`, `constructor`) are stored with their text. The page
+  refuses a reserved name before it stages a save, so the server never has to. Exactly one preset is
+  active at a time.
 - "New preset from this" copies the current text into a new named preset and activates it.
 - "Delete preset" removes a custom preset; deleting the active one activates `default` rather than
   leaving a dangling reference. The button is disabled on the built-in default.
@@ -354,11 +359,12 @@ run against the profile may prune anything it does not know about, removing this
 profile itself, run `bash install.sh` afterwards; `install.sh` is cold-only, so stop the service and
 exit the SPV session first or it refuses with exit 3.
 
-**Restart the superagent service after installing a host-half change.** `lib/client.js` hot-reloads
-through dsh's client-bundle watcher, but `lib/index.js` and the core copies are imported once when
-the service starts. The server-side `kind` / `repo` / `since` / `until` filters, the
-`/wheelchair-settings` route and the inbox poller live in that host half, so an already-running older
-service keeps the old behaviour even though the new client bundle is visible.
+**Restart the superagent service after installing a host-half code change.** `lib/client.js`
+hot-reloads through dsh's client-bundle watcher, but `lib/index.js` and the core copies are imported
+once when the service starts. The server-side `kind` / `repo` / `since` / `until` filters, the
+`/wheelchair-settings` route and the inbox poller code live in that host half, so an already-running
+older service keeps the old behaviour even though the new client bundle is visible. Saved settings
+are different: the file is re-read on use, so a save from the page needs no restart.
 
 `install.sh` is cold-install only: while the service or a live SPV session holds the targets it
 refuses with exit 3, and `install.sh --check` is read-only. Between a merge and the next cold

@@ -238,7 +238,9 @@ async function loadHostApply(box) {
 }
 
 /** 用假的 `window.__ModuleLoader__` 载入浏览器 bundle（与 test-inbox-refresh 同一手法）。 */
+const CLIENT_MODULE = { current: undefined }
 async function loadClient() {
+  if (CLIENT_MODULE.current !== undefined) return CLIENT_MODULE.current
   let captured
   globalThis.window = {
     __ModuleLoader__: {
@@ -252,6 +254,7 @@ async function loadClient() {
   } finally {
     delete globalThis.window
   }
+  CLIENT_MODULE.current = captured
   return captured
 }
 
@@ -861,7 +864,10 @@ async function testClientSettingsHelpers() {
   assert.ok(client?.__test?.activePreset, 'the client bundle exposes activePreset')
   assert.ok(client.__test.placeholderTokens, 'the client bundle exposes placeholderTokens')
   assert.ok(client.__test.statusOf, 'the existing inbox helpers stay exported')
-  const { activePreset, placeholderTokens } = client.__test
+  assert.equal(typeof client.__test.stagedChanges, 'function', 'the client bundle exposes stagedChanges')
+  assert.equal(typeof client.__test.templateDraftsOf, 'function', 'the client bundle exposes templateDraftsOf')
+  assert.equal(typeof client.__test.presetNameError, 'function', 'the client bundle exposes presetNameError')
+  const { activePreset, placeholderTokens, presetNameError } = client.__test
 
   const builtin = { name: 'default', text: 'DEFAULT', builtin: true }
   const custom = { name: 'custom', text: 'CUSTOM', builtin: false }
@@ -886,6 +892,155 @@ async function testClientSettingsHelpers() {
   assert.deepEqual(placeholderTokens('no tokens'), [])
   assert.deepEqual(placeholderTokens('{a{b}'), ['{b}'], 'the tokenizer does not accept nested braces')
   assert.deepEqual(placeholderTokens(undefined), [])
+
+  // Prototype keys are refused loudly before the page can stage a preset the server must reject.
+  for (const reserved of ['__proto__', 'prototype', 'constructor']) {
+    assert.equal(
+      presetNameError(reserved, {}, key => key),
+      'settings.template.error.nameReserved',
+      `${reserved} is refused as a preset name`,
+    )
+  }
+  assert.equal(presetNameError('default', {}, key => key), 'settings.template.error.nameDefault')
+  assert.equal(presetNameError('mine', { mine: 'x' }, key => key), 'settings.template.error.nameExists')
+  assert.equal(presetNameError('mine', {}, key => key), '', 'an ordinary new name passes')
+}
+
+/**
+ * 页面 staging 出来的模板 PUT 体必须能被真实 `saveSettings`/handler 接受。
+ *
+ * 这条回归对应一个真实事故：`stagedChanges()` 曾把预设发成 `{ name: "<text>" }`，而服务端要求
+ * `{ name: { text } }`，于是所有新建/切换/删除/还原预设都 400。用例先证明旧形状被拒，再把客户端为
+ * 四种动作生成的 body 原样喂给 handler，断言 200 与 active/presets。
+ */
+async function testClientTemplateStaging() {
+  const box = await sandbox()
+  const client = await loadClient()
+  const { stagedChanges, templateDraftsOf, valueDraftsOf } = client?.__test ?? {}
+  assert.equal(typeof stagedChanges, 'function', 'the client bundle exposes stagedChanges for the offline regression test')
+  assert.equal(typeof templateDraftsOf, 'function', 'the client bundle exposes templateDraftsOf')
+  assert.equal(typeof valueDraftsOf, 'function', 'the client bundle exposes valueDraftsOf')
+  const t = key => key
+  const handler = createSettingsHandler({ stateDir: box.state, env: {} })
+
+  const mine = 'MINE {repo} {pr} {comment}'
+  const extra = 'EXTRA {repo} {pr}\n{comment}'
+  saveSettings({
+    stateDir: box.state,
+    revision: 0,
+    templates: { prIssue: { active: 'default', presets: { mine: { text: mine } } } },
+  })
+  let snapshot = resolveSettings({ stateDir: box.state, env: {} })
+  let drafts = valueDraftsOf(snapshot)
+  let templateDrafts = templateDraftsOf(snapshot)
+  const defaultText = snapshot.templates.prIssue.defaultText
+
+  // The pre-fix payload: string-valued presets. It must be refused, which is what was happening in the page.
+  const legacy = await call(handler, {
+    method: 'PUT',
+    body: { revision: snapshot.revision, templates: { prIssue: { active: 'mine2', presets: { mine2: extra } } } },
+  })
+  assert.equal(legacy.status, 400, 'the old string-preset payload is refused')
+  assert.match(legacy.body.message, /preset "mine2" must be an object with a string "text"/)
+
+  // (a) "new preset from this": active changes and the custom set gains a member.
+  const created = stagedChanges(
+    snapshot,
+    drafts,
+    {
+      ...templateDrafts,
+      prIssue: { active: 'mine2', presets: { ...templateDrafts.prIssue.presets, mine2: extra } }
+    },
+    new Set(),
+    t,
+  )
+  assert.deepEqual(created.templateErrors, {}, created.templateErrors.prIssue)
+  assert.deepEqual(created.templates, {
+    prIssue: {
+      active: 'mine2',
+      presets: { mine: { text: mine }, mine2: { text: extra } },
+    },
+  })
+  const createdPut = await call(handler, { method: 'PUT', body: { revision: snapshot.revision, templates: created.templates } })
+  assert.equal(createdPut.status, 200, createdPut.body.message)
+  assert.equal(createdPut.body.templates.prIssue.active, 'mine2')
+  assert.equal(createdPut.body.templates.prIssue.text, extra)
+  assert.deepEqual(
+    createdPut.body.templates.prIssue.presets.map(preset => preset.name),
+    ['default', 'mine', 'mine2'],
+  )
+  assert.equal(createdPut.body.templates.prIssue.presets[0].text, defaultText, 'the built-in preset is preserved')
+  assert.equal(createdPut.body.templates.prIssue.presets[0].builtin, true)
+
+  // (b) activate-only: `presets` is omitted, so the server keeps the stored custom set.
+  snapshot = createdPut.body
+  drafts = valueDraftsOf(snapshot)
+  templateDrafts = templateDraftsOf(snapshot)
+  const activated = stagedChanges(
+    snapshot,
+    drafts,
+    { ...templateDrafts, prIssue: { active: 'mine', presets: { ...templateDrafts.prIssue.presets } } },
+    new Set(),
+    t,
+  )
+  assert.deepEqual(activated.templates, { prIssue: { active: 'mine' } })
+  assert.equal(Object.hasOwn(activated.templates.prIssue, 'presets'), false)
+  const activatedPut = await call(handler, { method: 'PUT', body: { revision: snapshot.revision, templates: activated.templates } })
+  assert.equal(activatedPut.status, 200, activatedPut.body.message)
+  assert.equal(activatedPut.body.templates.prIssue.active, 'mine')
+  assert.equal(activatedPut.body.templates.prIssue.text, mine)
+  assert.deepEqual(
+    activatedPut.body.templates.prIssue.presets.map(preset => preset.name),
+    ['default', 'mine', 'mine2'],
+    'activate-only keeps every custom preset',
+  )
+
+  // (c) delete the active preset: the draft falls back to default and sends the smaller custom set.
+  snapshot = activatedPut.body
+  drafts = valueDraftsOf(snapshot)
+  templateDrafts = templateDraftsOf(snapshot)
+  const deleted = stagedChanges(
+    snapshot,
+    drafts,
+    { ...templateDrafts, prIssue: { active: 'default', presets: { mine2: extra } } },
+    new Set(),
+    t,
+  )
+  assert.deepEqual(deleted.templates, {
+    prIssue: { active: 'default', presets: { mine2: { text: extra } } },
+  })
+  const deletedPut = await call(handler, { method: 'PUT', body: { revision: snapshot.revision, templates: deleted.templates } })
+  assert.equal(deletedPut.status, 200, deletedPut.body.message)
+  assert.equal(deletedPut.body.templates.prIssue.active, 'default')
+  assert.deepEqual(
+    deletedPut.body.templates.prIssue.presets.map(preset => preset.name),
+    ['default', 'mine2'],
+  )
+
+  // (d) revert to default: activate-only again, and the custom presets stay stored.
+  saveSettings({ stateDir: box.state, revision: deletedPut.body.revision, templates: { prIssue: { active: 'mine2' } } })
+  snapshot = resolveSettings({ stateDir: box.state, env: {} })
+  drafts = valueDraftsOf(snapshot)
+  templateDrafts = templateDraftsOf(snapshot)
+  assert.equal(snapshot.templates.prIssue.active, 'mine2')
+  const reverted = stagedChanges(
+    snapshot,
+    drafts,
+    { ...templateDrafts, prIssue: { active: 'default', presets: { ...templateDrafts.prIssue.presets } } },
+    new Set(),
+    t,
+  )
+  assert.deepEqual(reverted.templates, { prIssue: { active: 'default' } })
+  assert.equal(Object.hasOwn(reverted.templates.prIssue, 'presets'), false)
+  const revertedPut = await call(handler, { method: 'PUT', body: { revision: snapshot.revision, templates: reverted.templates } })
+  assert.equal(revertedPut.status, 200, revertedPut.body.message)
+  assert.equal(revertedPut.body.templates.prIssue.active, 'default')
+  assert.equal(revertedPut.body.templates.prIssue.text, defaultText)
+  assert.deepEqual(
+    revertedPut.body.templates.prIssue.presets.map(preset => preset.name),
+    ['default', 'mine2'],
+    'revert to default keeps the custom presets stored',
+  )
 }
 
 /** host 半身：注册 SETTINGS_PATH、同一道 fence、GET 的 config 来源、PUT 的 409 与成功。 */
@@ -1477,6 +1632,7 @@ try {
   await testPrecedence()
   await testHttpHandler()
   await testClientSettingsHelpers()
+  await testClientTemplateStaging()
   await testHostSettingsRoute()
   await testAppendReviewUsesTemplates()
   await testFormatResultUsesSettings()
