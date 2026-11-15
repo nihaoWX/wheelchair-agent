@@ -19,6 +19,8 @@ window.__ModuleLoader__.load({
 		/** The two JSON endpoints the inbox already serves; the panel only reads them. */
 		const ITEMS_URL = "/wheelchair-inbox/items";
 		const REVIEW_URL = "/wheelchair-inbox/review";
+		/** The one settings endpoint: GET the snapshot, PUT one staged change set with its revision. */
+		const SETTINGS_URL = "/wheelchair-settings";
 
 		/** Copy for the panel, the inbox section and the Markdown chrome. */
 		const zh = {
@@ -29,6 +31,87 @@ window.__ModuleLoader__.load({
 			"section.inbox": "收件箱",
 			"feature.inbox.title": "收件箱",
 			"feature.inbox.description": "复查 GitHub PR 与 SPV 的自主决策。SPV 在无人看管时自己做的决定会写成一封信，记录决定了什么、为什么；你之后通过或质疑。",
+			"section.settings": "设置",
+			"feature.settings.title": "设置",
+			"feature.settings.description": "编辑只因为 wheelchair-agent 存在而存在的旋钮：收件箱刷新、合并处理、消息注入、派单模板与工作回收。保存后立即生效，不需要重启服务或 SPV 会话。",
+			"settings.loading": "正在加载设置…",
+			"settings.loadFailed": "加载设置失败：{message}",
+			"settings.reload": "重新加载",
+			"settings.save": "保存",
+			"settings.saving": "保存中…",
+			"settings.saved": "已保存，revision {revision}",
+			"settings.unchanged": "没有未保存的改动",
+			"settings.dirty": "{count} 项未保存",
+			"settings.fixErrors": "有字段不合法，先按行内提示修正，再保存。",
+			"settings.conflict": "设置在别处已被改动（当前 revision {revision}）。草稿还在；重新加载后再保存，避免覆盖别人的改动。",
+			"settings.saveFailed": "保存失败：{message}",
+			"settings.fileWarning": "设置警告：{warning} 下面显示的是回退后的值；保存一次会用当前表单覆盖设置文件。",
+			"settings.fileMissing": "还没有设置文件（{file}）：下面显示的是内置默认值，保存一次就会创建它。",
+			"settings.effective": "当前生效：{value}",
+			"settings.defaultValue": "默认：{value}",
+			"settings.reset": "恢复默认",
+			"settings.resetStaged": "已标记恢复默认，保存后生效。",
+			"settings.source.file": "已保存",
+			"settings.source.config": "插件 config",
+			"settings.source.env": "环境变量",
+			"settings.source.default": "内置默认",
+			"settings.overridden": "生效来源是{source}；这些低层值被压住、不会生效：{layers}。",
+			"settings.envIgnored": "环境变量 {name}={value} 已设置但无效，未生效。",
+			"settings.on": "开启",
+			"settings.off": "关闭",
+			"settings.error.number": "必须是整数。",
+			"settings.error.range": "必须是 {min}–{max} 之间的整数。",
+			"settings.error.repo": "填 owner/name 或 name，只能使用字母、数字、点、横线和下划线。",
+			"settings.group.inbox": "收件箱刷新",
+			"settings.group.merge": "合并处理",
+			"settings.group.injection": "消息注入",
+			"settings.group.templates": "派单文本",
+			"settings.group.work": "工作回收",
+			"settings.group.other": "其他设置",
+			"settings.template.preset": "预设",
+			"settings.template.builtinSuffix": "（内置）",
+			"settings.template.placeholders": "可用占位符",
+			"settings.template.count": "{count} / {limit} 字符",
+			"settings.template.readonly": "内置默认不可直接修改；用“从这里新建预设”复制一份再改。",
+			"settings.template.newFromThis": "从这里新建预设",
+			"settings.template.presetName": "预设名称",
+			"settings.template.create": "新建",
+			"settings.template.cancel": "取消",
+			"settings.template.delete": "删除预设",
+			"settings.template.revert": "恢复内置默认",
+			"settings.template.requiredLegend": "必填：{required}（接收方行动所需的事实，不能删）",
+			"settings.template.error.unknown": "未知占位符 {token}；可用：{allowed}。",
+			"settings.template.error.required": "缺少必填占位符 {token}：接收方需要它才能行动。",
+			"settings.template.error.limit": "超过 {limit} 字符上限（当前 {count}）。",
+			"settings.template.error.preset": "预设“{name}”：{message}",
+			"settings.template.error.nameEmpty": "预设名不能为空。",
+			"settings.template.error.nameLong": "预设名最多 64 个字符。",
+			"settings.template.error.nameControl": "预设名不能包含控制字符。",
+			"settings.template.error.nameDefault": "“default” 是内置预设名，请换一个。",
+			"settings.template.error.nameExists": "已有同名预设，请换一个名字。",
+			"settings.notes.recovery": "恢复命令文本不参与模板化：冷安装合并通知、install.sh 的拒绝文本、restart-all 的计划文本都保持精确原文。",
+			"settings.notes.scope": "superagent 的面板负责 executor、eval、policy、source:github、source:spv；本页只改因为 wheelchair-agent 存在而存在的旋钮，不镜像、不链接它们。",
+			"settings.notes.live": "设置文件由服务和 SPV 会话在使用时重读，所以保存后立即生效；host 半身（路由与轮询器）的改动要等下一次正常的服务重启，浏览器 bundle 会热重载。",
+			"setting.inbox.intervalSeconds.label": "收件箱刷新间隔（秒）",
+			"setting.inbox.intervalSeconds.desc": "每多少秒检查一次各仓库的 PR；每个仓库每轮跑一次 gh pr list。0 暂停自动刷新，改回正数不需要重启。",
+			"setting.merge.installRepo.label": "合并即冷安装的仓库",
+			"setting.merge.installRepo.desc": "这个仓库的 PR 合并后排队一条冷安装通知，而不是普通 pull；填 owner/name 或 name。",
+			"setting.injection.intervalMs.label": "结果注入间隔（毫秒）",
+			"setting.injection.intervalMs.desc": "SPV 会话里的结果注入器多久检查一次 outbox。",
+			"setting.injection.maxBodyChars.label": "注入正文上限（字符）",
+			"setting.injection.maxBodyChars.desc": "注入到 SPV 会话的消息正文最多多少字符，超出部分截断。",
+			"setting.work.keep.label": "work gc 保留的最新目录数",
+			"setting.work.keep.desc": "work gc 默认保留最新的多少个 ticket 克隆目录。",
+			"setting.work.keepDays.label": "work gc 保留最近天数",
+			"setting.work.keepDays.desc": "work gc 默认保留最近多少天的目录；0 表示不按天数保留。",
+			"setting.work.sweepOnMount.label": "服务启动时自动回收",
+			"setting.work.sweepOnMount.desc": "服务挂载时是否自动回收可重建的 ticket 克隆；关掉后只能手动跑 work gc。",
+			"template.injection.title": "结果注入模板",
+			"template.injection.desc": "注入到 SPV 会话的消息头与正文；内置默认与改造前的输出逐字节一致。",
+			"template.prIssue.title": "PR「有问题」任务正文",
+			"template.prIssue.desc": "把 PR 的「有问题」评论派给 worker 时使用；评论原文由 comment 占位符承载。",
+			"template.spvObjection.title": "SPV 质疑通知正文",
+			"template.spvObjection.desc": "把对 SPV 自主决定的质疑写进 outbox 时使用；操作者评论由 comment 占位符承载。",
 			refresh: "刷新",
 			"filter.label": "筛选",
 			"filter.all": "全部",
@@ -93,6 +176,87 @@ window.__ModuleLoader__.load({
 			"section.inbox": "Inbox",
 			"feature.inbox.title": "Inbox",
 			"feature.inbox.description": "Review GitHub pull requests and SPV decisions. When SPV runs unattended, each call it makes on your behalf becomes a letter recording what it decided and why; you later accept it or object.",
+			"section.settings": "Settings",
+			"feature.settings.title": "Settings",
+			"feature.settings.description": "Edit the knobs that exist because wheelchair-agent exists: inbox refresh, merge handling, message injection, dispatch text and work reclaim. Changes apply immediately; no service or SPV-session restart is needed.",
+			"settings.loading": "Loading settings…",
+			"settings.loadFailed": "Could not load settings: {message}",
+			"settings.reload": "Reload",
+			"settings.save": "Save",
+			"settings.saving": "Saving…",
+			"settings.saved": "Saved at revision {revision}",
+			"settings.unchanged": "No unsaved changes",
+			"settings.dirty": "{count} unsaved change(s)",
+			"settings.fixErrors": "Some fields are invalid; fix the inline errors before saving.",
+			"settings.conflict": "Settings changed elsewhere (current revision {revision}). Your drafts are kept; reload before saving so you do not overwrite the other change.",
+			"settings.saveFailed": "Could not save: {message}",
+			"settings.fileWarning": "Settings warnings: {warning} The values below are the fallbacks; saving once replaces the settings file with this form.",
+			"settings.fileMissing": "No settings file yet ({file}): the values below are the built-in defaults; saving once creates it.",
+			"settings.effective": "Effective: {value}",
+			"settings.defaultValue": "Default: {value}",
+			"settings.reset": "Reset",
+			"settings.resetStaged": "Reset staged; it applies on save.",
+			"settings.source.file": "Saved",
+			"settings.source.config": "Plugin config",
+			"settings.source.env": "Environment",
+			"settings.source.default": "Default",
+			"settings.overridden": "The effective source is {source}; these lower values are set but overridden and do not apply: {layers}.",
+			"settings.envIgnored": "Environment {name}={value} is set but invalid, so it is not used.",
+			"settings.on": "On",
+			"settings.off": "Off",
+			"settings.error.number": "Enter a whole number.",
+			"settings.error.range": "Enter a whole number from {min} to {max}.",
+			"settings.error.repo": "Use owner/name or name, with letters, digits, dot, dash and underscore only.",
+			"settings.group.inbox": "Inbox refresh",
+			"settings.group.merge": "Merge handling",
+			"settings.group.injection": "Message injection",
+			"settings.group.templates": "Dispatch text",
+			"settings.group.work": "Work reclaim",
+			"settings.group.other": "Other settings",
+			"settings.template.preset": "Preset",
+			"settings.template.builtinSuffix": " (built-in)",
+			"settings.template.placeholders": "Placeholders",
+			"settings.template.count": "{count} / {limit} characters",
+			"settings.template.readonly": "The built-in default cannot be edited; use \"New preset from this\" to copy it first.",
+			"settings.template.newFromThis": "New preset from this",
+			"settings.template.presetName": "Preset name",
+			"settings.template.create": "Create",
+			"settings.template.cancel": "Cancel",
+			"settings.template.delete": "Delete preset",
+			"settings.template.revert": "Revert to default",
+			"settings.template.requiredLegend": "Required: {required} (the facts the receiver needs to act; they cannot be removed)",
+			"settings.template.error.unknown": "Unknown placeholder {token}; allowed: {allowed}.",
+			"settings.template.error.required": "Missing required placeholder {token}: the receiving agent needs it to act.",
+			"settings.template.error.limit": "Over the {limit}-character limit (currently {count}).",
+			"settings.template.error.preset": "Preset \"{name}\": {message}",
+			"settings.template.error.nameEmpty": "A preset name cannot be empty.",
+			"settings.template.error.nameLong": "A preset name must be at most 64 characters.",
+			"settings.template.error.nameControl": "A preset name cannot contain control characters.",
+			"settings.template.error.nameDefault": "\"default\" is the built-in preset name; pick another.",
+			"settings.template.error.nameExists": "A preset with that name already exists; pick another.",
+			"settings.notes.recovery": "Recovery-command text is not templated: the cold-install merge notice, the install.sh refusal text and the restart-all plan text stay exact strings.",
+			"settings.notes.scope": "superagent's panel owns executor, eval, policy, source:github and source:spv; this page only edits knobs that exist because wheelchair-agent exists, and does not mirror or link them.",
+			"settings.notes.live": "The settings file is re-read by the service and the SPV session on use, so a save applies immediately; a host-half change (routes and poller) needs the next normal service restart, while the browser bundle hot-reloads.",
+			"setting.inbox.intervalSeconds.label": "Inbox refresh interval (seconds)",
+			"setting.inbox.intervalSeconds.desc": "How often each repository is checked for pull requests; every tick costs one gh pr list per repository. 0 pauses automatic refresh; a positive value applies without a restart.",
+			"setting.merge.installRepo.label": "Install-target repository",
+			"setting.merge.installRepo.desc": "Merges of this repository queue the cold-install notice instead of a plain pull. Use owner/name or name.",
+			"setting.injection.intervalMs.label": "Result injection interval (ms)",
+			"setting.injection.intervalMs.desc": "How often the SPV-session result injector checks the outbox.",
+			"setting.injection.maxBodyChars.label": "Injected body limit (characters)",
+			"setting.injection.maxBodyChars.desc": "Maximum characters of a message body injected into the SPV session; longer bodies are truncated.",
+			"setting.work.keep.label": "work gc newest directories to keep",
+			"setting.work.keep.desc": "How many of the newest ticket clone directories work gc keeps by default.",
+			"setting.work.keepDays.label": "work gc retention days",
+			"setting.work.keepDays.desc": "How many days work gc keeps directories for by default; 0 keeps none by age.",
+			"setting.work.sweepOnMount.label": "Reclaim at mount",
+			"setting.work.sweepOnMount.desc": "Whether the service reclaims reproducible ticket clones when it mounts; when off, only a manual work gc reclaims.",
+			"template.injection.title": "Result injection template",
+			"template.injection.desc": "The header and body injected into the SPV session; the built-in default reproduces the previous output byte-for-byte.",
+			"template.prIssue.title": "PR issue task text",
+			"template.prIssue.desc": "Used when a PR issue comment is dispatched to a worker; the comment placeholder carries the original comment.",
+			"template.spvObjection.title": "SPV objection notice",
+			"template.spvObjection.desc": "Used when an objection to an SPV decision is written to the outbox; the comment placeholder carries the operator's comment.",
 			refresh: "Refresh",
 			"filter.label": "Filter",
 			"filter.all": "All",
@@ -1278,6 +1442,217 @@ window.__ModuleLoader__.load({
 				font: var(--dsw-font-markdown-table-head);
 			}
 			.wca-md td { font: var(--dsw-font-markdown-table); }
+
+			/* Settings: one block per knob, one editor per template. Rows wrap at narrow widths and
+			   textareas only resize vertically, so the page stays usable beside a split editor. */
+			.wca-settings {
+				display: flex;
+				flex-direction: column;
+				gap: 18px;
+				padding: 12px 16px 16px;
+			}
+			.wca-settings-toolbar {
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				flex-wrap: wrap;
+			}
+			.wca-settings-status {
+				margin: 0;
+				min-height: 20px;
+				color: var(--dsw-alias-label-tertiary);
+				font-size: 13px;
+				line-height: 20px;
+			}
+			.wca-settings-status[data-tone="error"] { color: var(--dsw-alias-state-error-primary); }
+			.wca-settings-status[data-tone="success"] { color: var(--dsw-alias-state-success-primary); }
+			.wca-settings-banner {
+				box-sizing: border-box;
+				display: flex;
+				align-items: flex-start;
+				justify-content: space-between;
+				gap: 12px;
+				margin: 0;
+				padding: 10px 12px;
+				border: .5px solid var(--dsw-alias-border-l2);
+				border-left: 3px solid var(--dsw-alias-state-warn-primary);
+				border-radius: var(--dsw-radius-sm);
+				background: var(--dsw-alias-bg-module-platform);
+				font-size: 13px;
+				line-height: 20px;
+			}
+			.wca-settings-banner[data-tone="error"] { border-left-color: var(--dsw-alias-state-error-primary); }
+			.wca-settings-banner[data-tone="info"] { border-left-color: var(--dsw-alias-state-business-primary); }
+			.wca-settings-banners { display: flex; flex-direction: column; gap: 8px; }
+			.wca-settings-banner-text { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+			.wca-settings-group {
+				display: flex;
+				flex-direction: column;
+				gap: 12px;
+				min-width: 0;
+				padding-top: 12px;
+				border-top: .5px solid var(--dsw-alias-border-l2);
+			}
+			.wca-settings-group:first-of-type { padding-top: 0; border-top: 0; }
+			.wca-settings-group-title {
+				margin: 0;
+				color: var(--dsw-alias-label-secondary);
+				font-size: 12px;
+				line-height: 18px;
+				font-weight: 600;
+				letter-spacing: .02em;
+			}
+			.wca-setting {
+				display: flex;
+				flex-direction: column;
+				gap: 6px;
+				min-width: 0;
+				padding: 10px 0 0;
+			}
+			.wca-setting-head {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: 10px;
+				flex-wrap: wrap;
+			}
+			.wca-setting-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+			.wca-setting-label { font-size: 14px; line-height: 20px; font-weight: 500; }
+			.wca-setting-desc {
+				margin: 0;
+				color: var(--dsw-alias-label-secondary);
+				font-size: 13px;
+				line-height: 20px;
+			}
+			.wca-setting-meta {
+				margin: 0;
+				color: var(--dsw-alias-label-tertiary);
+				font-size: 12px;
+				line-height: 18px;
+				font-variant-numeric: tabular-nums;
+			}
+			.wca-setting-values {
+				display: flex;
+				align-items: flex-end;
+				gap: 10px 16px;
+				flex-wrap: wrap;
+			}
+			.wca-input {
+				box-sizing: border-box;
+				height: 30px;
+				min-width: 0;
+				width: min(320px, 100%);
+				padding: 0 8px;
+				border: .5px solid var(--dsw-alias-border-l3);
+				border-radius: var(--dsw-radius-sm);
+				background: var(--dsw-alias-bg-base);
+				color: var(--dsw-alias-label-primary);
+				font: inherit;
+				font-size: 13px;
+				line-height: 20px;
+			}
+			.wca-input:disabled { opacity: .5; cursor: not-allowed; }
+			.wca-settings-check {
+				display: inline-flex;
+				align-items: center;
+				gap: 8px;
+				font-size: 13px;
+				line-height: 20px;
+			}
+			.wca-settings-check input { accent-color: var(--dsw-alias-state-business-primary); }
+			.wca-setting-note {
+				margin: 0;
+				color: var(--dsw-alias-label-tertiary);
+				font-size: 12px;
+				line-height: 18px;
+				overflow-wrap: anywhere;
+			}
+			.wca-setting-error,
+			.wca-template-error {
+				margin: 0;
+				min-height: 18px;
+				color: var(--dsw-alias-state-error-primary);
+				font-size: 12px;
+				line-height: 18px;
+				overflow-wrap: anywhere;
+			}
+			.wca-template {
+				display: flex;
+				flex-direction: column;
+				gap: 8px;
+				min-width: 0;
+				padding: 12px;
+				border: .5px solid var(--dsw-alias-border-l2);
+				border-radius: var(--dsw-radius-md);
+				background: var(--dsw-alias-bg-module-platform);
+			}
+			.wca-template-head { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+			.wca-template-title { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; }
+			.wca-template-desc { margin: 0; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; }
+			.wca-template-controls {
+				display: flex;
+				align-items: flex-end;
+				gap: 8px;
+				flex-wrap: wrap;
+			}
+			.wca-template-controls .wca-field { flex-direction: row; align-items: center; gap: 6px; }
+			.wca-textarea {
+				box-sizing: border-box;
+				width: 100%;
+				min-height: 120px;
+				resize: vertical;
+				padding: 8px 10px;
+				border: .5px solid var(--dsw-alias-border-l4);
+				border-radius: var(--dsw-radius-sm);
+				background: var(--dsw-alias-bg-base);
+				color: var(--dsw-alias-label-primary);
+				font: var(--dsw-font-markdown-code-block-small);
+				font-size: 12px;
+				line-height: 19px;
+			}
+			.wca-textarea:read-only { opacity: .85; }
+			.wca-textarea:disabled { opacity: .5; cursor: not-allowed; }
+			.wca-template-meta {
+				display: flex;
+				align-items: baseline;
+				justify-content: space-between;
+				gap: 8px 16px;
+				flex-wrap: wrap;
+				color: var(--dsw-alias-label-tertiary);
+				font-size: 12px;
+				line-height: 18px;
+				font-variant-numeric: tabular-nums;
+			}
+			.wca-template-meta[data-over="true"] .wca-template-count { color: var(--dsw-alias-state-error-primary); }
+			.wca-template-placeholders { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
+			.wca-placeholders { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+			.wca-placeholder {
+				padding: 1px 6px;
+				border: .5px solid var(--dsw-alias-border-l2);
+				border-radius: var(--dsw-radius-sm);
+				background: var(--dsw-alias-bg-base);
+				color: var(--dsw-alias-label-secondary);
+				font: var(--dsw-font-markdown-code);
+				font-size: 11px;
+				line-height: 17px;
+			}
+			.wca-placeholder[data-required="true"] {
+				border-color: var(--dsw-alias-border-l4);
+				color: var(--dsw-alias-label-primary);
+			}
+			.wca-template-new {
+				display: flex;
+				align-items: flex-end;
+				gap: 8px;
+				flex-wrap: wrap;
+			}
+			.wca-settings-notes {
+				display: flex;
+				flex-direction: column;
+				gap: 6px;
+				padding-top: 12px;
+				border-top: .5px solid var(--dsw-alias-border-l2);
+			}
 		`;
 		//#endregion
 
@@ -2131,6 +2506,1095 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		//#region settings
+		//
+		// The Settings section edits the store that only exists because wheelchair-agent exists. The
+		// GET snapshot is the baseline; every control writes a local draft, and one Save sends only the
+		// changed values, changed templates and staged resets with the snapshot's revision. The server
+		// owns validation and optimistic concurrency (a stale revision is a 409 and nothing is written);
+		// the client mirrors the visible constraints for fast feedback and never replaces them.
+
+		/** Visible integer bounds, mirrored from KEY_SPECS for inline feedback; the server enforces them. */
+		const SETTING_LIMITS = {
+			"inbox.intervalSeconds": { min: 0, max: 2147483 },
+			"injection.intervalMs": { min: 50, max: 3600000 },
+			"injection.maxBodyChars": { min: 100, max: 200000 },
+			"work.keep": { min: 0, max: 100000 },
+			"work.keepDays": { min: 0, max: 36500 }
+		};
+
+		/** The install-target repo shape accepted by the settings store: `owner/name` or `name`. */
+		const INSTALL_REPO = /^[A-Za-z0-9][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9][A-Za-z0-9_.-]*)?$/;
+
+		/** Display order; the template editors form their own group between injection and work. */
+		const SETTINGS_GROUPS = [
+			{ id: "inbox", titleKey: "settings.group.inbox", keys: ["inbox.intervalSeconds"] },
+			{ id: "merge", titleKey: "settings.group.merge", keys: ["merge.installRepo"] },
+			{ id: "injection", titleKey: "settings.group.injection", keys: ["injection.intervalMs", "injection.maxBodyChars"] },
+			{ id: "templates", titleKey: "settings.group.templates", templates: true },
+			{ id: "work", titleKey: "settings.group.work", keys: ["work.keep", "work.keepDays", "work.sweepOnMount"] }
+		];
+
+		const SETTING_SOURCE_KEYS = {
+			file: "settings.source.file",
+			config: "settings.source.config",
+			env: "settings.source.env",
+			default: "settings.source.default"
+		};
+
+		/** The preset a template is editing: the active one, else the built-in default. */
+		function activePreset(template) {
+			const presets = Array.isArray(template?.presets) ? template.presets : [];
+			const wanted = String(template?.active ?? "default");
+			const found = presets.find((preset) => String(preset?.name ?? "") === wanted);
+			if (found !== undefined) return found;
+			const builtin = presets.find((preset) => preset?.builtin === true || String(preset?.name ?? "") === "default");
+			if (builtin !== undefined) return builtin;
+			return {
+				name: "default",
+				text: typeof template?.defaultText === "string" ? template.defaultText : "",
+				builtin: true
+			};
+		}
+
+		/** Every `{...}` token in a text, in order; validation compares it with the declared list. */
+		function placeholderTokens(text) {
+			const tokens = [];
+			const source = typeof text === "string" ? text : "";
+			const pattern = /\{([^{}]*)\}/g;
+			for (const match of source.matchAll(pattern)) tokens.push(`{${match[1]}}`);
+			return tokens;
+		}
+
+		/** One value as text: booleans use the localized On/Off, everything else its string form. */
+		function settingText(t, value) {
+			if (typeof value === "boolean") return value ? t("settings.on") : t("settings.off");
+			return String(value ?? "");
+		}
+
+		/** The draft string for one row; booleans are staged as "true"/"false". */
+		function settingDraft(value) {
+			if (typeof value === "boolean") return value ? "true" : "false";
+			return String(value ?? "");
+		}
+
+		function valueDraftsOf(snapshot) {
+			const drafts = {};
+			for (const row of Array.isArray(snapshot?.rows) ? snapshot.rows : []) {
+				drafts[String(row.key)] = settingDraft(row.value);
+			}
+			return drafts;
+		}
+
+		/** Custom presets of a stored template; the built-in default is never part of the draft set. */
+		function customPresetsOf(template) {
+			const customs = {};
+			for (const preset of Array.isArray(template?.presets) ? template.presets : []) {
+				if (preset?.builtin === true) continue;
+				const name = String(preset?.name ?? "");
+				if (name === "" || name === "default") continue;
+				customs[name] = String(preset?.text ?? "");
+			}
+			return customs;
+		}
+
+		function templateDraftsOf(snapshot) {
+			const drafts = {};
+			for (const id of Object.keys(snapshot?.templates ?? {})) {
+				const template = snapshot.templates[id];
+				drafts[id] = {
+					active: String(template?.active ?? "default"),
+					presets: customPresetsOf(template)
+				};
+			}
+			return drafts;
+		}
+
+		/** The text of the preset the draft edits; the built-in default is immutable text. */
+		function templateDraftText(template, draft) {
+			if (draft === undefined || draft.active === "default") return String(template?.defaultText ?? "");
+			const text = draft.presets?.[draft.active];
+			return typeof text === "string" ? text : String(template?.defaultText ?? "");
+		}
+
+		function templateDraftChanged(template, draft) {
+			if (draft.active !== String(template?.active ?? "default")) return true;
+			const before = customPresetsOf(template);
+			const after = draft.presets ?? {};
+			const names = new Set([...Object.keys(before), ...Object.keys(after)]);
+			for (const name of names) if (before[name] !== after[name]) return true;
+			return false;
+		}
+
+		/** Mirror validateTemplate(): unknown token, missing required token, then the length limit. */
+		function templateTextError(template, text, t) {
+			const placeholders = Array.isArray(template?.placeholders) ? template.placeholders.map(String) : [];
+			const allowed = new Set(placeholders);
+			const seen = new Set();
+			for (const token of placeholderTokens(text)) {
+				const name = token.slice(1, -1);
+				if (!allowed.has(name)) {
+					return t("settings.template.error.unknown", {
+						token,
+						allowed: placeholders.map((item) => `{${item}}`).join(", ")
+					});
+				}
+				seen.add(name);
+			}
+			for (const name of Array.isArray(template?.required) ? template.required : []) {
+				if (!seen.has(String(name))) return t("settings.template.error.required", { token: `{${name}}` });
+			}
+			const limit = Number(template?.limit);
+			if (Number.isFinite(limit) && text.length > limit) {
+				return t("settings.template.error.limit", { limit, count: text.length });
+			}
+			return "";
+		}
+
+		/** Every custom preset must pass the server's rules before the draft can be saved. */
+		function templateSaveError(template, draft, t) {
+			for (const [name, text] of Object.entries(draft.presets ?? {})) {
+				const message = templateTextError(template, text, t);
+				if (message !== "") return t("settings.template.error.preset", { name, message });
+			}
+			return "";
+		}
+
+		function settingDraftChanged(row, draft) {
+			if (typeof row.value === "boolean") return (draft === "true") !== row.value;
+			if (typeof row.value === "number") return String(draft).trim() !== String(row.value);
+			return String(draft).trim() !== String(row.value ?? "");
+		}
+
+		/** The typed value of a valid draft; only called after settingDraftError() returned "". */
+		function settingDraftValue(row, draft) {
+			if (typeof row.value === "boolean") return draft === "true";
+			if (typeof row.value === "number") return Number(String(draft).trim());
+			return String(draft).trim();
+		}
+
+		function settingDraftError(row, draft, t) {
+			if (typeof row.value === "boolean") return "";
+			const text = String(draft ?? "").trim();
+			if (typeof row.value === "number") {
+				if (!/^-?\d+$/.test(text)) return t("settings.error.number");
+				const value = Number(text);
+				if (!Number.isFinite(value) || !Number.isInteger(value)) return t("settings.error.number");
+				const limit = SETTING_LIMITS[row.key];
+				if (limit !== undefined && (value < limit.min || value > limit.max)) {
+					return t("settings.error.range", { min: limit.min, max: limit.max });
+				}
+				return "";
+			}
+			if (row.key === "merge.installRepo" && !INSTALL_REPO.test(text)) return t("settings.error.repo");
+			return "";
+		}
+
+		/**
+		* Diff the drafts against the snapshot. Only changed rows enter `values`; staged resets stay
+		* apart so the same PUT can say "remove the override" without re-sending a value. A changed but
+		* invalid draft produces an inline error and is not staged.
+		*/
+		function stagedChanges(snapshot, drafts, templateDrafts, resets, t) {
+			const values = {};
+			const valueErrors = {};
+			for (const row of Array.isArray(snapshot?.rows) ? snapshot.rows : []) {
+				const key = String(row.key);
+				const draft = drafts[key];
+				if (draft === undefined || resets.has(key)) continue;
+				if (!settingDraftChanged(row, draft)) continue;
+				const error = settingDraftError(row, draft, t);
+				if (error !== "") valueErrors[key] = error;
+				else values[key] = settingDraftValue(row, draft);
+			}
+			const templates = {};
+			const templateErrors = {};
+			for (const id of Object.keys(templateDrafts)) {
+				const template = snapshot?.templates?.[id];
+				const draft = templateDrafts[id];
+				if (template === undefined || draft === undefined) continue;
+				if (!templateDraftChanged(template, draft)) continue;
+				const error = templateSaveError(template, draft, t);
+				if (error !== "") templateErrors[id] = error;
+				else templates[id] = { active: draft.active, presets: { ...draft.presets } };
+			}
+			return { values, valueErrors, templates, templateErrors, reset: [...resets] };
+		}
+
+		function presetNameError(name, presets, t) {
+			const value = String(name ?? "").trim();
+			if (value === "") return t("settings.template.error.nameEmpty");
+			if (value.length > 64) return t("settings.template.error.nameLong");
+			if (/[\u0000-\u001f\u007f]/.test(value)) return t("settings.template.error.nameControl");
+			if (value === "default") return t("settings.template.error.nameDefault");
+			if (Object.hasOwn(presets ?? {}, value)) return t("settings.template.error.nameExists");
+			return "";
+		}
+
+		/** Attach a server 400 to the row/template it names; an unrecognized message stays page-level. */
+		function fieldOfMessage(message) {
+			const text = String(message ?? "");
+			for (const group of SETTINGS_GROUPS) {
+				for (const key of group.keys ?? []) if (text.includes(key)) return key;
+			}
+			for (const id of Object.keys({ injection: true, prIssue: true, spvObjection: true })) {
+				if (text.includes(`"${id}"`) || text.includes(`'${id}'`)) return id;
+			}
+			return "";
+		}
+
+		/** One value row: label, description, effective/default, source, input, reset and inline error. */
+		function SettingRow(props) {
+			const t = props.t;
+			const row = props.row;
+			const overridden = Array.isArray(row.overridden) ? row.overridden : [];
+			const sourceKey = SETTING_SOURCE_KEYS[row.source] ?? SETTING_SOURCE_KEYS.default;
+			const layers = overridden
+				.map(
+					(entry) =>
+						`${t(SETTING_SOURCE_KEYS[entry.source] ?? SETTING_SOURCE_KEYS.default)} = ${settingText(t, entry.value)}`
+				)
+				.join(" · ");
+			const envNote =
+				row.env !== null &&
+				row.env !== undefined &&
+				row.env.present === true &&
+				row.source !== "env" &&
+				!overridden.some((entry) => entry.source === "env")
+					? t("settings.envIgnored", { name: row.env.name, value: String(row.env.value ?? "") })
+					: "";
+			const label = t(`setting.${row.key}.label`);
+			const description = t(`setting.${row.key}.desc`);
+			const boolean = typeof row.value === "boolean";
+			const numeric = typeof row.value === "number";
+			const inputId = `wca-setting-${row.key}`;
+			let control;
+			if (boolean) {
+				control = jsxs(
+					"label",
+					{
+						className: "wca-settings-check",
+						htmlFor: inputId,
+						children: [
+							jsx(
+								"input",
+								{
+									id: inputId,
+									type: "checkbox",
+									checked: props.draft === "true",
+									disabled: props.saving,
+									onChange: (event) => props.onChange(event.target.checked ? "true" : "false")
+								},
+								"check"
+							),
+							jsx("span", { children: props.draft === "true" ? t("settings.on") : t("settings.off") }, "text")
+						]
+					},
+					"control"
+				);
+			} else {
+				const limit = SETTING_LIMITS[row.key];
+				control = jsx(
+					"input",
+					{
+						id: inputId,
+						className: "wca-input",
+						type: numeric ? "number" : "text",
+						inputMode: numeric ? "numeric" : undefined,
+						step: numeric ? 1 : undefined,
+						min: numeric && limit !== undefined ? limit.min : undefined,
+						max: numeric && limit !== undefined ? limit.max : undefined,
+						spellCheck: false,
+						autoComplete: "off",
+						value: props.draft,
+						disabled: props.saving,
+						"aria-label": label,
+						onChange: (event) => props.onChange(event.target.value)
+					},
+					"control"
+				);
+			}
+			return jsxs(
+				"div",
+				{
+					className: "wca-setting",
+					"data-setting": row.key,
+					children: [
+						jsxs(
+							"div",
+							{
+								className: "wca-setting-head",
+								children: [
+									jsxs(
+										"div",
+										{
+											className: "wca-setting-title",
+											children: [
+												jsx("span", { className: "wca-setting-label", children: label }, "label"),
+												jsx("span", { className: "wca-tag", "data-tone": "neutral", children: t(sourceKey) }, "source")
+											]
+										},
+										"title"
+									),
+									jsx(
+										"button",
+										{
+											type: "button",
+											className: "wca-btn",
+											"data-variant": "outline",
+											disabled: props.saving || row.source === "default" || props.pendingReset,
+											onClick: props.onReset,
+											children: t("settings.reset")
+										},
+										"reset"
+									)
+								]
+							},
+							"head"
+						),
+						jsx("p", { className: "wca-setting-desc", children: description }, "desc"),
+						jsx(
+							"p",
+							{
+								className: "wca-setting-meta",
+								children: `${t("settings.effective", { value: settingText(t, row.value) })} · ${t("settings.defaultValue", {
+									value: settingText(t, row.default)
+								})}`
+							},
+							"meta"
+						),
+						jsx("div", { className: "wca-setting-values", children: control }, "values"),
+						props.pendingReset
+							? jsx("p", { className: "wca-setting-note", children: t("settings.resetStaged") }, "staged")
+							: null,
+						overridden.length === 0
+							? null
+							: jsx(
+									"p",
+									{
+										className: "wca-setting-note",
+										children: t("settings.overridden", { source: t(sourceKey), layers })
+									},
+									"overridden"
+								),
+						envNote === "" ? null : jsx("p", { className: "wca-setting-note", children: envNote }, "env"),
+						props.error === "" ? null : jsx("p", { className: "wca-setting-error", role: "alert", children: props.error }, "error")
+					]
+				},
+				row.key
+			);
+		}
+
+		/** One template editor: preset selector, textarea, preset actions, placeholders and errors. */
+		function TemplateEditor(props) {
+			const t = props.t;
+			const template = props.template;
+			const draft = props.draft;
+			const [creating, setCreating] = react.useState(false);
+			const [name, setName] = react.useState("");
+			const [nameError, setNameError] = react.useState("");
+			const builtin = draft.active === "default";
+			const text = templateDraftText(template, draft);
+			const limit = Number(template.limit);
+			const over = Number.isFinite(limit) && text.length > limit;
+			const presets = [{ name: "default", builtin: true }];
+			for (const presetName of Object.keys(draft.presets)) presets.push({ name: presetName, builtin: false });
+			const required = new Set((Array.isArray(template.required) ? template.required : []).map(String));
+			const requiredList = (Array.isArray(template.required) ? template.required : [])
+				.map((item) => `{${item}}`)
+				.join(", ");
+			const create = () => {
+				const failure = presetNameError(name, draft.presets, t);
+				if (failure !== "") {
+					setNameError(failure);
+					return;
+				}
+				props.onCreate(String(name).trim());
+				setCreating(false);
+				setName("");
+				setNameError("");
+			};
+			return jsxs(
+				"div",
+				{
+					className: "wca-template",
+					"data-template": props.id,
+					children: [
+						jsxs(
+							"div",
+							{
+								className: "wca-template-head",
+								children: [
+									jsx("h3", { className: "wca-template-title", children: t(`template.${props.id}.title`) }, "title"),
+									jsx("p", { className: "wca-template-desc", children: t(`template.${props.id}.desc`) }, "desc")
+								]
+							},
+							"head"
+						),
+						jsxs(
+							"div",
+							{
+								className: "wca-template-controls",
+								children: [
+									jsxs(
+										"label",
+										{
+											className: "wca-field",
+											children: [
+												jsx("span", { className: "wca-field-label", children: t("settings.template.preset") }, "label"),
+												jsx(
+													"select",
+													{
+														className: "wca-select",
+														value: draft.active,
+														disabled: props.saving,
+														onChange: (event) => props.onActive(event.target.value),
+														children: presets.map((preset) =>
+															jsx(
+																"option",
+																{
+																	value: preset.name,
+																	children: preset.builtin
+																		? `${preset.name}${t("settings.template.builtinSuffix")}`
+																		: preset.name
+																},
+																preset.name
+															)
+														)
+													},
+													"select"
+												)
+											]
+										},
+										"preset"
+									),
+									jsx(
+										"button",
+										{
+											type: "button",
+											className: "wca-btn",
+											"data-variant": "outline",
+											disabled: props.saving,
+											onClick: () => {
+												setCreating(true);
+												setName("");
+												setNameError("");
+											},
+											children: t("settings.template.newFromThis")
+										},
+										"new"
+									),
+									jsx(
+										"button",
+										{
+											type: "button",
+											className: "wca-btn",
+											"data-variant": "outline",
+											disabled: props.saving || builtin,
+											onClick: props.onDelete,
+											children: t("settings.template.delete")
+										},
+										"delete"
+									),
+									jsx(
+										"button",
+										{
+											type: "button",
+											className: "wca-btn",
+											"data-variant": "outline",
+											disabled: props.saving || builtin,
+											onClick: props.onRevert,
+											children: t("settings.template.revert")
+										},
+										"revert"
+									)
+								]
+							},
+							"controls"
+						),
+						creating
+							? jsxs(
+									"div",
+									{
+										className: "wca-template-new",
+										children: [
+											jsxs(
+												"label",
+												{
+													className: "wca-field",
+													children: [
+														jsx("span", { className: "wca-field-label", children: t("settings.template.presetName") }, "label"),
+														jsx(
+															"input",
+															{
+																className: "wca-input",
+																type: "text",
+																value: name,
+																maxLength: 64,
+																spellCheck: false,
+																autoComplete: "off",
+																disabled: props.saving,
+																onChange: (event) => {
+																	setName(event.target.value);
+																	setNameError("");
+																},
+																onKeyDown: (event) => {
+																	if (event.key === "Enter") {
+																		event.preventDefault();
+																		create();
+																	}
+																}
+															},
+															"input"
+														)
+													]
+												},
+												"field"
+											),
+											jsx(
+												"button",
+												{
+													type: "button",
+													className: "wca-btn",
+													"data-variant": "primary",
+													disabled: props.saving,
+													onClick: create,
+													children: t("settings.template.create")
+												},
+												"create"
+											),
+											jsx(
+												"button",
+												{
+													type: "button",
+													className: "wca-btn",
+													"data-variant": "outline",
+													disabled: props.saving,
+													onClick: () => {
+														setCreating(false);
+														setName("");
+														setNameError("");
+													},
+													children: t("settings.template.cancel")
+												},
+												"cancel"
+											)
+										]
+									},
+									"new-form"
+							  )
+							: null,
+						nameError === ""
+							? null
+							: jsx("p", { className: "wca-template-error", role: "alert", children: nameError }, "name-error"),
+						jsx(
+							"textarea",
+							{
+								className: "wca-textarea",
+								rows: 7,
+								value: text,
+								readOnly: builtin,
+								disabled: props.saving,
+								spellCheck: false,
+								"aria-label": t(`template.${props.id}.title`),
+								onChange: (event) => props.onText(event.target.value)
+							},
+							"text"
+						),
+						builtin ? jsx("p", { className: "wca-setting-note", children: t("settings.template.readonly") }, "readonly") : null,
+						jsxs(
+							"div",
+							{
+								className: "wca-template-meta",
+								"data-over": over ? "true" : "false",
+								children: [
+									jsx(
+										"span",
+										{ className: "wca-template-count", children: t("settings.template.count", { count: text.length, limit }) },
+										"count"
+									),
+									jsx("span", { children: t("settings.template.requiredLegend", { required: requiredList }) }, "required")
+								]
+							},
+							"meta"
+						),
+						jsxs(
+							"div",
+							{
+								className: "wca-template-placeholders",
+								children: [
+									jsx("span", { className: "wca-field-label", children: t("settings.template.placeholders") }, "label"),
+									jsx(
+										"span",
+										{
+											className: "wca-placeholders",
+											children: (Array.isArray(template.placeholders) ? template.placeholders : []).map((item) =>
+												jsx(
+													"code",
+													{
+														className: "wca-placeholder",
+														"data-required": required.has(String(item)) ? "true" : "false",
+														children: `{${item}}`
+													},
+													String(item)
+												)
+											)
+										},
+										"tokens"
+									)
+								]
+							},
+							"placeholders"
+						),
+						props.error === ""
+							? null
+							: jsx("p", { className: "wca-template-error", role: "alert", children: props.error }, "error")
+					]
+				},
+				props.id
+			);
+		}
+
+		/** The Settings feature panel: loads the snapshot, edits it locally, saves one PUT at a time. */
+		function SettingsSection(props) {
+			const t = props.t;
+			const feature = props.feature;
+			const [snapshot, setSnapshot] = react.useState(null);
+			const [drafts, setDrafts] = react.useState({});
+			const [templateDrafts, setTemplateDrafts] = react.useState({});
+			const [resets, setResets] = react.useState(() => new Set());
+			const [fieldErrors, setFieldErrors] = react.useState({});
+			const [pageError, setPageError] = react.useState("");
+			const [loading, setLoading] = react.useState(true);
+			const [saving, setSaving] = react.useState(false);
+			const [conflict, setConflict] = react.useState(null);
+			const [savedRevision, setSavedRevision] = react.useState(null);
+			const alive = react.useRef(true);
+			const requestId = react.useRef(0);
+
+			const adopt = react.useCallback((payload) => {
+				setSnapshot(payload);
+				setDrafts(valueDraftsOf(payload));
+				setTemplateDrafts(templateDraftsOf(payload));
+				setResets(new Set());
+				setFieldErrors({});
+				setPageError("");
+				setConflict(null);
+			}, []);
+
+			const load = react.useCallback(() => {
+				const current = ++requestId.current;
+				setLoading(true);
+				return (async () => {
+					try {
+						const response = await fetch(SETTINGS_URL, {
+							headers: { accept: "application/json" },
+							cache: "no-store"
+						});
+						const payload = await response.json().catch(() => ({}));
+						if (!alive.current || current !== requestId.current) return;
+						if (!response.ok) throw new Error(payload?.message ?? `HTTP ${response.status}`);
+						adopt(payload);
+						setSavedRevision(null);
+					} catch (failure) {
+						if (!alive.current || current !== requestId.current) return;
+						setPageError(
+							t("settings.loadFailed", {
+								message: failure instanceof Error ? failure.message : String(failure)
+							})
+						);
+					} finally {
+						if (alive.current && current === requestId.current) setLoading(false);
+					}
+				})();
+			}, [adopt, t]);
+
+			react.useEffect(() => {
+				alive.current = true;
+				load();
+				return () => {
+					alive.current = false;
+				};
+			}, [load]);
+
+			const staged = react.useMemo(
+				() => stagedChanges(snapshot, drafts, templateDrafts, resets, t),
+				[snapshot, drafts, templateDrafts, resets, t]
+			);
+			const changeCount =
+				Object.keys(staged.values).length + Object.keys(staged.templates).length + staged.reset.length;
+			const errorCount = Object.keys(staged.valueErrors).length + Object.keys(staged.templateErrors).length;
+			const dirty = changeCount > 0 || errorCount > 0;
+
+			const clearError = (key) =>
+				setFieldErrors((previous) => {
+					if (previous[key] === undefined) return previous;
+					const next = { ...previous };
+					delete next[key];
+					return next;
+				});
+			const setValue = (key, value) => {
+				setDrafts((previous) => ({ ...previous, [key]: value }));
+				setResets((previous) => {
+					if (!previous.has(key)) return previous;
+					const next = new Set(previous);
+					next.delete(key);
+					return next;
+				});
+				clearError(key);
+			};
+			const stageReset = (row) => {
+				setResets((previous) => new Set(previous).add(String(row.key)));
+				setDrafts((previous) => ({ ...previous, [String(row.key)]: settingDraft(row.default) }));
+				clearError(String(row.key));
+			};
+			const setActive = (id, active) => {
+				clearError(id);
+				setTemplateDrafts((previous) => ({ ...previous, [id]: { ...previous[id], active } }));
+			};
+			const setText = (id, text) => {
+				clearError(id);
+				setTemplateDrafts((previous) => {
+					const draft = previous[id];
+					if (draft === undefined || draft.active === "default") return previous;
+					return { ...previous, [id]: { ...draft, presets: { ...draft.presets, [draft.active]: text } } };
+				});
+			};
+			const createPreset = (id, name) => {
+				clearError(id);
+				setTemplateDrafts((previous) => {
+					const draft = previous[id];
+					if (draft === undefined) return previous;
+					const text = templateDraftText(snapshot?.templates?.[id], draft);
+					return { ...previous, [id]: { active: name, presets: { ...draft.presets, [name]: text } } };
+				});
+			};
+			const deletePreset = (id) => {
+				clearError(id);
+				setTemplateDrafts((previous) => {
+					const draft = previous[id];
+					if (draft === undefined || draft.active === "default") return previous;
+					const presets = { ...draft.presets };
+					delete presets[draft.active];
+					return { ...previous, [id]: { active: "default", presets } };
+				});
+			};
+			const revertPreset = (id) => setActive(id, "default");
+
+			const save = async () => {
+				if (snapshot === null || saving || conflict !== null) return;
+				const next = stagedChanges(snapshot, drafts, templateDrafts, resets, t);
+				if (Object.keys(next.valueErrors).length > 0 || Object.keys(next.templateErrors).length > 0) {
+					setFieldErrors({ ...next.valueErrors, ...next.templateErrors });
+					setPageError(t("settings.fixErrors"));
+					return;
+				}
+				if (
+					Object.keys(next.values).length === 0 &&
+					Object.keys(next.templates).length === 0 &&
+					next.reset.length === 0
+				) {
+					setPageError("");
+					return;
+				}
+				const body = { revision: snapshot.revision };
+				if (Object.keys(next.values).length > 0) body.values = next.values;
+				if (Object.keys(next.templates).length > 0) body.templates = next.templates;
+				if (next.reset.length > 0) body.reset = { values: next.reset };
+				setSaving(true);
+				setPageError("");
+				try {
+					const response = await fetch(SETTINGS_URL, {
+						method: "PUT",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify(body)
+					});
+					const payload = await response.json().catch(() => ({}));
+					if (!alive.current) return;
+					if (response.status === 409) {
+						const revision = Number(payload?.revision);
+						const current = Number.isFinite(revision) ? revision : "?";
+						setConflict({ revision: Number.isFinite(revision) ? revision : null, message: String(payload?.message ?? "") });
+						setPageError(t("settings.conflict", { revision: current }));
+						return;
+					}
+					if (!response.ok) {
+						const message = String(payload?.message ?? `HTTP ${response.status}`);
+						const field = fieldOfMessage(message);
+						if (field !== "") setFieldErrors({ [field]: message });
+						setPageError(t("settings.saveFailed", { message }));
+						return;
+					}
+					adopt(payload);
+					const revision = Number(payload?.revision);
+					setSavedRevision(Number.isFinite(revision) ? revision : null);
+				} catch (failure) {
+					if (!alive.current) return;
+					setPageError(
+						t("settings.saveFailed", {
+							message: failure instanceof Error ? failure.message : String(failure)
+						})
+					);
+				} finally {
+					if (alive.current) setSaving(false);
+				}
+			};
+
+			const rowByKey = new Map();
+			for (const row of Array.isArray(snapshot?.rows) ? snapshot.rows : []) rowByKey.set(String(row.key), row);
+			const covered = new Set();
+			for (const group of SETTINGS_GROUPS) for (const key of group.keys ?? []) covered.add(key);
+			const extraRows = (Array.isArray(snapshot?.rows) ? snapshot.rows : []).filter(
+				(row) => !covered.has(String(row.key))
+			);
+			const groups =
+				extraRows.length === 0
+					? SETTINGS_GROUPS
+					: [
+							...SETTINGS_GROUPS,
+							{ id: "other", titleKey: "settings.group.other", keys: extraRows.map((row) => String(row.key)) }
+						];
+
+			const renderRow = (key) => {
+				const row = rowByKey.get(key);
+				if (row === undefined) return null;
+				return jsx(
+					SettingRow,
+					{
+						row,
+						t,
+						draft: drafts[key] ?? settingDraft(row.value),
+						pendingReset: resets.has(key),
+						error: String(fieldErrors[key] ?? staged.valueErrors[key] ?? ""),
+						saving,
+						onChange: (value) => setValue(key, value),
+						onReset: () => stageReset(row)
+					},
+					key
+				);
+			};
+
+			const banners = [];
+			const fileWarning =
+				snapshot === null || snapshot.warning === undefined || snapshot.warning === null
+					? ""
+					: String(snapshot.warning);
+			if (snapshot !== null && (fileWarning !== "" || snapshot.fileState !== "ok")) {
+				const missing = snapshot.fileState === "missing" && fileWarning === "";
+				const message = missing
+					? t("settings.fileMissing", { file: String(snapshot.file ?? "") })
+					: t("settings.fileWarning", {
+							warning: fileWarning !== "" ? fileWarning : String(snapshot.fileState ?? "")
+						});
+				banners.push(
+					jsx(
+						"p",
+						{
+							className: "wca-settings-banner",
+							"data-tone": missing ? "info" : "warning",
+							children: jsx("span", { className: "wca-settings-banner-text", children: message }, "text")
+						},
+						"file"
+					)
+				);
+			}
+			if (pageError !== "") {
+				banners.push(
+					jsxs(
+						"div",
+						{
+							className: "wca-settings-banner",
+							"data-tone": "error",
+							role: "alert",
+							children: [
+								jsx("p", { className: "wca-settings-banner-text", children: pageError }, "text"),
+								conflict === null && snapshot !== null
+									? null
+									: jsx(
+											"button",
+											{
+												type: "button",
+												className: "wca-btn",
+												"data-variant": "outline",
+												disabled: saving,
+												onClick: () => load(),
+												children: t("settings.reload")
+											},
+											"reload"
+										)
+							]
+						},
+						"page"
+					)
+				);
+			}
+
+			const status =
+				snapshot === null
+					? loading
+						? t("settings.loading")
+						: ""
+					: dirty
+						? errorCount > 0
+							? t("settings.fixErrors")
+							: t("settings.dirty", { count: changeCount })
+						: savedRevision !== null
+							? t("settings.saved", { revision: savedRevision })
+							: t("settings.unchanged");
+			const titleId = `wca-feature-${feature.id}`;
+			return jsxs(
+				"section",
+				{
+					className: "wca-feature",
+					"aria-labelledby": titleId,
+					children: [
+						jsxs(
+							"header",
+							{
+								className: "wca-feature-head",
+								children: [
+									jsxs(
+										"div",
+										{
+											className: "wca-feature-heading",
+											children: [
+												jsx("h2", { id: titleId, className: "wca-feature-title", children: t(feature.titleKey) }, "title"),
+												jsx("p", { className: "wca-feature-desc", children: t(feature.descriptionKey) }, "desc")
+											]
+										},
+										"heading"
+									),
+									jsxs(
+										"div",
+										{
+											className: "wca-settings-toolbar",
+											children: [
+												jsx(
+													"button",
+													{
+														type: "button",
+														className: "wca-btn",
+														"data-variant": "outline",
+														disabled: saving,
+														onClick: () => load(),
+														children: t("settings.reload")
+													},
+													"reload"
+												),
+												jsx(
+													"button",
+													{
+														type: "button",
+														className: "wca-btn",
+														"data-variant": "primary",
+														disabled: saving || snapshot === null || conflict !== null || !dirty,
+														onClick: () => save(),
+														children: saving ? t("settings.saving") : t("settings.save")
+													},
+													"save"
+												)
+											]
+										},
+										"toolbar"
+									)
+								]
+							},
+							"head"
+						),
+						jsxs(
+							"div",
+							{
+								className: "wca-settings",
+								children: [
+									banners.length === 0
+										? null
+										: jsx("div", { className: "wca-settings-banners", children: banners }, "banners"),
+									jsx(
+										"p",
+										{
+											className: "wca-settings-status",
+											"data-tone":
+												errorCount > 0 && !loading
+													? "error"
+													: savedRevision !== null && !dirty
+														? "success"
+														: undefined,
+											role: errorCount > 0 ? "alert" : undefined,
+											children: status
+										},
+										"status"
+									),
+									snapshot === null
+										? null
+										: jsx(
+												react.Fragment,
+												{
+													children: groups.map((group) => {
+														const hasContent =
+															group.templates === true
+																? Object.keys(snapshot.templates ?? {}).length > 0
+																: (group.keys ?? []).some((key) => rowByKey.has(key));
+														if (!hasContent) return null;
+														const content =
+															group.templates === true
+																? Object.keys(snapshot.templates ?? {}).map((id) =>
+																		jsx(
+																			TemplateEditor,
+																			{
+																				id,
+																				t,
+																				template: snapshot.templates[id],
+																				draft: templateDrafts[id] ?? { active: "default", presets: {} },
+																				saving,
+																				error: String(fieldErrors[id] ?? staged.templateErrors[id] ?? ""),
+																				onActive: (active) => setActive(id, active),
+																				onText: (text) => setText(id, text),
+																				onCreate: (name) => createPreset(id, name),
+																				onDelete: () => deletePreset(id),
+																				onRevert: () => revertPreset(id)
+																			},
+																			id
+																		)
+																  )
+																: (group.keys ?? []).map((key) => renderRow(key));
+														return jsxs(
+															"div",
+															{
+																className: "wca-settings-group",
+																children: [
+																	jsx("h3", { className: "wca-settings-group-title", children: t(group.titleKey) }, "title"),
+																	content
+																]
+															},
+															group.id
+														);
+													})
+												},
+												"groups"
+										  ),
+									jsxs(
+										"div",
+										{
+											className: "wca-settings-notes",
+											children: [
+												jsx("p", { className: "wca-hint", children: t("settings.notes.recovery") }, "recovery"),
+												jsx("p", { className: "wca-hint", children: t("settings.notes.scope") }, "scope"),
+												jsx("p", { className: "wca-hint", children: t("settings.notes.live") }, "live")
+											]
+										},
+										"notes"
+									)
+								]
+							},
+							"body"
+						)
+					]
+				},
+				"feature"
+			);
+		}
+		//#endregion
+
 		/**
 		* The features this page hosts. Adding a feature is exactly one array entry plus its
 		* component; the feature nav and the active body are generated from this list.
@@ -2142,6 +3606,13 @@ window.__ModuleLoader__.load({
 				titleKey: "feature.inbox.title",
 				descriptionKey: "feature.inbox.description",
 				Component: InboxSection
+			},
+			{
+				id: "settings",
+				labelKey: "section.settings",
+				titleKey: "feature.settings.title",
+				descriptionKey: "feature.settings.description",
+				Component: SettingsSection
 			}
 		];
 
@@ -2258,7 +3729,7 @@ window.__ModuleLoader__.load({
 		exports.apply = apply;
 		exports.inject = inject;
 		/* Pure helpers exposed for the offline UI-status test; not a slot/module API. */
-		exports.__test = { statusOf, stateOf, kindOfItem };
+		exports.__test = { statusOf, stateOf, kindOfItem, activePreset, placeholderTokens };
 		return module.exports;
 	}
 });

@@ -27,10 +27,10 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { chmod, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
+import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import {
   KEY_SPECS,
@@ -215,6 +215,44 @@ function cli(box, args, options = {}) {
 function save(stateDir, patch = {}) {
   const revision = resolveSettings({ stateDir, env: {} }).revision
   return saveSettings({ stateDir, revision, ...patch })
+}
+
+/** 把 host 半身和它的 core/shared 副本装进一个临时包，再 import —— 与 install.sh 的布局一致。 */
+async function loadHostApply(box) {
+  const app = join(box.base, 'webui')
+  await mkdir(join(app, 'lib', 'core'), { recursive: true })
+  await mkdir(join(app, 'lib', 'shared'), { recursive: true })
+  await writeFile(join(app, 'package.json'), '{"type":"module"}\n', 'utf8')
+  for (const [source, target] of [
+    ['src/spv/inbox.js', 'lib/core/inbox.js'],
+    ['src/spv/dispatch.js', 'lib/core/dispatch.js'],
+    ['src/spv/paths.js', 'lib/core/paths.js'],
+    ['src/shared/queue.js', 'lib/shared/queue.js'],
+    ['src/shared/settings.js', 'lib/shared/settings.js'],
+    ['webui/lib/index.js', 'lib/index.js'],
+  ]) {
+    await copyFile(new URL(`../${source}`, import.meta.url), join(app, target))
+  }
+  const { apply } = await import(pathToFileURL(join(app, 'lib', 'index.js')).href)
+  return apply
+}
+
+/** 用假的 `window.__ModuleLoader__` 载入浏览器 bundle（与 test-inbox-refresh 同一手法）。 */
+async function loadClient() {
+  let captured
+  globalThis.window = {
+    __ModuleLoader__: {
+      load: ({ factory }) => {
+        captured = factory(id => (id === 'react' ? {} : { jsx: () => null, jsxs: () => null }))
+      },
+    },
+  }
+  try {
+    await import('../webui/lib/client.js')
+  } finally {
+    delete globalThis.window
+  }
+  return captured
 }
 
 /** 断言一个 promise/函数以某个错误码失败，并返回错误本身。 */
@@ -705,11 +743,12 @@ async function testPrecedence() {
 // ------------------------------------------------------------------- HTTP handler
 
 /** 直接调 handler，不监听端口；请求体通过 async iterator 提供。 */
-async function call(handler, { method = 'GET', url = SETTINGS_PATH, contentType = 'application/json', body } = {}) {
+async function call(handler, { method = 'GET', url = SETTINGS_PATH, contentType = 'application/json', body, forbidden = false } = {}) {
   const payload = body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body)
   const req = {
     method,
     url,
+    forbidden,
     headers: contentType === undefined ? {} : { 'content-type': contentType },
     async *[Symbol.asyncIterator]() {
       if (payload !== undefined) yield Buffer.from(payload)
@@ -812,6 +851,124 @@ async function testHttpHandler() {
   assert.equal(resetTemplates.status, 200)
   assert.deepEqual(resetTemplates.body.templates.prIssue.presets.map(preset => preset.name), ['default'])
   assert.equal(resetTemplates.body.templates.prIssue.active, 'default')
+}
+
+// ---------------------------------------------------------------- client + host wiring
+
+/** 浏览器 bundle 里的纯设置助手：active 预设回退与占位符提取。 */
+async function testClientSettingsHelpers() {
+  const client = await loadClient()
+  assert.ok(client?.__test?.activePreset, 'the client bundle exposes activePreset')
+  assert.ok(client.__test.placeholderTokens, 'the client bundle exposes placeholderTokens')
+  assert.ok(client.__test.statusOf, 'the existing inbox helpers stay exported')
+  const { activePreset, placeholderTokens } = client.__test
+
+  const builtin = { name: 'default', text: 'DEFAULT', builtin: true }
+  const custom = { name: 'custom', text: 'CUSTOM', builtin: false }
+  assert.deepEqual(activePreset({ active: 'custom', presets: [builtin, custom], defaultText: 'DEFAULT' }), custom)
+  assert.deepEqual(
+    activePreset({ active: 'missing', presets: [builtin, custom], defaultText: 'DEFAULT' }),
+    builtin,
+    'a dangling active preset falls back to the built-in default',
+  )
+  assert.deepEqual(
+    activePreset({ active: 'default', presets: [custom], defaultText: 'DEFAULT' }),
+    { name: 'default', text: 'DEFAULT', builtin: true },
+    'a missing built-in preset is synthesized from defaultText',
+  )
+  assert.deepEqual(activePreset({ active: 'gone' }), { name: 'default', text: '', builtin: true }, 'an empty template still falls back')
+
+  assert.deepEqual(
+    placeholderTokens('{repo} #{pr}\n{comment} {comment} {oops}'),
+    ['{repo}', '{pr}', '{comment}', '{comment}', '{oops}'],
+    'tokens keep their order and duplicates',
+  )
+  assert.deepEqual(placeholderTokens('no tokens'), [])
+  assert.deepEqual(placeholderTokens('{a{b}'), ['{b}'], 'the tokenizer does not accept nested braces')
+  assert.deepEqual(placeholderTokens(undefined), [])
+}
+
+/** host 半身：注册 SETTINGS_PATH、同一道 fence、GET 的 config 来源、PUT 的 409 与成功。 */
+async function testHostSettingsRoute() {
+  const box = await sandbox()
+  const apply = await loadHostApply(box)
+  const saved = { ...process.env }
+  try {
+    process.env.DSH_SUPERAGENT_STATE_DIR = box.state
+    process.env.SPV_INBOX_DIR = box.inbox
+    process.env.SPV_PROJECTS_ROOT = box.projects
+    delete process.env.SPV_INBOX_INTERVAL_SECONDS
+    const effects = []
+    const routes = []
+    const rejected = []
+    const ctx = {
+      logger: { info: () => {}, warn: () => {} },
+      connection: {
+        requestRejection: req => {
+          rejected.push(req)
+          return req.forbidden === true ? 403 : undefined
+        },
+      },
+      webServer: {
+        register: ({ kind, path, handler }) => {
+          routes.push({ kind, path, handler })
+          return () => {}
+        },
+      },
+      effect: (fn, label) => { effects.push({ fn, label }) },
+    }
+    apply(ctx, { intervalSeconds: 0.02 })
+    // The web host runs each non-poller effect on mount; that is what registers the routes.
+    for (const effect of effects.filter(item => !item.label.includes('poller'))) effect.fn()
+
+    const route = routes.find(item => item.path === SETTINGS_PATH)
+    assert.ok(route, 'the host registers /wheelchair-settings')
+    assert.equal(route.kind, 'exact', 'the settings route is an exact route')
+    assert.ok(routes.some(item => item.path === '/wheelchair-inbox/items'), 'the inbox routes stay registered')
+    assert.ok(effects.some(item => item.label.includes('inbox poller')), 'the host still registers the inbox poller')
+
+    const get = await call(route.handler)
+    assert.equal(get.status, 200)
+    assert.equal(get.headers['cache-control'], 'no-store')
+    const intervalRow = get.body.rows.find(item => item.key === 'inbox.intervalSeconds')
+    assert.equal(intervalRow.source, 'config', 'the plugin config is the source when the file has no override')
+    assert.equal(intervalRow.value, 0.02, 'the legacy fractional plugin config is accepted')
+    assert.equal(get.body.templates.injection.active, 'default')
+
+    const stale = await call(route.handler, { method: 'PUT', body: { revision: 5, values: { 'work.keep': 2 } } })
+    assert.equal(stale.status, 409)
+    assert.equal(stale.body.code, 'conflict')
+    assert.equal(stale.body.revision, 0)
+    assert.equal(await readFile(settingsFile(box.state), 'utf8').catch(() => undefined), undefined, 'a stale PUT writes nothing')
+
+    const denied = await call(route.handler, {
+      method: 'PUT',
+      forbidden: true,
+      body: { revision: 0, values: { 'work.keep': 2 } },
+    })
+    assert.equal(denied.status, 403, 'the connection fence answers before the settings handler')
+    assert.equal(denied.text, '', 'a rejected request gets no handler body')
+    assert.equal(
+      await readFile(settingsFile(box.state), 'utf8').catch(() => undefined),
+      undefined,
+      'a rejected PUT has no side effect',
+    )
+    assert.equal(rejected.at(-1)?.forbidden, true, 'the settings route asks the connection fence before the handler')
+
+    for (const candidate of routes.filter(item => item.path.startsWith('/wheelchair-inbox/'))) {
+      const forbidden = await call(candidate.handler, { forbidden: true, url: candidate.path })
+      assert.equal(forbidden.status, 403, `${candidate.path} is behind the same fence`)
+    }
+
+    const savedPut = await call(route.handler, { method: 'PUT', body: { revision: 0, values: { 'work.keep': 2 } } })
+    assert.equal(savedPut.status, 200)
+    assert.equal(savedPut.body.revision, 1)
+    const after = await call(route.handler)
+    assert.equal(after.body.effective['work.keep'], 2)
+    assert.equal(after.body.rows.find(item => item.key === 'work.keep').source, 'file')
+  } finally {
+    restoreEnv(saved)
+  }
 }
 
 // --------------------------------------------------------------- consumers
@@ -1271,6 +1428,8 @@ try {
   await testPresetCrudAndReset()
   await testPrecedence()
   await testHttpHandler()
+  await testClientSettingsHelpers()
+  await testHostSettingsRoute()
   await testAppendReviewUsesTemplates()
   await testFormatResultUsesSettings()
   await testInjectorUsesSettings()
