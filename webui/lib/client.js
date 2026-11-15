@@ -32,7 +32,7 @@ window.__ModuleLoader__.load({
 			refresh: "刷新",
 			"filter.label": "筛选",
 			"filter.all": "全部",
-			"filter.pending": "待审",
+			"filter.pending": "待审查",
 			"filter.issue": "有问题",
 			"filter.approved": "已通过",
 			"filter.empty": "这个筛选下没有信件。",
@@ -64,7 +64,7 @@ window.__ModuleLoader__.load({
 			"card.thread": "线程：{thread}",
 			"card.open": "打开 PR",
 			"card.reviews": "审查记录（{count}）",
-			"status.pending": "待审",
+			"status.pending": "待审查",
 			"status.approved": "已通过",
 			"status.issue": "有问题",
 			"form.pass": "通过",
@@ -81,9 +81,9 @@ window.__ModuleLoader__.load({
 			"form.cancel": "取消",
 			"form.failed": "提交失败：{message}",
 			"form.inflight": "提交中…",
-			"state.open": "OPEN",
-			"state.merged": "MERGED",
-			"state.closed": "CLOSED"
+			"state.open": "打开",
+			"state.merged": "已合并",
+			"state.closed": "已关闭"
 		};
 		const en = {
 			panel: "wheelchair-agent",
@@ -96,7 +96,7 @@ window.__ModuleLoader__.load({
 			refresh: "Refresh",
 			"filter.label": "Filter",
 			"filter.all": "All",
-			"filter.pending": "Pending",
+			"filter.pending": "Pending review",
 			"filter.issue": "Issues",
 			"filter.approved": "Approved",
 			"filter.empty": "No letters in this filter.",
@@ -128,7 +128,7 @@ window.__ModuleLoader__.load({
 			"card.thread": "Thread: {thread}",
 			"card.open": "Open PR",
 			"card.reviews": "Review history ({count})",
-			"status.pending": "Pending",
+			"status.pending": "Pending review",
 			"status.approved": "Approved",
 			"status.issue": "Issue",
 			"form.pass": "Approve",
@@ -145,9 +145,9 @@ window.__ModuleLoader__.load({
 			"form.cancel": "Cancel",
 			"form.failed": "Could not submit: {message}",
 			"form.inflight": "Submitting…",
-			"state.open": "OPEN",
-			"state.merged": "MERGED",
-			"state.closed": "CLOSED"
+			"state.open": "Open",
+			"state.merged": "Merged",
+			"state.closed": "Closed"
 		};
 
 		/**
@@ -1040,6 +1040,7 @@ window.__ModuleLoader__.load({
 			.wca-item:first-child { border-top: 0; }
 			.wca-item-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 			.wca-item-origin { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+			.wca-state-tag { font-weight: 400; }
 			.wca-repo { color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; }
 			.wca-repo strong { color: var(--dsw-alias-label-primary); font-weight: 500; }
 			.wca-item-title { margin: 0; font-size: 15px; font-weight: 600; line-height: 22px; }
@@ -1301,18 +1302,25 @@ window.__ModuleLoader__.load({
 
 		/**
 		* Derive an item's review status from its latest review entry; there is no stored status
-		* field, so the log stays the single source of truth. A merged PR with no review needs no
-		* operator action: it is approved, not pending, so the default Pending view is really the
-		* things still waiting for the operator.
+		* field, so the log stays the single source of truth. GitHub's merge state is deliberately
+		* NOT consulted: merging is not reviewing, so a merged PR with no review is still pending.
 		* @param item - inbox item.
 		* @returns `"pending"`, `"approved"` or `"issue"`.
 		*/
 		function statusOf(item) {
 			const reviews = Array.isArray(item?.review) ? item.review : [];
-			if (reviews.length > 0) {
-				return reviewKindOf(reviews[reviews.length - 1]) === "approve" ? "approved" : "issue";
-			}
-			return String(item?.state ?? "").toUpperCase() === "MERGED" ? "approved" : "pending";
+			if (reviews.length === 0) return "pending";
+			return reviewKindOf(reviews[reviews.length - 1]) === "approve" ? "approved" : "issue";
+		}
+
+		/**
+		* Normalize the item's GitHub state for the separate PR-state chip (open / merged / closed).
+		* This is display context only; it never feeds statusOf().
+		* @param item - inbox item.
+		* @returns the lower-case state, or "" when the item carries none.
+		*/
+		function stateOf(item) {
+			return String(item?.state ?? "").trim().toLowerCase();
 		}
 
 		/** Map a derived status to a Tag tone. */
@@ -1624,6 +1632,7 @@ window.__ModuleLoader__.load({
 			const isMessage = kind === "spv_message";
 			const reviews = Array.isArray(item.review) ? item.review : [];
 			const status = statusOf(item);
+			const prState = isMessage ? "" : stateOf(item);
 			const href = isMessage ? undefined : safeWebHref(item.url);
 			const additions = Number.isFinite(Number(item.additions)) ? Number(item.additions) : 0;
 			const deletions = Number.isFinite(Number(item.deletions)) ? Number(item.deletions) : 0;
@@ -1668,7 +1677,18 @@ window.__ModuleLoader__.load({
 													},
 													"kind"
 												),
-												origin
+												origin,
+												prState === ""
+													? null
+													: jsx(
+															"span",
+															{
+																className: "wca-tag wca-state-tag",
+																"data-tone": stateTone(prState),
+																children: stateLabel(t, prState)
+															},
+															"pr-state"
+													  )
 											]
 										},
 										"origin"
@@ -2238,7 +2258,7 @@ window.__ModuleLoader__.load({
 		exports.apply = apply;
 		exports.inject = inject;
 		/* Pure helpers exposed for the offline UI-status test; not a slot/module API. */
-		exports.__test = { statusOf, kindOfItem };
+		exports.__test = { statusOf, stateOf, kindOfItem };
 		return module.exports;
 	}
 });
