@@ -9,7 +9,7 @@
  *   - 拉取失败（脏工作区）把原因写进 item、保留脏文件、后续轮询重试；清理树后可完成并写 notice；
  *   - notice 写入失败保留已拉到的 sha，后续只重试 notice、不重复 pull；
  *   - 一个 gh 仓库失败只记 warning，其他仓库继续刷新；
- *   - MERGED 且没有 review 的 PR 在面板的 `statusOf()` 里是 approved，不是 pending；
+ *   - MERGED 但没有 review 的 PR 仍是 pending；PR state 由 `stateOf()` 单独提供（open/merged/closed）；
  *   - 升级前就已经 MERGED 的 item 不会被当成新合并重放；
  *   - host 半身通过 `ctx.effect` 启动同一个循环，能解析 core 副本的导入；
  *   - `research/` 不会被轮询或拉取；
@@ -494,8 +494,8 @@ async function testNoticeFailureRetries() {
   await watcher.done
 }
 
-/** (d) A merged PR with no review is approved, not pending, in the panel's derivation. */
-async function testMergedStatus() {
+/** (d) Review status is independent of GitHub state; the separate PR-state chip has its own helper. */
+async function testReviewStatusAndPrState() {
   let captured
   globalThis.window = {
     __ModuleLoader__: {
@@ -510,15 +510,25 @@ async function testMergedStatus() {
     delete globalThis.window
   }
   assert.ok(captured?.__test?.statusOf, 'the client bundle exposes statusOf for the offline test')
-  const { statusOf } = captured.__test
-  assert.equal(statusOf({ state: 'MERGED', review: [] }), 'approved', 'a merged PR is not pending')
+  assert.ok(captured.__test.stateOf, 'the client bundle exposes stateOf for the PR-state chip')
+  const { statusOf, stateOf } = captured.__test
+
+  // Review status: merge state must never make an unreviewed PR look reviewed.
+  assert.equal(statusOf({ state: 'MERGED', review: [] }), 'pending', 'a merged but unreviewed PR is still pending')
   assert.equal(statusOf({ state: 'OPEN', review: [] }), 'pending')
-  assert.equal(statusOf({ state: 'MERGED', review: [{ kind: 'issue', text: 'x' }] }), 'issue', 'an issue review still wins')
+  assert.equal(statusOf({ state: 'MERGED', review: [{ kind: 'approve' }] }), 'approved', 'an explicit approval survives the merge')
+  assert.equal(statusOf({ state: 'MERGED', review: [{ kind: 'issue', text: 'x' }] }), 'issue', 'an issue review wins')
   assert.equal(
     statusOf({ state: 'MERGED', mergedAt: '2026-11-15T00:00:00.000Z', review: [{ at: '2026-11-01T00:00:00.000Z', kind: 'issue', text: 'early' }] }),
     'issue',
-    'a pre-merge issue also wins, so the merged item is not pending',
+    'a pre-merge issue also wins',
   )
+
+  // PR state: separate display axis for the chip.
+  assert.equal(stateOf({ state: 'MERGED' }), 'merged')
+  assert.equal(stateOf({ state: 'CLOSED' }), 'closed')
+  assert.equal(stateOf({ state: 'OPEN' }), 'open')
+  assert.equal(stateOf({}), '')
 }
 
 /** (d2) One failing gh repo is a warning; the healthy repo still refreshes on later polls. */
@@ -643,7 +653,7 @@ try {
   await testMergeNonInstallRepoNoNotice()
   await testPullFailureRecovers()
   await testNoticeFailureRetries()
-  await testMergedStatus()
+  await testReviewStatusAndPrState()
   await testOneRepoFailureDoesNotStopLoop()
   await testHostStartsPoller()
   testIntervalConfig()

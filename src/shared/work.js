@@ -32,11 +32,10 @@ export const RECLAIMED_FILE = 'work-reclaimed.jsonl'
 export const KEEP_DAYS_DEFAULT = 0
 
 /**
- * Hard floor: the newest N directories that pass the gate are kept regardless of age. A recent ticket's worker
- * session still remembers its old commit, while re-preparing it clones the current `main`, so a few newest clones are
- * worth keeping for a while.
+ * Opt-in count floor: `--keep N` protects the newest N passing directories when someone asks for it. The default is
+ * 0 because `work restored` rebuilds a clone from the record in a moment; recency alone buys nothing.
  */
-export const KEEP_DEFAULT = 10
+export const KEEP_DEFAULT = 0
 
 /** A Ticket directory is `<short name>-<hex>`; `state/` and other residue must not match. */
 const TICKET_DIR = /^[A-Za-z0-9][A-Za-z0-9._-]*-[0-9a-f]{8,64}$/
@@ -68,7 +67,7 @@ export function resolveWorkRoot({ stateDir, directory = '', env = process.env })
   const configured = String(directory ?? '').trim()
   const fromEnv = String(env.DSH_SUPERAGENT_WORK_DIR ?? '').trim()
   const chosen = configured || fromEnv
-  if (chosen === '') return join(stateDir, 'work')
+  if (chosen === '') return resolve(join(stateDir, 'work'))
   if (!isAbsolute(chosen)) throw new Error(`the work root must be an absolute path, got ${JSON.stringify(chosen)}`)
   const root = resolve(chosen)
   const blocked = [resolve('/'), resolve(homedir()), stateDir ? resolve(stateDir) : '']
@@ -98,6 +97,140 @@ export function megabytes(bytes) {
 /** Quote one value for a POSIX shell. The rebuild commands are meant to be pasted, so this matters. */
 export function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
+}
+
+// ------------------------------------------------------------- open tickets
+
+/**
+ * The one implementation of "which directories may not be reclaimed because an open Ticket owns them".
+ *
+ * `provider` is the only part that differs between the two callers:
+ *   - the CLI passes `() => fetchOpenTickets()` (HTTP to the running service);
+ *   - the mount hook passes `() => ({ tickets: source.tickets.open() })` (in-process).
+ *
+ * The result is deliberately three-state: `{ ok: true, directories }`, `{ ok: false, down: true }` when nothing is
+ * listening (nothing can be working, so the caller proceeds), and `{ ok: false, reason }` for every other failure
+ * (malformed response, unexpected shape, thrown provider), which must keep everything. A ticket may expose its
+ * directory as `execution.directory` (the domain record) or `directory` (the management API view).
+ */
+export async function openTicketDirectories(provider) {
+  let value
+  try {
+    value = await provider()
+  } catch (error) {
+    return { ok: false, reason: error?.message ?? String(error) }
+  }
+  if (value === undefined || value === null) return { ok: false, reason: 'the provider returned no response' }
+  if (value.down === true) return { ok: false, down: true, reason: value.reason ?? 'the service is not running' }
+  if (value.error !== undefined) return { ok: false, reason: String(value.error) }
+  if (!Array.isArray(value.tickets)) return { ok: false, reason: 'the response is not a list of tickets' }
+  const directories = new Map()
+  for (const ticket of value.tickets) {
+    if (ticket === null || typeof ticket !== 'object') {
+      return { ok: false, reason: 'a ticket is not an object' }
+    }
+    const directory = ticket.execution?.directory ?? ticket.directory
+    // A queued ticket may have no execution yet; it owns no clone, so there is nothing to protect. A *present* but
+    // unusable directory is a different thing: the answer cannot be trusted, so keep everything.
+    if (directory === undefined || directory === null) continue
+    if (typeof directory !== 'string' || directory === '') {
+      return { ok: false, reason: 'a ticket has an unusable execution.directory' }
+    }
+    directories.set(directory, String(ticket.id ?? ticket.title ?? directory))
+  }
+  return { ok: true, directories }
+}
+
+// ------------------------------------------------------------ workspaces
+
+/**
+ * Remove workspace records whose directory no longer exists.
+ *
+ * dsh never prunes a workspace record when its directory disappears, so the sidebar keeps showing rows for reclaimed
+ * clones. The registry is a dsh service only the mount hook can reach; the CLI has no registry. The guards are
+ * strict: the record's canonical path must be a child of the resolved work root, the directory must be gone, and
+ * nothing outside the work root is ever considered (the operator's own `~/bioagentforge` workspace must survive
+ * anything this code does). The call only removes the registry row; directories, session ids and session logs are
+ * untouched.
+ *
+ * Fail-soft: a missing, throwing, or malformed registry returns zero prunes and an optional reason; a failed delete
+ * for one record does not stop the others. This function never throws.
+ */
+export async function pruneStaleWorkspaces({ registry, root } = {}) {
+  const pruned = []
+  try {
+    if (typeof root !== 'string' || root === '') return { pruned, error: 'no work root' }
+    let list
+    let remove
+    try {
+      list = registry?.list
+      remove = registry?.delete
+    } catch {
+      return { pruned, error: 'the workspace registry could not be read' }
+    }
+    if (typeof list !== 'function' || typeof remove !== 'function') {
+      return { pruned, skipped: 'no workspace registry' }
+    }
+    const rootPath = resolve(root)
+    // A symlinked work root would make the canonical prefix a different (possibly broader) subtree. Skipping keeps
+    // the hard "child of the work root" promise; the operator can point DSH_SUPERAGENT_WORK_DIR at the real path.
+    let rootInfo
+    try {
+      rootInfo = await lstat(rootPath)
+    } catch {
+      rootInfo = undefined
+    }
+    if (rootInfo?.isSymbolicLink() === true) {
+      return { pruned, skipped: 'the work root is a symlink; workspace prune skipped' }
+    }
+    const canonicalRoot = await realpath(rootPath).catch(() => rootPath)
+    if (canonicalRoot !== rootPath) {
+      return { pruned, skipped: 'the work root is not canonical; workspace prune skipped' }
+    }
+    let records
+    try {
+      records = list.call(registry)
+    } catch (error) {
+      return { pruned, error: `workspace registry list failed: ${error?.message ?? error}` }
+    }
+    if (!Array.isArray(records)) return { pruned, error: 'workspace registry list is not an array' }
+    for (const record of records) {
+      const id = record?.id
+      const path = record?.path
+      if (typeof id !== 'string' || id === '' || typeof path !== 'string' || path === '') continue
+      // dsh stores canonical absolute paths; anything else is an unexpected shape and is left alone.
+      if (!isAbsolute(path)) continue
+      const target = resolve(path)
+      if (!target.startsWith(`${rootPath}${sep}`)) continue
+      let missing = false
+      try {
+        const info = await stat(target)
+        if (info.isDirectory()) continue
+        missing = true
+      } catch (error) {
+        if (error.code !== 'ENOENT') continue
+        missing = true
+      }
+      if (!missing) continue
+      // Re-check immediately before the registry write; this narrows the recreate race but cannot remove it.
+      try {
+        if ((await stat(target)).isDirectory()) continue
+      } catch (error) {
+        if (error.code !== 'ENOENT') continue
+      }
+      try {
+        const deleted = await remove.call(registry, id)
+        if (deleted !== false) {
+          pruned.push({ id, path: target, title: typeof record.title === 'string' ? record.title : '' })
+        }
+      } catch {
+        // One bad row must not stop the rest; the summary simply reports fewer prunes.
+      }
+    }
+    return { pruned }
+  } catch (error) {
+    return { pruned, error: `workspace prune failed: ${error?.message ?? error}` }
+  }
 }
 
 // ------------------------------------------------------------------ the gate
@@ -322,16 +455,17 @@ async function sizeOf(path) {
  * Build the plan: every direct child of `root`, its size, and either `reclaim` or the reason it is kept.
  *
  * Unknown entries (no `.git`, or a name that is not `<name>-<hex>`, or a plain file) are never reclaimed. `--keep`
- * and `--keep-days` only delay an otherwise passing entry; they never override a failed gate. `skipDirectories`
- * names clones an open Ticket still works in (the mount hook passes them); they are kept for that reason even when
- * the gate passes, which only makes the sweep less aggressive.
+ * and `--keep-days` only delay an otherwise passing entry; they never override a failed gate. `skipDirectories` maps
+ * a directory to the open Ticket that owns it; those are kept for that reason even when the gate passes, which only
+ * makes the sweep less aggressive. `blockedReason` (an unreadable open-ticket answer) keeps every passing entry.
  */
 export async function planWork({
   root,
   keep = KEEP_DEFAULT,
   keepDays = KEEP_DAYS_DEFAULT,
   now = Date.now(),
-  skipDirectories = new Set(),
+  skipDirectories = new Map(),
+  blockedReason,
 }) {
   const entries = []
   let children = []
@@ -342,7 +476,10 @@ export async function planWork({
     else throw new Error(`cannot read the work root ${root}: ${error.code ?? error.message}`)
   }
   children.sort((a, b) => a.name.localeCompare(b.name))
-  const skip = new Set([...skipDirectories].map(item => resolve(item)))
+  const pairs = skipDirectories instanceof Map
+    ? [...skipDirectories]
+    : [...skipDirectories].map(directory => [directory, directory])
+  const skip = new Map(pairs.map(([directory, ticket]) => [resolve(directory), String(ticket)]))
 
   for (const child of children) {
     const path = join(root, child.name)
@@ -369,7 +506,7 @@ export async function planWork({
         continue
       }
       if (skip.has(resolve(path))) {
-        entries.push({ ...base, action: 'keep', reason: 'an open ticket still uses this directory' })
+        entries.push({ ...base, action: 'keep', reason: `open ticket ${skip.get(resolve(path))} is using this directory` })
         continue
       }
       const inspected = await inspectClone(path)
@@ -404,6 +541,14 @@ export async function planWork({
     }
     if (passing[index].reason !== undefined) passing[index].action = 'keep'
   }
+  if (blockedReason !== undefined) {
+    for (const entry of entries) {
+      if (entry.action === 'reclaim') {
+        entry.action = 'keep'
+        entry.reason = blockedReason
+      }
+    }
+  }
   const reclaimable = entries.filter(entry => entry.action === 'reclaim')
   return {
     root,
@@ -435,9 +580,10 @@ export async function reclaimWork({
   keepDays = KEEP_DAYS_DEFAULT,
   dryRun = false,
   now = Date.now(),
-  skipDirectories = new Set(),
+  skipDirectories = new Map(),
+  blockedReason,
 }) {
-  const plan = await planWork({ root, keep, keepDays, now, skipDirectories })
+  const plan = await planWork({ root, keep, keepDays, now, skipDirectories, blockedReason })
   if (dryRun) {
     return {
       root,

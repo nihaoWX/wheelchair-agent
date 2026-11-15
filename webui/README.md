@@ -80,7 +80,7 @@ The review status is derived from the **latest `review` entry**, with no stored 
 
 | latest review | status | UI |
 |---|---|---|
-| none | `pending` (待审); `approved` when the PR state is `MERGED` | tertiary badge |
+| none | `pending` (待审查) | tertiary badge |
 | `approve` | `approved` (已通过) | success badge; row de-emphasized |
 | `issue` | `issue` (有问题) | error badge |
 
@@ -101,10 +101,14 @@ response and the body stays `{items: [...]}`. The panel only URL-encodes the par
 re-fetches when they change, so the filter logic stays out of the bundle. Time uses the PR's own
 `createdAt` (its age, not the moment the watcher noticed it) and an `spv_message`'s `at`.
 
-The toolbar also keeps the derived-status filter (All / Pending / Issues / Approved, default
-Pending), with counts over the currently fetched letters. A PR whose `state` is `MERGED` and that
-has no review counts as **approved**, not pending: a merged PR needs no operator action. Any existing
-review still wins (an issue is not pending, but it stays an issue).
+The toolbar also keeps the derived-status filter (All / Pending review / Issues / Approved,
+default Pending review), with counts over the currently fetched letters. Review status is independent
+of GitHub state: merging is not reviewing, so a `MERGED` PR with no review is **pending**. Any
+existing review still wins (an issue is not pending, but it stays an issue).
+
+The GitHub state is a **separate chip** next to the repo + number (`Open` / `Merged` / `Closed`,
+localized), derived by `stateOf()` from the item's existing `state`. It is context only and never
+feeds `statusOf()`.
 
 ### Automatic refresh
 
@@ -214,12 +218,16 @@ and the same viewport/theme: `before-letter-types.png` is commit `f301111` (the 
 fixture, written with the new `inbox add`; it was removed after the capture. No submission was sent
 from either form, so no worker task or SPV notice was produced.
 
-- `docs/before-merged-status.png` / `docs/after-merged-status.png` — the derived-status change in
-  the same inbox, status filter **All**, light, 1440×900. A temporary `state: "MERGED"` fixture is
-  **Pending** in the before capture and **Approved** in the after capture (counts move with it). The
-  after capture patches the client bundle served to the same running app with this branch's
-  `statusOf()`; no cold install was run and the host half was not restarted. The fixture was removed
-  after the capture.
+- `docs/before-status-pending.png` / `docs/after-status-pending.png` — the review-status regression
+  on the real inbox, **Pending review** tab, light, 1440×2300 (tall enough for all seven rows). Before, the installed panel shows only
+  #6 as pending and counts 14 approved because merged-but-unreviewed PRs fall through to GitHub's
+  `MERGED` state. After, the branch's `client.js` is hot-swapped into the running package (the documented
+  client-bundle path; no preset/host install) and shows
+  **7 pending**: #6 with a `Closed` chip and #11–#16 with a `Merged` chip, all still **Pending review**.
+- `docs/before-status-approved.png` / `docs/after-status-approved.png` — the same comparison on the
+  **Approved** tab: the wrong count drops from 14 to the **8** items that actually carry an
+  `approve` record (`#2 #3 #4 #5 #7 #8 #9 #10`), each with its own `Merged` chip. #11–#16 no longer
+  appear here.
 - `docs/before-letter-types.png` / `docs/after-letter-types.png` — PR-only list vs the two-letter
   inbox with the filter bar (`letter type` / `repository` / `time`), the `PR` and `SPV decision`
   badges, and the two separate actions.
@@ -229,10 +237,11 @@ from either form, so no worker task or SPV notice was produced.
   hint says submitting notifies SPV (on a PR the same action says it dispatches a worker).
 - `docs/after-letter-types-dark.png` — the same two-letter inbox in dark theme.
 - `docs/after-filter-pending.png`, `docs/after-filter-issues.png`,
-  `docs/after-filter-approved.png`, `docs/after-filter-all.png` — the four derived-status states,
-  including the real PR #1 whose legacy `question` review displays as **Issue**.
+  `docs/after-filter-approved.png`, `docs/after-filter-all.png` — historical PR #13 captures of the
+  four derived-status tabs (before the PR-state chip and the merged-status correction); kept as
+  history.
 - `docs/after-pr-body.png` — a PR description expanded in the new chrome, rendering Markdown.
-- `docs/after-panel.png` / `docs/after-panel-dark.png` — the current feature host in light and dark.
+- `docs/after-panel.png` / `docs/after-panel-dark.png` — earlier feature-host captures in light and dark; the current status/chip UI is shown above.
 
 Earlier captures (`before-panel.png`, `before-sidebar.png` / `after-sidebar.png`,
 `after-pr-table.png`, `after-pr-code-dark.png`, `before-pr-body-dark.png` /
