@@ -17,7 +17,7 @@
 
 - 需要的 helper（`health`、`key`、`threadKey`）在 `src/superagent/spv.js` 里重写了等价的小函数。
 - `SourceContext` 用 `ctx.orchestrator.context(kind)` 拿，不导入 `sourceContext`（`lib/` 没导出它）。
-- schema 用自己写的 `src/shared/schema.js`（只实现 `parse`/`safeParse`），**故意不依赖 zod**。理由见 7.2。
+- schema 用自己写的 `src/shared/schema.js`（只实现 `parse`/`safeParse`），**故意不依赖 zod**。理由见 8.2。
 
 ## 2. 队列布局与"无 cursor"的消费标记
 
@@ -118,9 +118,45 @@ worker preset）。`triggerOf()` 把除 `text` / `thread` / `actor` 之外的字
 `notice` 走同一个 outbox 通道，因此队列格式没有第二种。与 worker 的答复一样，注入器只投递**会话挂载之后**
 到达的消息：SPV 会话关闭期间写下的质疑会留在 `outbox/`，`spv_status` 能看到，但不会在下次启动时补投。
 
-## 7. 踩过的坑
+## 7. 合并 PR 与冷安装通知
 
-### 7.1 插件入口的相对路径
+收件箱的快照不再是“有人运行 `wheelchair-agent inbox watch` 才更新”的。webui 的 host 半身在
+`ctx.effect` 里启动 `startInboxWatcher()`（`src/spv/inbox.js`，与 CLI 的 `inbox watch` 共用同一个
+循环），默认每 60 秒轮询一次；插件配置的 `intervalSeconds` 或环境变量 `SPV_INBOX_INTERVAL_SECONDS`
+可覆盖，`0` 表示关闭自动轮询。单个仓库或 `gh` 失败只记一行 warning，下一轮继续。
+
+`gh pr list` 额外取 `mergedAt` / `mergeCommit`，item 也记录合并处理的状态：
+
+| 字段 | 含义 |
+|---|---|
+| `mergedAt` / `mergeCommit` | GitHub 给出的合并时间与合并提交 |
+| `mergeObservedAt` | watcher 亲眼看到这次 OPEN → MERGED 的时刻；失败后靠它重试 |
+| `mergeHandledAt` | 拉取（以及本仓库需要的 notice）都成功后才置位；重复轮询与服务重启都看它 |
+| `pullAt` / `pulledSha` | 本地 clone 执行 `git pull --ff-only` 的时刻与拉到的 HEAD |
+| `pullError` | 拉取失败的原因（脏工作区、分叉、无远端、无网络……），失败不抛出、不阻断循环 |
+| `noticeAt` / `noticeError` | 冷安装 notice 是否已写入 spv outbox |
+
+处理规则：
+
+- 只处理 watcher **亲眼看到**的 `OPEN → MERGED` 变化。升级前就已经是 `MERGED` 的 item 不重放，
+  否则第一次轮询会把历史 PR 全部拉一遍、并为每个都排一条 notice。
+- 只处理 `<projectsRoot>/tools/` 下有 GitHub origin 的仓库；`research/` 永不被轮询、拉取或推送。
+- 拉取永远是 `git -C <local clone> pull --ff-only`，从不 force、reset 或 stash。失败时本地树保持原样，
+  原因写进 `pullError`，收件箱与其他仓库照常更新；item 保留 `mergeObservedAt` 且不置 `mergeHandledAt`，
+  下一次轮询会重试，所以把脏树清理掉之后同一次合并仍能完成。
+- 如果更新的就是本仓库（目录名或 repo basename 为 `wheelchair-agent`，可用 `SPV_INSTALL_REPO` 覆盖），
+  **运行中的 service 不安装自己**：它通过 `writeMessage()` 往 spv outbox 写**恰好一条** `notice`
+  （id `inbox-merge-<item id>`），正文给出 PR/仓库/拉到的 sha、冷安装待办，以及
+  `service stop` → 退出 SPV 会话 → `cd <clone> && bash install.sh` → `service start` 的确切命令。
+  去重靠 item 上的 `mergeHandledAt` / `noticeAt`，所以成功处理后轮询不会每 60 秒重复，重启也不会再来一次；失败则按上面的 `mergeObservedAt` 重试。
+- 冷安装永远由操作者（或收到 notice 后的 SPV 会话）执行；service 只负责发现合并、拉取本地 clone 和通知。
+
+这条 notice 与收件箱的审查质疑共用 outbox 的 `notice` 通道；注入器的头部现在只报 kind 与 thread，
+不再说“worker 停了”，因为同一 kind 现在也承载合并通知和操作者质疑。
+
+## 8. 踩过的坑
+
+### 8.1 插件入口的相对路径
 
 插件入口是 `src/superagent/watch.js`，Source kind 在 `src/superagent/spv.js`，队列在 `src/shared/`。
 第一版把入口放在包根、源码放在 `src/`，写成 `from './spv.js'`，服务日志里 `ERR_MODULE_NOT_FOUND` 直接让
@@ -130,13 +166,13 @@ entry 不激活（`dsh: warning: 1 entry did not activate`）——但进程照�
 `package.json` 的 exports 键（`./spv-watch` 等）是公开 API，`~/.dsh/profiles/superagent/cordis.patch.yml`
 用 bare specifier 引用它们；键名不能改，只能改它指向的文件。
 
-### 7.2 不要导入 zod
+### 8.2 不要导入 zod
 
 dsh-superagent 自带一份 zod。插件如果 import 另一个副本的 zod，抛出的 `ZodError` 在它的
 `failure()`（`app/http.ts:82`）里 `instanceof` 判定失败，一个"设置值非法"的 400 会变成 500。
 `src/shared/schema.js` 用自定义 `SchemaError` 绕开这个问题，同时省掉一个依赖。
 
-### 7.3 `pids: []` 但服务在跑
+### 8.3 `pids: []` 但服务在跑
 
 `scripts/dsh-superagent status|stop` 用 `ps` 的 `ucomm` 判断进程名，在 WSL2 下 node 进程的 comm 是
 `MainThread`，于是脚本认为"没有服务"。表现：`restart` 打印 "An existing orchestrator answers at this URL;
@@ -146,7 +182,7 @@ refusing duplicate startup"，实际没重启。可靠做法是直接按端口�
 kill -INT $(ss -ltnp 2>/dev/null | grep 3082 | sed -n 's/.*pid=\([0-9]*\).*/\1/p')
 ```
 
-### 7.4 主会话的模型凭据是既有缺口
+### 8.4 主会话的模型凭据是既有缺口
 
 `~/.dsh/profiles/superagent` 原来**没有挂 provider**，`agent-default-model` 落到 `deepseek-official`，
 而本机没有 `DEEPSEEK_API_KEY`。后果：任何 Eval 都 `MISSING_CREDENTIAL`，两分钟超时后记 `unavailable`。
@@ -158,7 +194,7 @@ zstd -dc ~/.dsh/sessions/--home-nihao-.dsh-state-superagent--/orchestrator-*/ses
 
 修法是在 profile 的 `cordis.patch.yml` 挂 commandcode provider 并把 `agent-default-model` 指过去。
 
-### 7.5 主会话会固化第一次的 request header
+### 8.5 主会话会固化第一次的 request header
 
 主会话的 `model/selection` 一旦写入 session 记录，`initializeRoleModel()` 就不再覆盖
 （`if (agent.session.requestHeader() || snapshotEvents().some(e => e.type === 'model/selection')) return`）。
@@ -166,7 +202,7 @@ zstd -dc ~/.dsh/sessions/--home-nihao-.dsh-state-superagent--/orchestrator-*/ses
 处理：删掉 `~/.dsh/sessions/--home-nihao-.dsh-state-superagent--/orchestrator-*` 与对应的
 `~/.dsh/storages/session_projcache/sessions/orchestrator-*.json`，让它重建。Ticket/Thread 全在 SQLite 里，不丢。
 
-### 7.6 消费标记只有一个：rename
+### 8.6 消费标记只有一个：rename
 
 `outbox/` 的消息靠 `rename(outbox/x.json → outbox/read/x.json)` 标记已读。注入器（`src/spv/injector.js`）
 先 `consumeMessage` 再注入；`consumeMessage` 只在真正搬走文件时返回 id，被别的读者抢先时返回 `undefined`，

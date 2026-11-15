@@ -34,8 +34,9 @@ export const MAX_BODY_CHARS = 12000
 /**
  * 一条结果在会话里的样子：线程、种类、正文，有工单号时带上它。
  *
- * `reply` 的正文就是 worker 的答复；`notice` 先说明「worker 停了或需要决策」，正文跟在下一行。正文为空时
- * 明写 `(empty message)`，否则一条空消息看起来像注入器自己出了故障。正文超过 `MAX_BODY_CHARS` 时截断，
+ * `reply` 与 `notice` 的正文都跟在下一行。`notice` 现在也承载操作者对 SPV 决策的质疑，所以头部只报种类与
+ * 线程，不再断言原因（那会对一半的消息说错）。正文为空时明写 `(empty message)`，否则一条空消息看起来像
+ * 注入器自己出了故障。正文超过 `MAX_BODY_CHARS` 时截断，
  * `options.read` 是已消费消息的文件路径，截断标记会指向它（完整内容就在那里）。
  */
 export function formatResult(message, { read } = {}) {
@@ -48,9 +49,9 @@ export function formatResult(message, { read } = {}) {
     const where = read === undefined ? '' : `; full message: ${read}`
     body = `${chars.slice(0, MAX_BODY_CHARS).join('')}\n[truncated after ${MAX_BODY_CHARS} characters${where}]`
   }
-  const header = String(message.kind) === 'notice'
-    ? `[spv] notice on thread "${thread}"${ticket}: the worker stopped or needs a decision`
-    : `[spv] reply on thread "${thread}"${ticket}:`
+  // Neutral by design: a notice is also an operator's objection to an SPV decision, so naming a cause
+  // here would be false half the time. The body says what the message is.
+  const header = `[spv] ${String(message.kind)} on thread "${thread}"${ticket}:`
   return `${header}\n${body === '' ? '(empty message)' : body}`
 }
 

@@ -18,8 +18,8 @@ its own loader row in `~/.dsh/profiles/superagent/cordis.patch.yml` (written by 
 - Host half (`lib/index.js`): `name = 'wheelchair-agent-webui'`, `inject = ['webServer',
   'connection']`. It registers two exact JSON routes — `/wheelchair-inbox/items` and
   `/wheelchair-inbox/review` — each behind `ctx.connection.requestRejection` so dsh's
-  Host/Origin and login fence guards them. The Host no longer serves a page: the panel is a
-  Client React component.
+  Host/Origin and login fence guards them, and starts the inbox poller through `ctx.effect`.
+  The Host no longer serves a page: the panel is a Client React component.
 - Browser half (`lib/client.js`): a hand-written prebuilt bundle in the fixed
   `window.__ModuleLoader__.load({ id, factory })` format. It registers the sidebar row
   (`sidebar.panellist`) and the page (`main`) under the same id `wheelchair-agent`, with the
@@ -80,7 +80,7 @@ The review status is derived from the **latest `review` entry**, with no stored 
 
 | latest review | status | UI |
 |---|---|---|
-| none | `pending` (待审) | tertiary badge |
+| none | `pending` (待审); `approved` when the PR state is `MERGED` | tertiary badge |
 | `approve` | `approved` (已通过) | success badge; row de-emphasized |
 | `issue` | `issue` (有问题) | error badge |
 
@@ -102,7 +102,56 @@ re-fetches when they change, so the filter logic stays out of the bundle. Time u
 `createdAt` (its age, not the moment the watcher noticed it) and an `spv_message`'s `at`.
 
 The toolbar also keeps the derived-status filter (All / Pending / Issues / Approved, default
-Pending), with counts over the currently fetched letters.
+Pending), with counts over the currently fetched letters. A PR whose `state` is `MERGED` and that
+has no review counts as **approved**, not pending: a merged PR needs no operator action. Any existing
+review still wins (an issue is not pending, but it stays an issue).
+
+### Automatic refresh
+
+The host half starts the inbox poller on mount, inside `ctx.effect`, so it stops with the plugin.
+It calls `startInboxWatcher()` from `lib/core/inbox.js` — the same implementation behind
+`wheelchair-agent inbox watch`; there is no second loop. The first round runs immediately and the
+next ones follow a timer, so the inbox data is current while SPV runs unattended and nobody has to
+type the CLI command.
+
+The interval is **60 seconds by default**, matching the CLI. Configure it in either place:
+
+- the webui plugin's config: `intervalSeconds: <seconds>`; or
+- `SPV_INBOX_INTERVAL_SECONDS=<seconds>` in the service's environment.
+
+`0` disables the automatic poller (the CLI still works). A non-numeric or negative value is logged
+and falls back to 60s rather than failing the panel. One failing repository or one `gh` error is
+logged as a warning and the next round still runs.
+
+### Merged PRs, pulls and the cold-install notice
+
+`gh pr list` now also returns `mergedAt` and `mergeCommit`. When a `pr` item becomes `MERGED`, the
+first poll that observes it records the merge on the item and then acts exactly once:
+
+- it runs `git -C <projectsRoot>/tools/<name> pull --ff-only` and records `pulledSha` (the local
+  HEAD after the pull), `pullAt`, and `mergeHandledAt`. It never force-pulls, resets or stashes.
+  A dirty tree, a diverged branch, a missing remote or no network makes git fail; the failure is
+  recorded as `pullError`, the local tree is left alone, and the poll loop continues. The item keeps
+  `mergeObservedAt` and is retried on a later poll, so cleaning the tree lets the same transition
+  finish instead of being lost.
+- if the updated clone is this repository (local directory or repo basename `wheelchair-agent`;
+  override with `SPV_INSTALL_REPO`, either `wheelchair-agent` or `owner/wheelchair-agent`), the service
+  cannot install itself. It writes exactly one
+  `notice` through `writeMessage()` into the spv outbox, with id `inbox-merge-<item id>`. The text
+  names the PR, repo and pulled sha, says a cold install is pending, and gives the stop → install →
+  start commands (`wheelchair-agent service stop`, exit the SPV session, `cd <clone> && bash
+  install.sh`, `wheelchair-agent service start`, `wheelchair-agent spv`). `noticeAt` records that
+  the notice was written; if the notice itself fails, the pull result is kept and only the notice is
+  retried on later polls. `mergeHandledAt` is set only once the pull (and, for this repository, the
+  notice) succeeds, so a later poll or a service restart neither pulls nor notifies again.
+
+Only an observed transition counts: an item the watcher already saw as `MERGED` (for example the
+historical merged PRs already in an upgraded inbox) is left alone, so the first poll after an
+upgrade neither pulls every old PR nor queues a notice for each.
+
+Only `tools/` directories with a GitHub origin are candidates. `research/` is local-only and is
+never polled, pulled or pushed. The cold install is always performed by the operator (or the SPV
+session after the notice), never by the running service.
 
 ## Markdown
 
@@ -146,19 +195,31 @@ exit the SPV session first or it refuses with exit 3.
 
 **Restart the superagent service after installing a host-half change.** `lib/client.js` hot-reloads
 through dsh's client-bundle watcher, but `lib/index.js` and the core copies are imported once when
-the service starts. The server-side `kind` / `repo` / `since` / `until` filters live in that host
-half, so an already-running older service keeps listing every letter even though the new filter bar
-is visible.
+the service starts. The server-side `kind` / `repo` / `since` / `until` filters and the inbox poller
+live in that host half, so an already-running older service keeps the old behaviour even though the
+new client bundle is visible.
+
+`install.sh` is cold-install only: while the service or a live SPV session holds the targets it
+refuses with exit 3, and `install.sh --check` is read-only. Between a merge and the next cold
+install, `--check` therefore reports the installed tree as different (exit 2); that is the expected
+cold-install state, not a panel regression. A cold install into a throwaway `DSH_HOME` followed by
+`--check` is the offline proof of the checkout.
 
 ## Screenshots
 
 All captures use the same dsh web composition (`dsh-web-app`, 1440×900), light unless the file name
 says dark. The letter-types comparison uses the same scenario — the real inbox with its PR rows —
 and the same viewport/theme: `before-letter-types.png` is commit `f301111` (the PR-only list), and
-`after-letter-types.png` is this change. The after capture also shows one temporary `spv_message`
+`after-letter-types.png` is PR #13 (`c5ab828`). That after capture also shows one temporary `spv_message`
 fixture, written with the new `inbox add`; it was removed after the capture. No submission was sent
 from either form, so no worker task or SPV notice was produced.
 
+- `docs/before-merged-status.png` / `docs/after-merged-status.png` — the derived-status change in
+  the same inbox, status filter **All**, light, 1440×900. A temporary `state: "MERGED"` fixture is
+  **Pending** in the before capture and **Approved** in the after capture (counts move with it). The
+  after capture patches the client bundle served to the same running app with this branch's
+  `statusOf()`; no cold install was run and the host half was not restarted. The fixture was removed
+  after the capture.
 - `docs/before-letter-types.png` / `docs/after-letter-types.png` — PR-only list vs the two-letter
   inbox with the filter bar (`letter type` / `repository` / `time`), the `PR` and `SPV decision`
   badges, and the two separate actions.

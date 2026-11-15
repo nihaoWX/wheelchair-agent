@@ -1301,14 +1301,18 @@ window.__ModuleLoader__.load({
 
 		/**
 		* Derive an item's review status from its latest review entry; there is no stored status
-		* field, so the log stays the single source of truth.
+		* field, so the log stays the single source of truth. A merged PR with no review needs no
+		* operator action: it is approved, not pending, so the default Pending view is really the
+		* things still waiting for the operator.
 		* @param item - inbox item.
 		* @returns `"pending"`, `"approved"` or `"issue"`.
 		*/
 		function statusOf(item) {
 			const reviews = Array.isArray(item?.review) ? item.review : [];
-			if (reviews.length === 0) return "pending";
-			return reviewKindOf(reviews[reviews.length - 1]) === "approve" ? "approved" : "issue";
+			if (reviews.length > 0) {
+				return reviewKindOf(reviews[reviews.length - 1]) === "approve" ? "approved" : "issue";
+			}
+			return String(item?.state ?? "").toUpperCase() === "MERGED" ? "approved" : "pending";
 		}
 
 		/** Map a derived status to a Tag tone. */
@@ -2233,6 +2237,8 @@ window.__ModuleLoader__.load({
 		}
 		exports.apply = apply;
 		exports.inject = inject;
+		/* Pure helpers exposed for the offline UI-status test; not a slot/module API. */
+		exports.__test = { statusOf, kindOfItem };
 		return module.exports;
 	}
 });
