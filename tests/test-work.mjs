@@ -41,6 +41,7 @@ import {
   megabytes,
   openTicketDirectories,
   planWork,
+  pruneStaleWorkspaces,
   readReclaimed,
   reclaimWork,
   resolveWorkRoot,
@@ -682,7 +683,7 @@ async function testMountApply() {
   }
   apply(ctx)
   await waitFor(() => lines.length === 1, 'the mount summary line')
-  assert.match(lines[0], /wheelchair-agent work gc: reclaimed 10, kept 1, freed [\d.]+ MB/)
+  assert.match(lines[0], /wheelchair-agent work gc: reclaimed 10 clones, pruned 0 workspaces, freed [\d.]+ MB/)
   for (const dir of dirs.slice(0, 10)) {
     await assert.rejects(readFile(join(dir, '.git', 'HEAD')), { code: 'ENOENT' }, `${dir} is reclaimed`)
   }
@@ -711,7 +712,128 @@ async function testMountFallback() {
   }
   await reclaimAtMount(ctx)
   assert.equal(lines.length, 1)
-  assert.match(lines[0], /reclaimed 1, kept 0/, 'with no floor the only passing clone goes')
+  assert.match(lines[0], /reclaimed 1 clones, pruned 0 workspaces, freed [\d.]+ MB/, 'with no floor the only passing clone goes')
+}
+
+/** A fake workspace registry: a record list plus a delete spy. */
+function registryOf(records, { listThrows, nonArray } = {}) {
+  const calls = []
+  return {
+    calls,
+    registry: {
+      list: () => {
+        if (listThrows !== undefined) throw new Error(listThrows)
+        return nonArray === true ? {} : records
+      },
+      delete: async id => {
+        calls.push(id)
+        return true
+      },
+    },
+  }
+}
+
+/** Only a missing child of the work root is pruned; an existing dir, the root itself and outside paths are not. */
+async function testPruneWorkspaces() {
+  const box = await sandbox()
+  const gone = join(box.work, 'gone-0123456789ab')
+  const kept = join(box.work, 'kept-0123456789ab')
+  await mkdir(kept, { recursive: true })
+  const { registry, calls } = registryOf([
+    { id: 'w-gone', path: gone },
+    { id: 'w-kept', path: kept },
+    { id: 'w-outside', path: join(box.base, 'outside-home') },
+    { id: 'w-root', path: box.work },
+    { id: 'w-shape', title: 'no path or id' },
+  ])
+  const result = await pruneStaleWorkspaces({ registry, root: box.work })
+  assert.deepEqual(result.pruned.map(item => item.id), ['w-gone'])
+  assert.equal(result.pruned[0].path, gone)
+  assert.deepEqual(calls, ['w-gone'], 'the registry is never asked to delete an outside or existing path')
+}
+
+/** A missing, throwing or malformed registry keeps everything and never throws; one failed delete does not stop the rest. */
+async function testPruneFailSoft() {
+  const box = await sandbox()
+  assert.deepEqual(await pruneStaleWorkspaces({ registry: undefined, root: box.work }), {
+    pruned: [],
+    skipped: 'no workspace registry',
+  })
+  const throwing = registryOf([], { listThrows: 'boom' })
+  const failed = await pruneStaleWorkspaces({ registry: throwing.registry, root: box.work })
+  assert.deepEqual(failed.pruned, [])
+  assert.match(failed.error, /boom/)
+  const malformed = registryOf([], { nonArray: true })
+  const wrong = await pruneStaleWorkspaces({ registry: malformed.registry, root: box.work })
+  assert.deepEqual(wrong.pruned, [])
+  assert.match(wrong.error, /not an array/)
+
+  const calls = []
+  const registry = {
+    list: () => [
+      { id: 'w-throws', path: join(box.work, 'throws-0123456789ab') },
+      { id: 'w-ok', path: join(box.work, 'ok-0123456789ab') },
+    ],
+    delete: async id => {
+      calls.push(id)
+      if (id === 'w-throws') throw new Error('delete failed')
+      return true
+    },
+  }
+  const partial = await pruneStaleWorkspaces({ registry, root: box.work })
+  assert.deepEqual(partial.pruned.map(item => item.id), ['w-ok'])
+  assert.deepEqual(calls, ['w-throws', 'w-ok'], 'a failed delete does not stop the other records')
+}
+
+/** The prune runs after the clone pass, so a clone reclaimed now has its row removed in the same pass. */
+async function testPruneAfterReclaim() {
+  const box = await sandbox()
+  const dir = await cloneTicket(box, 'prune')
+  const { registry, calls } = registryOf([{ id: 'w-prune', path: dir }])
+  const lines = []
+  const ctx = {
+    orchestrator: {
+      machine: { stateDir: box.state },
+      settings: { current: () => ({ executor: { directory: box.work } }) },
+    },
+    logger: { info: line => lines.push(String(line)), warn: line => lines.push(String(line)) },
+  }
+  await reclaimAtMount(ctx, { openTickets: async () => ({ tickets: [] }), workspaceRegistry: registry })
+  await assert.rejects(readFile(join(dir, '.git', 'HEAD')), { code: 'ENOENT' }, 'the clone is reclaimed')
+  assert.deepEqual(calls, ['w-prune'], 'the row of the clone reclaimed in this pass is pruned')
+  assert.ok(lines.some(line => line.includes(`pruned workspace ${dir}`)), 'one line per pruned path')
+  const summary = lines.find(line => line.includes('reclaimed'))
+  assert.match(summary, /reclaimed 1 clones, pruned 1 workspaces, freed [\d.]+ MB/)
+}
+
+/** A bad registry does not disturb the mount path, and the clone pass still completes. */
+async function testPruneDoesNotBreakMount() {
+  const cases = [
+    ['missing', undefined],
+    ['throwing', { list: () => { throw new Error('boom') }, delete: async () => true }],
+    ['non-array', { list: () => ({}), delete: async () => true }],
+  ]
+  for (const [label, registry] of cases) {
+    const box = await sandbox()
+    const dir = await cloneTicket(box, 'soft')
+    const lines = []
+    const ctx = {
+      orchestrator: {
+        machine: { stateDir: box.state },
+        settings: { current: () => ({ executor: { directory: box.work } }) },
+      },
+      logger: { info: line => lines.push(String(line)), warn: line => lines.push(String(line)) },
+    }
+    await reclaimAtMount(ctx, { openTickets: async () => ({ tickets: [] }), workspaceRegistry: registry })
+    await assert.rejects(readFile(join(dir, '.git', 'HEAD')), { code: 'ENOENT' }, `${label}: the clone pass completes`)
+    assert.ok(
+      lines.some(line => /reclaimed 1 clones, pruned 0 workspaces/.test(line)),
+      `${label}: the summary still reports zero prunes`,
+    )
+    if (label !== 'missing') {
+      assert.ok(lines.some(line => line.includes('workspace prune skipped')), `${label}: the failure is logged`)
+    }
+  }
 }
 
 /** Root resolution and formatting helpers: documented defaults and overrides, and unsafe roots refused. */
@@ -764,6 +886,10 @@ try {
   await testAgeRetention()
   await testDeleteFailureRetracts()
   await testMountFallback()
+  await testPruneWorkspaces()
+  await testPruneFailSoft()
+  await testPruneAfterReclaim()
+  await testPruneDoesNotBreakMount()
   await testMountApply()
   testHelpers()
   process.stdout.write('ok\n')

@@ -8,7 +8,13 @@
 import { join } from 'node:path'
 import { Queue, SOURCE, health, spvKind, triggerOf } from './spv.js'
 import { consumeTask, ensureDirs, pendingNames, quarantineTask, readTask } from '../shared/queue.js'
-import { megabytes, openTicketDirectories, reclaimWork, resolveWorkRoot } from '../shared/work.js'
+import {
+  megabytes,
+  openTicketDirectories,
+  pruneStaleWorkspaces,
+  reclaimWork,
+  resolveWorkRoot,
+} from '../shared/work.js'
 
 export const name = 'wheelchair-agent-spv'
 export const inject = ['orchestrator']
@@ -40,7 +46,20 @@ export function apply(ctx) {
     reclaimedAtMount = true
     // The shared resolver turns this in-process provider into the same directory map the CLI gets from HTTP.
     const openTickets = () => ({ tickets: ctx.orchestrator.context(kind).tickets.open() })
-    reclaimAtMount(ctx, { openTickets }).catch(error => {
+    let workspaceRegistry
+    try {
+      workspaceRegistry = ctx.workspaceRegistry
+    } catch {
+      // The registry may not be composed yet; the prune then reports a skip instead of blocking the mount.
+    }
+    if (workspaceRegistry === undefined && typeof ctx.get === 'function') {
+      try {
+        workspaceRegistry = ctx.get('workspaceRegistry')
+      } catch {
+        // Same: a missing registry is a soft skip.
+      }
+    }
+    reclaimAtMount(ctx, { openTickets, workspaceRegistry }).catch(error => {
       ctx.logger?.warn?.(`wheelchair-agent work gc failed: ${error?.message ?? error}`)
     })
   }
@@ -55,7 +74,7 @@ export function apply(ctx) {
  * from the orchestrator service is used instead, still under the same gate. A live worker is kept by the shared
  * open-ticket map, not by the cwd scan alone: between tool calls its process cwd is not inside the clone.
  */
-export async function reclaimAtMount(ctx, { openTickets } = {}) {
+export async function reclaimAtMount(ctx, { openTickets, workspaceRegistry } = {}) {
   let stateDir = ''
   let directory = ''
   let early = false
@@ -90,14 +109,30 @@ export async function reclaimAtMount(ctx, { openTickets } = {}) {
       ctx.logger?.warn?.(`wheelchair-agent work gc: ${blockedReason}`)
     }
   }
+  const root = resolveWorkRoot({ stateDir, directory })
   const result = await reclaimWork({
-    root: resolveWorkRoot({ stateDir, directory }),
+    root,
     stateDir,
     skipDirectories,
     blockedReason,
   })
+  // Run after the clone pass so a directory reclaimed in this same pass has its stale workspace row removed now.
+  // `pruneStaleWorkspaces` is written not to throw; this catch keeps an unforeseen registry failure off the mount path.
+  let prune = { pruned: [] }
+  try {
+    prune = await pruneStaleWorkspaces({ registry: workspaceRegistry, root })
+  } catch (error) {
+    ctx.logger?.warn?.(`wheelchair-agent work gc: workspace prune failed: ${error?.message ?? error}`)
+  }
+  if (prune.error !== undefined) {
+    ctx.logger?.warn?.(`wheelchair-agent work gc: workspace prune skipped: ${prune.error}`)
+  }
+  for (const item of prune.pruned) {
+    ctx.logger?.info?.(`wheelchair-agent work gc: pruned workspace ${item.path}`)
+  }
   ctx.logger?.info?.(
-    `wheelchair-agent work gc: reclaimed ${result.reclaimed}, kept ${result.kept}, freed ${megabytes(result.freedBytes)} MB`,
+    `wheelchair-agent work gc: reclaimed ${result.reclaimed} clones, pruned ${prune.pruned.length} workspaces, ` +
+      `freed ${megabytes(result.freedBytes)} MB`,
   )
 }
 

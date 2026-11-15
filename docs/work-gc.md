@@ -62,11 +62,25 @@ copy-paste.
 
 The `spv` Source plugin entry (`src/superagent/watch.js`) calls the same `src/shared/work.js` implementation once,
 without awaiting it, so a slow disk or a failed gate can never delay or break the Source's own startup. It uses the
-same defaults and the same shared open-ticket resolver as the CLI, and logs one line:
+same defaults and the same shared open-ticket resolver as the CLI, prunes stale workspace records (below), and logs
+one summary line plus one line per pruned workspace path:
 
 ```
-wheelchair-agent work gc: reclaimed N, kept M, freed X MB
+wheelchair-agent work gc: reclaimed N clones, pruned M workspaces, freed X MB
+wheelchair-agent work gc: pruned workspace /home/.../work/<ticket>
 ```
+
+## Stale workspace rows
+
+dsh keeps a workspace record after its directory disappears, so the sidebar keeps rendering rows for reclaimed
+clones. The mount pass removes such records after the clone pass: a record is deleted only when its canonical path is
+a **child of the work root** and the directory is missing. Paths outside the work root (for example the operator's own
+`~/bioagentforge`) are never considered; only the registry row is removed, so session ids, session logs and the
+directories themselves are untouched, and dsh moves orphaned sessions to "Ungrouped" by itself. A missing, throwing or
+malformed registry leaves everything alone, and one failed delete does not stop the others.
+
+The CLI has no dsh context and therefore cannot prune workspace records. The stale rows go away at the next service
+start, or immediately through dsh's own "Delete workspace" (删除工作区) action.
 
 The root is `settings.executor.directory` from the running deployment. The CLI cannot read the panel settings, so set
 `DSH_SUPERAGENT_WORK_DIR` to that directory when it is not `<stateDir>/work`, and `DSH_SUPERAGENT_STATE_DIR` when the

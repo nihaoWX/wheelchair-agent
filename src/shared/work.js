@@ -135,6 +135,58 @@ export async function openTicketDirectories(provider) {
   return { ok: true, directories }
 }
 
+// ------------------------------------------------------------ workspaces
+
+/**
+ * Remove workspace records whose directory no longer exists.
+ *
+ * dsh never prunes a workspace record when its directory disappears, so the sidebar keeps showing rows for reclaimed
+ * clones. The registry is a dsh service only the mount hook can reach; the CLI has no registry. The guards are
+ * strict: the record's canonical path must be a child of the resolved work root, the directory must be gone, and
+ * nothing outside the work root is ever considered (the operator's own `~/bioagentforge` workspace must survive
+ * anything this code does). The call only removes the registry row; directories, session ids and session logs are
+ * untouched.
+ *
+ * Fail-soft: a missing, throwing, or malformed registry returns zero prunes and an optional reason; a failed delete
+ * for one record does not stop the others. This function never throws.
+ */
+export async function pruneStaleWorkspaces({ registry, root }) {
+  if (!registry || typeof registry.list !== 'function' || typeof registry.delete !== 'function') {
+    return { pruned: [], skipped: 'no workspace registry' }
+  }
+  let records
+  try {
+    records = registry.list()
+  } catch (error) {
+    return { pruned: [], error: `workspace registry list failed: ${error?.message ?? error}` }
+  }
+  if (!Array.isArray(records)) return { pruned: [], error: 'workspace registry list is not an array' }
+  const rootPath = await realpath(root).catch(() => resolve(root))
+  const pruned = []
+  for (const record of records) {
+    const id = record?.id
+    const path = record?.path
+    if (typeof id !== 'string' || id === '' || typeof path !== 'string' || path === '') continue
+    const target = resolve(path)
+    if (!target.startsWith(`${rootPath}${sep}`)) continue
+    try {
+      await stat(target)
+      continue
+    } catch (error) {
+      if (error.code !== 'ENOENT') continue
+    }
+    try {
+      const deleted = await registry.delete(id)
+      if (deleted !== false) {
+        pruned.push({ id, path: target, title: typeof record.title === 'string' ? record.title : '' })
+      }
+    } catch {
+      // One bad row must not stop the rest; the summary simply reports fewer prunes.
+    }
+  }
+  return { pruned }
+}
+
 // ------------------------------------------------------------------ the gate
 
 /** Environment for a child git that must inspect exactly the clone at `-C`, not the caller's repository. */
