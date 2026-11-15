@@ -66,6 +66,7 @@ SERVICE=$BIN_DIR/superagent-service
 JOBCTL=$BIN_DIR/jobctl
 TARGET_PLUGIN_URL="file://$PRESET_DIR/src/spv/tools.js"
 TARGET_CRON_URL="file://$PRESET_DIR/src/spv/cron-plugin.js"
+TARGET_RESTART_URL="file://$PRESET_DIR/src/spv/restart-command.js"
 PROFILE_DIR=$DSH_HOME_DIR/profiles/superagent
 WEBUI_TARGET=$PROFILE_DIR/node_modules/wheelchair-agent-webui
 SERVICE_PROFILE=${DSH_SUPERAGENT_PROFILE:-superagent}
@@ -208,9 +209,9 @@ render_into() {
     fix 'check that the temporary directory is writable, then rerun this script'
     return 1
   fi
-  if ! node "$SELF_DIR/build/render-preset.mjs" "$SELF_DIR/preset" "$TARGET_PLUGIN_URL" "$TARGET_CRON_URL" "$dest" >/dev/null; then
+  if ! node "$SELF_DIR/build/render-preset.mjs" "$SELF_DIR/preset" "$TARGET_PLUGIN_URL" "$TARGET_CRON_URL" "$dest" "$TARGET_RESTART_URL" >/dev/null; then
     fail 'could not render the preset (build/render-preset.mjs failed)'
-    fix "run: node $SELF_DIR/build/render-preset.mjs $SELF_DIR/preset $TARGET_PLUGIN_URL $TARGET_CRON_URL <dir>"
+    fix "run: node $SELF_DIR/build/render-preset.mjs $SELF_DIR/preset $TARGET_PLUGIN_URL $TARGET_CRON_URL <dir> $TARGET_RESTART_URL"
     return 1
   fi
   # Every copy reports its own failure: a missing source file must not leave a half-installed preset that
@@ -220,7 +221,7 @@ render_into() {
     fix "check that $SELF_DIR/bin/wheelchair-agent.mjs exists and is readable, then rerun this script"
     return 1
   fi
-  for file in shared/queue.js shared/schema.js shared/work.js spv/check.js spv/cron-plugin.js spv/cron.js spv/dispatch.js spv/health.js spv/inbox.js spv/injector.js spv/outbox.js spv/paths.js spv/tools.js; do
+  for file in shared/queue.js shared/schema.js shared/work.js spv/check.js spv/cron-plugin.js spv/cron.js spv/dispatch.js spv/health.js spv/inbox.js spv/injector.js spv/outbox.js spv/paths.js spv/restart-command.js spv/restart.js spv/tools.js; do
     if ! cp "$SELF_DIR/src/$file" "$dest/src/$file"; then
       fail "cannot copy src/$file from this checkout"
       fix "check that $SELF_DIR/src/$file exists and is readable, then rerun this script"
@@ -329,7 +330,7 @@ check_preset() {
   staged=$(mktemp -d) || { fail 'could not create a temporary directory'; return; }
   if ! render_into "$staged" >/dev/null 2>&1; then
     fail 'the preset sources cannot be rendered'
-    fix "run: node $SELF_DIR/build/render-preset.mjs $SELF_DIR/preset $TARGET_PLUGIN_URL $TARGET_CRON_URL $PRESET_DIR"
+    fix "run: node $SELF_DIR/build/render-preset.mjs $SELF_DIR/preset $TARGET_PLUGIN_URL $TARGET_CRON_URL $PRESET_DIR $TARGET_RESTART_URL"
     rm -rf "$staged"
     return
   fi
@@ -347,7 +348,7 @@ check_preset() {
     fix 'run: bash tools/wheelchair-agent/install.sh'
   fi
   actual=$(find "$PRESET_DIR" -type f | sed "s|^$PRESET_DIR/||" | sort | tr '\n' ' ')
-  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/queue.js src/shared/schema.js src/shared/work.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/dispatch.js src/spv/health.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/paths.js src/spv/tools.js "
+  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/queue.js src/shared/schema.js src/shared/work.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/dispatch.js src/spv/health.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/paths.js src/spv/restart-command.js src/spv/restart.js src/spv/tools.js "
   if [ "$actual" = "$expected" ]; then
     ok 'the installed preset holds only the whitelisted files'
   else

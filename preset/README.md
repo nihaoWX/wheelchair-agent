@@ -139,9 +139,21 @@ wheelchair-agent inbox add --title "决定" --body "正文 / @文件" [--thread 
 wheelchair-agent check          # 运行时健康：服务 / preset / 面板 prepare 值 / prepare dry run
 wheelchair-agent work gc --dry-run   # 回收可重建的 ticket 克隆；挂载时同一实现自动跑一次
 wheelchair-agent work restored <ticket>  # 从 work-reclaimed.jsonl 打印重建命令
+wheelchair-agent restart-all --dry-run   # 重启计划：服务 pid、SPV 链、checkout、日志与每一步命令
+wheelchair-agent restart-all             # 停服务 → 停 SPV 链 → 冷安装 → 起服务 → tmux 里重开 TUI
 ```
 
 `work gc` 的门禁与记录格式见 `docs/work-gc.md`。
+
+### 重启整套部署
+
+`/restart-wheelchair-agent` 是这条命令的会话内入口：它只做守卫检查、arm 一个 detached orchestrator，
+然后告诉你会话即将结束、TUI 会在 tmux session `dsh-spv` 里回来。真正的重启由
+`wheelchair-agent restart-all` 完成，顺序固定为 **服务停止 → SPV 链 SIGTERM/等待/SIGKILL →
+`install.sh` 冷安装 → 服务启动 → tmux 重开 TUI**；这个顺序是 `install.sh` 的冷安装守卫唯一接受的
+（服务或活着的 SPV 会话占用时它会拒绝，且半安装的服务比停着的服务更糟）。它只接受 `--force`：打断
+正在跑的 worker 与排队的 ticket（会先打印打断了什么）。每一步连同命令与退出码写进
+`<stateDir>/restart-all.log`。详见 `docs/restart.md`。
 
 ## 标准工具从哪来
 
