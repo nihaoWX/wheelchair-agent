@@ -166,4 +166,4 @@ worker 不会去开 PR。**但默认值仍是 PR**：任务没写清时，worker
 | 研究任务类 AGENTS.md 模板 | `docs/agentsmd-examples/research-task-agentsmd.md` |
 | prepare 命令本体 | `commands/prepare.sh` |
 | prepare 命令的可跑证据 | `tests/test-prepare.sh`（`sh tests/test-prepare.sh`，77 条断言） |
-| superagent 的交付契约与合并规则 | `tools/dsh-superagent/prompts/work.md`、`prompts/team/delivery.md` |
+| superagent 的交付契约与合并规则 | `~/opt/dsh-plugins/dsh-superagent/prompts/work.md`、`~/opt/dsh-plugins/dsh-superagent/prompts/team/delivery.md` |

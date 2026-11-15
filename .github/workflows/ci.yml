@@ -3,8 +3,8 @@
 # Every check here is the same command an operator runs by hand from a clean clone. The `check` script
 # only parses JS with `node --check`, and the two test scripts run against throwaway sandboxes (the
 # prepare test fakes `gh` and redirects github.com to local bare repositories), so none of them needs a
-# credential or reaches github.com. `npm ci` is neither needed nor possible: package.json's
-# devDependency is a machine-local `link:` path.
+# credential or reaches github.com. No install step is needed either: every check is self-contained, and
+# `dsh-superagent` is an optional peer supplied by the dsh profile, not a resolvable dependency of this repo.
 #
 # The job id is deliberately `ci`: it is the required status check context configured on `main`, so
 # renaming it silently un-gates auto-merge.

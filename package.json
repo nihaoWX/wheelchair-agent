@@ -36,8 +36,5 @@
     "dsh-superagent": {
       "optional": true
     }
-  },
-  "devDependencies": {
-    "dsh-superagent": "link:/home/nihao/bioagentforge/tools/dsh-superagent"
   }
 }

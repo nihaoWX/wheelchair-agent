@@ -16,7 +16,7 @@ R2 的结论是「配置层消不掉这个单值，方向定为给 worker 一份
 族4 已定方向的材料还在（R2-F1）：`docs/delivery-target.md` 记着方向，两份模板都在，研究任务模板的
     `GIT` 一节明写 local-only。
 
-族1 / 族2 / 族3 要读本机上的兄弟目录（`bioagentforge` 根、`tools/dsh-superagent`），工单目录是
+族1 / 族2 / 族3 要读本机上的兄弟目录（`bioagentforge` 根、上游 `~/opt/dsh-plugins/dsh-superagent`），工单目录是
 wheelchair-agent 的 clone、旁边没有它们 ⇒ 那时打 SKIP 并给原因，不当成功也不当失败。
 
 契约：tools/pitfalls-manager/references/02_consume.md §4.3 —— 无参、退出码即结论、每族一行、
@@ -64,8 +64,8 @@ def bioagentforge_root():
 
 
 def superagent_source():
-    """兄弟项目 `tools/dsh-superagent` 的源码树；工单 clone 里退到 superagent profile 的 link。"""
-    for cand in (REPO.parent / "dsh-superagent",
+    """上游规范开发树 `~/opt/dsh-plugins/dsh-superagent`；工单 clone 里没有它，退到 superagent profile 的 link。"""
+    for cand in (Path.home() / "opt" / "dsh-plugins" / "dsh-superagent",
                  Path.home() / ".dsh" / "profiles" / "superagent" / "node_modules" / "dsh-superagent"):
         if (cand / "src" / "deployment.ts").is_file():
             return cand
@@ -126,7 +126,8 @@ def family1():
 def family2():
     src = superagent_source()
     if src is None:
-        return "SKIP", ("找不到兄弟项目 tools/dsh-superagent 的源码（工单 clone 里没有它）；"
+        return "SKIP", ("找不到上游 dsh-superagent 的源码（工单 clone 里既没有 "
+                        "~/opt/dsh-plugins/dsh-superagent，也没有 superagent profile 的 link）；"
                         "两条绕行路无从断言，不等于它们通了")
     deployment = (src / "src" / "deployment.ts").read_text(encoding="utf-8", errors="replace")
     commands = (src / "src" / "infra" / "commands.ts").read_text(encoding="utf-8", errors="replace")
@@ -150,7 +151,8 @@ def family3():
         return "SKIP", "node 不在 PATH 上（这条断言要调 environmentLines()）"
     src = superagent_source()
     if src is None:
-        return "SKIP", ("找不到兄弟项目 tools/dsh-superagent 的源码（工单 clone 里没有它）；"
+        return "SKIP", ("找不到上游 dsh-superagent 的源码（工单 clone 里既没有 "
+                        "~/opt/dsh-plugins/dsh-superagent，也没有 superagent profile 的 link）；"
                         "同名变量的渲染规则无从断言")
     module = src / "src" / "app" / "execution-environment.ts"
     need(module.is_file(), f"src/app/execution-environment.ts 不存在：{module}")

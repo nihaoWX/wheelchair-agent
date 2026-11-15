@@ -64,8 +64,12 @@ export function serviceDown(result) {
   return new Error(
     `the superagent service is not running (${result.reason}), so nothing would read the task you are about to ` +
       'dispatch. Its spv queue directory survives a stop, which is why this is checked against the health ' +
-      `endpoint and not against the directory. Start it with "wheelchair-agent service start" (or ` +
-      `"python3 <bioagentforge>/tools/dsh-superagent/scripts/dsh-superagent start"), wait until ` +
-      `"wheelchair-agent service status" reports runtime ready at ${where}, then dispatch again.`,
+      `endpoint and not against the directory. Start it with "wheelchair-agent service start", run ` +
+      `"wheelchair-agent service status" until it reports runtime ready at ${where}, then dispatch again. ` +
+      'This repo wraps the upstream launcher at `~/opt/dsh-plugins/dsh-superagent/scripts/dsh-superagent`: ' +
+      'upstream process detection uses `ps -o ucomm=`, which reports `MainThread` instead of `node` for a ' +
+      'Node process on WSL2, so it sees no process and `restart` refuses while claiming the service already ' +
+      'answers. `commands/superagent-service.py` keeps the upstream semantics (same exit codes, same tmux ' +
+      'session, graceful SIGINT) but finds the process through the listening socket and `/proc/<pid>/cmdline`.',
   )
 }

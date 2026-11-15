@@ -4,7 +4,7 @@
 它不依赖 GitHub/飞书，是"入口会话"派活与收结果的唯一通道。
 
 - 插件包：`tools/wheelchair-agent/`（独立 git 仓库，纯 ESM JavaScript，无构建步骤）
-- 上游：`tools/dsh-superagent/`（**只作为 peer 依赖，未改一行源码**）
+- 上游：`~/opt/dsh-plugins/dsh-superagent/`（规范开发树；**只作为 peer 依赖，一个字节的源码都没改**）
 - profile 加载点：`~/.dsh/profiles/superagent/cordis.patch.yml`
 
 ## 1. 为什么是 Source 而不是改核心
@@ -13,7 +13,7 @@
 策略允许谁、环境变量是什么"，插件入口再用 `ctx.effect` 注册 kind 并跑自己的轮询循环。核心（`src/core`）不认识 `spv`，
 它只看到一个普通 Source。
 
-关键约束：**`tools/dsh-superagent/src/` 一个字节都不能改**。所以：
+关键约束：**`~/opt/dsh-plugins/dsh-superagent/src/` 一个字节都不能改**。所以：
 
 - 需要的 helper（`health`、`key`、`threadKey`）在 `src/superagent/spv.js` 里重写了等价的小函数。
 - `SourceContext` 用 `ctx.orchestrator.context(kind)` 拿，不导入 `sourceContext`（`lib/` 没导出它）。
@@ -98,7 +98,7 @@ worker preset）。`triggerOf()` 把除 `text` / `thread` / `actor` 之外的字
 插件入口是 `src/superagent/watch.js`，Source kind 在 `src/superagent/spv.js`，队列在 `src/shared/`。
 第一版把入口放在包根、源码放在 `src/`，写成 `from './spv.js'`，服务日志里 `ERR_MODULE_NOT_FOUND` 直接让
 entry 不激活（`dsh: warning: 1 entry did not activate`）——但进程照样起来，health 里只是**没有** `spv` 条目。
-排查方式：`health` 列表缺条目就去 `tools/dsh-superagent/.artifacts/*.log` 找。
+排查方式：`health` 列表缺条目就去 `~/opt/dsh-plugins/dsh-superagent/.artifacts/*.log` 找。
 
 `package.json` 的 exports 键（`./spv-watch` 等）是公开 API，`~/.dsh/profiles/superagent/cordis.patch.yml`
 用 bare specifier 引用它们；键名不能改，只能改它指向的文件。
