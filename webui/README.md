@@ -205,16 +205,21 @@ One JSON file at `<stateDir>/panel-settings.json`:
 ```json
 {
   "version": 1,
-  "revision": 0,
+  "revision": 3,
   "values": { "inbox.intervalSeconds": 30 },
   "templates": {
     "injection": {
-      "active": "default",
-      "presets": { "default": { "text": "...", "builtin": true } }
+      "active": "terse",
+      "presets": { "terse": { "text": "[spv] {kind} {thread}: {body}", "builtin": false } }
     }
   }
 }
 ```
+
+Only **custom** presets are written. The built-in `default` text always comes from
+`src/shared/settings.js`, so a template that is still on `default` (with no custom presets) is omitted
+from the file, and a stored `default` entry from an older version is advisory and ignored: it never
+changes the built-in text and never produces a warning.
 
 `stateDir` is `$DSH_SUPERAGENT_STATE_DIR`, else `~/.dsh/state/superagent` (the same rule as
 `src/spv/paths.js`). `values` holds only explicit overrides, so changing a built-in default is not
