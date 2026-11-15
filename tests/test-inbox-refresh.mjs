@@ -120,6 +120,9 @@ async function sandbox() {
   process.env.FAKE_GIT_LOG = box.gitLog
   process.env.REAL_GIT = REAL_GIT
   process.env.SPV_QUEUE_DIR = box.queue
+  // The panel settings store also lives under the deployment state dir: keep it inside the sandbox, so a
+  // real `~/.dsh/state/superagent/panel-settings.json` can never change what these cases assert.
+  process.env.DSH_SUPERAGENT_STATE_DIR = join(base, 'state')
   delete process.env.SPV_INSTALL_REPO
   delete process.env.FAKE_GH_FAIL_REPO
   return box
@@ -572,6 +575,7 @@ async function testHostStartsPoller() {
     ['src/spv/dispatch.js', 'lib/core/dispatch.js'],
     ['src/spv/paths.js', 'lib/core/paths.js'],
     ['src/shared/queue.js', 'lib/shared/queue.js'],
+    ['src/shared/settings.js', 'lib/shared/settings.js'],
     ['webui/lib/index.js', 'lib/index.js'],
   ]) {
     await copyFile(join(REPO, source), join(app, target))
@@ -628,7 +632,11 @@ async function testHostStartsPoller() {
 /** (f) Interval configuration: default 60, env/argument override, 0 disables, bad values throw. *//** (f) Interval configuration: default 60, env/argument override, 0 disables, bad values throw. */
 function testIntervalConfig() {
   const saved = process.env.SPV_INBOX_INTERVAL_SECONDS
+  const savedStateDir = process.env.DSH_SUPERAGENT_STATE_DIR
   delete process.env.SPV_INBOX_INTERVAL_SECONDS
+  // A sandbox state dir proves the assertion holds when no panel settings file exists (and keeps a real
+  // one on the operator's machine out of the test).
+  process.env.DSH_SUPERAGENT_STATE_DIR = join(tmpdir(), `wheelchair-agent-inbox-interval-${process.pid}`)
   try {
     assert.equal(INBOX_INTERVAL_DEFAULT, 60)
     assert.equal(resolveInboxIntervalSeconds(), 60)
@@ -641,6 +649,8 @@ function testIntervalConfig() {
   } finally {
     if (saved === undefined) delete process.env.SPV_INBOX_INTERVAL_SECONDS
     else process.env.SPV_INBOX_INTERVAL_SECONDS = saved
+    if (savedStateDir === undefined) delete process.env.DSH_SUPERAGENT_STATE_DIR
+    else process.env.DSH_SUPERAGENT_STATE_DIR = savedStateDir
   }
 }
 

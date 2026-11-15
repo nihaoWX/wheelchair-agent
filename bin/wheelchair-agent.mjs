@@ -134,8 +134,9 @@ keeps everything. --keep and --keep-days are optional guards, not the safety mec
 
 options:
   --dry-run          print every directory and the reason it is kept; delete nothing
-  --keep <n>         never delete the newest n passing directories (default 0; opt-in floor)
-  --keep-days <d>    keep passing directories modified less than d days ago (default 0)
+  --keep <n>         never delete the newest n passing directories (default: settings work.keep, built-in 0)
+  --keep-days <d>    keep passing directories modified less than d days ago (default: settings
+                     work.keepDays, built-in 0)
 
 environment:
   DSH_SUPERAGENT_STATE_DIR  deployment state dir (default ~/.dsh/state/superagent)
@@ -530,8 +531,20 @@ async function commandWorkGc(argv) {
     parsed[name] = Number(value)
     index += 1
   }
-  const { KEEP_DEFAULT, formatBytes, openTicketDirectories, reclaimWork, resolveWorkRoot } =
+  const { KEEP_DEFAULT, KEEP_DAYS_DEFAULT, formatBytes, openTicketDirectories, reclaimWork, resolveWorkRoot } =
     await load('src', 'shared', 'work.js')
+  // 面板设置的 `work.keep` / `work.keepDays` 是 `work gc` 的默认保留策略；显式 `--keep` / `--keep-days` 仍然优先。
+  // 坏文件/读设置失败退回今天的默认（都是 0），**绝不**让 `work gc` 因为设置而失败。
+  let settingsKeep = KEEP_DEFAULT
+  let settingsKeepDays = KEEP_DAYS_DEFAULT
+  try {
+    const { resolveSettings } = await load('src', 'shared', 'settings.js')
+    const effective = resolveSettings({ stateDir: STATE_DIR }).effective
+    settingsKeep = effective['work.keep']
+    settingsKeepDays = effective['work.keepDays']
+  } catch {
+    // The built-in defaults are exactly today's behaviour; the CLI must keep working without settings.
+  }
   const { fetchOpenTickets } = await load('src', 'spv', 'health.js')
   const open = await openTicketDirectories(() => fetchOpenTickets())
   let skipDirectories = new Map()
@@ -550,8 +563,8 @@ async function commandWorkGc(argv) {
   const summary = await reclaimWork({
     root,
     stateDir: STATE_DIR,
-    keep: parsed.keep ?? KEEP_DEFAULT,
-    ...(parsed.keepDays === undefined ? {} : { keepDays: parsed.keepDays }),
+    keep: parsed.keep ?? settingsKeep,
+    keepDays: parsed.keepDays ?? settingsKeepDays,
     dryRun: parsed.dryRun,
     skipDirectories,
     blockedReason,

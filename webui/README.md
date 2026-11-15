@@ -118,14 +118,18 @@ It calls `startInboxWatcher()` from `lib/core/inbox.js` — the same implementat
 next ones follow a timer, so the inbox data is current while SPV runs unattended and nobody has to
 type the CLI command.
 
-The interval is **60 seconds by default**, matching the CLI. Configure it in either place:
+The interval is **60 seconds by default**, matching the CLI. Configure it in any of these places, in
+increasing precedence:
 
-- the webui plugin's config: `intervalSeconds: <seconds>`; or
-- `SPV_INBOX_INTERVAL_SECONDS=<seconds>` in the service's environment.
+- `SPV_INBOX_INTERVAL_SECONDS=<seconds>` in the service's environment;
+- the webui plugin's config: `intervalSeconds: <seconds>`;
+- `inbox.intervalSeconds` in the panel settings file (`<stateDir>/panel-settings.json`, editable
+  from the Settings section), which wins over both.
 
-`0` disables the automatic poller (the CLI still works). A non-numeric or negative value is logged
-and falls back to 60s rather than failing the panel. One failing repository or one `gh` error is
-logged as a warning and the next round still runs.
+`0` disables the automatic poller (the CLI still works). The poller re-reads the settings file before every
+schedule, so changing the interval applies without a restart; a paused poller re-checks every second and
+resumes by itself. A non-numeric or negative value is logged and falls back to 60s rather than failing the
+panel. One failing repository or one `gh` error is logged as a warning and the next round still runs.
 
 ### Merged PRs, pulls and the cold-install notice
 
@@ -169,18 +173,19 @@ Block nesting is capped so a hostile body cannot exhaust the stack.
 
 ## Self-contained installed package
 
-`install.sh` copies this package into the profile's `node_modules` **and** copies the four core
+`install.sh` copies this package into the profile's `node_modules` **and** copies the five core
 files it imports from the checkout:
 
 ```
-src/spv/inbox.js     -> lib/core/inbox.js
-src/spv/dispatch.js  -> lib/core/dispatch.js
-src/spv/paths.js     -> lib/core/paths.js
-src/shared/queue.js  -> lib/shared/queue.js
+src/spv/inbox.js       -> lib/core/inbox.js
+src/spv/dispatch.js    -> lib/core/dispatch.js
+src/spv/paths.js       -> lib/core/paths.js
+src/shared/queue.js    -> lib/shared/queue.js
+src/shared/settings.js -> lib/shared/settings.js
 ```
 
 The relative imports line up (`inbox.js` imports `./dispatch.js`, `./paths.js`,
-`../shared/queue.js`), so the installed package is self-contained: replacing
+`../shared/queue.js`, `../shared/settings.js`), so the installed package is self-contained: replacing
 `~/.dsh/.agent-presets/spv/` (for example, another worktree running its own `install.sh`) can no
 longer break the plugin's import, and the next service restart keeps working.
 

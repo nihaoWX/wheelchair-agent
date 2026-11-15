@@ -28,6 +28,7 @@ import { promisify } from 'node:util'
 import { checkProject, checkTask, checkThread, submitTask } from './dispatch.js'
 import { DEFAULT_STATE_DIR, resolveRoot } from './paths.js'
 import { dirsOf, writeMessage } from '../shared/queue.js'
+import { defaultSettings, renderTemplate, resolveSettings } from '../shared/settings.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -304,44 +305,47 @@ function repoName(repo) {
  * 一条「有问题」评论变成的任务正文：repo、PR 号、标题、URL、kind、评论原文，最后**恰好一句**指令。
  *
  * 正文把事实全带上，worker 不需要回读收件箱；最后一句是唯一的行为约束，所以它必须只有一句。
+ * 文本来自面板设置的 `prIssue` 模板；不传 `settings` 时用内置默认，输出与改造前逐字节一致。
  * 「通过」（approve）不派任务，因此不经过这个函数。
  */
-function taskText(item, comment) {
-  return [
-    '审查收件箱转来一条 GitHub PR 评论，请处理。',
-    '',
-    `repo: ${item.repo}`,
-    `PR: #${item.pr}`,
-    `title: ${item.title ?? ''}`,
-    `url: ${item.url ?? ''}`,
-    'kind: issue',
-    '',
-    '评论原文（原样保留）：',
+function taskText(item, comment, settings) {
+  const snapshot = settings ?? defaultSettings()
+  return renderTemplate('prIssue', snapshot.templates.prIssue.text, {
+    repo: item.repo,
+    pr: item.pr,
+    title: item.title ?? '',
+    url: item.url ?? '',
     comment,
-    '',
-    '操作者认为这个 PR 有问题，请按评论处理。',
-  ].join('\n')
+  })
 }
 
 /**
  * 一条对 SPV 决策信的质疑：写进 outbox 的 `notice` 正文。
  *
  * 它必须让 SPV 知道被质疑的是**哪一封**信（标题 + id + thread），并原样保留操作者的评论；
- * 最后一句只说清楚要它回顾这次决定。这里不派任务，所以没有 `project`。
+ * 最后一句只说清楚要它回顾这次决定。这里不派任务，所以没有 `project`。文本来自 `spvObjection` 模板，
+ * 未传 `settings` 时与改造前逐字节一致。
  */
-function noticeText(item, comment) {
-  return [
-    '审查收件箱转来一次对 SPV 自主决定的质疑，请处理。',
-    '',
-    `信件：${item.title ?? ''}`,
-    `信件 id: ${item.id}`,
-    `thread: ${item.thread || 'main'}`,
-    '',
-    '操作者评论（原样保留）：',
+function noticeText(item, comment, settings) {
+  const snapshot = settings ?? defaultSettings()
+  return renderTemplate('spvObjection', snapshot.templates.spvObjection.text, {
+    title: item.title ?? '',
+    id: item.id,
+    thread: item.thread || 'main',
     comment,
-    '',
-    '这是对你在无人看管时自己作出的决定的质疑；请回顾当时的判断并处理。',
-  ].join('\n')
+  })
+}
+
+/**
+ * 读一次面板设置。`resolveSettings` 按设计不因坏文件抛错，这里的 catch 只防「读盘本身出了意外」
+ * （权限、路径已不是目录等）：评审仍然要能落盘，不能因为一个坏设置文件把收件箱拖死。
+ */
+function readPanelSettings() {
+  try {
+    return resolveSettings()
+  } catch {
+    return defaultSettings()
+  }
 }
 
 /**
@@ -373,6 +377,8 @@ export async function appendReview(root, { id, kind, text } = {}) {
   if (comment.length > REVIEW_LIMIT) {
     throw invalid(`text is ${comment.length} characters, over the ${REVIEW_LIMIT} limit.`)
   }
+  // 一次调用只解析一次设置：同一份评论派生出的通知/任务正文用同一版模板，坏文件也只影响这一次读取。
+  const settings = readPanelSettings()
 
   return withItemLock(root, itemId, async () => {
     const item = await readItem(root, itemId)
@@ -400,7 +406,7 @@ export async function appendReview(root, { id, kind, text } = {}) {
       }
       // review index 在追加前确定，所以通知 id 对同一封信的同一轮质疑是稳定的。
       const messageId = `inbox-${itemId}-review-${review.length}`
-      const notice = noticeText(item, comment)
+      const notice = noticeText(item, comment, settings)
       item.review = [...review, { at: new Date().toISOString(), kind: 'issue', text: comment }]
       await writeItem(root, item)
 
@@ -446,7 +452,7 @@ export async function appendReview(root, { id, kind, text } = {}) {
     try {
       project = checkProject(`tools/${repoName(item.repo)}`)
       thread = checkThread(`inbox-${item.pr}`)
-      task = checkTask(taskText(item, comment))
+      task = checkTask(taskText(item, comment, settings))
     } catch (error) {
       throw invalid(
         `inbox item ${JSON.stringify(itemId)} cannot be dispatched: ${messageOf(error)} ` +
@@ -584,12 +590,15 @@ function commandFailure(error) {
 /**
  * Is this local clone the checkout whose files `install.sh` installs?
  *
- * `SPV_INSTALL_REPO` accepts either the directory name (`wheelchair-agent`) or `owner/name`; the latter
- * is what a person naturally copies from the notice, so accepting only the basename would silently
- * disable the cold-install notice.
+ * The panel settings file (`merge.installRepo`) wins over `SPV_INSTALL_REPO`; both accept either the
+ * directory name (`wheelchair-agent`) or `owner/name` — the latter is what a person naturally copies from
+ * the notice, so accepting only the basename would silently disable the cold-install notice.
  */
-function isInstallTargetRepo(name, repo) {
-  const configured = String(process.env.SPV_INSTALL_REPO ?? '').trim()
+function isInstallTargetRepo(name, repo, settings) {
+  const snapshot = settings ?? readPanelSettings()
+  const configured =
+    String(snapshot?.effective?.['merge.installRepo'] ?? '').trim() ||
+    String(process.env.SPV_INSTALL_REPO ?? '').trim()
   const expected = configured || INSTALL_REPO_DEFAULT
   const expectedName = repoName(expected)
   return name === expected || name === expectedName || repo === expected || repoName(repo) === expectedName
@@ -620,7 +629,7 @@ function mergeNoticeText({ item, repo, localPath, pulledSha }) {
  * `mergeHandledAt` and does neither the pull nor the notice again. The notice id is derived from the item
  * id, so even a retry after a partial write overwrites one outbox file rather than stacking notices.
  */
-async function handleMergedPull({ item, repo, name, localPath, existing, observedAt, log = () => {} }) {
+async function handleMergedPull({ item, repo, name, localPath, existing, observedAt, settings, log = () => {} }) {
   const at = new Date().toISOString()
   const mergeObservedAt = existing?.mergeObservedAt || observedAt
   let pulledSha = existing?.pulledSha
@@ -658,7 +667,7 @@ async function handleMergedPull({ item, repo, name, localPath, existing, observe
 
   let noticeAt = existing?.noticeAt
   let noticeError
-  if (isInstallTargetRepo(name, repo) && !noticeAt) {
+  if (isInstallTargetRepo(name, repo, settings) && !noticeAt) {
     try {
       await writeMessage(dirsOf(resolveRoot()), {
         id: `inbox-merge-${item.id}`,
@@ -692,13 +701,8 @@ async function handleMergedPull({ item, repo, name, localPath, existing, observe
   }
 }
 
-/** Parse the interval in seconds; empty means the default, `0` disables the host-side poller. */
-export function resolveInboxIntervalSeconds(configured) {
-  const raw =
-    configured === undefined || configured === null || String(configured).trim() === ''
-      ? process.env.SPV_INBOX_INTERVAL_SECONDS
-      : configured
-  if (raw === undefined || raw === null || String(raw).trim() === '') return INBOX_INTERVAL_DEFAULT
+/** 校验一个「秒」间隔，沿用改造前的错误文案（configured 非法要大声报错，host 会 catch 并告警）。 */
+function checkIntervalSeconds(raw) {
   const value = Number(raw)
   if (!Number.isFinite(value) || value < 0) {
     throw new Error(
@@ -716,31 +720,69 @@ export function resolveInboxIntervalSeconds(configured) {
 }
 
 /**
+ * 有效收件箱间隔（秒）：设置文件 > 插件 config（这里的 `configured`）> 环境变量 > 60。每次调用都重读文件。
+ *
+ * - `0` 表示关闭自动轮询（CLI 的 `inbox watch` 仍然可用）；
+ * - **显式传入的 `configured` 非法时仍然抛错**，这是改造前的契约（host 半身 catch 后回退到 60 并告警）；
+ *   环境变量非法同样抛错，避免「写错一个 env 却看起来生效了」；
+ * - 设置文件里的坏值由 `resolveSettings` 自己忽略并告警，不会抛。
+ *
+ * `stateDir` 省略时用 `$DSH_SUPERAGENT_STATE_DIR` / `~/.dsh/state/superagent`（与 `paths.js` 同一条规则）。
+ */
+export function resolveInboxIntervalSeconds(configured, { stateDir, env = process.env } = {}) {
+  const hasConfigured = !(configured === undefined || configured === null || String(configured).trim() === '')
+  const config = {}
+  if (hasConfigured) {
+    config['inbox.intervalSeconds'] = checkIntervalSeconds(configured)
+  } else {
+    // 保留旧行为：没有显式值时，坏的环境变量也要报错，而不是静默回退。
+    const fromEnv = env?.SPV_INBOX_INTERVAL_SECONDS
+    if (fromEnv !== undefined && fromEnv !== null && String(fromEnv).trim() !== '') {
+      checkIntervalSeconds(fromEnv)
+    }
+  }
+  const settings = resolveSettings({ stateDir, env, config })
+  return settings.effective['inbox.intervalSeconds']
+}
+
+/**
  * Start the inbox poll loop and return a stop function plus a `done` promise.
  *
  * This is the one loop shared by the web host half and `wheelchair-agent inbox watch`: the first poll runs
  * immediately, then one `setTimeout` chain; a failed round is logged and the next one still runs. `unref`
  * lets the web plugin's timer stop holding a process open, while the CLI keeps the default (referenced)
  * timer. The host calls `stop()` from `ctx.effect`, so the poller dies with the plugin.
+ *
+ * `intervalSecondsOf` is the live-interval seam: when present it is called **before every schedule**, so a
+ * settings change applies without a restart. It may return `0` to pause; a paused poller runs no `gh` call
+ * and re-checks after ~1s, so enabling it again also needs no restart. Without the seam the old fixed
+ * `intervalSeconds` contract holds (positive number, invalid values throw).
  */
 export function startInboxWatcher({
   root = resolveInboxRoot(),
   projectsRoot = defaultProjectsRoot(),
   intervalSeconds = INBOX_INTERVAL_DEFAULT,
+  intervalSecondsOf,
   gh,
   log = () => {},
   unref = false,
   once = false,
 } = {}) {
-  const seconds = Number(intervalSeconds)
-  if (!Number.isFinite(seconds) || seconds <= 0) {
-    throw new Error(`intervalSeconds must be a positive number, got ${JSON.stringify(intervalSeconds)}.`)
+  const dynamic = intervalSecondsOf !== undefined
+  if (dynamic && typeof intervalSecondsOf !== 'function') {
+    throw new Error('intervalSecondsOf must be a function returning the interval in seconds.')
   }
-  if (seconds * 1000 > MAX_TIMER_MS) {
-    throw new Error(
-      `intervalSeconds is ${intervalSeconds}, over setTimeout's ${Math.floor(MAX_TIMER_MS / 1000)}s limit ` +
-        '(larger values overflow into a ~1ms loop). Use a shorter interval.',
-    )
+  const seconds = Number(intervalSeconds)
+  if (!dynamic) {
+    if (!Number.isFinite(seconds) || seconds <= 0) {
+      throw new Error(`intervalSeconds must be a positive number, got ${JSON.stringify(intervalSeconds)}.`)
+    }
+    if (seconds * 1000 > MAX_TIMER_MS) {
+      throw new Error(
+        `intervalSeconds is ${intervalSeconds}, over setTimeout's ${Math.floor(MAX_TIMER_MS / 1000)}s limit ` +
+          '(larger values overflow into a ~1ms loop). Use a shorter interval.',
+      )
+    }
   }
   const warn = message => {
     try {
@@ -748,6 +790,23 @@ export function startInboxWatcher({
     } catch {
       // A logging sink must never take the poll loop down.
     }
+  }
+  /** 下一次调度：`{ delay, paused }`。动态间隔在这里重新解析，坏值回退到 60s 而不是停掉轮询。 */
+  const plan = () => {
+    if (!dynamic) return { delay: seconds * 1000, paused: false }
+    let value
+    try {
+      value = Number(intervalSecondsOf())
+    } catch (error) {
+      warn(`warning: could not read the inbox interval: ${messageOf(error)}; using ${INBOX_INTERVAL_DEFAULT}s`)
+      value = INBOX_INTERVAL_DEFAULT
+    }
+    if (!Number.isFinite(value) || value < 0 || value * 1000 > MAX_TIMER_MS) {
+      warn(`warning: invalid inbox interval ${JSON.stringify(value)}; using ${INBOX_INTERVAL_DEFAULT}s`)
+      value = INBOX_INTERVAL_DEFAULT
+    }
+    // 0 是「暂停」：不跑 gh，但 ~1s 后回来看一次，重新启用同样不需要重启。
+    return value === 0 ? { delay: 1000, paused: true } : { delay: value * 1000, paused: false }
   }
   let stopped = false
   let timer
@@ -765,12 +824,14 @@ export function startInboxWatcher({
       wake()
       return
     }
-    await poll()
+    const { delay, paused } = plan()
+    // 暂停的轮询器一个 gh 都不跑；`once` 是 CLI 的显式单轮请求，仍然照跑。
+    if (!paused || once) await poll()
     if (stopped || once) {
       wake()
       return
     }
-    timer = setTimeout(() => { void tick() }, seconds * 1000)
+    timer = setTimeout(() => { void tick() }, delay)
     if (unref) timer.unref?.()
   }
   void tick()
@@ -793,6 +854,8 @@ export function startInboxWatcher({
  */
 export async function pollOnce({ root = resolveInboxRoot(), projectsRoot = defaultProjectsRoot(), gh, log = () => {} } = {}) {
   const binary = String(gh ?? '').trim() || String(process.env.SPV_GH ?? '').trim() || 'gh'
+  // 每轮读一次：面板把 `merge.installRepo` 改掉后，下一次轮询就用新值，不需要重启服务。
+  const settings = readPanelSettings()
   const counts = { created: 0, updated: 0, failed: 0, merged: 0 }
   for (const { name, repo } of discoverRepos(projectsRoot)) {
     let pullRequests
@@ -845,6 +908,7 @@ export async function pollOnce({ root = resolveInboxRoot(), projectsRoot = defau
               localPath,
               existing,
               observedAt: new Date().toISOString(),
+              settings,
               log,
             })
             Object.assign(next, merge)

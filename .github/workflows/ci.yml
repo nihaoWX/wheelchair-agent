@@ -33,6 +33,9 @@ jobs:
       - name: Syntax-check every JS file
         run: npm run check
 
+      - name: Panel settings store and backend consumers
+        run: node tests/test-settings.mjs
+
       - name: SPV result injector header
         run: node tests/test-injector.mjs
 
