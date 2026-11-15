@@ -115,8 +115,8 @@ Client bundle 由 `dsh-client-hmr` 热更新，不需要为改页面重启服务
 
 # In Progress
 
-- **UI 主页改为原生 React 页面**（分支 `agent/webui-native`，PR 待创建）：实现、安装与面板实测完成，
-  见 `ARCHITECTURE/decisions.md` 的「UI 主页改为原生 React 页面」。
+- **UI 主页改为原生 React 页面**（PR #10，分支 `agent/webui-native`）：实现、安装、浏览器实测与 CI 完成，
+  等人工评审/合并。见 `ARCHITECTURE/decisions.md` 的「UI 主页改为原生 React 页面」。
 - **SPV preset 纯增量**（PR #9，分支 `agent/spv-standard-tools`）：实现、安装与全套验证完成，CI 已过，
   等合并。见 `ARCHITECTURE/decisions.md` 的「SPV preset：普通 dsh 会话 + `spv_*`」。
 
