@@ -16,9 +16,13 @@ SPV 侧不 import superagent 的任何代码。两侧唯一的接口是队列里
 
 ## 装
 
+`install.sh` **只做冷安装**：它要写 preset 目录、`~/.local/bin` 与 superagent profile 的 `node_modules`，
+而 superagent 服务或一个活着的 SPV 会话可能正持有这些文件。占用时它会拒绝，不会写一半（见下面的
+「冷安装：占用时拒绝」）。
+
 ```sh
-bash tools/wheelchair-agent/install.sh          # 装 preset、CLI 与兼容命令
-bash tools/wheelchair-agent/install.sh --check  # 只读自检，任一不满足 exit 2
+bash tools/wheelchair-agent/install.sh          # 冷安装 preset、CLI 与兼容命令
+bash tools/wheelchair-agent/install.sh --check  # 只读自检，任一不满足 exit 2；运行时也允许
 ```
 
 装这些东西：
@@ -29,6 +33,29 @@ bash tools/wheelchair-agent/install.sh --check  # 只读自检，任一不满足
    自己的 `node_modules` 软链加载它）。
 2. `~/.local/bin/wheelchair-agent` —— 唯一入口（薄壳，把 preset 目录烧进去后 `exec node <preset>/cli.js`）
 3. `~/.local/bin/{spv,superagent-service,jobctl}` —— 兼容名，每个都是 `exec wheelchair-agent <子命令> "$@"`
+
+### 冷安装：占用时拒绝
+
+安装前先探测两类运行时占用，复用 `commands/superagent-service.py probe` 而不是另写一份进程查找：
+
+- **superagent 服务**：监听端口（`ss -lptnH 'sport = :<port>'`）+ `/proc/*/cmdline` 里的 `--profile superagent`；
+- **活着的 SPV 会话**：`/proc/*/cmdline` 里带 `--patch <preset>/preset-default.patch.yml`。它只认安装器
+  启动器起出来的会话（或 dsh/dsh-tui 带同一个 `--patch` 的进程）；用 `/preset` 在无 `--patch` 的会话里切过来、
+  或换了 `DSH_HOME` 的会话认不出——宁愿漏报也不凭猜测拒绝。
+
+占用时：
+
+- **不写任何安装目标**（preset 目录、`~/.local/bin`、profile 的 `node_modules` 都不创建、不替换）；
+- 打印占用者（服务 pid/端口、SPV 会话 pid）以及停止 / 安装 / 重启的**可照抄命令**；
+- 退出码 **3**（`1` 是安装失败，`2` 是 `--check` 失败）；
+- 往 SPV 的 `outbox/` 写**一条** `kind: "notice"`（id 固定，重跑同一次拒绝不会叠第二条），让 SPV 会话知道
+  需要冷安装、被什么挡住、下一步跑什么。队列目录不存在（服务从没跑过）时跳过通知、只打印一行，退出码仍是 3。
+
+所以改 preset / CLI 的流程变成：**先停服务、退出 SPV 会话，再 `install.sh`，最后重新启动**。服务运行时硬装一个
+半新不旧的 CLI 比拒绝更糟：2026-11-15 服务在跑时 `install.sh` 报 “up to date”，但装着的
+`~/.dsh/.agent-presets/spv/cli.js` 是旧的 14943 字节、没有 `inbox` 子命令，第二次运行才修好。
+
+`--check` 始终只读、始终允许；它把占用者作为 `note:` 报出，不拒绝，也不创建任何东西。
 
 装完会打印面板要用的 prepare 命令：
 
@@ -44,7 +71,8 @@ superagent 的 sqlite 里，`install.sh` 管不到它，绝对路径会在换 `D
 `origin` 指过去；`research/` 永不配远端。行为与约束见 `docs/delivery-target.md`，可跑证据是
 `tests/test-prepare.sh`。
 
-前置：`dsh-tui` 在 `PATH` 上、`node` >= 22。缺了 `install.sh` 会 FAIL 并给获取方式。
+前置：`dsh-tui` 在 `PATH` 上、`node` >= 22、`python3`（服务管理与冷安装探测）。缺了 `install.sh` 会 FAIL
+并给获取方式。
 
 ## 起
 
@@ -137,4 +165,5 @@ preset mount 失败，而失败只表现为 "never started"。
 `@deepseek-ai/cordis-plugin-include` 指过去 —— 在本机测过的 dsh 0.2.1-rc.3 + dsh-tui 0.19.0 上，
 preset 声明里的 include 行不挂载子行，也不报错。
 
-改了 `preset/`、`src/`、`commands/` 或 `bin/` 里的东西，**重跑 `install.sh`** 才会生效。
+改了 `preset/`、`src/`、`commands/` 或 `bin/` 里的东西，要**先停服务、退出 SPV 会话，再重跑 `install.sh`**
+才会生效：占用时它会拒绝（exit 3）而不是写一半。

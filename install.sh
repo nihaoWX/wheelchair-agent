@@ -1,6 +1,34 @@
 #!/usr/bin/env bash
 # Install the SPV preset, the `wheelchair-agent` CLI and its compatibility commands for the current user.
 #
+# Cold installs only. This script refuses to write while anything that loads the installed files is
+# running: the superagent service (it mounts the webui package) and a live SPV session (it loads the
+# preset's spv_* tools in-process). A half-applied install that still reports "up to date" is worse than a
+# refusal: on 2026-11-15 a run while the service was up left a stale cli.js without `inbox` while saying
+# "up to date".
+#
+# Before any write, the pre-flight asks commands/superagent-service.py for two runtime facts: the service
+# PIDs (listening socket plus a /proc scan for `--profile superagent`) and the SPV-session PIDs (a
+# /proc/*/cmdline scan for `--patch <preset>/preset-default.patch.yml`). It recognises a session started by
+# the installed launcher, or by dsh/dsh-tui with that exact patch. It does not recognise a session that
+# picked the preset at runtime with `/preset` after starting without `--patch`, or one using a different
+# DSH_HOME. A false negative only lets an unsafe install through; refusing on a guess would block a safe
+# cold install.
+#
+# On a refusal it exits 3 (distinct from 1 install failure and 2 check failure), prints what is in use and
+# the exact stop/install/start commands, writes no file under any install target, and queues exactly one
+# `notice` for the SPV session through src/shared/queue.js. If the queue does not exist (the service has
+# never run), it skips the notice, says so in one line, and keeps exit 3.
+#
+# --check is read-only and always allowed, even while everything is running. It reports the in-use holders
+# as notes and exits 2 only when the installed files differ from this checkout.
+#
+# Exit status:
+#   0  installed, or --check found everything as expected
+#   1  install failed (missing prerequisite or a copy failed)
+#   2  --check found problems, or the arguments were invalid
+#   3  refused: something is using the install targets (cold installs only)
+#
 # Installs (this project is not an agent tool, so there is no SKILL.md to copy):
 #   1. the dsh agent preset  -> $DSH_HOME/.agent-presets/spv/
 #      (the preset ymls, the SPV-side JS, cli.js, prepare.sh, commands/ and agentsmd-examples/)
@@ -19,6 +47,7 @@
 #   - --check is read-only, reports item by item, and exits 2 with a "fix:" line when anything is off.
 #
 # Usage: bash install.sh [--check]
+#        bash install.sh --help
 set -uo pipefail
 
 SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -44,6 +73,8 @@ for arg in "$@"; do
     -h|--help)
       printf 'usage: bash install.sh [--check]\n'
       printf '  --check   read-only self-check; exit 2 when anything is not installed as expected\n'
+      printf 'exit 0 installed or checks pass; 1 install failed; 2 check failed or bad argument;\n'
+      printf '     3 refused because the install targets are in use (cold installs only)\n'
       exit 0 ;;
     *)
       printf 'FAIL: unknown argument %s\n' "$arg" >&2
@@ -57,6 +88,53 @@ ok()   { printf 'OK: %s\n' "$1"; }
 note() { printf 'note: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; PROBLEMS=$((PROBLEMS + 1)); }
 fix()  { printf 'fix: %s\n' "$1"; }
+
+# -------------------------------------------------------------- in-use probe
+
+# The runtime holders found by the pre-flight; each is a space-separated PID list, empty when none.
+SERVICE_PIDS=''
+SPV_PIDS=''
+
+# Run the runtime probe: leave SERVICE_PIDS and SPV_PIDS set, both empty when nothing holds the targets.
+#
+# The probe is commands/superagent-service.py, deliberately not a second copy of its process hunt: that
+# file already finds the service through the listening socket and /proc (because `ps` names the Node thread
+# `MainThread` here), and its `probe` action also scans /proc for a live SPV session's `--patch` argument.
+#
+# SPV_INSTALL_PROBE is a test seam: tests/test-install.sh points it at a fake probe so both the refused and
+# the cold path can be driven without real processes. Normal operation never sets it; when unset, the real
+# python probe runs against the real /proc.
+probe_in_use() {
+  local out probe_cmd
+  SERVICE_PIDS=''
+  SPV_PIDS=''
+  if [ -n "${SPV_INSTALL_PROBE:-}" ]; then
+    if ! out=$("$SPV_INSTALL_PROBE" 2>&1); then
+      fail "the in-use probe $SPV_INSTALL_PROBE failed"
+      fix 'fix or unset SPV_INSTALL_PROBE, then rerun this script'
+      return 1
+    fi
+  else
+    probe_cmd=(python3 "$SELF_DIR/commands/superagent-service.py" probe
+      --profile superagent --port "$SERVICE_PORT"
+      --preset-patch "$PRESET_DIR/preset-default.patch.yml")
+    if ! out=$("${probe_cmd[@]}" 2>&1); then
+      fail 'the in-use pre-flight failed (commands/superagent-service.py probe)'
+      fix "run: python3 $SELF_DIR/commands/superagent-service.py probe --preset-patch $PRESET_DIR/preset-default.patch.yml"
+      return 1
+    fi
+  fi
+  case $out in
+    *service_pids=*spv_pids=*) ;;
+    *)
+      fail 'the in-use pre-flight did not print both service_pids and spv_pids, so the targets cannot be proven free'
+      fix "run: python3 $SELF_DIR/commands/superagent-service.py probe --preset-patch $PRESET_DIR/preset-default.patch.yml"
+      return 1 ;;
+  esac
+  SERVICE_PIDS=$(printf '%s\n' "$out" | sed -n 's/^service_pids=//p' | head -1)
+  SPV_PIDS=$(printf '%s\n' "$out" | sed -n 's/^spv_pids=//p' | head -1)
+  return 0
+}
 
 # ---------------------------------------------------------------- prerequisites
 
@@ -83,6 +161,20 @@ require_dsh_tui() {
     return 1
   fi
   ok "dsh-tui at $(command -v dsh-tui)"
+}
+
+# The service manager and the pre-flight are Python; a machine without python3 cannot run either.
+# A test seam replaces the pre-flight, so it does not need python3.
+require_python3() {
+  if [ -n "${SPV_INSTALL_PROBE:-}" ]; then
+    return 0
+  fi
+  if ! command -v python3 >/dev/null 2>&1; then
+    fail 'python3 is not on PATH, so the cold-install pre-flight cannot run'
+    fix 'install Python 3 (https://www.python.org/downloads), then rerun this script'
+    return 1
+  fi
+  ok "python3 $(python3 --version 2>&1 | sed 's/^Python //')"
 }
 
 # ------------------------------------------------------------------- rendering
@@ -351,19 +443,12 @@ check_jobctl() {
 render_service_wrapper() { render_wrapper "$1" service; }
 render_jobctl_wrapper() { render_wrapper "$1" jobctl; }
 
-# The PID of the running superagent service, or empty.
+# The first running superagent service PID, or empty.
 #
-# Two sources, because neither alone is enough: `superagent-service status` knows the profile and the
-# configured port, while the listening socket is the runtime fact when the status output is unavailable.
+# The pre-flight already found every service PID (listening socket plus /proc), so this reuses that list
+# instead of running the process hunt a second time.
 service_pid() {
-  local out pid
-  out=$("$SERVICE" status 2>/dev/null) || true
-  pid=$(printf '%s\n' "$out" | sed -n 's/^pids:[[:space:]]*//p' | tr -d ' ' | cut -d, -f1)
-  case $pid in ''|'(none)') pid='' ;; esac
-  if [ -z "$pid" ] && command -v ss >/dev/null 2>&1; then
-    pid=$(ss -lptnH "sport = :$SERVICE_PORT" 2>/dev/null | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | head -1)
-  fi
-  printf '%s' "$pid"
+  printf '%s' "${SERVICE_PIDS%% *}"
 }
 
 # Verify the *service process's* PATH, not this shell's.
@@ -406,6 +491,74 @@ check_service_path() {
 check_prerequisites() {
   require_node || true
   require_dsh_tui || true
+  require_python3 || true
+}
+
+# ---------------------------------------------------------------------- refusal
+
+# What is in use, one line per holder. Empty when the probe found nothing.
+in_use_lines() {
+  if [ -n "$SERVICE_PIDS" ]; then
+    printf '  - the superagent service (pid %s, port %s)\n' "$(service_pid)" "$SERVICE_PORT"
+  fi
+  if [ -n "$SPV_PIDS" ]; then
+    printf '  - a live SPV session (pids %s)\n' "$SPV_PIDS"
+  fi
+}
+
+# The exact commands that clear the refusal, install and start everything again.
+refusal_commands() {
+  printf '  wheelchair-agent service stop\n'
+  printf '  # exit the SPV session (Ctrl-D); it cannot be stopped from here\n'
+  printf '  bash %s/install.sh\n' "$SELF_DIR"
+  printf '  wheelchair-agent service start\n'
+  printf '  wheelchair-agent spv\n'
+}
+
+# The refusal body, shared by the terminal and the SPV notice so both say the same thing.
+refusal_text() {
+  printf 'Cold install refused: the wheelchair-agent install targets are in use.\n\n'
+  printf 'In use:\n'
+  in_use_lines
+  printf '\ninstall.sh performs cold installs only, so nothing was installed or changed.\n\n'
+  printf 'Stop what is in use, install, then start it again:\n'
+  refusal_commands
+  printf '\nTell the operator that the install is waiting on this restart.\n'
+}
+
+# A deterministic id for this refusal: identical blockers replace one outbox file (two runs do not stack
+# two notices), while a changed blocker set is a new notice. cksum is POSIX, so no hashing tool is assumed.
+notice_id_for_blockers() {
+  printf 'install-cold-refusal-%s' \
+    "$(printf '%s|%s' "$SERVICE_PIDS" "$SPV_PIDS" | cksum | cut -d' ' -f1)"
+}
+
+# Queue one `notice` for the SPV session; never fail the refusal because nobody could be notified.
+#
+# build/refusal-notice.mjs uses writeMessage() from src/shared/queue.js, the same outbox channel the
+# `spv` Source writes results into, and prints `skipped:` when the queue does not exist. That skipped
+# line is the one-line explanation, and the exit code stays 3 either way.
+refusal_notice() {
+  local out id
+  id=$(notice_id_for_blockers)
+  if ! out=$(refusal_text | node "$SELF_DIR/build/refusal-notice.mjs" "$id" 2>&1); then
+    note "could not queue the SPV refusal notice: $out"
+    return 0
+  fi
+  case $out in
+    queued:*) note "queued one notice for the SPV session: ${out#queued: }" ;;
+    skipped:*) note "${out#skipped: }" ;;
+    *) note "$out" ;;
+  esac
+  return 0
+}
+
+# Refuse the hot install: explain, notify SPV, touch nothing, exit 3.
+refuse_install() {
+  printf 'FAIL: refusing to install: the files this script installs are in use (cold installs only).\n' >&2
+  refusal_text >&2
+  refusal_notice
+  exit 3
 }
 
 # ------------------------------------------------------------------ install mode
@@ -555,6 +708,19 @@ ensure_webui_loader() {
 
 if [ "$CHECK" -eq 1 ]; then
   check_prerequisites
+  # Report the in-use holders (the cold-install gate). This is a note, never a refusal: --check is
+  # read-only and must stay usable while everything runs.
+  if probe_in_use; then
+    if [ -n "$SERVICE_PIDS" ]; then
+      note "the superagent service is running (pid $(service_pid), port $SERVICE_PORT); --check is read-only and does not refuse"
+    fi
+    if [ -n "$SPV_PIDS" ]; then
+      note "a live SPV session holds the preset (pids $SPV_PIDS); a real install would refuse with exit 3 until it exits"
+    fi
+    if [ -z "$SERVICE_PIDS" ] && [ -z "$SPV_PIDS" ]; then
+      note 'no running service or SPV session holds the install targets; a cold install is allowed'
+    fi
+  fi
   check_preset
   check_webui
   check_cli
@@ -577,6 +743,20 @@ fi
 if ! require_dsh_tui; then
   printf '\n1 problem(s) blocked the install.\n'
   exit 1
+fi
+if ! require_python3; then
+  printf '\n1 problem(s) blocked the install.\n'
+  exit 1
+fi
+
+# The gate: everything below writes, so this must pass first. A probe failure is an install failure (1),
+# not a refusal (3): the targets were not proven free, and guessing either way is worse than stopping.
+if ! probe_in_use; then
+  printf '\n1 problem(s) blocked the install.\n'
+  exit 1
+fi
+if [ -n "$SERVICE_PIDS" ] || [ -n "$SPV_PIDS" ]; then
+  refuse_install
 fi
 
 install_preset

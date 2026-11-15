@@ -1,10 +1,12 @@
 # Minimal CI: no secrets and no install step.
 #
 # Every check here is the same command an operator runs by hand from a clean clone. The `check` script
-# only parses JS with `node --check`, and the two test scripts run against throwaway sandboxes (the
-# prepare test fakes `gh` and redirects github.com to local bare repositories), so none of them needs a
-# credential or reaches github.com. No install step is needed either: every check is self-contained, and
-# `dsh-superagent` is an optional peer supplied by the dsh profile, not a resolvable dependency of this repo.
+# only parses JS with `node --check`, and the test scripts run against throwaway sandboxes (the prepare
+# test fakes `gh` and redirects github.com to local bare repositories; the install test fakes `dsh-tui`
+# and the in-use probe), so none of them needs a credential or reaches github.com. No install step is
+# needed either: every check is self-contained, and `dsh-superagent` is an optional peer supplied by the
+# dsh profile, not a resolvable dependency of this repo. CI never runs the real install: it cannot have a
+# service or an SPV session, and the real-machine refusal is demonstrated by hand in the PR.
 #
 # The job id is deliberately `ci`: it is the required status check context configured on `main`, so
 # renaming it silently un-gates auto-merge.
@@ -39,3 +41,6 @@ jobs:
 
       - name: prepare.sh sandbox test
         run: sh tests/test-prepare.sh
+
+      - name: install.sh cold-install sandbox test
+        run: sh tests/test-install.sh
