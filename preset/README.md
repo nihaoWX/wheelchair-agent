@@ -137,7 +137,11 @@ wheelchair-agent dispatch --project tools/foo --task "..." --thread t1
 wheelchair-agent status [--thread t1]
 wheelchair-agent inbox add --title "决定" --body "正文 / @文件" [--thread t1]
 wheelchair-agent check          # 运行时健康：服务 / preset / 面板 prepare 值 / prepare dry run
+wheelchair-agent work gc --dry-run   # 回收可重建的 ticket 克隆；挂载时同一实现自动跑一次
+wheelchair-agent work restored <ticket>  # 从 work-reclaimed.jsonl 打印重建命令
 ```
+
+`work gc` 的门禁与记录格式见 `docs/work-gc.md`。
 
 ## 标准工具从哪来
 

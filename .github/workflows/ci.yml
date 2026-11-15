@@ -42,6 +42,9 @@ jobs:
       - name: Inbox auto-refresh and merged-PR pull
         run: node tests/test-inbox-refresh.mjs
 
+      - name: Ticket-directory reclamation
+        run: node tests/test-work.mjs
+
       - name: Layout boundary rules
         run: bash tests/test-layout.sh
 
