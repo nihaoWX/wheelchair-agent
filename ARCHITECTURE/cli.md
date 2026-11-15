@@ -35,6 +35,8 @@
 | `wheelchair-agent jobctl <submit\|status\|log\|verify\|cancel>` | 长任务交给 systemd | `exec python3 commands/jobctl.py "$@"` |
 | `wheelchair-agent dispatch --project <p> --task <t> [--thread <n>] [--preset <id>]` | 往队列写一个任务 | `import src/spv/dispatch.js` |
 | `wheelchair-agent status [--thread <n>]` | 非阻塞看队列 | `import src/spv/outbox.js` |
+| `wheelchair-agent inbox` | 打印面板在哪里（dsh Web UI 的 `wheelchair-agent` 面板）；不再起独立页 | — |
+| `wheelchair-agent inbox watch [--once] [--interval <秒>]` | 轮询 `tools/*` 的 `gh pr list`，把 PR 写进收件箱 | `import src/spv/inbox.js` |
 | `wheelchair-agent check` | **运行时**健康：服务在跑吗、preset 能加载吗、`prepare` 在假环境里能跑通吗 | 见下 |
 | `wheelchair-agent --help` / `--version` | 用法与版本 | — |
 

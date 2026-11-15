@@ -1,6 +1,7 @@
 /**
- * Host half of the review inbox: the three `/wheelchair-inbox/*` routes on the composition's
- * `webServer`, each behind the composition's connection trust fence.
+ * Host half of the review inbox: the two `/wheelchair-inbox/*` JSON routes on the composition's
+ * `webServer`, each behind the composition's connection trust fence. The panel page itself is a
+ * Client React component (`./client.js`) in the `main` slot; the Host no longer serves HTML.
  *
  * Security has one home, here. Every route asks `ctx.connection.requestRejection(req)` first:
  * its Host/Origin fence defeats DNS rebinding and cross-site calls, and its browser
@@ -18,7 +19,6 @@ import { createInboxHandler, resolveInboxRoot } from './core/inbox.js'
 export const name = 'wheelchair-agent-webui'
 export const inject = ['webServer', 'connection']
 
-const PAGE_PATH = '/wheelchair-inbox/page'
 const ITEMS_PATH = '/wheelchair-inbox/items'
 const REVIEW_PATH = '/wheelchair-inbox/review'
 
@@ -47,10 +47,6 @@ export function apply(ctx) {
     if (rejected(ctx, req, res)) return
     await handler(req, res)
   }
-  ctx.effect(
-    () => ctx.webServer.register({ kind: 'exact', path: PAGE_PATH, handler: guarded }),
-    `wheelchair-agent-webui: GET ${PAGE_PATH}`,
-  )
   ctx.effect(
     () => ctx.webServer.register({ kind: 'exact', path: ITEMS_PATH, handler: guarded }),
     `wheelchair-agent-webui: GET ${ITEMS_PATH}`,
