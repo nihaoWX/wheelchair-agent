@@ -112,6 +112,9 @@ inside it, its working tree is clean, and every commit is already pushed. The re
 environment:
   DSH_SUPERAGENT_STATE_DIR  deployment state dir (default ~/.dsh/state/superagent)
   DSH_SUPERAGENT_WORK_DIR   settings.executor.directory, when it is not <stateDir>/work
+  SPV_SUPERAGENT_URL        management API base URL (default http://127.0.0.1:3082)
+  DSH_SUPERAGENT_URL        service-manager fallback base URL
+  SPV_SUPERAGENT_PORT       management API port when no URL is set (default 3082)
 
 commands:
   gc [--dry-run] [--keep <n>] [--keep-days <d>]
@@ -122,14 +125,22 @@ const WORK_GC_USAGE = `usage: wheelchair-agent work gc [--dry-run] [--keep <n>] 
 
 Reclaim ticket directories that are reproducible duplicates of their source repository.
 
+Before planning, work gc asks the running service which tickets are open and keeps their
+directories, because a live worker's process cwd is not inside its ticket between tool calls.
+If the service is not running that check is skipped (nothing can be working); any other failure
+keeps everything. --keep and --keep-days are optional guards, not the safety mechanism.
+
 options:
   --dry-run          print every directory and the reason it is kept; delete nothing
-  --keep <n>         never delete the newest n passing directories (default 10; 0 disables the floor)
+  --keep <n>         never delete the newest n passing directories (default 0; opt-in floor)
   --keep-days <d>    keep passing directories modified less than d days ago (default 0)
 
 environment:
   DSH_SUPERAGENT_STATE_DIR  deployment state dir (default ~/.dsh/state/superagent)
-  DSH_SUPERAGENT_WORK_DIR   settings.executor.directory, when it is not <stateDir>/work`
+  DSH_SUPERAGENT_WORK_DIR   settings.executor.directory, when it is not <stateDir>/work
+  SPV_SUPERAGENT_URL        management API base URL (default http://127.0.0.1:3082)
+  DSH_SUPERAGENT_URL        service-manager fallback base URL
+  SPV_SUPERAGENT_PORT       management API port when no URL is set (default 3082)`
 
 const WORK_RESTORED_USAGE = `usage: wheelchair-agent work restored <ticket>
 
@@ -497,7 +508,22 @@ async function commandWorkGc(argv) {
     parsed[name] = Number(value)
     index += 1
   }
-  const { KEEP_DEFAULT, formatBytes, reclaimWork, resolveWorkRoot } = await load('src', 'shared', 'work.js')
+  const { KEEP_DEFAULT, formatBytes, openTicketDirectories, reclaimWork, resolveWorkRoot } =
+    await load('src', 'shared', 'work.js')
+  const { fetchOpenTickets } = await load('src', 'spv', 'health.js')
+  const open = await openTicketDirectories(() => fetchOpenTickets())
+  let skipDirectories = new Map()
+  let blockedReason
+  const notices = []
+  if (open.ok) {
+    skipDirectories = open.directories
+    if (skipDirectories.size > 0) notices.push(`open tickets: ${skipDirectories.size} directory(s) in use`)
+  } else if (open.down) {
+    notices.push(`open-ticket check skipped: ${open.reason}`)
+  } else {
+    blockedReason = `cannot read open tickets: ${open.reason}`
+    notices.push(`${blockedReason}; keeping everything`)
+  }
   const root = resolveWorkRoot({ stateDir: STATE_DIR })
   const summary = await reclaimWork({
     root,
@@ -505,8 +531,10 @@ async function commandWorkGc(argv) {
     keep: parsed.keep ?? KEEP_DEFAULT,
     ...(parsed.keepDays === undefined ? {} : { keepDays: parsed.keepDays }),
     dryRun: parsed.dryRun,
+    skipDirectories,
+    blockedReason,
   })
-  const lines = [`work root: ${root}${parsed.dryRun ? ' (dry run; nothing is deleted)' : ''}`]
+  const lines = [`work root: ${root}${parsed.dryRun ? ' (dry run; nothing is deleted)' : ''}`, ...notices]
   if (summary.entries.length === 0) lines.push('  (no directories)')
   for (const entry of summary.entries) {
     const label = entry.action === 'reclaim' ? 'reclaim' : entry.action === 'unknown' ? 'unknown' : 'keep'
@@ -520,6 +548,7 @@ async function commandWorkGc(argv) {
     `${verb} ${summary.reclaimed}, kept ${summary.kept}${unknown}, ${freedVerb} ${formatBytes(summary.freedBytes)}`,
   )
   process.stdout.write(`${lines.join('\n')}\n`)
+  if (blockedReason !== undefined) process.exitCode = 1
 }
 
 /** `work restored <ticket>`：只读回收记录，打印可粘贴的重建命令。 */
