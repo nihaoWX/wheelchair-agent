@@ -141,7 +141,8 @@ The package is a directory inside the profile's `node_modules`, not a dependency
 `package.json` (that file is operator/dsh state and is deliberately not modified). A `pnpm install`
 run against the profile may prune anything it does not know about, removing this package;
 `install.sh --check` reports that, and rerunning `install.sh` restores it. If you reinstall the
-profile itself, run `bash install.sh` afterwards.
+profile itself, run `bash install.sh` afterwards; `install.sh` is cold-only, so stop the service and
+exit the SPV session first or it refuses with exit 3.
 
 **Restart the superagent service after installing a host-half change.** `lib/client.js` hot-reloads
 through dsh's client-bundle watcher, but `lib/index.js` and the core copies are imported once when

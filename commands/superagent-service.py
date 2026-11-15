@@ -20,6 +20,8 @@ Usage:
   superagent-service start             start in tmux session dsh-<profile>, wait until ready
   superagent-service stop              graceful SIGINT, up to --stop-timeout seconds
   superagent-service restart           stop then start
+  superagent-service probe             print the service and live SPV-session PIDs as key=value lines
+                                       (`install.sh` uses this as its cold-install pre-flight)
 
 Every command prints English text: `OK:`, `FAIL:`, `note:`, and a `fix:` line when something can be
 exchanged for a command. A failure explains what is wrong, why, and what to run.
@@ -104,14 +106,22 @@ def pid_on_port(port):
 
 
 def pids_from_proc(profile):
-    """Scan /proc for every process whose argv selects `profile` as the DSH service."""
+    """Scan /proc for every process whose argv selects `profile` as the DSH service.
+
+    The scanning process itself is skipped: `probe` is invoked with `--profile <name>` on its own
+    command line (that is how it is told what to look for), so without this it would report itself as
+    the service and a genuinely cold machine would look occupied.
+    """
     found = []
     for entry in Path('/proc').iterdir():
         if not entry.name.isdigit():
             continue
+        pid = int(entry.name)
+        if pid == os.getpid():
+            continue
         argv = cmdline_of(entry.name)
         if argv and serves(argv, profile):
-            found.append(int(entry.name))
+            found.append(pid)
     return sorted(found)
 
 
@@ -127,6 +137,52 @@ def service_pids(profile, port):
         pids.add(listening)
     pids.update(pids_from_proc(profile))
     return sorted(pids)
+
+
+def preset_patch_used(argv, preset_patch):
+    """Return whether these argv launch a dsh session with `preset_patch`.
+
+    The SPV launcher (`~/.local/bin/spv`) execs
+    `dsh-tui --patch <preset>/preset-default.patch.yml`, and the dsh child it spawns keeps the same
+    argument, so that path in argv is the runtime fact that a live SPV session is loading the preset.
+    Symlinks are compared through their target, because the launcher may be reached through one.
+    """
+    if not preset_patch:
+        return False
+    target = os.path.realpath(preset_patch)
+    for index, word in enumerate(argv):
+        value = None
+        if word == '--patch' and index + 1 < len(argv):
+            value = argv[index + 1]
+        elif word.startswith('--patch='):
+            value = word.split('=', 1)[1]
+        if value and os.path.realpath(value) == target:
+            return True
+    return False
+
+
+def pids_with_preset(preset_patch):
+    """Scan /proc for every process that loads the SPV preset through `--patch <preset_patch>`.
+
+    What it recognises: an SPV session started by the installed launcher, or by `dsh`/`dsh-tui` with
+    that exact patch argument (the wrapper, the dsh-tui process and its dsh child all carry it).
+
+    What it does not: a session that selected the preset at runtime with `/preset spv` after starting
+    without `--patch`, a session launched with a different patch path (another DSH_HOME or checkout), and
+    any process whose argv no longer contains the argument. Missing these is deliberate - a false
+    negative only lets an unsafe install through, while a false positive would refuse a safe one.
+    """
+    found = []
+    for entry in Path('/proc').iterdir():
+        if not entry.name.isdigit():
+            continue
+        pid = int(entry.name)
+        if pid == os.getpid():
+            continue
+        argv = cmdline_of(entry.name)
+        if argv and preset_patch_used(argv, preset_patch):
+            found.append(pid)
+    return sorted(found)
 
 
 def alive(pid):
@@ -281,6 +337,22 @@ def cmd_status(args):
     return report(pids, current, args.url, args.profile, False, args.log)
 
 
+def cmd_probe(args):
+    """Print the runtime holders of the install targets as machine-readable `key=value` lines.
+
+    `install.sh` runs this before it writes anything: the superagent service holds the webui package and
+    the preset path is loaded in-process by a live SPV session, so a rewrite under either would half-apply
+    while they run. One space-separated PID list per key; an empty value means "none found".
+    """
+    pids = service_pids(args.profile, args.port)
+    spv = pids_with_preset(args.preset_patch)
+    print(f'service_pids={" ".join(str(pid) for pid in pids)}')
+    print(f'service_port={args.port}')
+    print(f'spv_pids={" ".join(str(pid) for pid in spv)}')
+    print(f'preset_patch={os.path.realpath(args.preset_patch) if args.preset_patch else ""}')
+    return 0
+
+
 def wait_ready(args, deadline):
     """Poll the management API until the runtime is up; return (code, current) or (None, None) on timeout."""
     while time.monotonic() < deadline:
@@ -377,7 +449,7 @@ def cmd_restart(args):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    parser.add_argument('action', choices=['start', 'stop', 'restart', 'status', 'open'])
+    parser.add_argument('action', choices=['start', 'stop', 'restart', 'status', 'open', 'probe'])
     parser.add_argument('--profile', default=os.environ.get('DSH_SUPERAGENT_PROFILE') or DEFAULT_PROFILE,
                         help=f'DSH profile that loads dsh-superagent (default: {DEFAULT_PROFILE})')
     parser.add_argument('--url', default=os.environ.get('DSH_SUPERAGENT_URL') or DEFAULT_URL,
@@ -387,6 +459,8 @@ def main():
     parser.add_argument('--timeout', type=float, default=60, help='startup timeout in seconds (default: 60)')
     parser.add_argument('--stop-timeout', type=float, default=300,
                         help='graceful shutdown timeout in seconds (default: 300)')
+    parser.add_argument('--preset-patch', default=None,
+                        help='preset-default.patch.yml of a live SPV session; `probe` reports processes that load it')
     parser.add_argument('--cwd', default=os.getcwd(), help='working directory for the tmux pane')
     parser.add_argument('--log', type=Path, default=None,
                         help='log file (default: $DSH_HOME/.artifacts/<profile>.log)')
@@ -410,7 +484,7 @@ def main():
         return fail('--timeout and --stop-timeout must be positive', 'omit them to use the defaults')
 
     handlers = {'status': cmd_status, 'start': cmd_start, 'stop': cmd_stop, 'restart': cmd_restart,
-                'open': cmd_open}
+                'open': cmd_open, 'probe': cmd_probe}
     try:
         return handlers[args.action](args)
     except KeyboardInterrupt:
