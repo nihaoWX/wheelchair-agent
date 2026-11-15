@@ -12,8 +12,11 @@
  *   - MERGED 但没有 review 的 PR 仍是 pending；PR state 由 `stateOf()` 单独提供（open/merged/closed）；
  *   - 升级前就已经 MERGED 的 item 不会被当成新合并重放；
  *   - host 半身通过 `ctx.effect` 启动同一个循环，能解析 core 副本的导入；
+ *   - host 半身的轮询器在设置文件 `inbox.intervalSeconds=0` 时注册但不跑 gh，改回正数后无需重挂载即恢复；
+ *   - `/wheelchair-settings` 与 `/wheelchair-inbox/*` 注册在同一道 connection fence 后面：被拒的请求 403
+ *     且不产生任何 handler 副作用；
  *   - `research/` 不会被轮询或拉取；
- *   - 间隔配置的默认值、环境变量覆盖与 0（关闭）。
+ *   - 间隔配置的默认值、环境变量覆盖与 0（暂停）。
  *
  * 全程离线：假 `gh` 只 `cat` 一份 JSON；假 `git` 只记录参数再 exec 真 git；拉取通过仓库本地的
  * `url.<local-bare>.insteadOf` 指向 `mkdtemp` 里的 bare 仓库，不访问 github.com，不需要凭据。
@@ -101,11 +104,12 @@ async function sandbox() {
     remotes: join(base, 'remotes'),
     inbox: join(base, 'inbox'),
     queue: join(base, 'queue'),
+    state: join(base, 'state'),
     ghJson: join(base, 'gh.json'),
     ghLog: join(base, 'gh-calls.log'),
     gitLog: join(base, 'git-calls.log'),
   }
-  for (const dir of [box.bin, box.tools, join(base, 'projects', 'research'), box.remotes]) {
+  for (const dir of [box.bin, box.tools, join(base, 'projects', 'research'), box.remotes, box.state]) {
     await mkdir(dir, { recursive: true })
   }
   await writeFile(box.ghLog, '', 'utf8')
@@ -120,8 +124,13 @@ async function sandbox() {
   process.env.FAKE_GIT_LOG = box.gitLog
   process.env.REAL_GIT = REAL_GIT
   process.env.SPV_QUEUE_DIR = box.queue
+  // The panel settings store also lives under the deployment state dir: keep it inside the sandbox, so a
+  // real `~/.dsh/state/superagent/panel-settings.json` can never change what these cases assert.
+  process.env.DSH_SUPERAGENT_STATE_DIR = join(base, 'state')
   delete process.env.SPV_INSTALL_REPO
   delete process.env.FAKE_GH_FAIL_REPO
+  // The settings file now beats this variable; an operator shell that sets it must not change these cases.
+  delete process.env.SPV_INBOX_INTERVAL_SECONDS
   return box
 }
 
@@ -559,10 +568,8 @@ async function testOneRepoFailureDoesNotStopLoop() {
   await watcher.done
 }
 
-/** (e) The web host starts the same poll loop from ctx.effect, using the configured interval. */
-async function testHostStartsPoller() {
-  const box = await sandbox()
-  await makeRepo(box, 'demo')
+/** Copy the host half plus its core/shared siblings into a throwaway package and import it. */
+async function loadHostApply(box) {
   const app = join(box.base, 'webui')
   await mkdir(join(app, 'lib', 'core'), { recursive: true })
   await mkdir(join(app, 'lib', 'shared'), { recursive: true })
@@ -572,31 +579,51 @@ async function testHostStartsPoller() {
     ['src/spv/dispatch.js', 'lib/core/dispatch.js'],
     ['src/spv/paths.js', 'lib/core/paths.js'],
     ['src/shared/queue.js', 'lib/shared/queue.js'],
+    ['src/shared/settings.js', 'lib/shared/settings.js'],
     ['webui/lib/index.js', 'lib/index.js'],
   ]) {
     await copyFile(join(REPO, source), join(app, target))
   }
+  const { apply } = await import(pathToFileURL(join(app, 'lib', 'index.js')).href)
+  return apply
+}
+
+/** Drive one registered route handler with a fake request/response, like a real HTTP call but offline. */
+async function routeCall(route, { method = 'GET', url = route.path, contentType = 'application/json', body, forbidden = false } = {}) {
+  const payload = body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body)
+  const req = {
+    method,
+    url,
+    forbidden,
+    headers: contentType === undefined ? {} : { 'content-type': contentType },
+    async *[Symbol.asyncIterator]() {
+      if (payload !== undefined) yield Buffer.from(payload)
+    },
+    resume() {},
+  }
+  const res = {
+    statusCode: 0,
+    headers: {},
+    text: '',
+    setHeader(name, value) { this.headers[String(name).toLowerCase()] = value },
+    end(chunk) { if (chunk !== undefined) this.text += String(chunk) },
+  }
+  await route.handler(req, res)
+  let parsed
+  try { parsed = JSON.parse(res.text) } catch { parsed = undefined }
+  return { status: res.statusCode, headers: res.headers, text: res.text, body: parsed }
+}
+
+/** (e) The web host starts the same poll loop from ctx.effect, using the configured interval. */
+async function testHostStartsPoller() {
+  const box = await sandbox()
+  await makeRepo(box, 'demo')
   process.env.SPV_INBOX_DIR = box.inbox
   process.env.SPV_PROJECTS_ROOT = box.projects
-  const { apply } = await import(pathToFileURL(join(app, 'lib', 'index.js')).href)
-
-  const hostContext = () => {
-    const effects = []
-    const lines = []
-    return {
-      effects,
-      lines,
-      ctx: {
-        logger: { info: line => lines.push(String(line)), warn: line => lines.push(String(line)) },
-        connection: { requestRejection: () => undefined },
-        webServer: { register: () => () => {} },
-        effect: (fn, label) => { effects.push({ fn, label }) },
-      },
-    }
-  }
+  const apply = await loadHostApply(box)
 
   await writeJson(box.ghJson, prPayload({ number: 1, repo: 'acme/demo', title: 'first' }))
-  const host = hostContext()
+  const host = hostContextWithFence()
   apply(host.ctx, { intervalSeconds: 0.02 })
   const poller = host.effects.find(effect => effect.label.includes('wheelchair-agent-webui: inbox poller'))
   assert.ok(poller, 'the host registers the inbox poller through ctx.effect')
@@ -614,21 +641,140 @@ async function testHostStartsPoller() {
   await sleep(100)
   assert.equal(await ghCallCount(box), afterStop, 'the host disposer stops the loop')
 
-  const disabled = hostContext()
-  apply(disabled.ctx, { intervalSeconds: 0 })
-  assert.ok(!disabled.effects.some(effect => effect.label.includes('inbox poller')), 'intervalSeconds=0 registers no poller')
-  assert.ok(disabled.lines.some(line => line.includes('automatic refresh disabled')), 'intervalSeconds=0 is logged')
+  // A paused (0) interval still registers the effect: the poller runs no gh call, re-checks every second,
+  // and a later settings-file value resumes it without remounting. That is what makes Pause/Resume from the
+  // Settings section work without a restart.
+  const paused = hostContextWithFence()
+  apply(paused.ctx, { intervalSeconds: 0 })
+  const pausedPoller = paused.effects.find(effect => effect.label.includes('wheelchair-agent-webui: inbox poller'))
+  assert.ok(pausedPoller, 'intervalSeconds=0 still registers the poller so a change applies without remount')
+  assert.ok(paused.lines.some(line => line.includes('automatic refresh disabled')), 'the paused state is logged')
+  const pausedStop = pausedPoller.fn()
+  try {
+    const pausedCalls = await ghCallCount(box)
+    await sleep(350)
+    assert.equal(await ghCallCount(box), pausedCalls, 'a paused poller runs no gh call')
+    await writeJson(join(box.state, 'panel-settings.json'), {
+      version: 1,
+      revision: 0,
+      values: { 'inbox.intervalSeconds': 1 },
+      templates: {},
+    })
+    await waitFor(async () => (await ghCallCount(box)) > pausedCalls, 'the resumed poll from the settings file', 6000)
+  } finally {
+    pausedStop()
+  }
 
-  const invalid = hostContext()
+  // A valid saved interval wins over a broken plugin config: the poller must use exactly what the
+  // Settings page shows, rather than falling back to 60s on the config typo.
+  const brokenConfig = hostContextWithFence()
+  apply(brokenConfig.ctx, { intervalSeconds: 'soon' })
+  assert.ok(
+    brokenConfig.lines.some(line => line.includes('refreshing every 1s')),
+    'a valid saved interval wins over an invalid plugin config',
+  )
+  const brokenConfigPoller = brokenConfig.effects.find(effect => effect.label.includes('wheelchair-agent-webui: inbox poller'))
+  const brokenConfigStop = brokenConfigPoller.fn()
+  brokenConfigStop()
+
+  // With no settings-file value, the old loud fallback still applies: an invalid config logs once and
+  // the poller still registers at 60s.
+  await rm(join(box.state, 'panel-settings.json'))
+  const invalid = hostContextWithFence()
   apply(invalid.ctx, { intervalSeconds: 'soon' })
   assert.ok(invalid.lines.some(line => line.includes('using 60s')), 'an invalid interval falls back to 60s')
   assert.ok(invalid.effects.some(effect => effect.label.includes('inbox poller')), 'the fallback still registers the poller')
 }
 
+/** (e2) The settings route is registered behind the same fence as the inbox routes; GET and a stale PUT work. */
+async function testHostSettingsRouteAndFence() {
+  const box = await sandbox()
+  const apply = await loadHostApply(box)
+  const host = hostContextWithFence({ rejection: req => (req.forbidden === true ? 403 : undefined) })
+  apply(host.ctx, { intervalSeconds: 0.02 })
+  // The web host runs each non-poller effect on mount; that is what registers the routes.
+  for (const effect of host.effects.filter(item => !item.label.includes('poller'))) effect.fn()
+
+  const route = host.routes.find(candidate => candidate.path === '/wheelchair-settings')
+  assert.ok(route, 'the host registers the /wheelchair-settings route')
+  assert.equal(route.kind, 'exact', 'the settings route is an exact route')
+  assert.ok(host.routes.some(candidate => candidate.path === '/wheelchair-inbox/items'), 'the inbox routes are still registered')
+
+  const get = await routeCall(route)
+  assert.equal(get.status, 200)
+  assert.equal(get.headers['cache-control'], 'no-store')
+  assert.equal(get.body.revision, 0)
+  const intervalRow = get.body.rows.find(row => row.key === 'inbox.intervalSeconds')
+  assert.equal(intervalRow.source, 'config', 'the plugin config is the fallback source when no file override exists')
+  assert.equal(intervalRow.value, 0.02, 'the legacy fractional plugin config is accepted')
+  assert.equal(get.body.templates.injection.active, 'default')
+
+  const stale = await routeCall(route, { method: 'PUT', body: { revision: 5, values: { 'work.keep': 3 } } })
+  assert.equal(stale.status, 409)
+  assert.equal(stale.body.code, 'conflict')
+  assert.equal(stale.body.revision, 0)
+  assert.equal(await readFile(join(box.state, 'panel-settings.json'), 'utf8').catch(() => undefined), undefined, 'a stale PUT writes nothing')
+
+  // The connection fence answers first: a rejected PUT never reaches the settings handler, so it has no
+  // side effect. This is the same `guarded` wrapper as the two inbox routes.
+  const forbidden = await routeCall(route, { method: 'PUT', forbidden: true, body: { revision: 0, values: { 'work.keep': 9 } } })
+  assert.equal(forbidden.status, 403, 'the connection fence rejects before the handler')
+  assert.equal(forbidden.text, '', 'a rejected request gets no handler body')
+  assert.equal(await readFile(join(box.state, 'panel-settings.json'), 'utf8').catch(() => undefined), undefined, 'a rejected PUT has no side effect')
+  assert.equal(host.rejected.at(-1)?.forbidden, true, 'the settings route asks the connection fence before the handler')
+
+  const saved = await routeCall(route, { method: 'PUT', body: { revision: 0, values: { 'work.keep': 3 } } })
+  assert.equal(saved.status, 200)
+  assert.equal(saved.body.revision, 1)
+  const after = await routeCall(route)
+  assert.equal(after.body.effective['work.keep'], 3)
+  assert.equal(after.body.rows.find(row => row.key === 'work.keep').source, 'file')
+
+  for (const candidate of host.routes.filter(item => item.path.startsWith('/wheelchair-inbox/'))) {
+    const denied = await routeCall(candidate, { forbidden: true, url: candidate.path })
+    assert.equal(denied.status, 403, `${candidate.path} is behind the same fence`)
+  }
+}
+
+/** One host context that records routes, effects, log lines and fence calls. */
+function hostContextWithFence({ rejection } = {}) {
+  const effects = []
+  const routes = []
+  const lines = []
+  const rejected = []
+  return {
+    effects,
+    routes,
+    lines,
+    rejected,
+    ctx: {
+      logger: { info: line => lines.push(String(line)), warn: line => lines.push(String(line)) },
+      connection: {
+        requestRejection: req => {
+          rejected.push(req)
+          return typeof rejection === 'function' ? rejection(req) : undefined
+        },
+      },
+      webServer: {
+        register: ({ kind, path, handler }) => {
+          routes.push({ kind, path, handler })
+          return () => {}
+        },
+      },
+      effect: (fn, label) => { effects.push({ fn, label }) },
+    },
+  }
+}
+
+
 /** (f) Interval configuration: default 60, env/argument override, 0 disables, bad values throw. *//** (f) Interval configuration: default 60, env/argument override, 0 disables, bad values throw. */
 function testIntervalConfig() {
   const saved = process.env.SPV_INBOX_INTERVAL_SECONDS
+  const savedStateDir = process.env.DSH_SUPERAGENT_STATE_DIR
   delete process.env.SPV_INBOX_INTERVAL_SECONDS
+  // A sandbox state dir proves the assertion holds when no panel settings file exists (and keeps a real
+  // one on the operator's machine out of the test).
+  process.env.DSH_SUPERAGENT_STATE_DIR = join(tmpdir(), `wheelchair-agent-inbox-interval-${process.pid}`)
   try {
     assert.equal(INBOX_INTERVAL_DEFAULT, 60)
     assert.equal(resolveInboxIntervalSeconds(), 60)
@@ -641,6 +787,8 @@ function testIntervalConfig() {
   } finally {
     if (saved === undefined) delete process.env.SPV_INBOX_INTERVAL_SECONDS
     else process.env.SPV_INBOX_INTERVAL_SECONDS = saved
+    if (savedStateDir === undefined) delete process.env.DSH_SUPERAGENT_STATE_DIR
+    else process.env.DSH_SUPERAGENT_STATE_DIR = savedStateDir
   }
 }
 
@@ -656,6 +804,7 @@ try {
   await testReviewStatusAndPrState()
   await testOneRepoFailureDoesNotStopLoop()
   await testHostStartsPoller()
+  await testHostSettingsRouteAndFence()
   testIntervalConfig()
   process.stdout.write('ok\n')
 } catch (error) {

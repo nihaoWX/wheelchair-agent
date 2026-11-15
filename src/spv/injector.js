@@ -23,36 +23,61 @@
  */
 import { access } from 'node:fs/promises'
 import { basename, join } from 'node:path'
+import { KEY_SPECS, defaultSettings, renderTemplate, resolveSettings } from '../shared/settings.js'
 import { RESULT_KINDS, consumeMessage, threadOf, unreadMessages } from './outbox.js'
 
-/** 轮询间隔（毫秒）。outbox 是本地目录，1s 足够；结果不是实时数据，再快也没有收益。 */
-export const INJECT_INTERVAL_MS = 1000
+/**
+ * 轮询间隔（毫秒）。outbox 是本地目录，1s 足够；结果不是实时数据，再快也没有收益。
+ * 默认值来自 `src/shared/settings.js` 的 `KEY_SPECS`，面板默认值与消费者不再各写一份。
+ */
+export const INJECT_INTERVAL_MS = KEY_SPECS['injection.intervalMs'].default
 
-/** 注入正文的上限：再长的答复会挤占会话上下文，完整内容留在 outbox/read/ 的文件里。 */
-export const MAX_BODY_CHARS = 12000
+/** 注入正文的上限：再长的答复会挤占会话上下文，完整内容留在 outbox/read/ 的文件里（来源同上）。 */
+export const MAX_BODY_CHARS = KEY_SPECS['injection.maxBodyChars'].default
+
+/** 面板设置里 `injection.intervalMs` 的下限（`setTimeout` 再快只会空转）。 */
+const MIN_INTERVAL_MS = 50
+
+/** 设置快照里的注入间隔；坏值退回今天的 1s，绝不把轮询停掉。 */
+function intervalOf(settings, fallback = INJECT_INTERVAL_MS) {
+  const value = Number(settings?.effective?.['injection.intervalMs'])
+  return Number.isFinite(value) && value >= MIN_INTERVAL_MS ? value : fallback
+}
+
+/** 设置快照里的正文上限；坏值退回今天的 12000。 */
+function bodyLimitOf(settings) {
+  const value = Number(settings?.effective?.['injection.maxBodyChars'])
+  return Number.isInteger(value) && value >= 1 ? value : MAX_BODY_CHARS
+}
 
 /**
  * 一条结果在会话里的样子：线程、种类、正文，有工单号时带上它。
  *
- * `reply` 与 `notice` 的正文都跟在下一行。`notice` 现在也承载操作者对 SPV 决策的质疑，所以头部只报种类与
- * 线程，不再断言原因（那会对一半的消息说错）。正文为空时明写 `(empty message)`，否则一条空消息看起来像
- * 注入器自己出了故障。正文超过 `MAX_BODY_CHARS` 时截断，
- * `options.read` 是已消费消息的文件路径，截断标记会指向它（完整内容就在那里）。
+ * 文本由面板设置里的 `injection` 模板渲染；不传 `settings` 时用内置默认，所以老调用点（与老测试）的输出
+ * 逐字节不变。`reply` 与 `notice` 的正文都跟在下一行。`notice` 现在也承载操作者对 SPV 决策的质疑，所以
+ * 头部只报种类与线程，不再断言原因（那会对一半的消息说错）。正文为空时明写 `(empty message)`，否则一条
+ * 空消息看起来像注入器自己出了故障。正文超过 `injection.maxBodyChars` 时截断，`options.read` 是已消费
+ * 消息的文件路径，截断标记会指向它（完整内容就在那里）。
  */
-export function formatResult(message, { read } = {}) {
+export function formatResult(message, { read, settings } = {}) {
+  const snapshot = settings ?? defaultSettings()
+  const limit = bodyLimitOf(snapshot)
   const thread = threadOf(message)
   const ticket = message.ticketId ? ` (ticket ${message.ticketId})` : ''
   let body = String(message.text ?? '').trim()
   // 按 Unicode 码点计数再截断：`slice` 按 UTF-16 码元切，正好落在 emoji 的代理对中间会留下孤立代理项。
   const chars = Array.from(body)
-  if (chars.length > MAX_BODY_CHARS) {
+  if (chars.length > limit) {
     const where = read === undefined ? '' : `; full message: ${read}`
-    body = `${chars.slice(0, MAX_BODY_CHARS).join('')}\n[truncated after ${MAX_BODY_CHARS} characters${where}]`
+    body = `${chars.slice(0, limit).join('')}\n[truncated after ${limit} characters${where}]`
   }
-  // Neutral by design: a notice is also an operator's objection to an SPV decision, so naming a cause
-  // here would be false half the time. The body says what the message is.
-  const header = `[spv] ${String(message.kind)} on thread "${thread}"${ticket}:`
-  return `${header}\n${body === '' ? '(empty message)' : body}`
+  const template = snapshot?.templates?.injection?.text ?? defaultSettings().templates.injection.text
+  return renderTemplate('injection', template, {
+    kind: String(message.kind),
+    thread,
+    ticket,
+    body: body === '' ? '(empty message)' : body,
+  })
 }
 
 /** 消息文件的 basename：基线按文件名记，`id` 只作兜底（真实消息两者都有）。 */
@@ -75,6 +100,10 @@ async function fileExists(file) {
  *
  * 依赖全部可注入（`unread` / `consume` / `inject` / `logger`），所以 `tests/test-injector.mjs` 不需要真队列。
  * `getAgent()` 返回 undefined 时**不消费**任何消息：会话还没接受过任务，此时消费等于把结果丢在没有读者的地方。
+ *
+ * 每次 tick 都重读面板设置（`stateDir` 可指定；`settingsOf` 是测试缝），所以改 `injection.intervalMs`、
+ * 模板或正文上限都**不需要重启会话**。调度用自排的 `setTimeout` 而不是固定 `setInterval`：间隔是每轮重新
+ * 取的，改小改大下一轮就生效。坏设置文件由 `resolveSettings` 自己退回默认，这里只记一条 warn。
  */
 export function startResultInjector({
   dirs,
@@ -82,6 +111,9 @@ export function startResultInjector({
   inject,
   logger = console,
   intervalMs = INJECT_INTERVAL_MS,
+  settingsOf,
+  stateDir,
+  timers = { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: id => clearTimeout(id) },
   unread = unreadMessages,
   consume = consumeMessage,
 }) {
@@ -107,6 +139,28 @@ export function startResultInjector({
 
   let busy = false
   let stopped = false
+  let timer
+  let lastWarning
+
+  /** 本轮要用的设置快照：坏文件/坏注入器失败都退回内置默认，且只 warn 一次同一条原因。 */
+  function currentSettings() {
+    try {
+      const snapshot =
+        typeof settingsOf === 'function' ? settingsOf() : resolveSettings(stateDir === undefined ? {} : { stateDir })
+      if (snapshot?.warning !== undefined && snapshot.warning !== lastWarning) {
+        lastWarning = snapshot.warning
+        logger?.warn?.(`[spv] panel settings ignored: ${snapshot.warning}`)
+      }
+      return snapshot
+    } catch (error) {
+      const message = `[spv] panel settings could not be read: ${error?.message ?? error}`
+      if (message !== lastWarning) {
+        lastWarning = message
+        logger?.warn?.(message)
+      }
+      return defaultSettings()
+    }
+  }
 
   async function tick() {
     // 上一轮还没读完就不叠一轮：两个 tick 同时 rename 同一个文件只会互相添乱。
@@ -116,6 +170,8 @@ export function startResultInjector({
       const skip = await baselineNames()
       // 卸载发生在基线读取期间：不再开始任何消费。
       if (stopped) return
+      // 每轮都读：模板/截断上限来自这一份快照，同一轮里所有消息用同一版本，改设置下一轮生效。
+      const settings = currentSettings()
       const agent = getAgent()
       if (agent === undefined || agent === null) return
       for (const message of await unread(dirs)) {
@@ -140,7 +196,7 @@ export function startResultInjector({
         // 同名副本已经投递过（同一个 id 的重发）：消费掉，但不再注入。
         if (deliveredBefore) continue
         try {
-          inject(agent, formatResult(message, { read: target }), message)
+          inject(agent, formatResult(message, { read: target, settings }), message)
         } catch (error) {
           logger?.warn?.(`[spv] the result injector could not hand over ${nameOf(message)}: ${error?.message ?? error}`)
         }
@@ -152,10 +208,25 @@ export function startResultInjector({
     }
   }
 
-  const timer = setInterval(() => { void tick() }, intervalMs)
-  timer.unref?.()
+  // 自排定时器：每一轮结束后重新取间隔，所以面板改 injection.intervalMs 无需重启。
+  //
+  // 显式传入非默认的 `intervalMs` 是旧调用点的测试缝（老测试用它把间隔压到 20ms），优先级最高；生产调用
+  // 不传，间隔就完全由设置快照决定。
+  const explicit = Number(intervalMs)
+  const legacyInterval =
+    Number.isFinite(explicit) && explicit >= 1 && explicit !== INJECT_INTERVAL_MS ? explicit : undefined
+  const schedule = () => {
+    if (stopped) return
+    const delay = legacyInterval ?? intervalOf(currentSettings())
+    timer = timers.setTimeout(() => {
+      void tick().finally(schedule)
+    }, delay)
+    timer?.unref?.()
+  }
+  schedule()
+
   return () => {
     stopped = true
-    clearInterval(timer)
+    if (timer !== undefined) timers.clearTimeout(timer)
   }
 }

@@ -15,6 +15,7 @@ import {
   reclaimWork,
   resolveWorkRoot,
 } from '../shared/work.js'
+import { defaultSettings, resolveSettings } from '../shared/settings.js'
 
 export const name = 'wheelchair-agent-spv'
 export const inject = ['orchestrator']
@@ -115,6 +116,22 @@ export async function reclaimAtMount(ctx, { openTickets, workspaceRegistry } = {
       // The default root is correct when the settings block cannot be read.
     }
   }
+  // 面板设置：`work.sweepOnMount` 关掉时**整个**挂载回收跳过（连 prune 也不做），`work.keep` /
+  // `work.keepDays` 就是 `work gc` 的默认保留策略。文件坏了由 resolveSettings 退回默认，这里再兜一层。
+  let settings
+  try {
+    settings = resolveSettings({ stateDir })
+  } catch (error) {
+    ctx.logger?.warn?.(`wheelchair-agent work gc: panel settings unavailable (${error?.message ?? error}); using defaults`)
+    settings = defaultSettings()
+  }
+  if (settings.warning !== undefined) {
+    ctx.logger?.warn?.(`wheelchair-agent work gc: panel settings ignored: ${settings.warning}`)
+  }
+  if (settings.effective['work.sweepOnMount'] === false) {
+    ctx.logger?.info?.('wheelchair-agent work gc: skipped; work.sweepOnMount is false in the panel settings')
+    return
+  }
   let skipDirectories = new Map()
   let blockedReason
   if (typeof openTickets === 'function') {
@@ -133,6 +150,8 @@ export async function reclaimAtMount(ctx, { openTickets, workspaceRegistry } = {
   const result = await reclaimWork({
     root,
     stateDir,
+    keep: settings.effective['work.keep'],
+    keepDays: settings.effective['work.keepDays'],
     skipDirectories,
     blockedReason,
   })
