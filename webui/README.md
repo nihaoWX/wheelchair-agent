@@ -386,6 +386,33 @@ and the same viewport/theme: `before-letter-types.png` is commit `f301111` (the 
 fixture, written with the new `inbox add`; it was removed after the capture. No submission was sent
 from either form, so no worker task or SPV notice was produced.
 
+The Settings comparison uses the same app at 1440×900 in light, in fresh English and Chinese pages:
+`before-settings-*.png` is the installed package at `main` @ `f2472a5` (Inbox only) and
+`after-settings-*.png` is `agent/webui-settings` @ `5bcecb7` (Inbox and Settings). Because the running
+service predates the new host route and cannot be restarted (it runs workers), the branch's
+`lib/client.js` was hot-swapped into the installed package only for these captures, and
+`/wheelchair-settings` was served in the page by request interception forwarding GET/PUT to a
+temporary local Node process running the real `createSettingsHandler({ stateDir, env: {} })` from
+`src/shared/settings.js`, seeded with one custom `prIssue` preset; no hand-written JSON fixtures were
+used. The installed client was restored afterwards (sha256 equals `main` @ `f2472a5`), and the host
+route registration itself is covered by the test suite.
+
+- `docs/before-settings-en.png` / `docs/before-settings-zh.png` — baseline installed panel at
+  `main` @ `f2472a5`: the Inbox tab only, no Settings tab, English and Chinese.
+- `docs/after-settings-en.png` / `docs/after-settings-zh.png` — the Settings tab at page top, both
+  locales: Reload/Save toolbar, status, Inbox refresh / Merge handling / Message injection groups,
+  with row labels, effective/default values, Reset buttons and source tags.
+- `docs/after-settings-templates-en.png` — the Dispatch text group scrolled into view: the three
+  template rows with preset selector, textarea, "New preset from this", Delete preset, Revert to
+  default, character count and placeholder list; the `prIssue` row uses the seeded `terse` preset.
+- `docs/after-settings-validation-en.png` — removing the required `{comment}` from that preset and
+  pressing Save shows the inline error ("Missing required placeholder {comment}") and the client
+  blocks the PUT, so the revision stays 1.
+- `docs/after-settings-saved-en.png` — optional live-save capture: changing
+  `inbox.intervalSeconds` from 60 to 90 and pressing Save PUTs to the real handler and shows
+  **Saved at revision 2**, the `Saved` source tag and effective 90 / default 60.
+- `docs/after-settings-dark.png` — optional dark capture of the same Settings page; the host tokens
+  switch under `prefers-color-scheme: dark`.
 - `docs/before-status-pending.png` / `docs/after-status-pending.png` — the review-status regression
   on the real inbox, **Pending review** tab, light, 1440×2300 (tall enough for all seven rows). Before, the installed panel shows only
   #6 as pending and counts 14 approved because merged-but-unreviewed PRs fall through to GitHub's
