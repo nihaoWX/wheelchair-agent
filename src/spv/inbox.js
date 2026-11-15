@@ -1,15 +1,21 @@
 /**
- * 审查收件箱：一个 PR 一个 JSON item，外加「整条评论 → spv 任务」的派活流程。
+ * 审查收件箱：操作者的通用复查入口，一个 item 一个 JSON 文件。
  *
- * 这是收件箱的**唯一**实现。CLI（`wheelchair-agent inbox watch`）与 dsh 的 webui 插件都 import 它：
+ * 两种信件（`item.kind`）：
+ *   pr           一个 GitHub PR；watcher 轮询 `gh pr list` 写入
+ *   spv_message  一次 SPV 在无人看管时自己做出的决定；CLI 的 `inbox add` 或 `spv_notify` 工具写入
+ *
+ * 这是收件箱的**唯一**实现。CLI（`wheelchair-agent inbox ...`）与 dsh 的 webui 插件都 import 它：
  * webui 的 host 半身 import 的是 `install.sh` 从本文件复制进 profile 的副本（`lib/core/inbox.js`），
  * 所以面板和轮询器不会各写一份，也不会因为 preset 被别的 worktree 替换而失效（见 `webui/README.md`）。
  *
  * 纯 Node builtins：不 import dsh，不 `process.exit`。
  *
  * 目录布局（缺省 `<stateDir>/inbox/`）：
- *   <owner>-<name>-<number>.json   一个 PR item；评论追加到它的 `review` 数组
+ *   <owner>-<name>-<number>.json   一个 PR item
+ *   spv-<thread>-<UTC>-<rand>.json 一个 SPV 决策信
  *   .<id>.lock                     该 item 的跨进程写锁（watcher 与 review POST 共用）
+ * 每条审查决定追加到 item 的 `review` 数组。
  */
 import { execFile, execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -21,7 +27,7 @@ import { promisify } from 'node:util'
 
 import { checkProject, checkTask, checkThread, submitTask } from './dispatch.js'
 import { DEFAULT_STATE_DIR, resolveRoot } from './paths.js'
-import { dirsOf } from '../shared/queue.js'
+import { dirsOf, writeMessage } from '../shared/queue.js'
 
 const execFileAsync = promisify(execFile)
 
@@ -30,16 +36,21 @@ export const INBOX_ROOT_DEFAULT = join(DEFAULT_STATE_DIR, 'inbox')
 
 /** 一条评论的上限：够写清一条审查意见，又不至于把任务正文推过模型的单次预算。 */
 const REVIEW_LIMIT = 5000
-/** item 文件名：轮询器生成的 `<owner>-<name>-<number>` 与 POST 传来的 id 共用同一套约束。 */
+/** 决策信的标题与正文上限；正文够放一段完整的判断依据，又不会撑爆面板与工具输出。 */
+const TITLE_LIMIT = 500
+const MESSAGE_BODY_LIMIT = 20000
+/** 两种 item 的 `kind`；旧磁盘记录没有这个字段，读取时按 `pr` 处理。 */
+const KINDS = new Set(['pr', 'spv_message'])
+/** item 文件名：轮询器生成的 `<owner>-<name>-<number>`、`spv-…` 与 POST 传来的 id 共用同一套约束。 */
 const ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/
 /** `git@github.com:owner/name.git`、`https://github.com/owner/name` 都归一到 `owner/name`。 */
 const GITHUB_REMOTE = /github\.com[:/]([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/i
 /** item 里 `repo` 字段的形状；`owner/name`，两段都是普通仓库名字符。 */
 const REPO_PATTERN = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 /** `gh pr list` 要的字段；顺序无关，但一处定义避免两个调用点漂移。 */
-const GH_FIELDS = 'number,title,state,additions,deletions,changedFiles,url,body,updatedAt'
+const GH_FIELDS = 'number,title,state,additions,deletions,changedFiles,url,body,createdAt,updatedAt'
 /** 这些字段变了才重写 item；`review` 与 `at` 从不参与比较。 */
-const ITEM_FIELDS = ['title', 'state', 'additions', 'deletions', 'changedFiles', 'url', 'body']
+const ITEM_FIELDS = ['kind', 'title', 'state', 'additions', 'deletions', 'changedFiles', 'url', 'body', 'createdAt', 'updatedAt']
 /** review 请求体上限：与 dsh-host-open-in-app 的 64 KiB 约定一致。 */
 const MAX_BODY_BYTES = 64 * 1024
 /** 每 item 一把跨进程锁：重试间隔、持锁上限、过期判定。 */
@@ -75,6 +86,22 @@ function checkItemId(id) {
     )
   }
   return value
+}
+
+/** item 的种类；旧记录没有 `kind`，一律按 `pr` 处理，升级磁盘记录不是读取的前提。 */
+function kindOf(item) {
+  return item?.kind === 'spv_message' ? 'spv_message' : 'pr'
+}
+
+/**
+ * 时间筛选用的时刻：PR 用它自己的创建时间（"年龄"），SPV 决策信没有 PR，用写入时刻。
+ *
+ * 旧版本写的 PR item 没有 `createdAt`，这里**不**回退到 watcher 的 `at`：那会把三个月前开的 PR 伪装成
+ * 今天的新信。没有创建时间的 item 在时间筛选下直接排除，等下一次 `inbox watch` 轮询补齐字段后再出现。
+ */
+function itemTime(item) {
+  if (kindOf(item) === 'pr') return String(item?.createdAt ?? '').trim()
+  return String(item?.at ?? '')
 }
 
 /** item 文件路径；id 先过 `checkItemId`，避免拼出 `../` 之类的路径。 */
@@ -136,6 +163,51 @@ export async function writeItem(root, item) {
   // writeFile's mode is filtered by the process umask; chmod once so the item is 0644 regardless.
   await chmod(temporary, 0o644)
   await rename(temporary, file)
+  return item
+}
+
+/**
+ * 写入一封 SPV 决策信（`kind: "spv_message"`），返回落盘的 item。
+ *
+ * 这是 `wheelchair-agent inbox add` 与 `spv_notify` 工具共用的唯一代码路径。id 由 thread、UTC 秒级时间戳
+ * 与 4 个随机字符组成：同一秒内写两封也不会撞名，且仍满足 `ID_PATTERN`（id 同时是文件名）。
+ *
+ * 标题与正文先全部校验，然后才写文件；`thread` 复用队列线程的校验规则（缺省 `main`），因为 `issue` 的
+ * 通知会回到这个线程。
+ */
+export async function createSpvMessage(root, { title, body, thread } = {}) {
+  const heading = String(title ?? '').trim()
+  if (heading === '') {
+    throw invalid('title is required: it is the one line the operator sees first in the review inbox.')
+  }
+  if (heading.length > TITLE_LIMIT) {
+    throw invalid(`title is ${heading.length} characters, over the ${TITLE_LIMIT} limit.`)
+  }
+  const text = String(body ?? '')
+  if (text.trim() === '') {
+    throw invalid('body is required: record what was decided and why, in Markdown.')
+  }
+  if (text.length > MESSAGE_BODY_LIMIT) {
+    throw invalid(`body is ${text.length} characters, over the ${MESSAGE_BODY_LIMIT} limit.`)
+  }
+  let name
+  try {
+    name = checkThread(thread)
+  } catch (error) {
+    throw invalid(`cannot use this thread for the decision letter: ${messageOf(error)}`)
+  }
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z')
+  const id = `spv-${name}-${stamp}-${randomUUID().slice(0, 4)}`
+  const item = {
+    id,
+    kind: 'spv_message',
+    title: heading,
+    body: text,
+    thread: name,
+    at: new Date().toISOString(),
+    review: [],
+  }
+  await writeItem(root, item)
   return item
 }
 
@@ -248,18 +320,42 @@ function taskText(item, comment) {
 }
 
 /**
+ * 一条对 SPV 决策信的质疑：写进 outbox 的 `notice` 正文。
+ *
+ * 它必须让 SPV 知道被质疑的是**哪一封**信（标题 + id + thread），并原样保留操作者的评论；
+ * 最后一句只说清楚要它回顾这次决定。这里不派任务，所以没有 `project`。
+ */
+function noticeText(item, comment) {
+  return [
+    '审查收件箱转来一次对 SPV 自主决定的质疑，请处理。',
+    '',
+    `信件：${item.title ?? ''}`,
+    `信件 id: ${item.id}`,
+    `thread: ${item.thread || 'main'}`,
+    '',
+    '操作者评论（原样保留）：',
+    comment,
+    '',
+    '这是对你在无人看管时自己作出的决定的质疑；请回顾当时的判断并处理。',
+  ].join('\n')
+}
+
+/**
  * 追加一条审查决定，返回 `{ item, task }`；`task` 为 `null` 表示这条决定不派活。
  *
  * 两种决定（`kind`）：
- *   - `approve`：通过，`text` 必须为空，只写 review，不派任务；
- *   - `issue`：有问题，`text` 必填，先写 review 再派 `inbox-<pr>` 任务。
+ *   - `approve`：通过，评论**可选**，只写 review，不派任务、不发消息；评论是操作者接受的理由，留给以后看。
+ *   - `issue`：有问题，评论必填，先写 review，然后按信件种类分流：
+ *       pr          → 派 `inbox-<pr>` 任务（与以前一样），不发 outbox 消息；
+ *       spv_message → 发**恰好一条** `notice` 到 spv outbox，回到信件自己的 thread，不派任务。
  * 旧数据里的 `question` / `fix` 只在 UI 读取时归一成 `issue`，这里不再写入旧 kind。
  *
  * 整个 read → 校验 → append → write 都在该 item 的跨进程锁内；watcher 的 read-modify-write 也在同一把
  * 锁里，所以两边不会用陈旧读取覆盖对方的改动。
  *
- * 顺序是刻意的：派生字段（project/thread/任务正文）与评论先全部校验，再落盘，最后派活。派活失败时评论
- * 仍在，调用方拿到带原 item 的 502；校验失败则什么都不写，避免面板报错后重试又重复一条评论。
+ * 顺序是刻意的：派生字段（project/thread/任务正文或通知正文）与评论先全部校验，再落盘，最后派活或发消息。
+ * 派活/发消息失败时评论仍在，调用方拿到带原 item 的 502；校验失败则什么都不写，避免面板报错后重试又重复
+ * 一条评论。
  */
 export async function appendReview(root, { id, kind, text } = {}) {
   const itemId = checkItemId(id)
@@ -269,15 +365,9 @@ export async function appendReview(root, { id, kind, text } = {}) {
   }
   const approve = reviewKind === 'approve'
   const comment = String(text ?? '').trim()
-  if (approve) {
-    if (comment !== '') {
-      throw invalid('an approve decision takes no comment; send text as an empty string or omit it.')
-    }
-  } else {
-    if (comment === '') throw invalid('text must contain the comment to send; it cannot be empty.')
-    if (comment.length > REVIEW_LIMIT) {
-      throw invalid(`text is ${comment.length} characters, over the ${REVIEW_LIMIT} limit.`)
-    }
+  if (!approve && comment === '') throw invalid('text must contain the comment to send; it cannot be empty.')
+  if (comment.length > REVIEW_LIMIT) {
+    throw invalid(`text is ${comment.length} characters, over the ${REVIEW_LIMIT} limit.`)
   }
 
   return withItemLock(root, itemId, async () => {
@@ -285,10 +375,50 @@ export async function appendReview(root, { id, kind, text } = {}) {
     if (item === undefined) throw notFound(itemId, root)
     if (item.id !== itemId) throw inconsistent(root, itemId, item)
 
+    const review = Array.isArray(item.review) ? item.review : []
     if (approve) {
-      const review = Array.isArray(item.review) ? item.review : []
-      item.review = [...review, { at: new Date().toISOString(), kind: 'approve', text: '' }]
+      // 评论只记录：它不会派任务，也不会给 SPV 发消息。空评论与旧行为一致，仍然允许。
+      item.review = [...review, { at: new Date().toISOString(), kind: 'approve', text: comment }]
       await writeItem(root, item)
+      return { item, task: null }
+    }
+
+    if (kindOf(item) === 'spv_message') {
+      // 这封信没有 repo/pr，所以完全不经过 checkProject 的预检；只校验回信线程与通知正文。
+      let thread
+      try {
+        thread = checkThread(item.thread)
+      } catch (error) {
+        throw invalid(
+          `inbox item ${JSON.stringify(itemId)} has no valid thread (thread: ${JSON.stringify(item.thread)}). ` +
+            `Cannot notify SPV: ${messageOf(error)} Nothing was saved.`,
+        )
+      }
+      // review index 在追加前确定，所以通知 id 对同一封信的同一轮质疑是稳定的。
+      const messageId = `inbox-${itemId}-review-${review.length}`
+      const notice = noticeText(item, comment)
+      item.review = [...review, { at: new Date().toISOString(), kind: 'issue', text: comment }]
+      await writeItem(root, item)
+
+      try {
+        await writeMessage(dirsOf(resolveRoot()), {
+          id: messageId,
+          source: 'spv',
+          thread,
+          kind: 'notice',
+          text: notice,
+          at: new Date().toISOString(),
+        })
+      } catch (error) {
+        const failure = new Error(
+          `the review was saved on "${item.id}", but could not be sent to the spv outbox: ${messageOf(error)}. ` +
+            `fix: check that the queue at ${resolveRoot()} exists (the superagent spv Source creates it) and retry; ` +
+            'the saved comment is not lost.',
+        )
+        failure.code = 'INBOX_DISPATCH'
+        failure.item = item
+        throw failure
+      }
       return { item, task: null }
     }
 
@@ -320,7 +450,6 @@ export async function appendReview(root, { id, kind, text } = {}) {
       )
     }
 
-    const review = Array.isArray(item.review) ? item.review : []
     item.review = [...review, { at: new Date().toISOString(), kind: 'issue', text: comment }]
     await writeItem(root, item)
 
@@ -415,6 +544,9 @@ function itemOf(repo, pull, existing) {
     changedFiles: Number(pull.changedFiles ?? 0),
     url: String(pull.url ?? ''),
     body: String(pull.body ?? ''),
+    // PR 自己的时间：时间筛选按 createdAt（PR 的年龄）走，而不是 watcher 碰巧发现它的时刻。
+    createdAt: String(pull.createdAt ?? ''),
+    updatedAt: String(pull.updatedAt ?? ''),
     at: new Date().toISOString(),
     review: Array.isArray(existing?.review) ? existing.review : [],
   }
@@ -526,6 +658,52 @@ function pathOf(req) {
   } catch {
     return '/'
   }
+}
+
+/** 查询参数；解析失败返回空参数，让 `GET /items` 仍然给默认响应而不是 500。 */
+function queryOf(req) {
+  try {
+    return new URL(String(req.url ?? '/'), 'http://inbox.local').searchParams
+  } catch {
+    return new URLSearchParams()
+  }
+}
+
+/**
+ * 服务端过滤：`kind` / `repo` / `since` / `until` 以 AND 组合。
+ *
+ * 过滤放在 host 这一侧而不是 bundle 里，面板只负责把参数 URL-encode 后重新取。没有参数时原样返回
+ * `readItems()` 的结果（同样的顺序、同样的项），所以旧调用方的行为不变。
+ *
+ * 时间取 `itemTime()`：PR 用创建时间，SPV 决策信写入时刻。`since`/`until` 是闭区间，接受任何
+ * `Date.parse()` 能解析的 ISO 字符串。
+ */
+function filterItems(items, { kind, repo, since, until }) {
+  const wantedKind = String(kind ?? '').trim()
+  if (wantedKind !== '' && wantedKind !== 'all' && !KINDS.has(wantedKind)) {
+    throw invalid(`kind must be "pr", "spv_message" or "all", got ${JSON.stringify(kind)}.`)
+  }
+  const wantedRepo = String(repo ?? '').trim()
+  const from = String(since ?? '').trim()
+  const to = String(until ?? '').trim()
+  const fromTime = from === '' ? undefined : Date.parse(from)
+  const toTime = to === '' ? undefined : Date.parse(to)
+  if (from !== '' && !Number.isFinite(fromTime)) {
+    throw invalid(`since is not a parseable date: ${JSON.stringify(since)}.`)
+  }
+  if (to !== '' && !Number.isFinite(toTime)) {
+    throw invalid(`until is not a parseable date: ${JSON.stringify(until)}.`)
+  }
+  return items.filter(item => {
+    if (wantedKind !== '' && wantedKind !== 'all' && kindOf(item) !== wantedKind) return false
+    if (wantedRepo !== '' && item?.repo !== wantedRepo) return false
+    if (fromTime === undefined && toTime === undefined) return true
+    const when = Date.parse(itemTime(item))
+    if (!Number.isFinite(when)) return false
+    if (fromTime !== undefined && when < fromTime) return false
+    if (toTime !== undefined && when > toTime) return false
+    return true
+  })
 }
 
 /** JSON 响应带 `no-store`：收件箱与派活结果都是实时事实。 */
@@ -645,9 +823,21 @@ export function createInboxHandler({ root = resolveInboxRoot() } = {}) {
         return
       }
       try {
-        sendJson(res, 200, { items: await readItems(root) })
+        const params = queryOf(req)
+        const items = await readItems(root)
+        const filtered = filterItems(items, {
+          kind: params.get('kind'),
+          repo: params.get('repo'),
+          since: params.get('since'),
+          until: params.get('until'),
+        })
+        sendJson(res, 200, { items: filtered })
       } catch (error) {
-        sendJson(res, 500, { code: 'internal-error', message: messageOf(error) })
+        if (error.code === 'INBOX_INVALID') {
+          sendJson(res, 400, { code: 'bad-request', message: messageOf(error) })
+        } else {
+          sendJson(res, 500, { code: 'internal-error', message: messageOf(error) })
+        }
       }
       return
     }

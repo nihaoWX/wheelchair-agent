@@ -31,6 +31,9 @@ jobs:
       - name: Syntax-check every JS file
         run: npm run check
 
+      - name: Inbox letter types and review semantics
+        run: node tests/test-inbox.mjs
+
       - name: Layout boundary rules
         run: bash tests/test-layout.sh
 

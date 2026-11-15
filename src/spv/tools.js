@@ -7,15 +7,17 @@
  * 与 superagent 侧严格分开：本文件不 import `~/opt/dsh-plugins/dsh-superagent/` 的任何东西，只按下文描述的文件布局与它对话。
  * 唯一的接口是 `<queue>/{pending,done,outbox}/` 里的 JSON 文件（见 `src/shared/queue.js` 与 `docs/spv-source.md`）。
  *
- * 两个工具：
+ * 三个工具：
  *   spv_dispatch  写 pending/，立刻返回 id/thread/project
  *   spv_status    非阻塞：pending 里还没取走的任务 + 已到但未读的消息
+ *   spv_notify    写一封 `spv_message` 决策信进操作者的收件箱，返回 id/thread
  *
  * 结果不是工具：阻塞式的结果工具已删除。worker 的 reply/notice 由 `src/spv/injector.js` 在后台轮询 outbox，
  * 消费后作为一条新消息 `followup` 进本会话（见 `apply` 里的 `ctx.effect`）。所以模型没有「读结果」这个动作，
  * 也没有超时；派完活接着说自己的话即可。
  *
  * 读写 outbox/pending 在 `src/spv/outbox.js`，写任务在 `src/spv/dispatch.js`，路径规则在 `src/spv/paths.js`。
+ * 收件箱的写入在 `src/spv/inbox.js`，与 CLI 的 `inbox add` 共用 `createSpvMessage()`。
  *
  * 为什么不 `import { defineTool } from '@deepseek-ai/dsh-tools'`：本包是用户级 preset 引用的普通目录，不在 dsh 的
  * 安装树里，`@deepseek-ai/dsh-tools` 这个 bare specifier 从本包位置解析不到，preset 会整个 mount 失败。
@@ -24,6 +26,7 @@
 import { dirsOf } from '../shared/queue.js'
 import { checkPreset, checkProject, checkTask, checkThread, submitTask } from './dispatch.js'
 import { probe, serviceDown } from './health.js'
+import { createSpvMessage, resolveInboxRoot } from './inbox.js'
 import { startResultInjector } from './injector.js'
 import { pendingTasks, unreadMessages } from './outbox.js'
 import { missingQueue, resolveRoot } from './paths.js'
@@ -40,7 +43,7 @@ function preview(text, limit) {
 }
 
 /**
- * 两个工具的定义。`root` 由挂载时解析：`queueDir` 设置 > `$SPV_QUEUE_DIR` > `<stateDir>/spv`。
+ * 三个工具的定义。`root` 由挂载时解析：`queueDir` 设置 > `$SPV_QUEUE_DIR` > `<stateDir>/spv`。
  * 队列目录不存在不在挂载时报错——那时 superagent 可能只是还没启动，报错会挡住整个会话；改由每次调用报。
  *
  * `state` 是插件实例的共享状态：`spv_dispatch` 从 `exec.agent` 记下这个会话的 agent，注入器用
@@ -119,6 +122,62 @@ export function defineSpvTools(root, state) {
           if (error.code === 'ENOENT') throw missingQueue(root)
           throw error
         }
+      },
+    },
+    {
+      name: 'spv_notify',
+      description:
+        'Push one autonomous decision into the human review inbox. Use this when you run unattended, make a call ' +
+        'on the operator\'s behalf while they are away, and need them to review it later: the letter records what ' +
+        'you decided and why, and the operator later accepts it or objects. It writes one `spv_message` letter ' +
+        '(title + Markdown body + optional thread, default "main") and returns immediately; it does not dispatch a ' +
+        'worker and does not wait for an answer. Do not use it for routine progress or for work you are handing to ' +
+        'a worker.',
+      parameters: {
+        type: 'object',
+        additionalProperties: false,
+        required: ['title', 'body'],
+        properties: {
+          title: {
+            type: 'string',
+            description: 'One line naming the decision; this is the first thing the operator sees in the inbox.',
+          },
+          body: {
+            type: 'string',
+            description: 'Markdown: what you decided, why, and anything the operator needs to judge it.',
+          },
+          thread: {
+            type: 'string',
+            description: 'SPV queue thread this decision belongs to; defaults to "main". An objection comes back on it.',
+          },
+        },
+      },
+      output: {
+        schema: {
+          type: 'object',
+          additionalProperties: false,
+          required: ['id', 'thread'],
+          properties: {
+            id: { type: 'string' },
+            thread: { type: 'string' },
+          },
+        },
+        render: (_args, value) => [{
+          type: 'text',
+          text: `Added decision letter ${value.id} to the review inbox on thread "${value.thread}". ` +
+            'It stays there until the operator accepts it or objects; do not wait for an answer.',
+        }],
+      },
+      async execute(args, exec) {
+        const item = await createSpvMessage(resolveInboxRoot(), {
+          title: args.title,
+          body: args.body,
+          thread: args.thread,
+        })
+        // 与 spv_dispatch 一样记下会话的 agent：即使这个会话没派过 worker，操作者之后对信的质疑
+        // 也要由注入器推进本会话。
+        if (exec?.agent) state.agent = exec.agent
+        return { id: item.id, thread: item.thread }
       },
     },
     {
@@ -216,9 +275,9 @@ export function defineSpvTools(root, state) {
 }
 
 /**
- * 注册两个工具，并让插件自己持有结果注入器。
+ * 注册三个工具，并让插件自己持有结果注入器。
  *
- * 队列根只解析一次：两个工具与注入器必须看同一个目录。注入器挂在 `ctx.effect` 上，返回的 stop 函数交给
+ * 队列根只解析一次：三个工具与注入器必须看同一个目录。注入器挂在 `ctx.effect` 上，返回的 stop 函数交给
  * 插件 fiber，所以会话关闭时定时器随之清掉，不会在进程里空转；它本身没有超时，插件挂着就一直等。
  */
 export function apply(ctx, config = {}) {

@@ -54,8 +54,29 @@ Adding a feature is exactly one array entry plus its React component:
 2. implement the component; it owns its heading controls and data. The feature panel itself owns
    the bordered surface, title/description row and toolbar.
 
-The inbox feature derives each PR's review status from the **latest `review` entry**, with no
-stored status field (`statusOf(item)` in `lib/client.js`):
+### Two letter types
+
+Every item carries a `kind`:
+
+| `kind` | What it is | Fields |
+|---|---|---|
+| `pr` | a GitHub pull request, written by `wheelchair-agent inbox watch` | `repo`, `pr`, `state`, diff counts, `url`, `body`, `createdAt`, `updatedAt`, `at` |
+| `spv_message` | one decision the SPV agent made on its own while running unattended | `title`, Markdown `body`, `thread`, `at`; **no** `repo` and **no** `pr` |
+
+An `spv_message` letter exists so the operator can later accept the call or object to it. Its writer
+is `wheelchair-agent inbox add --title <text> --body <markdown|@file> [--thread <name>]`, or the
+`spv_notify({title, body, thread?})` tool the SPV preset registers. Both call the same
+`createSpvMessage()`; ids are `spv-<thread>-<UTC timestamp>-<4 random chars>`, so two letters in the
+same second cannot collide. The panel shows a `PR` / localized `SPV decision` badge on every row;
+PR rows keep repo + number, decision rows show their thread.
+
+Both types keep `review: [{at, kind: "approve"|"issue", text}]` as the log, and both use the same
+per-item cross-process lock and atomic writes.
+
+### Review semantics
+
+The review status is derived from the **latest `review` entry**, with no stored status field
+(`statusOf(item)` in `lib/client.js`):
 
 | latest review | status | UI |
 |---|---|---|
@@ -63,19 +84,34 @@ stored status field (`statusOf(item)` in `lib/client.js`):
 | `approve` | `approved` (已通过) | success badge; row de-emphasized |
 | `issue` | `issue` (有问题) | error badge |
 
-`approve` takes no text and dispatches nothing; `issue` requires text and dispatches the usual
-`inbox-<pr>` task. Legacy `question` / `fix` records are normalized to `issue` on read, and the old
-disk records are never rewritten. The toolbar filters by derived status (All / Pending / Issues /
-Approved, default Pending), with counts.
+`approve` takes an **optional** comment; it is recorded only and never notifies the agent. `issue`
+requires a comment and branches by letter type: a `pr` dispatches the usual `inbox-<pr>` worker
+task; an `spv_message` writes **exactly one** `notice` into the spv outbox on the letter's thread,
+so the SPV session sees which decision is being questioned. Neither path sends an outbox message for
+a PR issue. Legacy `question` / `fix` records are normalized to `issue` on read, and the old disk
+records are never rewritten.
+
+### Filters
+
+Three filters compose with AND: **letter type** (`pr` / `spv_message` / all), **repository**
+(derived from the items; a specific repo excludes `spv_message`), and **time** (all / last 24 hours /
+last 7 days / custom range). They are implemented server-side in
+`GET /wheelchair-inbox/items?kind=&repo=&since=&until=`; no query parameters is exactly the old
+response and the body stays `{items: [...]}`. The panel only URL-encodes the parameters and
+re-fetches when they change, so the filter logic stays out of the bundle. Time uses the PR's own
+`createdAt` (its age, not the moment the watcher noticed it) and an `spv_message`'s `at`.
+
+The toolbar also keeps the derived-status filter (All / Pending / Issues / Approved, default
+Pending), with counts over the currently fetched letters.
 
 ## Markdown
 
-PR descriptions are rendered by a small dependency-free Markdown → React renderer inside
+PR descriptions and `spv_message` bodies are rendered by a small dependency-free Markdown → React renderer inside
 `lib/client.js`. It supports ATX headings, unordered/ordered nested lists, fenced code blocks,
 inline code, bold/italic/strikethrough, links, blockquotes, horizontal rules, GFM pipe tables and
 paragraphs. Raw HTML is not passed through (text becomes React children, so nothing is injected);
 images render as their alt text linked to the image, and footnotes and math are intentionally
-unsupported. The body is collapsed by default; expanding "PR description" renders the Markdown.
+unsupported. The body is collapsed by default; expanding "PR description" / "Decision note" renders the Markdown.
 Block nesting is capped so a hostile body cannot exhaust the stack.
 
 ## Self-contained installed package
@@ -107,26 +143,36 @@ run against the profile may prune anything it does not know about, removing this
 `install.sh --check` reports that, and rerunning `install.sh` restores it. If you reinstall the
 profile itself, run `bash install.sh` afterwards.
 
+**Restart the superagent service after installing a host-half change.** `lib/client.js` hot-reloads
+through dsh's client-bundle watcher, but `lib/index.js` and the core copies are imported once when
+the service starts. The server-side `kind` / `repo` / `since` / `until` filters live in that host
+half, so an already-running older service keeps listing every letter even though the new filter bar
+is visible.
+
 ## Screenshots
 
-All captures use the same dsh web composition (`dsh-web-app`, 1440×900). The "before" column is
-the previous iframe page (commit `7e8bfff`); the "after" column is the native feature host. Light
-and dark are included; the superagent service was not restarted, so the browser loaded the updated
-package through dsh's client-bundle watcher.
+All captures use the same dsh web composition (`dsh-web-app`, 1440×900), light unless the file name
+says dark. The letter-types comparison uses the same scenario — the real inbox with its PR rows —
+and the same viewport/theme: `before-letter-types.png` is commit `f301111` (the PR-only list), and
+`after-letter-types.png` is this change. The after capture also shows one temporary `spv_message`
+fixture, written with the new `inbox add`; it was removed after the capture. No submission was sent
+from either form, so no worker task or SPV notice was produced.
 
-- `docs/before-panel.png` / `docs/after-panel.png` — the panel before (iframe list) and after
-  (feature host, default Pending filter, light).
-- `docs/after-panel-dark.png` — the feature host in dark theme.
+- `docs/before-letter-types.png` / `docs/after-letter-types.png` — PR-only list vs the two-letter
+  inbox with the filter bar (`letter type` / `repository` / `time`), the `PR` and `SPV decision`
+  badges, and the two separate actions.
+- `docs/after-approve-form.png` — "Approve" opens the optional comment box; its hint says the text
+  is recorded only and does not notify the agent.
+- `docs/after-issue-form.png` — "Flag issue" on an `spv_message`: the comment is required and the
+  hint says submitting notifies SPV (on a PR the same action says it dispatches a worker).
+- `docs/after-letter-types-dark.png` — the same two-letter inbox in dark theme.
 - `docs/after-filter-pending.png`, `docs/after-filter-issues.png`,
-  `docs/after-filter-approved.png`, `docs/after-filter-all.png` — the four filter states,
+  `docs/after-filter-approved.png`, `docs/after-filter-all.png` — the four derived-status states,
   including the real PR #1 whose legacy `question` review displays as **Issue**.
-- `docs/after-issue-form.png` — "Flag issue" expanded with a comment.
-- `docs/before-pr-body.png` / `docs/after-pr-body.png` — the **same PR #4 body** expanded:
-  plain text + monospace before, rendered Markdown after (light).
-- `docs/before-pr-body-dark.png` / `docs/after-pr-body-dark.png` — the same comparison in dark.
-- `docs/after-pr-table.png` — a GFM pipe table rendered with token-colored borders.
-- `docs/after-pr-code-dark.png` — a fenced code block in dark theme (monospace + code surface).
-- `docs/before-sidebar.png` / `docs/after-sidebar.png` — the sidebar before/after this package.
+- `docs/after-pr-body.png` — a PR description expanded in the new chrome, rendering Markdown.
+- `docs/after-panel.png` / `docs/after-panel-dark.png` — the current feature host in light and dark.
 
-The approved-state capture uses a temporary fixture item because the real inbox had no approved
-PR; it was removed after the capture. Every other capture uses the real inbox.
+Earlier captures (`before-panel.png`, `before-sidebar.png` / `after-sidebar.png`,
+`after-pr-table.png`, `after-pr-code-dark.png`, `before-pr-body-dark.png` /
+`after-pr-body-dark.png`) document the earlier iframe → feature-host change at commit `7e8bfff`;
+they predate the letter types and are kept as history.

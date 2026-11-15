@@ -56,6 +56,8 @@ commands:
                                write one task into the queue and return
   status [--thread <n>]        show the queue without waiting
   inbox                        print where the review inbox lives (the dsh Web UI panel)
+  inbox add --title <text> --body <markdown|@file> [--thread <name>]
+                               push one SPV decision letter into the inbox and print its id
   inbox watch [--once] [--interval <seconds>]
                                poll the tools repos and write PR items into the inbox (default 60s)
   check                        runtime health: service, preset, panel prepare value, prepare dry run
@@ -64,7 +66,7 @@ commands:
 
 Run "wheelchair-agent <command> --help" for one command's options.`
 
-const INBOX_USAGE = `usage: wheelchair-agent inbox
+const INBOX_USAGE = `usage: wheelchair-agent inbox <command>
 
 The review inbox is a section of the wheelchair-agent panel in the dsh Web UI.
 Open the superagent service, then pick "wheelchair-agent" in the sidebar:
@@ -72,8 +74,23 @@ Open the superagent service, then pick "wheelchair-agent" in the sidebar:
   wheelchair-agent service start
   wheelchair-agent service open
 
-To poll the tools/ repos into the inbox:
-  wheelchair-agent inbox watch [--once] [--interval <seconds>]`
+commands:
+  add --title <text> --body <markdown|@file> [--thread <name>]
+                               write one SPV decision letter into the inbox (prints the new id)
+  watch [--once] [--interval <seconds>]
+                               poll the tools/ repos into the inbox`
+
+const INBOX_ADD_USAGE = `usage: wheelchair-agent inbox add --title <text> --body <markdown|@file> [--thread <name>]
+
+Write one "spv_message" decision letter into the review inbox: the SPV agent records
+what it decided and why while the operator was away, and the operator later accepts
+it or objects. The body is Markdown; "@file" reads it from a file. The new item id is
+printed on stdout.
+
+options:
+  --title <text>    one line naming the decision (required)
+  --body <value>    Markdown body, or @file to read it from a file (required)
+  --thread <name>   spv queue thread the letter belongs to (default main)`
 
 const INBOX_WATCH_USAGE = `usage: wheelchair-agent inbox watch [--once] [--interval <seconds>]
 
@@ -306,6 +323,39 @@ async function commandStatus(argv) {
   process.stdout.write(`${lines.join('\n')}\n`)
 }
 
+/**
+ * `inbox add`：写一封 SPV 决策信。
+ *
+ * 与 `spv_notify` 工具共用 `createSpvMessage()`，所以 CLI 与模型写出的信件字段完全一致。`--body @file`
+ * 让长正文走文件，避免命令行引号与长度限制；读文件失败时在写任何东西之前报错。
+ */
+async function commandInboxAdd(argv) {
+  const parsed = options(argv, {
+    command: 'inbox add',
+    usage: INBOX_ADD_USAGE,
+    flags: { '--title': 'title', '--body': 'body', '--thread': 'thread' },
+  })
+  if (parsed.title === undefined) throw new UsageError('inbox add needs --title <text>')
+  if (parsed.body === undefined) throw new UsageError('inbox add needs --body <markdown|@file>')
+  let body = parsed.body
+  if (body.startsWith('@')) {
+    const file = body.slice(1)
+    if (file === '') throw new UsageError('--body @ needs a file path after "@"')
+    try {
+      body = readFileSync(file, 'utf8')
+    } catch (error) {
+      throw new Error(`cannot read the body file ${JSON.stringify(file)}: ${error.message}`)
+    }
+  }
+  const { createSpvMessage, resolveInboxRoot } = await load('src', 'spv', 'inbox.js')
+  const item = await createSpvMessage(resolveInboxRoot(), {
+    title: parsed.title,
+    body,
+    thread: parsed.thread,
+  })
+  process.stdout.write(`${item.id}\n`)
+}
+
 /** `inbox watch`：先立刻轮询一轮，然后按间隔循环；`--once` 只跑一轮。 */
 async function commandInboxWatch(argv) {
   let once = false
@@ -368,6 +418,10 @@ async function commandInboxWatch(argv) {
  * 所以独立页与 `--port` 都已移除。
  */
 async function commandInbox(argv) {
+  if (argv[0] === 'add') {
+    await commandInboxAdd(argv.slice(1))
+    return
+  }
   if (argv[0] === 'watch') {
     await commandInboxWatch(argv.slice(1))
     return
