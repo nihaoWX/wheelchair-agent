@@ -94,7 +94,7 @@ wheelchair-agent/
 ├── src/superagent/               # 只被 superagent profile 加载（spv.js, watch.js）
 ├── src/spv/                      # 只被 SPV preset 与 CLI 加载（paths, dispatch, outbox, injector, health, inbox, cron, tools, cron-plugin）
 ├── preset/                       # 装到 ~/.dsh/.agent-presets/spv/（preset.yml, agent.cordis.yml, spv-launcher.sh, wheelchair-agent.sh, README.md）
-├── commands/                     # 会被装成独立命令的实现（prepare.sh, jobctl.py, superagent-service.py, open-url.py）
+├── commands/                     # 会被装成独立命令的实现（prepare.sh, jobctl.py, superagent-service.py）
 ├── webui/                        # 独立 dsh web client 包 wheelchair-agent-webui（装进 superagent profile，见下）
 ├── build/render-preset.mjs       # 构建步骤，不是命令
 ├── tests/                        # test-prepare.sh, test-layout.sh, test-injector.mjs
@@ -108,13 +108,19 @@ superagent 侧的 `src/superagent/` **从不进 preset 目录**：那个 profile
 `webui/` 是**第四种安装目标**：`install.sh` 把包拷进 `~/.dsh/profiles/superagent/node_modules/wheelchair-agent-webui/`，
 并往该 profile 的 `cordis.patch.yml` 追加一行 loader（见下）。
 
-## 审查收件箱 / `wheelchair-agent` UI 主页（2026-11-14，2026-11-15 改为原生 React）
+## 审查收件箱 / `wheelchair-agent` 功能宿主（2026-11-14，2026-11-15 原生 React / 功能宿主）
 
-面板不是"一个 PR 列表页"，而是 **`wheelchair-agent` 的 UI 主页**；收件箱只是它当前的第一个 section。
-页面是一个**原生 React 组件**（渲染在 `main` slot，因此继承 host 的 theme token、light/dark 与 `ctx.locale`），
-骨架由 `SECTIONS` 数组驱动（`{ id, labelKey, Component }`），tab 条与内容区都从它生成；加第二个 section =
-加一个数组项 + 一个 React 组件。PR 正文由 `lib/client.js` 自带的小 Markdown → React 渲染器生成，不写
-`innerHTML`、不 require `@deepseek-ai/dsh-client-ui-primitives`。详见 `webui/README.md`。
+面板不是"一个 PR 列表页"，而是 **`wheelchair-agent` 的功能宿主**：导航列功能，收件箱只是当前的第一个功能，
+渲染在自己的带边框功能面板里（标题、说明、筛选/刷新工具栏、PR 行列表）。页面是一个**原生 React 组件**
+（渲染在 `main` slot，因此继承 host 的 theme token、light/dark 与 `ctx.locale`），骨架由 `SECTIONS`
+数组驱动（`{ id, labelKey, titleKey, descriptionKey, Component }`）；加一个功能 = 加一个数组项 + 一个
+React 组件。PR 正文由 `lib/client.js` 自带的小 Markdown → React 渲染器生成，不写 `innerHTML`、不 require
+`@deepseek-ai/dsh-client-ui-primitives`。详见 `webui/README.md`。
+
+审查决定只有两种：`approve`（通过，`text` 为空，**不派任务**）和 `issue`（有问题，正文必填，派
+`inbox-<pr>` 任务）。item 状态不落盘，由最新一条 review 派生：无 → `pending`、`approve` → `approved`、
+`issue` → `issue`；旧数据的 `question`/`fix` 只在读取时归一成 `issue`，不改磁盘记录。UI 按派生状态提供
+全部 / 待审 / 有问题 / 已通过筛选（默认待审）。
 
 为什么是**独立包**：`dsh-client-modules` 的 `exactPackageSpecifier()` 只认裸包名，`wheelchair-agent/webui`
 这种子路径不会成为 loader 行、扫不到 `dsh.client`。所以包名 `wheelchair-agent-webui`、自己的 `package.json`

@@ -23,10 +23,19 @@ window.__ModuleLoader__.load({
 		/** Copy for the panel, the inbox section and the Markdown chrome. */
 		const zh = {
 			panel: "wheelchair-agent",
-			"panel.subtitle": "审查收件箱：PR、评论与任务派发",
-			"sections.label": "区块",
+			"panel.subtitle": "功能面板：wheelchair-agent 的各项工作流",
+			"nav.features": "功能",
+			"sections.label": "功能",
 			"section.inbox": "收件箱",
+			"feature.inbox.title": "收件箱",
+			"feature.inbox.description": "审查 GitHub PR：通过，或指出问题并派给 worker。",
 			refresh: "刷新",
+			"filter.label": "筛选",
+			"filter.all": "全部",
+			"filter.pending": "待审",
+			"filter.issue": "有问题",
+			"filter.approved": "已通过",
+			"filter.empty": "这个筛选下没有 PR。",
 			"status.loading": "加载中…",
 			"status.loaded": "{count} 个 PR · 更新于 {time}",
 			"status.failed": "加载失败：{message}",
@@ -36,13 +45,16 @@ window.__ModuleLoader__.load({
 			"card.body": "PR 说明",
 			"card.bodyEmpty": "（PR 正文为空）",
 			"card.open": "打开 PR",
-			"card.reviews": "已有评论（{count}）",
-			"kind.question": "提问",
-			"kind.fix": "要改",
-			"form.placeholder": "写一条整体评论；提问和要改都会转成任务。",
-			"form.ask": "提问",
-			"form.fix": "要改",
-			"form.empty": "请先写评论。",
+			"card.reviews": "审查记录（{count}）",
+			"status.pending": "待审",
+			"status.approved": "已通过",
+			"status.issue": "有问题",
+			"form.pass": "通过",
+			"form.issue": "有问题",
+			"form.issuePlaceholder": "写清楚问题在哪；提交后会派给 worker。",
+			"form.issueEmpty": "请写下问题再提交。",
+			"form.submit": "提交评论",
+			"form.cancel": "取消",
 			"form.failed": "提交失败：{message}",
 			"form.inflight": "提交中…",
 			"state.open": "OPEN",
@@ -51,10 +63,19 @@ window.__ModuleLoader__.load({
 		};
 		const en = {
 			panel: "wheelchair-agent",
-			"panel.subtitle": "Review inbox: pull requests, comments and dispatch",
-			"sections.label": "Sections",
+			"panel.subtitle": "Feature host: wheelchair-agent workflows",
+			"nav.features": "Features",
+			"sections.label": "Features",
 			"section.inbox": "Inbox",
+			"feature.inbox.title": "Inbox",
+			"feature.inbox.description": "Review GitHub pull requests: approve them, or flag an issue and dispatch it to a worker.",
 			refresh: "Refresh",
+			"filter.label": "Filter",
+			"filter.all": "All",
+			"filter.pending": "Pending",
+			"filter.issue": "Issues",
+			"filter.approved": "Approved",
+			"filter.empty": "No pull requests in this filter.",
 			"status.loading": "Loading…",
 			"status.loaded": "{count} PRs · updated {time}",
 			"status.failed": "Could not load: {message}",
@@ -64,13 +85,16 @@ window.__ModuleLoader__.load({
 			"card.body": "PR description",
 			"card.bodyEmpty": "(No PR description)",
 			"card.open": "Open PR",
-			"card.reviews": "Reviews ({count})",
-			"kind.question": "Question",
-			"kind.fix": "Change",
-			"form.placeholder": "Write one overall comment; questions and change requests both become tasks.",
-			"form.ask": "Ask",
-			"form.fix": "Request change",
-			"form.empty": "Write a comment first.",
+			"card.reviews": "Review history ({count})",
+			"status.pending": "Pending",
+			"status.approved": "Approved",
+			"status.issue": "Issue",
+			"form.pass": "Approve",
+			"form.issue": "Flag issue",
+			"form.issuePlaceholder": "Describe the problem; submitting dispatches it to a worker.",
+			"form.issueEmpty": "Describe the issue before submitting.",
+			"form.submit": "Submit comment",
+			"form.cancel": "Cancel",
 			"form.failed": "Could not submit: {message}",
 			"form.inflight": "Submitting…",
 			"state.open": "OPEN",
@@ -143,7 +167,7 @@ window.__ModuleLoader__.load({
 			return end - at;
 		}
 
-		/** Leading spaces of a line (tabs were expanded by normalizeSource). */
+		/** Leading spaces of a line; tabs stay literal (collapsing them would corrupt code). */
 		function indentOf(line) {
 			let end = 0;
 			while (end < line.length && line.charAt(end) === " ") end += 1;
@@ -232,9 +256,10 @@ window.__ModuleLoader__.load({
 		* Render inline Markdown into React children.
 		* @param text - inline source, possibly containing soft line breaks.
 		* @param keyPrefix - stable prefix for generated keys.
+		* @param inLink - true while rendering a link label, where nested links are invalid.
 		* @returns React children (strings and elements).
 		*/
-		function inlineNodes(text, keyPrefix) {
+		function inlineNodes(text, keyPrefix, inLink = false) {
 			const nodes = [];
 			let buffer = "";
 			const flush = () => {
@@ -291,7 +316,30 @@ window.__ModuleLoader__.load({
 					index += run;
 					continue;
 				}
-				if (char === "[") {
+				// Images are unsupported; show their alt text as a plain link to the image, not "!" + link.
+				if (char === "!" && !inLink && text.charAt(index + 1) === "[") {
+					const image = parseLink(text, index + 1);
+					if (image !== undefined) {
+						const alt = image.label.trim();
+						push(
+							jsx(
+								"a",
+								{
+									className: "wca-image-link",
+									href: image.href,
+									target: "_blank",
+									rel: "noopener noreferrer",
+									title: image.href,
+									children: alt === "" ? "image" : alt
+								},
+								`${keyPrefix}image${nodes.length}`
+							)
+						);
+						index = image.end;
+						continue;
+					}
+				}
+				if (char === "[" && !inLink) {
 					const link = parseLink(text, index);
 					if (link !== undefined) {
 						push(
@@ -301,7 +349,7 @@ window.__ModuleLoader__.load({
 									href: link.href,
 									target: "_blank",
 									rel: "noopener noreferrer",
-									children: inlineNodes(link.label, `${keyPrefix}link${nodes.length}-`)
+									children: inlineNodes(link.label, `${keyPrefix}link${nodes.length}-`, true)
 								},
 								`${keyPrefix}link${nodes.length}`
 							)
@@ -314,12 +362,33 @@ window.__ModuleLoader__.load({
 					const previous = index === 0 ? "" : text.charAt(index - 1);
 					// Underscores inside a word (snake_case) are literal; asterisks may sit inside one.
 					const intraword = char === "_" && /[A-Za-z0-9]/.test(previous);
+					const run = runLength(text, index, char);
+					if (run >= 3 && !intraword) {
+						const triple = new RegExp(`^\\${char}{3}(?=\\S)([\\s\\S]*?\\S)\\${char}{3}`).exec(
+							text.slice(index)
+						);
+						if (triple !== null) {
+							push(
+								jsx(
+									"strong",
+									{
+										children: jsx("em", {
+											children: inlineNodes(triple[1], `${keyPrefix}emstrong${nodes.length}-`, inLink)
+										})
+									},
+									`${keyPrefix}emstrong${nodes.length}`
+								)
+							);
+							index += triple[0].length;
+							continue;
+						}
+					}
 					const strong = new RegExp(`^\\${char}{2}(?=\\S)([\\s\\S]*?\\S)\\${char}{2}`).exec(text.slice(index));
 					if (strong !== null && !intraword) {
 						push(
 							jsx(
 								"strong",
-								{ children: inlineNodes(strong[1], `${keyPrefix}strong${nodes.length}-`) },
+								{ children: inlineNodes(strong[1], `${keyPrefix}strong${nodes.length}-`, inLink) },
 								`${keyPrefix}strong${nodes.length}`
 							)
 						);
@@ -331,7 +400,7 @@ window.__ModuleLoader__.load({
 						push(
 							jsx(
 								"em",
-								{ children: inlineNodes(emphasis[1], `${keyPrefix}em${nodes.length}-`) },
+								{ children: inlineNodes(emphasis[1], `${keyPrefix}em${nodes.length}-`, inLink) },
 								`${keyPrefix}em${nodes.length}`
 							)
 						);
@@ -345,7 +414,7 @@ window.__ModuleLoader__.load({
 						push(
 							jsx(
 								"del",
-								{ children: inlineNodes(strike[1], `${keyPrefix}del${nodes.length}-`) },
+								{ children: inlineNodes(strike[1], `${keyPrefix}del${nodes.length}-`, inLink) },
 								`${keyPrefix}del${nodes.length}`
 							)
 						);
@@ -413,7 +482,7 @@ window.__ModuleLoader__.load({
 			if (!header.includes("|")) return undefined;
 			const delimiter = lines[start + 1];
 			if (!delimiter.includes("|")) return undefined;
-			if (!/^[ \t]*\|?[ \t]*:?-{1,}:?[ \t]*(?:\|[ \t]*:?-{1,}:?[ \t]*)*\|?[ \t]*$/.test(delimiter)) {
+			if (!/^[ \t]*\|?[ \t]*:?-{3,}:?[ \t]*(?:\|[ \t]*:?-{3,}:?[ \t]*)*\|?[ \t]*$/.test(delimiter)) {
 				return undefined;
 			}
 			const headCells = splitTableRow(header);
@@ -494,11 +563,12 @@ window.__ModuleLoader__.load({
 		}
 
 		/** Parse one list (nested lists arrive through recursion) starting at `start`. */
-		function parseList(lines, start, key) {
+		function parseList(lines, start, key, depth) {
 			const first = matchListItem(lines[start]);
 			if (first === undefined) return undefined;
 			const baseIndent = first.indent;
 			const ordered = first.ordered;
+			const startNumber = ordered ? Number.parseInt(first.marker, 10) : 1;
 			const items = [];
 			let index = start;
 			let itemKey = 0;
@@ -517,7 +587,12 @@ window.__ModuleLoader__.load({
 							break;
 						}
 						const nextMarker = matchListItem(lines[lookahead]);
-						if (nextMarker !== undefined && nextMarker.indent === baseIndent) break;
+						if (nextMarker !== undefined && nextMarker.indent === baseIndent) {
+							// A blank line between same-type items keeps one loose list instead of
+							// splitting it into two lists (which would restart ordered numbering).
+							if (nextMarker.ordered === ordered) cursor = lookahead;
+							break;
+						}
 						if (indentOf(lines[lookahead]) >= marker.contentColumn) {
 							content.push("");
 							cursor += 1;
@@ -537,22 +612,31 @@ window.__ModuleLoader__.load({
 				index = cursor;
 			}
 			const children = items.map((item) => {
-				const blocks = renderBlocks(item.lines, `${item.key}-`);
+				const blocks = renderBlocks(item.lines, `${item.key}-`, depth + 1);
 				// A tight list item renders its text directly, not inside a paragraph: unwrap the
 				// leading paragraph and keep any nested blocks (sublists, code, tables) after it.
-				const first = blocks.length > 0 ? blocks[0] : undefined;
+				const firstBlock = blocks.length > 0 ? blocks[0] : undefined;
 				const itemChildren =
-					first !== undefined && first.type === "p" ? [...first.props.children, ...blocks.slice(1)] : blocks;
+					firstBlock !== undefined && firstBlock.type === "p"
+						? [...firstBlock.props.children, ...blocks.slice(1)]
+						: blocks;
 				return jsx("li", { children: itemChildren }, item.key);
 			});
 			return {
 				next: index,
-				node: ordered ? jsx("ol", { children }, key) : jsx("ul", { children }, key)
+				node: ordered
+					? jsx("ol", { start: startNumber === 1 ? undefined : startNumber, children }, key)
+					: jsx("ul", { children }, key)
 			};
 		}
 
 		/** Render the block-level Markdown of one document (or one list item). */
-		function renderBlocks(lines, keyPrefix) {
+		function renderBlocks(lines, keyPrefix, depth = 0) {
+			// A hostile PR body can nest quotes/lists thousands deep; stop before the JavaScript stack
+			// runs out and show the remaining source instead of letting a slot crash blank the panel.
+			if (depth > 64) {
+				return [jsx("pre", { className: "wca-md-deep", children: lines.join("\n") }, `${keyPrefix}deep`)];
+			}
 			const out = [];
 			let index = 0;
 			let blockKey = 0;
@@ -595,10 +679,10 @@ window.__ModuleLoader__.load({
 				}
 				const heading = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/.exec(line);
 				if (heading !== null) {
-					const depth = heading[1].length;
+					const level = heading[1].length;
 					const content = (heading[2] ?? "").replace(/[ \t]+#+[ \t]*$/, "").trim();
 					const headingKey = key();
-					out.push(jsx(`h${depth}`, { children: inlineNodes(content, `${headingKey}-`) }, headingKey));
+					out.push(jsx(`h${level}`, { children: inlineNodes(content, `${headingKey}-`) }, headingKey));
 					index += 1;
 					continue;
 				}
@@ -621,11 +705,13 @@ window.__ModuleLoader__.load({
 						index += 1;
 					}
 					const quoteKey = key();
-					out.push(jsx("blockquote", { children: renderBlocks(quoted, `${quoteKey}-`) }, quoteKey));
+					out.push(
+						jsx("blockquote", { children: renderBlocks(quoted, `${quoteKey}-`, depth + 1) }, quoteKey)
+					);
 					continue;
 				}
 				const listKey = key();
-				const list = parseList(lines, index, listKey);
+				const list = parseList(lines, index, listKey, depth);
 				if (list !== undefined) {
 					out.push(list.node);
 					index = list.next;
@@ -656,7 +742,13 @@ window.__ModuleLoader__.load({
 		function renderMarkdown(text) {
 			const source = normalizeSource(text);
 			if (source.trim() === "") return [];
-			return renderBlocks(source.split("\n"), "");
+			try {
+				return renderBlocks(source.split("\n"), "");
+			} catch (error) {
+				// Never let an externally supplied body throw past the component: a slot crash blanks
+				// the whole main page. Degrade to the raw source instead.
+				return [jsx("pre", { className: "wca-md-deep", children: source }, "markdown-fallback")];
+			}
 		}
 
 		/** Memoized Markdown body; parsing only happens once per distinct PR body. */
@@ -707,11 +799,27 @@ window.__ModuleLoader__.load({
 				font-size: 13px;
 				line-height: 20px;
 			}
+			.wca-nav {
+				display: flex;
+				align-items: center;
+				gap: 12px;
+				width: 100%;
+				min-width: 0;
+			}
+			.wca-nav-label {
+				flex: none;
+				color: var(--dsw-alias-label-tertiary);
+				font-size: 12px;
+				line-height: 18px;
+				font-weight: 600;
+				letter-spacing: .02em;
+			}
 			.wca-tabs {
 				display: flex;
-				align-self: flex-start;
 				gap: 4px;
 				width: fit-content;
+				min-width: 0;
+				overflow-x: auto;
 				padding: 4px;
 				border-radius: var(--dsw-radius-lg);
 				background: var(--dsw-alias-bg-module-platform);
@@ -727,6 +835,7 @@ window.__ModuleLoader__.load({
 				font-size: 14px;
 				line-height: 20px;
 				cursor: pointer;
+				white-space: nowrap;
 			}
 			.wca-tab:hover { color: var(--dsw-alias-label-primary); }
 			.wca-tab[aria-selected="true"] {
@@ -736,6 +845,7 @@ window.__ModuleLoader__.load({
 				font-weight: 600;
 			}
 			.wca-tab:focus-visible,
+			.wca-segment:focus-visible,
 			.wca-btn:focus-visible,
 			.wca-disclosure-toggle:focus-visible,
 			.wca-comment:focus-visible,
@@ -743,36 +853,127 @@ window.__ModuleLoader__.load({
 				outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
 				outline-offset: 2px;
 			}
-			.wca-section { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
-			.wca-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-			.wca-section-title { margin: 0; font-size: 16px; font-weight: 500; line-height: 24px; }
-			.wca-status {
+			.wca-feature {
+				box-sizing: border-box;
+				min-width: 0;
+				overflow: hidden;
+				border: .5px solid var(--dsw-alias-border-l2);
+				border-radius: var(--dsw-radius-xl);
+				background: var(--dsw-alias-bg-layer-1);
+			}
+			.wca-feature-head {
+				box-sizing: border-box;
+				display: flex;
+				align-items: flex-start;
+				justify-content: space-between;
+				gap: 16px;
+				padding: 16px;
+				border-bottom: .5px solid var(--dsw-alias-border-l2);
+				flex-wrap: wrap;
+			}
+			.wca-feature-heading {
+				display: flex;
+				flex-direction: column;
+				gap: 2px;
+				min-width: 0;
+			}
+			.wca-feature-title {
 				margin: 0;
+				font-size: 16px;
+				font-weight: 500;
+				line-height: 24px;
+			}
+			.wca-feature-desc {
+				margin: 0;
+				color: var(--dsw-alias-label-tertiary);
+				font-size: 13px;
+				line-height: 20px;
+			}
+			.wca-toolbar {
+				display: flex;
+				align-items: center;
+				justify-content: flex-end;
+				gap: 12px;
+				flex-wrap: wrap;
+			}
+			.wca-segmented {
+				display: flex;
+				align-items: center;
+				gap: 2px;
+				padding: 2px;
+				border-radius: var(--dsw-radius-md);
+				background: var(--dsw-alias-interactive-bg-hover);
+			}
+			.wca-segment {
+				box-sizing: border-box;
+				display: inline-flex;
+				align-items: center;
+				gap: 6px;
+				height: 26px;
+				padding: 0 9px;
+				border: .5px solid transparent;
+				border-radius: var(--dsw-radius-sm);
+				background: transparent;
+				color: var(--dsw-alias-label-secondary);
+				font: inherit;
+				font-size: 12px;
+				line-height: 18px;
+				cursor: pointer;
+				white-space: nowrap;
+			}
+			.wca-segment:hover { color: var(--dsw-alias-label-primary); }
+			.wca-segment[aria-pressed="true"] {
+				border-color: var(--dsw-alias-border-l3);
+				background: var(--dsw-alias-bg-layer-1);
+				color: var(--dsw-alias-label-primary);
+				font-weight: 500;
+			}
+			.wca-segment-count {
+				color: var(--dsw-alias-label-tertiary);
+				font-size: 11px;
+				line-height: 16px;
+				font-variant-numeric: tabular-nums;
+			}
+			.wca-feature-body {
+				display: flex;
+				flex-direction: column;
+				min-width: 0;
+				padding: 4px 16px 8px;
+			}
+			.wca-status {
+				margin: 12px 0 0;
 				min-height: 20px;
 				color: var(--dsw-alias-label-tertiary);
 				font-size: 13px;
 				line-height: 20px;
 			}
 			.wca-status[data-tone="error"] { color: var(--dsw-alias-state-error-primary); }
-			.wca-cards { display: flex; flex-direction: column; gap: 12px; }
-			.wca-card {
-				box-sizing: border-box;
+			.wca-items { display: flex; flex-direction: column; min-width: 0; }
+			.wca-item {
 				display: flex;
 				flex-direction: column;
 				gap: 10px;
 				min-width: 0;
-				padding: 16px;
-				border: .5px solid var(--dsw-alias-border-l2);
-				border-radius: var(--dsw-radius-xl);
-				background: var(--dsw-alias-bg-layer-1);
+				padding: 16px 0;
+				border-top: .5px solid var(--dsw-alias-border-l2);
 			}
-			.wca-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+			.wca-item:first-child { border-top: 0; }
+			.wca-item-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 			.wca-repo { color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; }
 			.wca-repo strong { color: var(--dsw-alias-label-primary); font-weight: 500; }
-			.wca-card-title { margin: 0; font-size: 15px; font-weight: 600; line-height: 22px; }
+			.wca-item-title { margin: 0; font-size: 15px; font-weight: 600; line-height: 22px; }
 			.wca-meta { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 20px; }
+			.wca-diff {
+				font: var(--dsw-font-markdown-code-block-small);
+				font-variant-numeric: tabular-nums;
+			}
 			.wca-added { color: var(--dsw-alias-state-success-primary); }
 			.wca-removed { color: var(--dsw-alias-state-error-primary); }
+			.wca-item[data-status="approved"] .wca-item-title {
+				color: var(--dsw-alias-label-secondary);
+				font-weight: 500;
+			}
+			.wca-item[data-status="approved"] .wca-repo strong { color: var(--dsw-alias-label-secondary); }
 			.wca-tag {
 				display: inline-flex;
 				align-items: center;
@@ -802,6 +1003,10 @@ window.__ModuleLoader__.load({
 			.wca-tag[data-tone="neutral"] {
 				background: var(--dsw-alias-bg-module-platform);
 				color: var(--dsw-alias-label-secondary);
+			}
+			.wca-tag[data-tone="pending"] {
+				background: var(--dsw-alias-bg-module-platform);
+				color: var(--dsw-alias-label-tertiary);
 			}
 			.wca-btn {
 				box-sizing: border-box;
@@ -885,6 +1090,15 @@ window.__ModuleLoader__.load({
 				padding-top: 10px;
 				border-top: .5px solid var(--dsw-alias-border-l2);
 			}
+			.wca-issue-box {
+				display: flex;
+				flex-direction: column;
+				gap: 8px;
+				padding: 10px;
+				border: .5px solid var(--dsw-alias-border-l2);
+				border-radius: var(--dsw-radius-md);
+				background: var(--dsw-alias-bg-module-platform);
+			}
 			.wca-comment {
 				box-sizing: border-box;
 				width: 100%;
@@ -900,7 +1114,7 @@ window.__ModuleLoader__.load({
 				line-height: 20px;
 			}
 			.wca-comment::placeholder { color: var(--dsw-alias-label-dimmed); }
-			.wca-actions { display: flex; gap: 8px; }
+			.wca-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 			.wca-form-error {
 				margin: 0;
 				min-height: 18px;
@@ -916,7 +1130,7 @@ window.__ModuleLoader__.load({
 				text-decoration: none;
 			}
 			.wca-open:hover { text-decoration: underline; }
-			.wca-empty { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 20px; }
+			.wca-empty { margin: 16px 0 8px; color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 20px; }
 
 			/* Markdown body: type, spacing and code surfaces follow the host Markdown. */
 			.wca-md {
@@ -994,7 +1208,54 @@ window.__ModuleLoader__.load({
 			return date.toLocaleString(undefined, { hour12: false });
 		}
 
-		/** Map an item state to a localized Tag tone. */
+		/**
+		* Normalize one review kind for display. Old records used `question`/`fix`; both mean
+		* "this PR has a problem". The disk record is never rewritten — only the view normalizes.
+		* @param review - stored review entry.
+		* @returns `"approve"` or `"issue"`.
+		*/
+		function reviewKindOf(review) {
+			return String(review?.kind ?? "").trim().toLowerCase() === "approve" ? "approve" : "issue";
+		}
+
+		/**
+		* Derive an item's review status from its latest review entry; there is no stored status
+		* field, so the log stays the single source of truth.
+		* @param item - inbox item.
+		* @returns `"pending"`, `"approved"` or `"issue"`.
+		*/
+		function statusOf(item) {
+			const reviews = Array.isArray(item?.review) ? item.review : [];
+			if (reviews.length === 0) return "pending";
+			return reviewKindOf(reviews[reviews.length - 1]) === "approve" ? "approved" : "issue";
+		}
+
+		/** Map a derived status to a Tag tone. */
+		function statusTone(status) {
+			switch (status) {
+				case "approved":
+					return "success";
+				case "issue":
+					return "danger";
+				default:
+					return "pending";
+			}
+		}
+
+		/** The derived status badge shown at the top of every item. */
+		function StatusBadge(props) {
+			return jsx(
+				"span",
+				{
+					className: "wca-tag",
+					"data-tone": statusTone(props.status),
+					children: props.t(`status.${props.status}`)
+				},
+				"status"
+			);
+		}
+
+		/** Map an item's GitHub state to a neutral Tag tone (context only, not review status). */
 		function stateTone(state) {
 			switch (String(state ?? "").toUpperCase()) {
 				case "OPEN":
@@ -1016,10 +1277,11 @@ window.__ModuleLoader__.load({
 			return label === key ? state : label;
 		}
 
-		/** Render one review (kind tag, time, plain-text body). */
+		/** Render one review entry (kind badge, time, and the issue text when present). */
 		function ReviewRow(props) {
 			const review = props.review;
-			const fix = review?.kind === "fix";
+			const kind = reviewKindOf(review);
+			const text = String(review?.text ?? "");
 			return jsxs(
 				"div",
 				{
@@ -1034,8 +1296,8 @@ window.__ModuleLoader__.load({
 										"span",
 										{
 											className: "wca-tag",
-											"data-tone": fix ? "warning" : "info",
-											children: props.t(fix ? "kind.fix" : "kind.question")
+											"data-tone": kind === "approve" ? "success" : "danger",
+											children: props.t(kind === "approve" ? "status.approved" : "status.issue")
 										},
 										"kind"
 									),
@@ -1044,27 +1306,39 @@ window.__ModuleLoader__.load({
 							},
 							"head"
 						),
-						jsx("p", { className: "wca-review-text", children: String(review?.text ?? "") }, "text")
+						text === "" ? null : jsx("p", { className: "wca-review-text", children: text }, "text")
 					]
 				},
-				String(review?.at ?? "") + String(review?.text ?? "")
+				String(review?.at ?? "") + kind
 			);
 		}
 
-		/** The review form: one textarea and the two existing actions (ask / request change). */
+		/**
+		* The review actions: Approve submits directly; Flag issue reveals the comment box and
+		* dispatches only after text is submitted.
+		*/
 		function ReviewForm(props) {
 			const t = props.t;
+			const [open, setOpen] = react.useState(false);
 			const [text, setText] = react.useState("");
 			const [busy, setBusy] = react.useState(false);
 			const [error, setError] = react.useState("");
 			const mounted = react.useRef(true);
-			react.useEffect(() => () => {
-				mounted.current = false;
+			const textarea = react.useRef(null);
+			react.useEffect(() => {
+				mounted.current = true;
+				return () => {
+					mounted.current = false;
+				};
 			}, []);
+			react.useEffect(() => {
+				if (open && textarea.current !== null) textarea.current.focus();
+			}, [open]);
 			const submit = async (kind) => {
-				const value = text.trim();
-				if (value === "") {
-					setError(t("form.empty"));
+				const value = kind === "issue" ? text.trim() : "";
+				if (kind === "issue" && value === "") {
+					setError(t("form.issueEmpty"));
+					if (textarea.current !== null) textarea.current.focus();
 					return;
 				}
 				setBusy(true);
@@ -1081,6 +1355,7 @@ window.__ModuleLoader__.load({
 					}
 					if (!mounted.current) return;
 					setText("");
+					setOpen(false);
 					props.onSubmitted();
 				} catch (failure) {
 					if (!mounted.current) return;
@@ -1094,14 +1369,6 @@ window.__ModuleLoader__.load({
 				{
 					className: "wca-form",
 					children: [
-						jsx("textarea", {
-							className: "wca-comment",
-							rows: 3,
-							placeholder: t("form.placeholder"),
-							value: text,
-							disabled: busy,
-							onChange: (event) => setText(event.target.value)
-						}),
 						jsxs(
 							"div",
 							{
@@ -1113,11 +1380,11 @@ window.__ModuleLoader__.load({
 											type: "button",
 											className: "wca-btn",
 											"data-variant": "outline",
-											disabled: busy,
-											onClick: () => submit("question"),
-											children: t("form.ask")
+											disabled: busy || props.status === "approved",
+											onClick: () => submit("approve"),
+											children: busy ? t("form.inflight") : t("form.pass")
 										},
-										"ask"
+										"approve"
 									),
 									jsx(
 										"button",
@@ -1126,15 +1393,79 @@ window.__ModuleLoader__.load({
 											className: "wca-btn",
 											"data-variant": "primary",
 											disabled: busy,
-											onClick: () => submit("fix"),
-											children: busy ? t("form.inflight") : t("form.fix")
+											"aria-expanded": open,
+											onClick: () => {
+												setError("");
+												setOpen(true);
+											},
+											children: t("form.issue")
 										},
-										"fix"
+										"issue"
 									)
 								]
 							},
 							"actions"
 						),
+						open
+							? jsxs(
+									"div",
+									{
+										className: "wca-issue-box",
+										children: [
+											jsx("textarea", {
+												ref: textarea,
+												className: "wca-comment",
+												rows: 3,
+												placeholder: t("form.issuePlaceholder"),
+												"aria-label": t("form.issuePlaceholder"),
+												value: text,
+												disabled: busy,
+												onChange: (event) => {
+													setText(event.target.value);
+													if (error !== "") setError("");
+												}
+											}),
+											jsxs(
+												"div",
+												{
+													className: "wca-actions",
+													children: [
+														jsx(
+															"button",
+															{
+																type: "button",
+																className: "wca-btn",
+																"data-variant": "primary",
+																disabled: busy,
+																onClick: () => submit("issue"),
+																children: busy ? t("form.inflight") : t("form.submit")
+															},
+															"submit"
+														),
+														jsx(
+															"button",
+															{
+																type: "button",
+																className: "wca-btn",
+																"data-variant": "outline",
+																disabled: busy,
+																onClick: () => {
+																	setOpen(false);
+																	setError("");
+																},
+																children: t("form.cancel")
+															},
+															"cancel"
+														)
+													]
+												},
+												"box-actions"
+											)
+										]
+									},
+									"box"
+							  )
+							: null,
 						jsx("p", { className: "wca-form-error", role: "alert", children: error }, "error")
 					]
 				},
@@ -1170,25 +1501,26 @@ window.__ModuleLoader__.load({
 			);
 		}
 
-		/** One PR card: identity, title, diff stat, Markdown body, reviews and the form. */
-		function PrCard(props) {
+		/** One PR row inside the inbox feature panel. */
+		function PrItem(props) {
 			const item = props.item;
 			const t = props.t;
 			const reviews = Array.isArray(item.review) ? item.review : [];
+			const status = statusOf(item);
 			const href = safeWebHref(item.url);
 			const additions = Number.isFinite(Number(item.additions)) ? Number(item.additions) : 0;
 			const deletions = Number.isFinite(Number(item.deletions)) ? Number(item.deletions) : 0;
 			const files = Number.isFinite(Number(item.changedFiles)) ? Number(item.changedFiles) : 0;
-			const state = String(item.state ?? "").toUpperCase();
 			return jsxs(
 				"article",
 				{
-					className: "wca-card",
+					className: "wca-item",
+					"data-status": status,
 					children: [
 						jsxs(
 							"div",
 							{
-								className: "wca-card-head",
+								className: "wca-item-head",
 								children: [
 									jsxs(
 										"div",
@@ -1198,30 +1530,22 @@ window.__ModuleLoader__.load({
 										},
 										"repo"
 									),
-									jsx(
-										"span",
-										{
-											className: "wca-tag",
-											"data-tone": stateTone(state),
-											children: stateLabel(t, state)
-										},
-										"state"
-									)
+									jsx(StatusBadge, { status, t }, "status")
 								]
 							},
 							"head"
 						),
-						jsx("h2", { className: "wca-card-title", children: String(item.title ?? "") || t("card.untitled") }, "title"),
+						jsx("h3", { className: "wca-item-title", children: String(item.title ?? "") || t("card.untitled") }, "title"),
 						jsxs(
 							"p",
 							{
 								className: "wca-meta",
 								children: [
-									jsx("span", { className: "wca-added", children: `+${additions}` }, "add"),
+									jsx("span", { className: "wca-diff wca-added", children: `+${additions}` }, "add"),
 									" ",
-									jsx("span", { className: "wca-removed", children: `−${deletions}` }, "del"),
-									", ",
-									t("card.files", { count: files })
+									jsx("span", { className: "wca-diff wca-removed", children: `−${deletions}` }, "del"),
+									" ",
+									jsx("span", { children: t("card.files", { count: files }) }, "files")
 								]
 							},
 							"meta"
@@ -1240,7 +1564,7 @@ window.__ModuleLoader__.load({
 									},
 									"reviews"
 							  ),
-						jsx(ReviewForm, { item, t, onSubmitted: props.onSubmitted }, "form"),
+						jsx(ReviewForm, { item, t, status, onSubmitted: props.onSubmitted }, "form"),
 						href === undefined
 							? null
 							: jsx(
@@ -1260,13 +1584,26 @@ window.__ModuleLoader__.load({
 			);
 		}
 
-		/** The inbox section: fetch once, refresh on demand, reload after a comment is accepted. */
+		/** The four inbox filters; the default view is pending. */
+		const FILTERS = [
+			{ id: "all", labelKey: "filter.all" },
+			{ id: "pending", labelKey: "filter.pending" },
+			{ id: "issue", labelKey: "filter.issue" },
+			{ id: "approved", labelKey: "filter.approved" }
+		];
+
+		/**
+		* The inbox feature panel: feature header and toolbar, a derived-status filter, and the
+		* PR rows. It owns its own controls so a future feature does not inherit them.
+		*/
 		function InboxSection(props) {
 			const t = props.t;
+			const feature = props.feature;
 			const [items, setItems] = react.useState(null);
 			const [loading, setLoading] = react.useState(true);
 			const [error, setError] = react.useState("");
 			const [updatedAt, setUpdatedAt] = react.useState(null);
+			const [filter, setFilter] = react.useState("pending");
 			const alive = react.useRef(true);
 			const inflight = react.useRef(null);
 			const rerun = react.useRef(false);
@@ -1309,6 +1646,18 @@ window.__ModuleLoader__.load({
 					alive.current = false;
 				};
 			}, [load]);
+			const counts = react.useMemo(() => {
+				const next = { all: 0, pending: 0, issue: 0, approved: 0 };
+				for (const item of items ?? []) {
+					next.all += 1;
+					next[statusOf(item)] += 1;
+				}
+				return next;
+			}, [items]);
+			const visible = react.useMemo(() => {
+				const list = items ?? [];
+				return filter === "all" ? list : list.filter((item) => statusOf(item) === filter);
+			}, [items, filter]);
 			const status =
 				error !== ""
 					? error
@@ -1318,72 +1667,137 @@ window.__ModuleLoader__.load({
 								count: items.length,
 								time: updatedAt === null ? "" : updatedAt.toLocaleTimeString(undefined, { hour12: false })
 							});
+			const titleId = `wca-feature-${feature.id}`;
 			return jsxs(
-				"div",
+				"section",
 				{
-					className: "wca-section",
+					className: "wca-feature",
+					"aria-labelledby": titleId,
 					children: [
 						jsxs(
-							"div",
+							"header",
 							{
-								className: "wca-section-head",
+								className: "wca-feature-head",
 								children: [
-									jsx("h2", { className: "wca-section-title", children: t("section.inbox") }, "title"),
-									jsx(
-										"button",
+									jsxs(
+										"div",
 										{
-											type: "button",
-											className: "wca-btn",
-											"data-variant": "outline",
-											disabled: loading,
-											onClick: () => load(),
-											children: t("refresh")
+											className: "wca-feature-heading",
+											children: [
+												jsx("h2", { id: titleId, className: "wca-feature-title", children: t(feature.titleKey) }, "title"),
+												jsx("p", { className: "wca-feature-desc", children: t(feature.descriptionKey) }, "desc")
+											]
 										},
-										"refresh"
+										"heading"
+									),
+									jsxs(
+										"div",
+										{
+											className: "wca-toolbar",
+											children: [
+												jsx(
+													"div",
+													{
+														className: "wca-segmented",
+														role: "group",
+														"aria-label": t("filter.label"),
+														children: FILTERS.map((option) =>
+															jsx(
+																"button",
+																{
+																	type: "button",
+																	className: "wca-segment",
+																	"aria-pressed": filter === option.id,
+																	onClick: () => setFilter(option.id),
+																	children: [
+																		t(option.labelKey),
+																		jsx("span", { className: "wca-segment-count", children: counts[option.id] }, "count")
+																	]
+																},
+																option.id
+															)
+														)
+													},
+													"filters"
+												),
+												jsx(
+													"button",
+													{
+														type: "button",
+														className: "wca-btn",
+														"data-variant": "outline",
+														disabled: loading,
+														onClick: () => load(),
+														children: t("refresh")
+													},
+													"refresh"
+												)
+											]
+										},
+										"toolbar"
 									)
 								]
 							},
 							"head"
 						),
-						jsx(
-							"p",
-							{
-								className: "wca-status",
-								"data-tone": error !== "" ? "error" : undefined,
-								role: error !== "" ? "alert" : undefined,
-								children: status
-							},
-							"status"
-						),
-						items !== null && items.length === 0
-							? jsx("p", { className: "wca-empty", children: t("inbox.empty") }, "empty")
-							: null,
-						jsx(
+						jsxs(
 							"div",
 							{
-								className: "wca-cards",
-								children:
-									items === null
-										? null
-										: items.map((item, index) =>
-												jsx(PrCard, { item, t, onSubmitted: () => load() }, String(item.id ?? index))
+								className: "wca-feature-body",
+								children: [
+									jsx(
+										"p",
+										{
+											className: "wca-status",
+											"data-tone": error !== "" ? "error" : undefined,
+											role: error !== "" ? "alert" : undefined,
+											children: status
+										},
+										"status"
+									),
+									items !== null && items.length === 0
+										? jsx("p", { className: "wca-empty", children: t("inbox.empty") }, "empty")
+										: null,
+									items !== null && items.length > 0 && visible.length === 0
+										? jsx("p", { className: "wca-empty", children: t("filter.empty") }, "filtered-empty")
+										: null,
+									items !== null && visible.length > 0
+										? jsx(
+												"div",
+												{
+													className: "wca-items",
+													children: visible.map((item, index) =>
+														jsx(PrItem, { item, t, onSubmitted: () => load() }, String(item.id ?? index))
+													)
+												},
+												"items"
 										  )
+										: null
+								]
 							},
-							"cards"
+							"body"
 						)
 					]
 				},
-				"inbox"
+				"feature"
 			);
 		}
 
 		/**
-		* The sections this page hosts. Adding a section is exactly one array entry plus
-		* its component; the tab bar is generated from this list.
+		* The features this page hosts. Adding a feature is exactly one array entry plus its
+		* component; the feature nav and the active body are generated from this list.
 		*/
-		const SECTIONS = [{ id: "inbox", labelKey: "section.inbox", Component: InboxSection }];
+		const SECTIONS = [
+			{
+				id: "inbox",
+				labelKey: "section.inbox",
+				titleKey: "feature.inbox.title",
+				descriptionKey: "feature.inbox.description",
+				Component: InboxSection
+			}
+		];
 
-		/** The `main` slot page: title, section tabs, and the active section. */
+		/** The `main` slot page: title, feature navigation, and the active feature panel. */
 		function PanelPage(props) {
 			const t = props.t;
 			const [active, setActive] = react.useState(SECTIONS[0].id);
@@ -1414,30 +1828,40 @@ window.__ModuleLoader__.load({
 							},
 							"head"
 						),
-						jsx(
+						jsxs(
 							"nav",
 							{
-								className: "wca-tabs",
-								role: "tablist",
-								"aria-label": t("sections.label"),
-								children: SECTIONS.map((candidate) =>
+								className: "wca-nav",
+								children: [
+									jsx("span", { className: "wca-nav-label", children: t("nav.features") }, "label"),
 									jsx(
-										"button",
+										"div",
 										{
-											type: "button",
-											role: "tab",
-											id: `wca-tab-${candidate.id}`,
-											"aria-controls": `wca-panel-${candidate.id}`,
-											className: "wca-tab",
-											"aria-selected": candidate.id === section.id,
-											onClick: () => setActive(candidate.id),
-											children: t(candidate.labelKey)
+											className: "wca-tabs",
+											role: "tablist",
+											"aria-label": t("sections.label"),
+											children: SECTIONS.map((candidate) =>
+												jsx(
+													"button",
+													{
+														type: "button",
+														role: "tab",
+														id: `wca-tab-${candidate.id}`,
+														"aria-controls": `wca-panel-${candidate.id}`,
+														className: "wca-tab",
+														"aria-selected": candidate.id === section.id,
+														onClick: () => setActive(candidate.id),
+														children: t(candidate.labelKey)
+													},
+													candidate.id
+												)
+											)
 										},
-										candidate.id
+										"tabs"
 									)
-								)
+								]
 							},
-							"tabs"
+							"nav"
 						),
 						jsx(
 							"div",
@@ -1445,7 +1869,7 @@ window.__ModuleLoader__.load({
 								id: `wca-panel-${section.id}`,
 								role: "tabpanel",
 								"aria-labelledby": `wca-tab-${section.id}`,
-								children: jsx(Component, { t })
+								children: jsx(Component, { t, feature: section })
 							},
 							"section"
 						)

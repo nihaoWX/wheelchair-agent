@@ -225,12 +225,12 @@ function repoName(repo) {
 }
 
 /**
- * 一条评论变成的任务正文：repo、PR 号、标题、URL、kind、评论原文，最后**恰好一句**指令。
+ * 一条「有问题」评论变成的任务正文：repo、PR 号、标题、URL、kind、评论原文，最后**恰好一句**指令。
  *
  * 正文把事实全带上，worker 不需要回读收件箱；最后一句是唯一的行为约束，所以它必须只有一句。
+ * 「通过」（approve）不派任务，因此不经过这个函数。
  */
-function taskText(item, kind, comment) {
-  const instruction = kind === 'question' ? '操作者只是提问，先回答，不要改代码。' : '操作者要求修改。'
+function taskText(item, comment) {
   return [
     '审查收件箱转来一条 GitHub PR 评论，请处理。',
     '',
@@ -238,17 +238,22 @@ function taskText(item, kind, comment) {
     `PR: #${item.pr}`,
     `title: ${item.title ?? ''}`,
     `url: ${item.url ?? ''}`,
-    `kind: ${kind}`,
+    'kind: issue',
     '',
     '评论原文（原样保留）：',
     comment,
     '',
-    instruction,
+    '操作者认为这个 PR 有问题，请按评论处理。',
   ].join('\n')
 }
 
 /**
- * 追加一条评论并派活，返回 `{ item, task }`。
+ * 追加一条审查决定，返回 `{ item, task }`；`task` 为 `null` 表示这条决定不派活。
+ *
+ * 两种决定（`kind`）：
+ *   - `approve`：通过，`text` 必须为空，只写 review，不派任务；
+ *   - `issue`：有问题，`text` 必填，先写 review 再派 `inbox-<pr>` 任务。
+ * 旧数据里的 `question` / `fix` 只在 UI 读取时归一成 `issue`，这里不再写入旧 kind。
  *
  * 整个 read → 校验 → append → write 都在该 item 的跨进程锁内；watcher 的 read-modify-write 也在同一把
  * 锁里，所以两边不会用陈旧读取覆盖对方的改动。
@@ -259,19 +264,34 @@ function taskText(item, kind, comment) {
 export async function appendReview(root, { id, kind, text } = {}) {
   const itemId = checkItemId(id)
   const reviewKind = String(kind ?? '').trim()
-  if (reviewKind !== 'question' && reviewKind !== 'fix') {
-    throw invalid(`kind must be "question" or "fix", got ${JSON.stringify(kind)}.`)
+  if (reviewKind !== 'approve' && reviewKind !== 'issue') {
+    throw invalid(`kind must be "approve" or "issue", got ${JSON.stringify(kind)}.`)
   }
+  const approve = reviewKind === 'approve'
   const comment = String(text ?? '').trim()
-  if (comment === '') throw invalid('text must contain the comment to send; it cannot be empty.')
-  if (comment.length > REVIEW_LIMIT) {
-    throw invalid(`text is ${comment.length} characters, over the ${REVIEW_LIMIT} limit.`)
+  if (approve) {
+    if (comment !== '') {
+      throw invalid('an approve decision takes no comment; send text as an empty string or omit it.')
+    }
+  } else {
+    if (comment === '') throw invalid('text must contain the comment to send; it cannot be empty.')
+    if (comment.length > REVIEW_LIMIT) {
+      throw invalid(`text is ${comment.length} characters, over the ${REVIEW_LIMIT} limit.`)
+    }
   }
 
   return withItemLock(root, itemId, async () => {
     const item = await readItem(root, itemId)
     if (item === undefined) throw notFound(itemId, root)
     if (item.id !== itemId) throw inconsistent(root, itemId, item)
+
+    if (approve) {
+      const review = Array.isArray(item.review) ? item.review : []
+      item.review = [...review, { at: new Date().toISOString(), kind: 'approve', text: '' }]
+      await writeItem(root, item)
+      return { item, task: null }
+    }
+
     if (!Number.isInteger(item.pr) || item.pr <= 0) {
       throw invalid(
         `inbox item ${JSON.stringify(itemId)} has no valid PR number (pr: ${JSON.stringify(item.pr)}). ` +
@@ -292,7 +312,7 @@ export async function appendReview(root, { id, kind, text } = {}) {
     try {
       project = checkProject(`tools/${repoName(item.repo)}`)
       thread = checkThread(`inbox-${item.pr}`)
-      task = checkTask(taskText(item, reviewKind, comment))
+      task = checkTask(taskText(item, comment))
     } catch (error) {
       throw invalid(
         `inbox item ${JSON.stringify(itemId)} cannot be dispatched: ${messageOf(error)} ` +
@@ -301,7 +321,7 @@ export async function appendReview(root, { id, kind, text } = {}) {
     }
 
     const review = Array.isArray(item.review) ? item.review : []
-    item.review = [...review, { at: new Date().toISOString(), kind: reviewKind, text: comment }]
+    item.review = [...review, { at: new Date().toISOString(), kind: 'issue', text: comment }]
     await writeItem(root, item)
 
     let record
@@ -567,17 +587,25 @@ async function handleReview(root, req, res) {
     body === null ||
     typeof body.id !== 'string' ||
     typeof body.kind !== 'string' ||
-    typeof body.text !== 'string'
+    (body.text !== undefined && body.text !== null && typeof body.text !== 'string')
   ) {
     sendJson(res, 400, {
       code: 'bad-request',
-      message: 'request body must be JSON with string "id", "kind" and "text"',
+      message: 'request body must be JSON with string "id" and "kind", plus an optional string "text"',
     })
     return
   }
   try {
-    const { item, task } = await appendReview(root, { id: body.id, kind: body.kind, text: body.text })
-    sendJson(res, 200, { ok: true, item, task: { id: task.id, thread: task.thread, project: task.project } })
+    const { item, task } = await appendReview(root, {
+      id: body.id,
+      kind: body.kind,
+      text: typeof body.text === 'string' ? body.text : '',
+    })
+    sendJson(res, 200, {
+      ok: true,
+      item,
+      task: task === null ? null : { id: task.id, thread: task.thread, project: task.project },
+    })
   } catch (error) {
     switch (error.code) {
       case 'INBOX_NOT_FOUND':

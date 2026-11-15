@@ -115,10 +115,16 @@ worker 环境里的 `DSH_SUPERAGENT_GITHUB_REPOSITORY` 永远是面板那一个�
   （无类型检查、随版本变动、组件抛错会清空 slot）。控件、Markdown 渲染器与 CSS 都写在
   `lib/client.js`，只 require `react` / `react/jsx-runtime`；class 一律加 `wca-` 前缀。
 - **PR 正文用自带的 Markdown → React 渲染器**（标题、嵌套列表、fenced code、行内代码、粗斜体、链接、
-  引用、水平线、GFM 表格、段落；不支持 HTML 透传/图片/脚注/公式）。产出 React 元素而非 `innerHTML`，
-  所以 GitHub 正文不会变成 HTML 注入；默认折叠，展开才解析。
+  引用、水平线、GFM 表格、段落；图片渲染成 alt 文本链接，不支持 HTML 透传/脚注/公式）。产出 React 元素
+  而非 `innerHTML`，所以 GitHub 正文不会变成 HTML 注入；默认折叠，展开才解析；嵌套深度有上限并有
+  try/catch 兜底，恶意正文不会把 slot 打崩。
 - **样式只用 `--dsw-alias-*` 等 host token**（颜色、边框、圆角、字号、代码字体），抄 Plugin Manager
   页的间距/字号节奏，不写死颜色，因此浅色/深色都跟 host 走。
+- **页面是功能宿主，不是收件箱页**：导航列功能（`SECTIONS`），活动功能渲染在自己的带边框面板里（标题、
+  说明、筛选/刷新工具栏、行列表）；PR 列表嵌在收件箱功能面板内。加功能 = 一个数组项 + 一个组件。
+- **审查模型只有 `approve` / `issue`**：通过不写正文、不派任务；有问题正文必填并派 `inbox-<pr>` 任务。
+  状态不落盘，由最新 review 派生（`pending` / `approved` / `issue`）；旧 `question`/`fix` 只在读取时
+  映射成 `issue`，不改磁盘记录。筛选默认「待审」，另有全部 / 有问题 / 已通过；已通过行降低对比度。
 
 ## SPV preset：普通 dsh 会话 + `spv_*`，纯增量（2026-11-14）
 

@@ -1,8 +1,9 @@
 # `wheelchair-agent-webui` — the wheelchair-agent UI home panel
 
-An **independent dsh web client plugin package**. It adds the `wheelchair-agent` UI home to the
-`superagent` profile: one sidebar row, one full-size page whose first section is the review inbox
-(收件箱), and the `/wheelchair-inbox/*` routes the inbox talks to.
+An **independent dsh web client plugin package**. It adds the `wheelchair-agent` **feature host** to
+the `superagent` profile: one sidebar row, one full-size page that lists features and hosts the
+active feature panel (the review inbox, 收件箱, is the first one), and the `/wheelchair-inbox/*`
+JSON routes the inbox talks to.
 
 ## Why a separate package
 
@@ -24,41 +25,58 @@ its own loader row in `~/.dsh/profiles/superagent/cordis.patch.yml` (written by 
   (`sidebar.panellist`) and the page (`main`) under the same id `wheelchair-agent`, with the
   label `wheelchair-agent` in both `zh` and `en`. The `main` entry renders a React component, so
   the page inherits the host's theme tokens, light/dark switching and `ctx.locale`.
-- The bundle uses no JSX and no Harness Client package: it calls
+- The bundle uses no JSX and no Harness Client package: it calls `require('react')` and
   `require('react/jsx-runtime')` / `jsx(...)` / `jsxs(...)` directly, and implements its own
   controls, Markdown renderer and styles. In particular it does **not** require
   `@deepseek-ai/dsh-client-ui-primitives` (the dsh plugin guide forbids loading Harness Client
   packages as modules). This repository has no TypeScript and no build chain.
+
+## Features and the review model
+
+The page is a **feature host**, not a PR list: the nav lists features (one today, shaped so adding
+another is one array entry) and the active feature renders in its own bordered panel with its own
+title, description and toolbar. `SECTIONS` is the single declaration:
+
+```js
+const SECTIONS = [{
+  id: 'inbox',
+  labelKey: 'section.inbox',
+  titleKey: 'feature.inbox.title',
+  descriptionKey: 'feature.inbox.description',
+  Component: InboxSection,
+}]
+```
+
+Adding a feature is exactly one array entry plus its React component:
+
+1. add `{ id, labelKey, titleKey, descriptionKey, Component }` to `SECTIONS` (and the locale keys
+   to both dictionaries);
+2. implement the component; it owns its heading controls and data. The feature panel itself owns
+   the bordered surface, title/description row and toolbar.
+
+The inbox feature derives each PR's review status from the **latest `review` entry**, with no
+stored status field (`statusOf(item)` in `lib/client.js`):
+
+| latest review | status | UI |
+|---|---|---|
+| none | `pending` (待审) | tertiary badge |
+| `approve` | `approved` (已通过) | success badge; row de-emphasized |
+| `issue` | `issue` (有问题) | error badge |
+
+`approve` takes no text and dispatches nothing; `issue` requires text and dispatches the usual
+`inbox-<pr>` task. Legacy `question` / `fix` records are normalized to `issue` on read, and the old
+disk records are never rewritten. The toolbar filters by derived status (All / Pending / Issues /
+Approved, default Pending), with counts.
 
 ## Markdown
 
 PR descriptions are rendered by a small dependency-free Markdown → React renderer inside
 `lib/client.js`. It supports ATX headings, unordered/ordered nested lists, fenced code blocks,
 inline code, bold/italic/strikethrough, links, blockquotes, horizontal rules, GFM pipe tables and
-paragraphs. Raw HTML is not passed through (text becomes React children, so nothing is injected),
-and images, footnotes and math are intentionally unsupported. The body is collapsed by default;
-expanding "PR description" renders the Markdown.
-
-## Page structure: sections
-
-The panel is the **UI home**, not a single-purpose PR list. It renders a fixed skeleton — an
-`<h1>` `wheelchair-agent`, a section tab bar and one body slot. Sections are declared by one
-array in `lib/client.js`:
-
-```js
-const SECTIONS = [{ id: 'inbox', labelKey: 'section.inbox', Component: InboxSection }]
-```
-
-Adding a second section is exactly one array entry plus its React component:
-
-1. add `{ id: 'settings', labelKey: 'section.settings', Component: SettingsSection }` to
-   `SECTIONS` (and the locale key to both dictionaries);
-2. implement `function SettingsSection({ t })` that renders its own heading, controls and data.
-
-The tab bar is generated from `SECTIONS`, so the page skeleton never changes. Each section owns
-its own controls: the inbox section owns its refresh button, status line and PR cards, so a new
-section does not inherit them.
-
+paragraphs. Raw HTML is not passed through (text becomes React children, so nothing is injected);
+images render as their alt text linked to the image, and footnotes and math are intentionally
+unsupported. The body is collapsed by default; expanding "PR description" renders the Markdown.
+Block nesting is capped so a hostile body cannot exhaust the stack.
 
 ## Self-contained installed package
 
@@ -91,17 +109,24 @@ profile itself, run `bash install.sh` afterwards.
 
 ## Screenshots
 
-All captures use the same dsh web composition (`dsh-web-app`, 1440×900) and the same real inbox
-data. The "before" column is the previous iframe page (commit `7e8bfff`); the "after" column is
-this native React page. Light and dark are both included; the superagent service was not
-restarted, so the browser loaded the updated package through dsh's client-bundle watcher.
+All captures use the same dsh web composition (`dsh-web-app`, 1440×900). The "before" column is
+the previous iframe page (commit `7e8bfff`); the "after" column is the native feature host. Light
+and dark are included; the superagent service was not restarted, so the browser loaded the updated
+package through dsh's client-bundle watcher.
 
-- `docs/before-panel.png` / `docs/after-panel.png` — the panel list, before (iframe page) and
-  after (native page, light).
-- `docs/after-panel-dark.png` — the native panel in dark theme.
+- `docs/before-panel.png` / `docs/after-panel.png` — the panel before (iframe list) and after
+  (feature host, default Pending filter, light).
+- `docs/after-panel-dark.png` — the feature host in dark theme.
+- `docs/after-filter-pending.png`, `docs/after-filter-issues.png`,
+  `docs/after-filter-approved.png`, `docs/after-filter-all.png` — the four filter states,
+  including the real PR #1 whose legacy `question` review displays as **Issue**.
+- `docs/after-issue-form.png` — "Flag issue" expanded with a comment.
 - `docs/before-pr-body.png` / `docs/after-pr-body.png` — the **same PR #4 body** expanded:
   plain text + monospace before, rendered Markdown after (light).
 - `docs/before-pr-body-dark.png` / `docs/after-pr-body-dark.png` — the same comparison in dark.
 - `docs/after-pr-table.png` — a GFM pipe table rendered with token-colored borders.
 - `docs/after-pr-code-dark.png` — a fenced code block in dark theme (monospace + code surface).
 - `docs/before-sidebar.png` / `docs/after-sidebar.png` — the sidebar before/after this package.
+
+The approved-state capture uses a temporary fixture item because the real inbox had no approved
+PR; it was removed after the capture. Every other capture uses the real inbox.

@@ -30,14 +30,14 @@ wheelchair-agent/
 │       ├── outbox.js             # 读/消费 outbox/ 的原语（没有阻塞读取器）
 │       ├── injector.js           # 后台注入器：新 reply/notice 消费后注入会话
 │       ├── health.js             # 探健康端点，服务没跑就拒绝派活
-│       ├── inbox.js              # 收件箱：item 存储、gh 轮询、评论→队列、面板 JSON 路由
+│       ├── inbox.js              # 收件箱：item 存储、gh 轮询、approve/issue→队列、面板 JSON 路由
 │       ├── cron.js               # `/spv-cron` 逻辑（纯逻辑，注入依赖）
 │       ├── tools.js              # 插件入口：spv_dispatch / spv_status + 持有注入器
 │       └── cron-plugin.js        # 插件入口：`/spv-cron` 薄壳
 ├── webui/                        # 独立 dsh web client 包 wheelchair-agent-webui
 │   ├── package.json              # dsh.client + exports ".", "./client", "./package.json"
 │   ├── lib/index.js              # host 半身：两个 /wheelchair-inbox/* JSON 路由
-│   ├── lib/client.js             # 手写预构建 bundle：React 页面 + 自带 Markdown 渲染器（不用 JSX）
+│   ├── lib/client.js             # 手写预构建 bundle：功能宿主 + 收件箱面板 + 自带 Markdown 渲染器
 │   └── README.md                 # 为什么独立、怎么加载、怎么加 section
 ├── preset/                       # 原 dsh/：装到 ~/.dsh/.agent-presets/spv/
 │   ├── preset.yml
