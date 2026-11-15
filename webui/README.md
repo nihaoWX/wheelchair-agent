@@ -15,41 +15,50 @@ its own loader row in `~/.dsh/profiles/superagent/cordis.patch.yml` (written by 
 ## How it loads
 
 - Host half (`lib/index.js`): `name = 'wheelchair-agent-webui'`, `inject = ['webServer',
-  'connection']`. It registers three exact routes — `/wheelchair-inbox/page`,
-  `/wheelchair-inbox/items`, `/wheelchair-inbox/review` — each behind
-  `ctx.connection.requestRejection` so dsh's Host/Origin and login fence guards them.
+  'connection']`. It registers two exact JSON routes — `/wheelchair-inbox/items` and
+  `/wheelchair-inbox/review` — each behind `ctx.connection.requestRejection` so dsh's
+  Host/Origin and login fence guards them. The Host no longer serves a page: the panel is a
+  Client React component.
 - Browser half (`lib/client.js`): a hand-written prebuilt bundle in the fixed
   `window.__ModuleLoader__.load({ id, factory })` format. It registers the sidebar row
   (`sidebar.panellist`) and the page (`main`) under the same id `wheelchair-agent`, with the
-  label `wheelchair-agent` in both `zh` and `en`. The page is an `<iframe>` pointing at the
-  document-relative `wheelchair-inbox/page`, so there is exactly **one** UI implementation (the
-  standalone page); the rail is hidden inside the iframe.
-- The browser bundle uses no JSX: it calls `require('react/jsx-runtime')` and
-  `jsx(...)` / `jsxs(...)` directly. This repository has no TypeScript and no build chain.
+  label `wheelchair-agent` in both `zh` and `en`. The `main` entry renders a React component, so
+  the page inherits the host's theme tokens, light/dark switching and `ctx.locale`.
+- The bundle uses no JSX and no Harness Client package: it calls
+  `require('react/jsx-runtime')` / `jsx(...)` / `jsxs(...)` directly, and implements its own
+  controls, Markdown renderer and styles. In particular it does **not** require
+  `@deepseek-ai/dsh-client-ui-primitives` (the dsh plugin guide forbids loading Harness Client
+  packages as modules). This repository has no TypeScript and no build chain.
+
+## Markdown
+
+PR descriptions are rendered by a small dependency-free Markdown → React renderer inside
+`lib/client.js`. It supports ATX headings, unordered/ordered nested lists, fenced code blocks,
+inline code, bold/italic/strikethrough, links, blockquotes, horizontal rules, GFM pipe tables and
+paragraphs. Raw HTML is not passed through (text becomes React children, so nothing is injected),
+and images, footnotes and math are intentionally unsupported. The body is collapsed by default;
+expanding "PR description" renders the Markdown.
 
 ## Page structure: sections
 
-The standalone page is the **UI home**, not a single-purpose PR list. It renders a fixed skeleton —
-document title and `<h1>` `wheelchair-agent`, a left section list, a section tab bar — and one body
-slot. Sections are declared by one array in the inline script of `pageHtml()`
-(`src/spv/inbox.js`):
+The panel is the **UI home**, not a single-purpose PR list. It renders a fixed skeleton — an
+`<h1>` `wheelchair-agent`, a section tab bar and one body slot. Sections are declared by one
+array in `lib/client.js`:
 
 ```js
-var SECTIONS = [
-  { id: 'inbox', label: '收件箱', render: InboxSection },
-]
+const SECTIONS = [{ id: 'inbox', labelKey: 'section.inbox', Component: InboxSection }]
 ```
 
-Adding a second section is exactly one array entry plus its render function:
+Adding a second section is exactly one array entry plus its React component:
 
-1. add `{ id: 'settings', label: '设置', render: SettingsSection }` to `SECTIONS`;
-2. implement `function SettingsSection(container)` that builds its own heading, controls and data
-   into `container`.
+1. add `{ id: 'settings', labelKey: 'section.settings', Component: SettingsSection }` to
+   `SECTIONS` (and the locale key to both dictionaries);
+2. implement `function SettingsSection({ t })` that renders its own heading, controls and data.
 
-The rail list and the tab bar are generated from `SECTIONS`, so the HTML skeleton never changes.
-Each section owns its own controls: the inbox section owns its refresh button, status line and PR
-cards, so a new section does not inherit them. When the page is embedded in the dsh panel the left
-rail is hidden (the panel row already names the app) but the section tab bar stays visible.
+The tab bar is generated from `SECTIONS`, so the page skeleton never changes. Each section owns
+its own controls: the inbox section owns its refresh button, status line and PR cards, so a new
+section does not inherit them.
+
 
 ## Self-contained installed package
 
@@ -82,14 +91,17 @@ profile itself, run `bash install.sh` afterwards.
 
 ## Screenshots
 
-Captured from a dsh `web` profile with the same `dsh-web-app` client composition (1440×900, light
-theme) before and after loading this package. The running `superagent` service was not restarted, so
-these prove the panel itself; the profile's loader row is proven separately by
-`dsh --profile superagent --dump-config`.
+All captures use the same dsh web composition (`dsh-web-app`, 1440×900) and the same real inbox
+data. The "before" column is the previous iframe page (commit `7e8bfff`); the "after" column is
+this native React page. Light and dark are both included; the superagent service was not
+restarted, so the browser loaded the updated package through dsh's client-bundle watcher.
 
-- `docs/before-sidebar.png` — the panel list without this package.
-- `docs/after-sidebar.png` — the same list with the `wheelchair-agent` row.
-- `docs/after-panel.png` — the panel: `wheelchair-agent` title, `收件箱` section, PR cards and the
-  review form.
-- `docs/standalone-panel.png` — the same page served by `wheelchair-agent inbox`.
-
+- `docs/before-panel.png` / `docs/after-panel.png` — the panel list, before (iframe page) and
+  after (native page, light).
+- `docs/after-panel-dark.png` — the native panel in dark theme.
+- `docs/before-pr-body.png` / `docs/after-pr-body.png` — the **same PR #4 body** expanded:
+  plain text + monospace before, rendered Markdown after (light).
+- `docs/before-pr-body-dark.png` / `docs/after-pr-body-dark.png` — the same comparison in dark.
+- `docs/after-pr-table.png` — a GFM pipe table rendered with token-colored borders.
+- `docs/after-pr-code-dark.png` — a fenced code block in dark theme (monospace + code surface).
+- `docs/before-sidebar.png` / `docs/after-sidebar.png` — the sidebar before/after this package.

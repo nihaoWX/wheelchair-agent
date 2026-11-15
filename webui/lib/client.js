@@ -4,7 +4,10 @@ window.__ModuleLoader__.load({
 		var module = { exports: {} };
 		var exports = module.exports;
 		Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
+		let react = require("react");
 		let react_jsx_runtime = require("react/jsx-runtime");
+		const { jsx, jsxs } = react_jsx_runtime;
+
 		/** Namespace of this package's locale dictionaries and slot declarations. */
 		const NS = "wheelchair-agent-webui";
 		/**
@@ -13,12 +16,68 @@ window.__ModuleLoader__.load({
 		* panel is the product entry, whose first section is the review inbox.
 		*/
 		const PANEL_ID = "wheelchair-agent";
+		/** The two JSON endpoints the inbox already serves; the panel only reads them. */
+		const ITEMS_URL = "/wheelchair-inbox/items";
+		const REVIEW_URL = "/wheelchair-inbox/review";
+
+		/** Copy for the panel, the inbox section and the Markdown chrome. */
 		const zh = {
-			panel: "wheelchair-agent"
+			panel: "wheelchair-agent",
+			"panel.subtitle": "审查收件箱：PR、评论与任务派发",
+			"sections.label": "区块",
+			"section.inbox": "收件箱",
+			refresh: "刷新",
+			"status.loading": "加载中…",
+			"status.loaded": "{count} 个 PR · 更新于 {time}",
+			"status.failed": "加载失败：{message}",
+			"inbox.empty": "收件箱是空的。先运行 “wheelchair-agent inbox watch --once” 拉取 PR。",
+			"card.untitled": "（无标题）",
+			"card.files": "{count} 个文件",
+			"card.body": "PR 说明",
+			"card.bodyEmpty": "（PR 正文为空）",
+			"card.open": "打开 PR",
+			"card.reviews": "已有评论（{count}）",
+			"kind.question": "提问",
+			"kind.fix": "要改",
+			"form.placeholder": "写一条整体评论；提问和要改都会转成任务。",
+			"form.ask": "提问",
+			"form.fix": "要改",
+			"form.empty": "请先写评论。",
+			"form.failed": "提交失败：{message}",
+			"form.inflight": "提交中…",
+			"state.open": "OPEN",
+			"state.merged": "MERGED",
+			"state.closed": "CLOSED"
 		};
 		const en = {
-			panel: "wheelchair-agent"
+			panel: "wheelchair-agent",
+			"panel.subtitle": "Review inbox: pull requests, comments and dispatch",
+			"sections.label": "Sections",
+			"section.inbox": "Inbox",
+			refresh: "Refresh",
+			"status.loading": "Loading…",
+			"status.loaded": "{count} PRs · updated {time}",
+			"status.failed": "Could not load: {message}",
+			"inbox.empty": "The inbox is empty. Run “wheelchair-agent inbox watch --once” to fetch pull requests.",
+			"card.untitled": "(untitled)",
+			"card.files": "{count} files",
+			"card.body": "PR description",
+			"card.bodyEmpty": "(No PR description)",
+			"card.open": "Open PR",
+			"card.reviews": "Reviews ({count})",
+			"kind.question": "Question",
+			"kind.fix": "Change",
+			"form.placeholder": "Write one overall comment; questions and change requests both become tasks.",
+			"form.ask": "Ask",
+			"form.fix": "Request change",
+			"form.empty": "Write a comment first.",
+			"form.failed": "Could not submit: {message}",
+			"form.inflight": "Submitting…",
+			"state.open": "OPEN",
+			"state.merged": "MERGED",
+			"state.closed": "CLOSED"
 		};
+
 		/**
 		* The sidebar glyph: a small inbox outline. The shell passes `size` (and
 		* `active`, which this icon does not use); `active` is accepted and ignored so
@@ -28,7 +87,7 @@ window.__ModuleLoader__.load({
 		*/
 		function InboxIcon(props) {
 			const size = typeof props?.size === "number" ? props.size : 16;
-			return (0, react_jsx_runtime.jsxs)("svg", {
+			return jsxs("svg", {
 				width: size,
 				height: size,
 				viewBox: "0 0 16 16",
@@ -38,38 +97,1365 @@ window.__ModuleLoader__.load({
 				strokeLinecap: "round",
 				strokeLinejoin: "round",
 				"aria-hidden": "true",
-				children: [(0, react_jsx_runtime.jsx)("path", {
-					d: "M2 9.5h3l1 1.8h4l1-1.8h3"
-				}, "tray"), (0, react_jsx_runtime.jsx)("path", {
-					d: "M2.8 9.5V4.2A1.2 1.2 0 0 1 4 3h8a1.2 1.2 0 0 1 1.2 1.2v5.3"
-				}, "top"), (0, react_jsx_runtime.jsx)("path", {
-					d: "M2.8 9.5v2.3A1.2 1.2 0 0 0 4 13h8a1.2 1.2 0 0 0 1.2-1.2V9.5"
-				}, "bottom")]
+				children: [
+					jsx("path", { d: "M2 9.5h3l1 1.8h4l1-1.8h3" }, "tray"),
+					jsx("path", { d: "M2.8 9.5V4.2A1.2 1.2 0 0 1 4 3h8a1.2 1.2 0 0 1 1.2 1.2v5.3" }, "top"),
+					jsx("path", { d: "M2.8 9.5v2.3A1.2 1.2 0 0 0 4 13h8a1.2 1.2 0 0 0 1.2-1.2V9.5" }, "bottom")
+				]
 			});
 		}
-		/**
-		* The panel page: one full-size iframe onto the standalone page, which is the
-		* wheelchair-agent UI home and hosts its sections (the review inbox is the
-		* first one). The iframe makes the standalone server and the dsh panel share
-		* exactly one UI implementation, and its document-relative `src` resolves
-		* against the panel's own URL.
-		* @param props - slot-injected `t` from this namespace.
-		* @returns the page frame.
-		*/
-		function InboxPage(props) {
-			const t = props && typeof props.t === "function" ? props.t : (key) => key;
-			return (0, react_jsx_runtime.jsx)("iframe", {
-				src: "wheelchair-inbox/page",
-				title: t("panel"),
-				style: {
-					border: "0",
-					width: "100%",
-					height: "100%",
-					minHeight: "100vh",
-					display: "block"
+
+		//#region inline SVG glyphs owned by this plugin
+		/** The disclosure chevron; rotation is CSS so no second icon is needed. */
+		function ChevronIcon(props) {
+			return jsx("svg", {
+				className: "wca-chevron",
+				"data-open": props.open ? "true" : "false",
+				width: 14,
+				height: 14,
+				viewBox: "0 0 16 16",
+				fill: "none",
+				stroke: "currentColor",
+				strokeWidth: 1.5,
+				strokeLinecap: "round",
+				strokeLinejoin: "round",
+				"aria-hidden": "true",
+				children: jsx("path", { d: "M6 3.5 10.5 8 6 12.5" })
+			});
+		}
+		//#endregion
+
+		//#region Markdown -> React
+		//
+		// A small, dependency-free CommonMark subset, enough to read a PR body: ATX
+		// headings, unordered/ordered (nested) lists, fenced code, inline code, bold,
+		// italic, strikethrough, links, blockquotes, horizontal rules, GFM pipe tables
+		// and paragraphs. It deliberately does NOT support raw HTML (text becomes React
+		// children, so nothing is injected), images, footnotes or math.
+
+		const ESCAPABLE = "\\`*_{}[]()#+-.!|>~";
+		const BLOCK_START = /^ {0,3}(?:#{1,6}(?:[ \t]|$)|`{3,}|~{3,}|>|(?:[-*+]|\d+[.)])[ \t])/;
+
+		/** Count the run of one character starting at `at`. */
+		function runLength(text, at, char) {
+			let end = at;
+			while (end < text.length && text.charAt(end) === char) end += 1;
+			return end - at;
+		}
+
+		/** Leading spaces of a line (tabs were expanded by normalizeSource). */
+		function indentOf(line) {
+			let end = 0;
+			while (end < line.length && line.charAt(end) === " ") end += 1;
+			return end;
+		}
+
+		/** Normalize CRLF; tab expansion would corrupt tabs inside fenced code. */
+		function normalizeSource(text) {
+			return String(text ?? "").replace(/\r\n?/g, "\n");
+		}
+
+		/** A link destination React may follow: absolute http(s), mailto and protocol-relative. */
+		function safeHref(value) {
+			const raw = String(value ?? "").trim();
+			if (raw === "") return undefined;
+			if (!/^(?:https?:|mailto:|\/\/)/i.test(raw)) return undefined;
+			try {
+				const url = new URL(raw, "https://github.invalid/");
+				if (url.protocol === "http:" || url.protocol === "https:" || url.protocol === "mailto:") return raw;
+			} catch {
+				return undefined;
+			}
+			return undefined;
+		}
+
+		/** http(s) only, for the "open PR" link the inbox item carries. */
+		function safeWebHref(value) {
+			try {
+				const url = new URL(String(value ?? ""));
+				return url.protocol === "http:" || url.protocol === "https:" ? url.href : undefined;
+			} catch {
+				return undefined;
+			}
+		}
+
+		/** Parse an inline `[label](destination "title")` at `at`; undefined when malformed. */
+		function parseLink(text, at) {
+			if (text.charAt(at) !== "[") return undefined;
+			let depth = 0;
+			let close = -1;
+			for (let index = at; index < text.length; index += 1) {
+				const char = text.charAt(index);
+				if (char === "\\") {
+					index += 1;
+					continue;
 				}
-			});
+				if (char === "[") depth += 1;
+				else if (char === "]") {
+					depth -= 1;
+					if (depth === 0) {
+						close = index;
+						break;
+					}
+				}
+			}
+			if (close === -1 || text.charAt(close + 1) !== "(") return undefined;
+			let parenthesis = 1;
+			let end = -1;
+			for (let index = close + 2; index < text.length; index += 1) {
+				const char = text.charAt(index);
+				if (char === "\\") {
+					index += 1;
+					continue;
+				}
+				if (char === "(") parenthesis += 1;
+				else if (char === ")") {
+					parenthesis -= 1;
+					if (parenthesis === 0) {
+						end = index;
+						break;
+					}
+				}
+			}
+			if (end === -1) return undefined;
+			const inside = text.slice(close + 2, end).trim();
+			const match = /^(<[^<>\s]*>|\S+)(?:\s+(?:"[^"]*"|'[^']*'|\([^()]*\)))?\s*$/.exec(inside);
+			if (match === null) return undefined;
+			let destination = match[1];
+			if (destination.startsWith("<") && destination.endsWith(">")) destination = destination.slice(1, -1);
+			const href = safeHref(destination);
+			if (href === undefined) return undefined;
+			return { label: text.slice(at + 1, close), href, end: end + 1 };
 		}
+
+		/**
+		* Render inline Markdown into React children.
+		* @param text - inline source, possibly containing soft line breaks.
+		* @param keyPrefix - stable prefix for generated keys.
+		* @returns React children (strings and elements).
+		*/
+		function inlineNodes(text, keyPrefix) {
+			const nodes = [];
+			let buffer = "";
+			const flush = () => {
+				if (buffer !== "") {
+					nodes.push(buffer);
+					buffer = "";
+				}
+			};
+			const push = (element) => {
+				flush();
+				nodes.push(element);
+			};
+			let index = 0;
+			while (index < text.length) {
+				const char = text.charAt(index);
+				if (char === "\\") {
+					const next = text.charAt(index + 1);
+					if (next === "\n") {
+						buffer = buffer.replace(/[ \t]+$/, "");
+						push(jsx("br", {}, `${keyPrefix}br${nodes.length}`));
+						index += 2;
+						continue;
+					}
+					if (ESCAPABLE.includes(next)) {
+						buffer += next;
+						index += 2;
+						continue;
+					}
+					buffer += char;
+					index += 1;
+					continue;
+				}
+				if (char === "\n") {
+					if (/[ ]{2,}$/.test(buffer)) {
+						buffer = buffer.replace(/[ \t]+$/, "");
+						push(jsx("br", {}, `${keyPrefix}br${nodes.length}`));
+					} else if (buffer !== "" && !buffer.endsWith(" ")) {
+						buffer += " ";
+					}
+					index += 1;
+					continue;
+				}
+				if (char === "`") {
+					const run = runLength(text, index, "`");
+					const close = text.indexOf("`".repeat(run), index + run);
+					if (close !== -1) {
+						let code = text.slice(index + run, close);
+						if (code.startsWith(" ") && code.endsWith(" ") && code.trim() !== "") code = code.slice(1, -1);
+						push(jsx("code", { children: code }, `${keyPrefix}code${nodes.length}`));
+						index = close + run;
+						continue;
+					}
+					buffer += text.slice(index, index + run);
+					index += run;
+					continue;
+				}
+				if (char === "[") {
+					const link = parseLink(text, index);
+					if (link !== undefined) {
+						push(
+							jsx(
+								"a",
+								{
+									href: link.href,
+									target: "_blank",
+									rel: "noopener noreferrer",
+									children: inlineNodes(link.label, `${keyPrefix}link${nodes.length}-`)
+								},
+								`${keyPrefix}link${nodes.length}`
+							)
+						);
+						index = link.end;
+						continue;
+					}
+				}
+				if (char === "*" || char === "_") {
+					const previous = index === 0 ? "" : text.charAt(index - 1);
+					// Underscores inside a word (snake_case) are literal; asterisks may sit inside one.
+					const intraword = char === "_" && /[A-Za-z0-9]/.test(previous);
+					const strong = new RegExp(`^\\${char}{2}(?=\\S)([\\s\\S]*?\\S)\\${char}{2}`).exec(text.slice(index));
+					if (strong !== null && !intraword) {
+						push(
+							jsx(
+								"strong",
+								{ children: inlineNodes(strong[1], `${keyPrefix}strong${nodes.length}-`) },
+								`${keyPrefix}strong${nodes.length}`
+							)
+						);
+						index += strong[0].length;
+						continue;
+					}
+					const emphasis = new RegExp(`^\\${char}(?=\\S)([\\s\\S]*?\\S)\\${char}`).exec(text.slice(index));
+					if (emphasis !== null && !intraword) {
+						push(
+							jsx(
+								"em",
+								{ children: inlineNodes(emphasis[1], `${keyPrefix}em${nodes.length}-`) },
+								`${keyPrefix}em${nodes.length}`
+							)
+						);
+						index += emphasis[0].length;
+						continue;
+					}
+				}
+				if (char === "~" && text.charAt(index + 1) === "~") {
+					const strike = /^~~(?=\S)([\s\S]*?\S)~~/.exec(text.slice(index));
+					if (strike !== null) {
+						push(
+							jsx(
+								"del",
+								{ children: inlineNodes(strike[1], `${keyPrefix}del${nodes.length}-`) },
+								`${keyPrefix}del${nodes.length}`
+							)
+						);
+						index += strike[0].length;
+						continue;
+					}
+				}
+				buffer += char;
+				index += 1;
+			}
+			flush();
+			return nodes;
+		}
+
+		/** A single list marker with its indentation and the column its content starts at. */
+		function matchListItem(line) {
+			const match = /^([ ]*)([-*+]|\d+[.)])([ \t]+)(.*)$/.exec(line);
+			if (match === null) return undefined;
+			const marker = match[2];
+			return {
+				indent: match[1].length,
+				marker,
+				ordered: /\d/.test(marker.charAt(0)),
+				contentColumn: match[1].length + marker.length + Math.min(match[3].length, 4),
+				content: match[4]
+			};
+		}
+
+		/** Split one pipe-table row, honoring code spans and escaped pipes. */
+		function splitTableRow(line) {
+			const cells = [];
+			let buffer = "";
+			let codeRun = 0;
+			for (let index = 0; index < line.length; index += 1) {
+				const char = line.charAt(index);
+				if (char === "\\" && line.charAt(index + 1) === "|") {
+					buffer += "|";
+					index += 1;
+					continue;
+				}
+				if (char === "`") {
+					const run = runLength(line, index, "`");
+					codeRun = codeRun === 0 ? run : codeRun === run ? 0 : codeRun;
+					buffer += "`".repeat(run);
+					index += run - 1;
+					continue;
+				}
+				if (char === "|" && codeRun === 0) {
+					cells.push(buffer);
+					buffer = "";
+					continue;
+				}
+				buffer += char;
+			}
+			cells.push(buffer);
+			if (cells.length > 0 && cells[0].trim() === "") cells.shift();
+			if (cells.length > 0 && cells[cells.length - 1].trim() === "") cells.pop();
+			return cells;
+		}
+
+		/** Parse a GFM table at `start`; undefined when these lines are not a table. */
+		function parseTable(lines, start, key) {
+			if (start + 1 >= lines.length) return undefined;
+			const header = lines[start];
+			if (!header.includes("|")) return undefined;
+			const delimiter = lines[start + 1];
+			if (!delimiter.includes("|")) return undefined;
+			if (!/^[ \t]*\|?[ \t]*:?-{1,}:?[ \t]*(?:\|[ \t]*:?-{1,}:?[ \t]*)*\|?[ \t]*$/.test(delimiter)) {
+				return undefined;
+			}
+			const headCells = splitTableRow(header);
+			const delimiterCells = splitTableRow(delimiter);
+			if (headCells.length === 0 || headCells.length !== delimiterCells.length) return undefined;
+			const align = delimiterCells.map((cell) => {
+				const value = cell.trim();
+				if (value.startsWith(":") && value.endsWith(":")) return "center";
+				if (value.endsWith(":")) return "right";
+				if (value.startsWith(":")) return "left";
+				return undefined;
+			});
+			let index = start + 2;
+			const bodyRows = [];
+			while (index < lines.length) {
+				const line = lines[index];
+				if (line.trim() === "" || !line.includes("|")) break;
+				bodyRows.push(splitTableRow(line));
+				index += 1;
+			}
+			const headRow = jsxs(
+				"thead",
+				{
+					children: jsx(
+						"tr",
+						{
+							children: headCells.map((cell, column) =>
+								jsx(
+									"th",
+									{
+										style: align[column] === undefined ? undefined : { textAlign: align[column] },
+										children: inlineNodes(cell.trim(), `${key}h${column}-`)
+									},
+									`${key}h${column}`
+								)
+							)
+						},
+						`${key}hr`
+					)
+				},
+				`${key}thead`
+			);
+			const body = jsxs(
+				"tbody",
+				{
+					children: bodyRows.map((row, rowIndex) =>
+						jsx(
+							"tr",
+							{
+								children: headCells.map((_cell, column) =>
+									jsx(
+										"td",
+										{
+											style: align[column] === undefined ? undefined : { textAlign: align[column] },
+											children: inlineNodes(String(row[column] ?? "").trim(), `${key}r${rowIndex}c${column}-`)
+										},
+										`${key}r${rowIndex}c${column}`
+									)
+								)
+							},
+							`${key}r${rowIndex}`
+						)
+					)
+				},
+				`${key}tbody`
+			);
+			return {
+				next: index,
+				node: jsx(
+					"div",
+					{
+						className: "wca-table-scroll",
+						children: jsxs("table", { children: [headRow, bodyRows.length > 0 ? body : null] }, `${key}table`)
+					},
+					key
+				)
+			};
+		}
+
+		/** Parse one list (nested lists arrive through recursion) starting at `start`. */
+		function parseList(lines, start, key) {
+			const first = matchListItem(lines[start]);
+			if (first === undefined) return undefined;
+			const baseIndent = first.indent;
+			const ordered = first.ordered;
+			const items = [];
+			let index = start;
+			let itemKey = 0;
+			while (index < lines.length) {
+				const marker = matchListItem(lines[index]);
+				if (marker === undefined || marker.indent !== baseIndent || marker.ordered !== ordered) break;
+				const content = [marker.content];
+				let cursor = index + 1;
+				while (cursor < lines.length) {
+					const line = lines[cursor];
+					if (line.trim() === "") {
+						let lookahead = cursor + 1;
+						while (lookahead < lines.length && lines[lookahead].trim() === "") lookahead += 1;
+						if (lookahead >= lines.length) {
+							cursor = lines.length;
+							break;
+						}
+						const nextMarker = matchListItem(lines[lookahead]);
+						if (nextMarker !== undefined && nextMarker.indent === baseIndent) break;
+						if (indentOf(lines[lookahead]) >= marker.contentColumn) {
+							content.push("");
+							cursor += 1;
+							continue;
+						}
+						break;
+					}
+					const nextMarker = matchListItem(line);
+					if (nextMarker !== undefined && nextMarker.indent === baseIndent) break;
+					const indent = indentOf(line);
+					if (indent < marker.contentColumn && indent <= baseIndent) break;
+					content.push(line.slice(Math.min(indent, marker.contentColumn)));
+					cursor += 1;
+				}
+				items.push({ lines: content, key: `${key}i${itemKey}` });
+				itemKey += 1;
+				index = cursor;
+			}
+			const children = items.map((item) => {
+				const blocks = renderBlocks(item.lines, `${item.key}-`);
+				// A tight list item renders its text directly, not inside a paragraph: unwrap the
+				// leading paragraph and keep any nested blocks (sublists, code, tables) after it.
+				const first = blocks.length > 0 ? blocks[0] : undefined;
+				const itemChildren =
+					first !== undefined && first.type === "p" ? [...first.props.children, ...blocks.slice(1)] : blocks;
+				return jsx("li", { children: itemChildren }, item.key);
+			});
+			return {
+				next: index,
+				node: ordered ? jsx("ol", { children }, key) : jsx("ul", { children }, key)
+			};
+		}
+
+		/** Render the block-level Markdown of one document (or one list item). */
+		function renderBlocks(lines, keyPrefix) {
+			const out = [];
+			let index = 0;
+			let blockKey = 0;
+			const key = () => `${keyPrefix}b${blockKey++}`;
+			while (index < lines.length) {
+				const line = lines[index];
+				if (line.trim() === "") {
+					index += 1;
+					continue;
+				}
+				const fence = /^ {0,3}(`{3,}|~{3,})(.*)$/.exec(line);
+				if (fence !== null) {
+					const fenceChar = fence[1].charAt(0);
+					const fenceLength = fence[1].length;
+					const info = fence[2].trim();
+					const language = /^[A-Za-z0-9_+#.-]*/.exec(info)?.[0] ?? "";
+					const openIndent = line.length - line.trimStart().length;
+					const body = [];
+					index += 1;
+					while (index < lines.length) {
+						const closing = /^ {0,3}(`{3,}|~{3,})[ \t]*$/.exec(lines[index]);
+						if (closing !== null && closing[1].charAt(0) === fenceChar && closing[1].length >= fenceLength) {
+							index += 1;
+							break;
+						}
+						body.push(lines[index].slice(Math.min(openIndent, indentOf(lines[index]))));
+						index += 1;
+					}
+					out.push(
+						jsx(
+							"pre",
+							{
+								"data-language": language === "" ? undefined : language,
+								children: jsx("code", { children: body.join("\n") })
+							},
+							key()
+						)
+					);
+					continue;
+				}
+				const heading = /^ {0,3}(#{1,6})(?:[ \t]+(.*?))?[ \t]*$/.exec(line);
+				if (heading !== null) {
+					const depth = heading[1].length;
+					const content = (heading[2] ?? "").replace(/[ \t]+#+[ \t]*$/, "").trim();
+					const headingKey = key();
+					out.push(jsx(`h${depth}`, { children: inlineNodes(content, `${headingKey}-`) }, headingKey));
+					index += 1;
+					continue;
+				}
+				if (/^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/.test(line)) {
+					out.push(jsx("hr", {}, key()));
+					index += 1;
+					continue;
+				}
+				const tableKey = key();
+				const table = parseTable(lines, index, tableKey);
+				if (table !== undefined) {
+					out.push(table.node);
+					index = table.next;
+					continue;
+				}
+				if (/^ {0,3}>/.test(line)) {
+					const quoted = [];
+					while (index < lines.length && /^ {0,3}>/.test(lines[index])) {
+						quoted.push(lines[index].replace(/^ {0,3}>[ \t]?/, ""));
+						index += 1;
+					}
+					const quoteKey = key();
+					out.push(jsx("blockquote", { children: renderBlocks(quoted, `${quoteKey}-`) }, quoteKey));
+					continue;
+				}
+				const listKey = key();
+				const list = parseList(lines, index, listKey);
+				if (list !== undefined) {
+					out.push(list.node);
+					index = list.next;
+					continue;
+				}
+				const paragraph = [line];
+				index += 1;
+				while (
+					index < lines.length &&
+					lines[index].trim() !== "" &&
+					!BLOCK_START.test(lines[index]) &&
+					!/^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$/.test(lines[index])
+				) {
+					paragraph.push(lines[index]);
+					index += 1;
+				}
+				const paragraphKey = key();
+				out.push(jsx("p", { children: inlineNodes(paragraph.join("\n"), `${paragraphKey}-`) }, paragraphKey));
+			}
+			return out;
+		}
+
+		/**
+		* Render a Markdown document as React elements.
+		* @param text - Markdown source.
+		* @returns the block elements; an empty array for empty input.
+		*/
+		function renderMarkdown(text) {
+			const source = normalizeSource(text);
+			if (source.trim() === "") return [];
+			return renderBlocks(source.split("\n"), "");
+		}
+
+		/** Memoized Markdown body; parsing only happens once per distinct PR body. */
+		function Markdown(props) {
+			const blocks = react.useMemo(() => renderMarkdown(props.text), [props.text]);
+			return jsx("div", { className: "wca-md", children: blocks });
+		}
+		//#endregion
+
+		//#region styles
+		//
+		// Styling follows the host: the page uses the Plugin Manager page's padding and
+		// max-width rhythm, and controls copy the primitive CSS (Button, Tag,
+		// SegmentedTabs, DisclosureRow) with a `wca-` prefix so no host class is
+		// reused. Every color comes from a `--dsw-alias-*` token; no literal color is
+		// hardcoded, so light and dark themes are both the host's call.
+		const STYLES = `
+			.wca-page {
+				box-sizing: border-box;
+				height: 100%;
+				min-height: 100%;
+				display: flex;
+				flex-direction: column;
+				align-items: center;
+				gap: 24px;
+				padding: 0 clamp(24px, 4vw, 48px) 48px;
+				overflow: auto;
+				color: var(--dsw-alias-label-primary);
+			}
+			.wca-page > * { width: 100%; max-width: 960px; }
+			.wca-head {
+				box-sizing: border-box;
+				display: flex;
+				align-items: flex-start;
+				justify-content: space-between;
+				gap: 16px;
+				padding-top: calc(28px + var(--dsh-frame-top-clearance, 0px));
+			}
+			.wca-title {
+				margin: 0;
+				font-size: 20px;
+				font-weight: 500;
+				line-height: 28px;
+			}
+			.wca-subtitle {
+				margin: 4px 0 0;
+				color: var(--dsw-alias-label-secondary);
+				font-size: 13px;
+				line-height: 20px;
+			}
+			.wca-tabs {
+				display: flex;
+				align-self: flex-start;
+				gap: 4px;
+				width: fit-content;
+				padding: 4px;
+				border-radius: var(--dsw-radius-lg);
+				background: var(--dsw-alias-bg-module-platform);
+			}
+			.wca-tab {
+				height: 34px;
+				padding: 0 12px;
+				border: 0;
+				border-radius: var(--dsw-radius-md);
+				background: transparent;
+				color: var(--dsw-alias-label-secondary);
+				font: inherit;
+				font-size: 14px;
+				line-height: 20px;
+				cursor: pointer;
+			}
+			.wca-tab:hover { color: var(--dsw-alias-label-primary); }
+			.wca-tab[aria-selected="true"] {
+				border: .5px solid var(--dsw-alias-border-l3);
+				background: var(--dsw-alias-bg-layer-3);
+				color: var(--dsw-alias-label-primary);
+				font-weight: 600;
+			}
+			.wca-tab:focus-visible,
+			.wca-btn:focus-visible,
+			.wca-disclosure-toggle:focus-visible,
+			.wca-comment:focus-visible,
+			.wca-open:focus-visible {
+				outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+				outline-offset: 2px;
+			}
+			.wca-section { display: flex; flex-direction: column; gap: 16px; min-width: 0; }
+			.wca-section-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+			.wca-section-title { margin: 0; font-size: 16px; font-weight: 500; line-height: 24px; }
+			.wca-status {
+				margin: 0;
+				min-height: 20px;
+				color: var(--dsw-alias-label-tertiary);
+				font-size: 13px;
+				line-height: 20px;
+			}
+			.wca-status[data-tone="error"] { color: var(--dsw-alias-state-error-primary); }
+			.wca-cards { display: flex; flex-direction: column; gap: 12px; }
+			.wca-card {
+				box-sizing: border-box;
+				display: flex;
+				flex-direction: column;
+				gap: 10px;
+				min-width: 0;
+				padding: 16px;
+				border: .5px solid var(--dsw-alias-border-l2);
+				border-radius: var(--dsw-radius-xl);
+				background: var(--dsw-alias-bg-layer-1);
+			}
+			.wca-card-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+			.wca-repo { color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; }
+			.wca-repo strong { color: var(--dsw-alias-label-primary); font-weight: 500; }
+			.wca-card-title { margin: 0; font-size: 15px; font-weight: 600; line-height: 22px; }
+			.wca-meta { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 20px; }
+			.wca-added { color: var(--dsw-alias-state-success-primary); }
+			.wca-removed { color: var(--dsw-alias-state-error-primary); }
+			.wca-tag {
+				display: inline-flex;
+				align-items: center;
+				border-radius: 999px;
+				padding: 1px 8px;
+				font-size: 11px;
+				line-height: 17px;
+				font-weight: 500;
+				white-space: nowrap;
+			}
+			.wca-tag[data-tone="success"] {
+				background: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent);
+				color: var(--dsw-alias-state-success-primary);
+			}
+			.wca-tag[data-tone="info"] {
+				background: color-mix(in srgb, var(--dsw-alias-state-business-primary) 10%, transparent);
+				color: var(--dsw-alias-state-business-primary);
+			}
+			.wca-tag[data-tone="warning"] {
+				background: color-mix(in srgb, var(--dsw-alias-state-warn-primary) 12%, transparent);
+				color: var(--dsw-alias-state-warn-primary);
+			}
+			.wca-tag[data-tone="danger"] {
+				background: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent);
+				color: var(--dsw-alias-state-error-primary);
+			}
+			.wca-tag[data-tone="neutral"] {
+				background: var(--dsw-alias-bg-module-platform);
+				color: var(--dsw-alias-label-secondary);
+			}
+			.wca-btn {
+				box-sizing: border-box;
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				gap: 4px;
+				height: 28px;
+				padding: 0 10px;
+				border: 0;
+				border-radius: var(--dsw-radius-sm);
+				background: transparent;
+				color: var(--dsw-alias-label-primary);
+				font: inherit;
+				font-size: 12px;
+				line-height: 18px;
+				cursor: pointer;
+			}
+			.wca-btn:hover:not(:disabled) { background: var(--dsw-alias-interactive-bg-hover); }
+			.wca-btn:disabled { opacity: .4; cursor: not-allowed; }
+			.wca-btn[data-variant="primary"] {
+				background: var(--dsw-alias-button-primary-fill);
+				color: var(--dsw-alias-label-primary-foreground);
+			}
+			.wca-btn[data-variant="primary"]:hover:not(:disabled) {
+				background: var(--dsw-alias-button-primary-hover);
+			}
+			.wca-btn[data-variant="outline"] { border: .5px solid var(--dsw-alias-border-l3); }
+			.wca-disclosure {
+				display: flex;
+				flex-direction: column;
+				gap: 8px;
+				padding-top: 10px;
+				border-top: .5px solid var(--dsw-alias-border-l2);
+			}
+			.wca-disclosure-toggle {
+				display: inline-flex;
+				align-items: center;
+				gap: 6px;
+				width: fit-content;
+				padding: 2px 0;
+				border: 0;
+				background: none;
+				color: var(--dsw-alias-label-secondary);
+				font: inherit;
+				font-size: 13px;
+				line-height: 20px;
+				cursor: pointer;
+			}
+			.wca-disclosure-toggle:hover { color: var(--dsw-alias-label-primary); }
+			.wca-chevron { flex: none; transition: transform .12s ease; }
+			.wca-chevron[data-open="true"] { transform: rotate(90deg); }
+			@media (prefers-reduced-motion: reduce) { .wca-chevron { transition: none; } }
+			.wca-reviews {
+				display: flex;
+				flex-direction: column;
+				gap: 8px;
+				padding-top: 10px;
+				border-top: .5px solid var(--dsw-alias-border-l2);
+			}
+			.wca-reviews-title { color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
+			.wca-review {
+				padding: 8px 10px;
+				border-left: 3px solid var(--dsw-alias-border-l2);
+				border-radius: 0 var(--dsw-radius-sm) var(--dsw-radius-sm) 0;
+				background: var(--dsw-alias-bg-module-platform);
+			}
+			.wca-review-head { display: flex; align-items: center; gap: 8px; font-size: 12px; line-height: 18px; }
+			.wca-review-time { color: var(--dsw-alias-label-tertiary); }
+			.wca-review-text {
+				margin: 2px 0 0;
+				white-space: pre-wrap;
+				overflow-wrap: anywhere;
+				font-size: var(--dsh-content-font-size-secondary, 13px);
+				line-height: calc(20px + var(--dsh-content-font-delta-secondary, 0px));
+			}
+			.wca-form {
+				display: flex;
+				flex-direction: column;
+				gap: 8px;
+				padding-top: 10px;
+				border-top: .5px solid var(--dsw-alias-border-l2);
+			}
+			.wca-comment {
+				box-sizing: border-box;
+				width: 100%;
+				min-height: 64px;
+				resize: vertical;
+				padding: 8px 10px;
+				border: .5px solid var(--dsw-alias-border-l4);
+				border-radius: var(--dsw-radius-sm);
+				background: var(--dsw-alias-bg-base);
+				color: var(--dsw-alias-label-primary);
+				font: inherit;
+				font-size: 13px;
+				line-height: 20px;
+			}
+			.wca-comment::placeholder { color: var(--dsw-alias-label-dimmed); }
+			.wca-actions { display: flex; gap: 8px; }
+			.wca-form-error {
+				margin: 0;
+				min-height: 18px;
+				color: var(--dsw-alias-state-error-primary);
+				font-size: 12px;
+				line-height: 18px;
+			}
+			.wca-open {
+				width: fit-content;
+				color: var(--dsw-alias-link);
+				font-size: 13px;
+				line-height: 20px;
+				text-decoration: none;
+			}
+			.wca-open:hover { text-decoration: underline; }
+			.wca-empty { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 20px; }
+
+			/* Markdown body: type, spacing and code surfaces follow the host Markdown. */
+			.wca-md {
+				min-width: 0;
+				overflow-wrap: anywhere;
+				font: var(--dsw-font-markdown-base);
+				color: var(--dsw-alias-label-primary);
+			}
+			.wca-md > :first-child { margin-top: 0; }
+			.wca-md > :last-child { margin-bottom: 0; }
+			.wca-md strong { font-weight: 600; }
+			.wca-md h1 { font: var(--dsw-font-markdown-h1); margin: 24px 0 12px; }
+			.wca-md h2 { font: var(--dsw-font-markdown-h2); margin: 22px 0 10px; }
+			.wca-md h3 { font: var(--dsw-font-markdown-h3); margin: 20px 0 8px; }
+			.wca-md h4 { font: var(--dsw-font-markdown-h4); margin: 16px 0 6px; }
+			.wca-md :is(h5, h6) { font: var(--dsw-font-markdown-base-strong); margin: 14px 0 6px; }
+			.wca-md p { margin: 12px 0; }
+			.wca-md :where(ul, ol) { margin: 12px 0; padding-left: 22px; }
+			.wca-md li:not(:first-child) { margin-top: 4px; }
+			.wca-md li::marker { color: var(--dsw-alias-label-secondary); }
+			.wca-md li > :where(ul, ol) { margin-top: 4px; }
+			.wca-md a { color: var(--dsw-alias-link); font-weight: 500; text-decoration: none; }
+			.wca-md a:hover { text-decoration: underline; text-underline-offset: 3px; }
+			.wca-md :not(pre) > code {
+				font: var(--dsw-font-markdown-code);
+				font-size: .875em;
+				background: var(--dsw-alias-markdown-inline-code);
+				border: .5px solid var(--dsw-alias-border-l1);
+				border-radius: var(--dsw-radius-sm);
+				padding: 0 5px;
+			}
+			.wca-md pre {
+				margin: 12px 0;
+				padding: 12px 14px;
+				overflow: auto;
+				border: .5px solid var(--dsw-alias-border-l1);
+				border-radius: var(--dsw-radius-lg);
+				background: var(--dsw-alias-markdown-code-block);
+				color: var(--dsw-alias-label-primary);
+				font: var(--dsw-font-markdown-code-block-small);
+			}
+			.wca-md pre code { font: inherit; background: none; border: 0; padding: 0; }
+			.wca-md blockquote {
+				margin: 12px 0;
+				padding-left: 14px;
+				border-left: 2px solid var(--dsw-alias-label-caption);
+				color: var(--dsw-alias-label-secondary);
+			}
+			.wca-md hr { height: .5px; margin: 20px 0; border: 0; background: var(--dsw-alias-border-l2); }
+			.wca-md .wca-table-scroll { max-width: 100%; overflow-x: auto; overscroll-behavior-x: contain; }
+			.wca-md table { border-collapse: collapse; width: max-content; max-width: 100%; }
+			.wca-md th,
+			.wca-md td {
+				max-width: min(30vw, 320px);
+				padding: 8px 12px;
+				border: .5px solid var(--dsw-alias-border-l2);
+				text-align: start;
+				vertical-align: top;
+				overflow-wrap: anywhere;
+			}
+			.wca-md th {
+				background: var(--dsw-alias-bg-module-platform);
+				font: var(--dsw-font-markdown-table-head);
+			}
+			.wca-md td { font: var(--dsw-font-markdown-table); }
+		`;
+		//#endregion
+
+		//#region data + components
+
+		/** Format one timestamp for the review list. */
+		function formatTime(value) {
+			const date = new Date(String(value ?? ""));
+			if (Number.isNaN(date.getTime())) return String(value ?? "");
+			return date.toLocaleString(undefined, { hour12: false });
+		}
+
+		/** Map an item state to a localized Tag tone. */
+		function stateTone(state) {
+			switch (String(state ?? "").toUpperCase()) {
+				case "OPEN":
+					return "info";
+				case "MERGED":
+					return "success";
+				case "CLOSED":
+					return "danger";
+				default:
+					return "neutral";
+			}
+		}
+
+		/** The localized label of one PR state, falling back to the raw state. */
+		function stateLabel(t, state) {
+			if (state === "") return "";
+			const key = `state.${state.toLowerCase()}`;
+			const label = t(key);
+			return label === key ? state : label;
+		}
+
+		/** Render one review (kind tag, time, plain-text body). */
+		function ReviewRow(props) {
+			const review = props.review;
+			const fix = review?.kind === "fix";
+			return jsxs(
+				"div",
+				{
+					className: "wca-review",
+					children: [
+						jsxs(
+							"div",
+							{
+								className: "wca-review-head",
+								children: [
+									jsx(
+										"span",
+										{
+											className: "wca-tag",
+											"data-tone": fix ? "warning" : "info",
+											children: props.t(fix ? "kind.fix" : "kind.question")
+										},
+										"kind"
+									),
+									jsx("span", { className: "wca-review-time", children: formatTime(review?.at) }, "time")
+								]
+							},
+							"head"
+						),
+						jsx("p", { className: "wca-review-text", children: String(review?.text ?? "") }, "text")
+					]
+				},
+				String(review?.at ?? "") + String(review?.text ?? "")
+			);
+		}
+
+		/** The review form: one textarea and the two existing actions (ask / request change). */
+		function ReviewForm(props) {
+			const t = props.t;
+			const [text, setText] = react.useState("");
+			const [busy, setBusy] = react.useState(false);
+			const [error, setError] = react.useState("");
+			const mounted = react.useRef(true);
+			react.useEffect(() => () => {
+				mounted.current = false;
+			}, []);
+			const submit = async (kind) => {
+				const value = text.trim();
+				if (value === "") {
+					setError(t("form.empty"));
+					return;
+				}
+				setBusy(true);
+				setError("");
+				try {
+					const response = await fetch(REVIEW_URL, {
+						method: "POST",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ id: props.item.id, kind, text: value })
+					});
+					const payload = await response.json().catch(() => ({}));
+					if (!response.ok || payload.ok !== true) {
+						throw new Error(payload?.message ?? `HTTP ${response.status}`);
+					}
+					if (!mounted.current) return;
+					setText("");
+					props.onSubmitted();
+				} catch (failure) {
+					if (!mounted.current) return;
+					setError(t("form.failed", { message: failure instanceof Error ? failure.message : String(failure) }));
+				} finally {
+					if (mounted.current) setBusy(false);
+				}
+			};
+			return jsxs(
+				"div",
+				{
+					className: "wca-form",
+					children: [
+						jsx("textarea", {
+							className: "wca-comment",
+							rows: 3,
+							placeholder: t("form.placeholder"),
+							value: text,
+							disabled: busy,
+							onChange: (event) => setText(event.target.value)
+						}),
+						jsxs(
+							"div",
+							{
+								className: "wca-actions",
+								children: [
+									jsx(
+										"button",
+										{
+											type: "button",
+											className: "wca-btn",
+											"data-variant": "outline",
+											disabled: busy,
+											onClick: () => submit("question"),
+											children: t("form.ask")
+										},
+										"ask"
+									),
+									jsx(
+										"button",
+										{
+											type: "button",
+											className: "wca-btn",
+											"data-variant": "primary",
+											disabled: busy,
+											onClick: () => submit("fix"),
+											children: busy ? t("form.inflight") : t("form.fix")
+										},
+										"fix"
+									)
+								]
+							},
+							"actions"
+						),
+						jsx("p", { className: "wca-form-error", role: "alert", children: error }, "error")
+					]
+				},
+				"form"
+			);
+		}
+
+		/** The collapsed-by-default PR description disclosure with the rendered Markdown body. */
+		function BodyDisclosure(props) {
+			const t = props.t;
+			const [open, setOpen] = react.useState(false);
+			const hasBody = typeof props.text === "string" && props.text.trim() !== "";
+			return jsxs(
+				"div",
+				{
+					className: "wca-disclosure",
+					children: [
+						jsxs(
+							"button",
+							{
+								type: "button",
+								className: "wca-disclosure-toggle",
+								"aria-expanded": open,
+								onClick: () => setOpen((value) => !value),
+								children: [jsx(ChevronIcon, { open }, "chevron"), jsx("span", { children: t("card.body") }, "label")]
+							},
+							"toggle"
+						),
+						open ? jsx(Markdown, { text: hasBody ? props.text : t("card.bodyEmpty") }, "body") : null
+					]
+				},
+				"disclosure"
+			);
+		}
+
+		/** One PR card: identity, title, diff stat, Markdown body, reviews and the form. */
+		function PrCard(props) {
+			const item = props.item;
+			const t = props.t;
+			const reviews = Array.isArray(item.review) ? item.review : [];
+			const href = safeWebHref(item.url);
+			const additions = Number.isFinite(Number(item.additions)) ? Number(item.additions) : 0;
+			const deletions = Number.isFinite(Number(item.deletions)) ? Number(item.deletions) : 0;
+			const files = Number.isFinite(Number(item.changedFiles)) ? Number(item.changedFiles) : 0;
+			const state = String(item.state ?? "").toUpperCase();
+			return jsxs(
+				"article",
+				{
+					className: "wca-card",
+					children: [
+						jsxs(
+							"div",
+							{
+								className: "wca-card-head",
+								children: [
+									jsxs(
+										"div",
+										{
+											className: "wca-repo",
+											children: [jsx("strong", { children: String(item.repo ?? "") }), ` #${String(item.pr ?? "")}`]
+										},
+										"repo"
+									),
+									jsx(
+										"span",
+										{
+											className: "wca-tag",
+											"data-tone": stateTone(state),
+											children: stateLabel(t, state)
+										},
+										"state"
+									)
+								]
+							},
+							"head"
+						),
+						jsx("h2", { className: "wca-card-title", children: String(item.title ?? "") || t("card.untitled") }, "title"),
+						jsxs(
+							"p",
+							{
+								className: "wca-meta",
+								children: [
+									jsx("span", { className: "wca-added", children: `+${additions}` }, "add"),
+									" ",
+									jsx("span", { className: "wca-removed", children: `−${deletions}` }, "del"),
+									", ",
+									t("card.files", { count: files })
+								]
+							},
+							"meta"
+						),
+						jsx(BodyDisclosure, { text: item.body, t }, "body"),
+						reviews.length === 0
+							? null
+							: jsxs(
+									"div",
+									{
+										className: "wca-reviews",
+										children: [
+											jsx("div", { className: "wca-reviews-title", children: t("card.reviews", { count: reviews.length }) }, "title"),
+											reviews.map((review, index) => jsx(ReviewRow, { review, t }, `review-${index}`))
+										]
+									},
+									"reviews"
+							  ),
+						jsx(ReviewForm, { item, t, onSubmitted: props.onSubmitted }, "form"),
+						href === undefined
+							? null
+							: jsx(
+									"a",
+									{
+										className: "wca-open",
+										href,
+										target: "_blank",
+										rel: "noopener noreferrer",
+										children: t("card.open")
+									},
+									"open"
+							  )
+					]
+				},
+				String(item.id ?? item.pr ?? "")
+			);
+		}
+
+		/** The inbox section: fetch once, refresh on demand, reload after a comment is accepted. */
+		function InboxSection(props) {
+			const t = props.t;
+			const [items, setItems] = react.useState(null);
+			const [loading, setLoading] = react.useState(true);
+			const [error, setError] = react.useState("");
+			const [updatedAt, setUpdatedAt] = react.useState(null);
+			const alive = react.useRef(true);
+			const inflight = react.useRef(null);
+			const rerun = react.useRef(false);
+			const load = react.useCallback(() => {
+				if (inflight.current !== null) {
+					rerun.current = true;
+					return inflight.current;
+				}
+				setLoading(true);
+				const request = (async () => {
+					try {
+						const response = await fetch(ITEMS_URL, { headers: { accept: "application/json" }, cache: "no-store" });
+						if (!response.ok) throw new Error(`HTTP ${response.status}`);
+						const payload = await response.json();
+						if (!alive.current) return;
+						setItems(Array.isArray(payload.items) ? payload.items : []);
+						setUpdatedAt(new Date());
+						setError("");
+					} catch (failure) {
+						if (!alive.current) return;
+						setError(t("status.failed", { message: failure instanceof Error ? failure.message : String(failure) }));
+					} finally {
+						if (alive.current) setLoading(false);
+					}
+				})();
+				inflight.current = request;
+				request.finally(() => {
+					if (inflight.current === request) inflight.current = null;
+					if (rerun.current) {
+						rerun.current = false;
+						load();
+					}
+				});
+				return request;
+			}, [t]);
+			react.useEffect(() => {
+				alive.current = true;
+				load();
+				return () => {
+					alive.current = false;
+				};
+			}, [load]);
+			const status =
+				error !== ""
+					? error
+					: loading || items === null
+						? t("status.loading")
+						: t("status.loaded", {
+								count: items.length,
+								time: updatedAt === null ? "" : updatedAt.toLocaleTimeString(undefined, { hour12: false })
+							});
+			return jsxs(
+				"div",
+				{
+					className: "wca-section",
+					children: [
+						jsxs(
+							"div",
+							{
+								className: "wca-section-head",
+								children: [
+									jsx("h2", { className: "wca-section-title", children: t("section.inbox") }, "title"),
+									jsx(
+										"button",
+										{
+											type: "button",
+											className: "wca-btn",
+											"data-variant": "outline",
+											disabled: loading,
+											onClick: () => load(),
+											children: t("refresh")
+										},
+										"refresh"
+									)
+								]
+							},
+							"head"
+						),
+						jsx(
+							"p",
+							{
+								className: "wca-status",
+								"data-tone": error !== "" ? "error" : undefined,
+								role: error !== "" ? "alert" : undefined,
+								children: status
+							},
+							"status"
+						),
+						items !== null && items.length === 0
+							? jsx("p", { className: "wca-empty", children: t("inbox.empty") }, "empty")
+							: null,
+						jsx(
+							"div",
+							{
+								className: "wca-cards",
+								children:
+									items === null
+										? null
+										: items.map((item, index) =>
+												jsx(PrCard, { item, t, onSubmitted: () => load() }, String(item.id ?? index))
+										  )
+							},
+							"cards"
+						)
+					]
+				},
+				"inbox"
+			);
+		}
+
+		/**
+		* The sections this page hosts. Adding a section is exactly one array entry plus
+		* its component; the tab bar is generated from this list.
+		*/
+		const SECTIONS = [{ id: "inbox", labelKey: "section.inbox", Component: InboxSection }];
+
+		/** The `main` slot page: title, section tabs, and the active section. */
+		function PanelPage(props) {
+			const t = props.t;
+			const [active, setActive] = react.useState(SECTIONS[0].id);
+			const section = SECTIONS.find((candidate) => candidate.id === active) ?? SECTIONS[0];
+			const Component = section.Component;
+			return jsxs(
+				"div",
+				{
+					className: "wca-page",
+					children: [
+						jsx("style", { children: STYLES }, "style"),
+						jsxs(
+							"header",
+							{
+								className: "wca-head",
+								children: [
+									jsxs(
+										"div",
+										{
+											children: [
+												jsx("h1", { className: "wca-title", children: t("panel") }, "title"),
+												jsx("p", { className: "wca-subtitle", children: t("panel.subtitle") }, "subtitle")
+											]
+										},
+										"heading"
+									)
+								]
+							},
+							"head"
+						),
+						jsx(
+							"nav",
+							{
+								className: "wca-tabs",
+								role: "tablist",
+								"aria-label": t("sections.label"),
+								children: SECTIONS.map((candidate) =>
+									jsx(
+										"button",
+										{
+											type: "button",
+											role: "tab",
+											id: `wca-tab-${candidate.id}`,
+											"aria-controls": `wca-panel-${candidate.id}`,
+											className: "wca-tab",
+											"aria-selected": candidate.id === section.id,
+											onClick: () => setActive(candidate.id),
+											children: t(candidate.labelKey)
+										},
+										candidate.id
+									)
+								)
+							},
+							"tabs"
+						),
+						jsx(
+							"div",
+							{
+								id: `wca-panel-${section.id}`,
+								role: "tabpanel",
+								"aria-labelledby": `wca-tab-${section.id}`,
+								children: jsx(Component, { t })
+							},
+							"section"
+						)
+					]
+				},
+				"page"
+			);
+		}
+		//#endregion
+
 		const inject = ["slots", "locale"];
 		/**
 		* Fill the sidebar panel list and the main page with the review inbox.
@@ -95,12 +1481,10 @@ window.__ModuleLoader__.load({
 				inject: () => ({
 					t
 				})
-			}, InboxPage));
+			}, PanelPage));
 		}
 		exports.apply = apply;
 		exports.inject = inject;
 		return module.exports;
 	}
 });
-
-//# sourceMappingURL=client.js.map

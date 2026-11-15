@@ -1,7 +1,7 @@
 /**
  * 审查收件箱：一个 PR 一个 JSON item，外加「整条评论 → spv 任务」的派活流程。
  *
- * 这是收件箱的**唯一**实现。CLI（`wheelchair-agent inbox`）、独立页面与 dsh 的 webui 插件都 import 它：
+ * 这是收件箱的**唯一**实现。CLI（`wheelchair-agent inbox watch`）与 dsh 的 webui 插件都 import 它：
  * webui 的 host 半身 import 的是 `install.sh` 从本文件复制进 profile 的副本（`lib/core/inbox.js`），
  * 所以面板和轮询器不会各写一份，也不会因为 preset 被别的 worktree 替换而失效（见 `webui/README.md`）。
  *
@@ -15,7 +15,6 @@ import { execFile, execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { existsSync, readdirSync } from 'node:fs'
 import { chmod, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
-import { createServer } from 'node:http'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
@@ -50,7 +49,6 @@ const LOCK_STALE_MS = 30_000
 /** `setTimeout` 的毫秒上限；更长的间隔会溢出成约 1ms 的忙循环。 */
 const MAX_TIMER_MS = 2_147_483_647
 
-const PAGE_PATH = '/wheelchair-inbox/page'
 const ITEMS_PATH = '/wheelchair-inbox/items'
 const REVIEW_PATH = '/wheelchair-inbox/review'
 
@@ -525,13 +523,6 @@ function sendMethodNotAllowed(res, allow) {
   res.end()
 }
 
-function sendHtml(res, html) {
-  res.statusCode = 200
-  res.setHeader('content-type', 'text/html; charset=utf-8')
-  res.setHeader('cache-control', 'no-store')
-  res.end(html)
-}
-
 /** 有上限地读完请求体；超过上限时把流排空并返回 null。 */
 async function readBoundedBody(req) {
   const chunks = []
@@ -613,31 +604,13 @@ async function handleReview(root, req, res) {
 }
 
 /**
- * 收件箱的完整 HTTP 面。`standalone` 只在 CLI 起的独立服务里为 true：那时 `/` 与 `/favicon.ico` 归我们，
- * 否则 dsh 的 webserver 拥有 `/`（插件只注册三个 `/wheelchair-inbox/*` 精确路由）。
+ * 收件箱的 HTTP 面：dsh 的 webserver 拥有 `/`，插件只注册两个 `/wheelchair-inbox/*` 精确路由；
+ * 页面本身由 `webui/lib/client.js` 在 Client 端渲染，Host 不再发 HTML。
  */
-export function createInboxHandler({ root = resolveInboxRoot(), standalone = false } = {}) {
+export function createInboxHandler({ root = resolveInboxRoot() } = {}) {
   return async function handle(req, res) {
     const pathname = pathOf(req)
     const method = String(req.method ?? 'GET').toUpperCase()
-    if (pathname === PAGE_PATH || (standalone && pathname === '/')) {
-      if (method !== 'GET') {
-        sendMethodNotAllowed(res, 'GET')
-        return
-      }
-      sendHtml(res, pageHtml())
-      return
-    }
-    if (standalone && pathname === '/favicon.ico') {
-      if (method !== 'GET') {
-        sendMethodNotAllowed(res, 'GET')
-        return
-      }
-      res.statusCode = 204
-      res.setHeader('cache-control', 'no-store')
-      res.end()
-      return
-    }
     if (pathname === ITEMS_PATH) {
       if (method !== 'GET') {
         sendMethodNotAllowed(res, 'GET')
@@ -660,384 +633,4 @@ export function createInboxHandler({ root = resolveInboxRoot(), standalone = fal
     }
     sendJson(res, 404, { code: 'not-found', message: `no route for ${pathname}` })
   }
-}
-
-/**
- * 起一个只绑 loopback 的独立服务（CLI 的 `wheelchair-agent inbox`）。
- *
- * 返回真实的 `url`：端口传 0 时以实际监听端口为准，测试与操作者都不必猜。
- */
-export async function startInboxServer({ root = resolveInboxRoot(), host = '127.0.0.1', port = 3099 } = {}) {
-  const server = createServer(createInboxHandler({ root, standalone: true }))
-  await new Promise((resolve, reject) => {
-    const onError = error => {
-      server.off('listening', onListening)
-      reject(error)
-    }
-    const onListening = () => {
-      server.off('error', onError)
-      resolve()
-    }
-    server.once('error', onError)
-    server.once('listening', onListening)
-    server.listen(port, host)
-  })
-  const address = server.address()
-  const actual = typeof address === 'object' && address !== null ? address.port : port
-  return { server, url: `http://${host}:${actual}` }
-}
-
-/**
- * 独立页面：`wheelchair-agent` 的 UI 首页。收件箱只是第一个 section。
- *
- * 页面骨架（标题、左侧 section 列表、顶部 tab 条）由内联 JS 的 `SECTIONS` 数组驱动；新增一个
- * section 只需要在 `SECTIONS` 里加一条 `{ id, label, render }` 并实现对应的 `render(container)`，
- * 不用改 HTML。数据全部由 DOM API 构建，GitHub 正文永远不会当 HTML 注入。
- *
- * 同一份页面同时服务独立服务与 dsh 面板的 iframe：`body.embedded` 只隐藏左侧栏，section tab 条
- * 在两种形态下都保留。用 `String.raw`：内联 JS 需要保留 `\n` 之类字符的字面形式。
- */
-export function pageHtml() {
-  return String.raw`<!doctype html>
-<html lang="zh-CN">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>wheelchair-agent</title>
-<style>
-:root{color-scheme:light;--bg:#f6f7f9;--panel:#ffffff;--rail:#eef0f3;--text:#1f2328;--muted:#656d76;--border:#d0d7de;--accent:#1f6feb;--accent-text:#ffffff;--danger:#cf222e;--code:#f0f2f4;--shadow:0 1px 2px rgba(31,35,40,.08)}
-@media (prefers-color-scheme:dark){:root{color-scheme:dark;--bg:#0d1117;--panel:#161b22;--rail:#010409;--text:#e6edf3;--muted:#8b949e;--border:#30363d;--accent:#2f81f7;--accent-text:#ffffff;--danger:#f85149;--code:#0d1117;--shadow:none}}
-*{box-sizing:border-box}
-body{margin:0;min-height:100vh;display:flex;background:var(--bg);color:var(--text);font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI","Noto Sans SC","Microsoft YaHei",sans-serif}
-body.embedded .rail{display:none}
-.rail{width:200px;flex:0 0 200px;min-height:100vh;padding:16px 10px;background:var(--rail);border-right:1px solid var(--border)}
-.rail-title{padding:4px 8px 14px;color:var(--muted);font-size:12px;font-weight:600;letter-spacing:.04em}
-.rail-sections{display:flex;flex-direction:column;gap:4px}
-.rail-row{display:flex;align-items:center;gap:8px;width:100%;padding:8px;border:1px solid transparent;border-radius:6px;background:transparent;color:var(--text);font:inherit;font-weight:600;text-align:left;cursor:pointer}
-.rail-row:hover{background:var(--panel)}
-.rail-row.active{border-color:var(--border);background:var(--panel);box-shadow:var(--shadow)}
-.rail-row svg{flex:0 0 auto;color:var(--accent)}
-.main{flex:1 1 auto;min-width:0;max-width:1100px;padding:20px 24px 48px}
-h1{margin:0 0 14px;font-size:20px}
-.section-nav{display:flex;gap:6px;margin-bottom:16px;border-bottom:1px solid var(--border)}
-.tab{margin-bottom:-1px;padding:6px 12px;border:1px solid transparent;border-bottom:none;border-radius:6px 6px 0 0;background:transparent;color:var(--muted);font:inherit;font-weight:600;cursor:pointer}
-.tab:hover{color:var(--text)}
-.tab.active{border-color:var(--border);border-bottom-color:var(--panel);background:var(--panel);color:var(--text)}
-.section-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:4px}
-.section-title{margin:0;font-size:16px}
-.status{margin:0 0 18px;min-height:20px;color:var(--muted);font-size:13px}
-.cards{display:flex;flex-direction:column;gap:14px}
-.card{background:var(--panel);border:1px solid var(--border);border-radius:8px;padding:16px;box-shadow:var(--shadow)}
-.card-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
-.card-repo{font-size:13px;color:var(--muted)}
-.card-repo .repo{font-weight:600;color:var(--text)}
-.pill{border:1px solid var(--border);border-radius:999px;padding:1px 8px;font-size:12px;font-weight:600}
-.state-open{color:#0969da;background:#ddf4ff;border-color:#54aeff}
-.state-merged{color:#1a7f37;background:#dafbe1;border-color:#4ac26b}
-.state-closed{color:#cf222e;background:#ffebe9;border-color:#ff8182}
-.card-title{margin:10px 0 2px;font-size:16px}
-.card-meta{margin:0 0 12px;color:var(--muted);font-size:13px}
-details.body{margin-bottom:12px;padding:8px 10px;border:1px solid var(--border);border-radius:6px;background:var(--code)}
-details.body summary{cursor:pointer;color:var(--muted);font-size:13px}
-.body-text{margin:8px 0 0;white-space:pre-wrap;word-break:break-word;font:12px/1.5 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
-.reviews{margin-bottom:12px;padding-top:10px;border-top:1px solid var(--border)}
-.reviews-title{margin-bottom:6px;color:var(--muted);font-size:12px}
-.review{margin-bottom:6px;padding:8px 10px;border-left:3px solid var(--border);border-radius:0 6px 6px 0;background:var(--code)}
-.review-head{display:flex;align-items:baseline;gap:8px;font-size:12px}
-.review-kind{font-weight:600}
-.review-kind.fix{color:var(--danger)}
-.review-kind.question{color:var(--accent)}
-.review-time{color:var(--muted)}
-.review-text{margin-top:2px;white-space:pre-wrap;word-break:break-word}
-.form{display:flex;flex-direction:column;gap:8px;padding-top:10px;border-top:1px solid var(--border)}
-.comment{width:100%;min-height:64px;resize:vertical;padding:8px;border:1px solid var(--border);border-radius:6px;background:var(--bg);color:var(--text);font:inherit}
-.actions{display:flex;gap:8px}
-.btn{padding:5px 14px;border:1px solid var(--border);border-radius:6px;background:var(--panel);color:var(--text);font:inherit;font-weight:600;cursor:pointer}
-.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-text)}
-.btn:disabled{opacity:.55;cursor:progress}
-.form-error{margin:0;min-height:18px;color:var(--danger);font-size:13px}
-.open-link{display:inline-block;margin-top:10px;color:var(--accent);font-size:13px;text-decoration:none}
-.open-link:hover{text-decoration:underline}
-.empty{color:var(--muted)}
-@media (max-width:640px){.rail{display:none}.main{padding:14px}}
-</style>
-</head>
-<body>
-<aside class="rail" aria-label="sections">
-  <div class="rail-title">wheelchair-agent</div>
-  <div id="rail-sections" class="rail-sections"></div>
-</aside>
-<main class="main">
-  <h1>wheelchair-agent</h1>
-  <nav id="section-nav" class="section-nav" role="tablist" aria-label="sections"></nav>
-  <div id="section-body" class="section-body"></div>
-</main>
-<script>
-(function () {
-  'use strict'
-  if (window.self !== window.top) document.body.classList.add('embedded')
-  var SVG_NS = 'http://www.w3.org/2000/svg'
-
-  function el(tag, className, text) {
-    var node = document.createElement(tag)
-    if (className) node.className = className
-    if (text !== undefined && text !== null) node.textContent = String(text)
-    return node
-  }
-
-  function timeText(at) {
-    if (!at) return ''
-    var date = new Date(at)
-    if (isNaN(date.getTime())) return String(at)
-    return date.toLocaleString('zh-CN', { hour12: false })
-  }
-
-  function safeUrl(value) {
-    try {
-      var url = new URL(String(value))
-      return url.protocol === 'http:' || url.protocol === 'https:' ? url.href : null
-    } catch (error) {
-      return null
-    }
-  }
-
-  function glyph() {
-    var svg = document.createElementNS(SVG_NS, 'svg')
-    svg.setAttribute('width', '16')
-    svg.setAttribute('height', '16')
-    svg.setAttribute('viewBox', '0 0 16 16')
-    svg.setAttribute('fill', 'none')
-    svg.setAttribute('stroke', 'currentColor')
-    svg.setAttribute('stroke-width', '1.4')
-    svg.setAttribute('stroke-linecap', 'round')
-    svg.setAttribute('stroke-linejoin', 'round')
-    svg.setAttribute('aria-hidden', 'true')
-    // 明确的变量名：没有分号的行如果以下一行的 [ 开头，会被 ASI 接成上一句的成员访问。
-    var paths = [
-      'M2 9.5h3l1 1.8h4l1-1.8h3',
-      'M2.8 9.5V4.2A1.2 1.2 0 0 1 4 3h8a1.2 1.2 0 0 1 1.2 1.2v5.3',
-      'M2.8 9.5v2.3A1.2 1.2 0 0 0 4 13h8a1.2 1.2 0 0 0 1.2-1.2V9.5'
-    ]
-    paths.forEach(function (d) {
-      var path = document.createElementNS(SVG_NS, 'path')
-      path.setAttribute('d', d)
-      svg.appendChild(path)
-    })
-    return svg
-  }
-
-  // 新增一个 section：在这个数组里加一条 { id, label, render }，并实现 render(container)。
-  // 左侧 section 列表与顶部 tab 条都由这个数组生成，页面骨架不需要改；每个 section 自己拥有
-  // 自己的标题、刷新按钮与内容，因此新增 section 不会继承收件箱的状态。
-  var SECTIONS = [
-    { id: 'inbox', label: '收件箱', render: InboxSection }
-    // 下一个 section 示例：{ id: 'settings', label: '设置', render: SettingsSection }
-  ]
-
-  var railList = document.getElementById('rail-sections')
-  var sectionNav = document.getElementById('section-nav')
-  var sectionBody = document.getElementById('section-body')
-  var railRows = {}
-  var tabButtons = {}
-
-  function setActive(id) {
-    Object.keys(railRows).forEach(function (key) {
-      var on = key === id
-      railRows[key].classList.toggle('active', on)
-      if (on) railRows[key].setAttribute('aria-current', 'page')
-      else railRows[key].removeAttribute('aria-current')
-    })
-    Object.keys(tabButtons).forEach(function (key) {
-      var on = key === id
-      tabButtons[key].classList.toggle('active', on)
-      tabButtons[key].setAttribute('aria-selected', on ? 'true' : 'false')
-    })
-  }
-
-  function showSection(id) {
-    var section = null
-    for (var index = 0; index < SECTIONS.length; index += 1) {
-      if (SECTIONS[index].id === id) { section = SECTIONS[index]; break }
-    }
-    if (!section) return
-    setActive(id)
-    sectionBody.textContent = ''
-    section.render(sectionBody)
-  }
-
-  function buildNavigation() {
-    SECTIONS.forEach(function (section) {
-      var row = el('button', 'rail-row')
-      row.type = 'button'
-      row.appendChild(glyph())
-      row.appendChild(el('span', 'rail-label', section.label))
-      row.addEventListener('click', function () { showSection(section.id) })
-      railList.appendChild(row)
-      railRows[section.id] = row
-
-      var tab = el('button', 'tab', section.label)
-      tab.type = 'button'
-      tab.setAttribute('role', 'tab')
-      tab.addEventListener('click', function () { showSection(section.id) })
-      sectionNav.appendChild(tab)
-      tabButtons[section.id] = tab
-    })
-  }
-
-  function InboxSection(container) {
-    var head = el('div', 'section-head')
-    head.appendChild(el('h2', 'section-title', '收件箱'))
-    var refresh = el('button', 'btn', '刷新')
-    refresh.type = 'button'
-    head.appendChild(refresh)
-    container.appendChild(head)
-    var status = el('p', 'status', '加载中…')
-    container.appendChild(status)
-    var cards = el('div', 'cards')
-    container.appendChild(cards)
-
-    function reviewRow(review) {
-      var row = el('div', 'review')
-      var head = el('div', 'review-head')
-      var kind = review && review.kind === 'fix' ? 'fix' : 'question'
-      head.appendChild(el('span', 'review-kind ' + kind, kind === 'fix' ? '要改' : '提问'))
-      head.appendChild(el('span', 'review-time', timeText(review && review.at)))
-      row.appendChild(head)
-      row.appendChild(el('div', 'review-text', review && review.text ? review.text : ''))
-      return row
-    }
-
-    function submit(id, kind, textarea, buttons, error) {
-      var text = textarea.value.trim()
-      if (text === '') {
-        error.textContent = '请先写评论。'
-        textarea.focus()
-        return
-      }
-      buttons.forEach(function (button) { button.disabled = true })
-      error.textContent = ''
-      fetch('/wheelchair-inbox/review', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: id, kind: kind, text: text })
-      }).then(function (response) {
-        return response.json().catch(function () { return {} }).then(function (payload) {
-          if (!response.ok || payload.ok !== true) {
-            throw new Error(payload && payload.message ? payload.message : '提交失败（HTTP ' + response.status + '）')
-          }
-          return payload
-        })
-      }).then(function () {
-        textarea.value = ''
-        return load(true)
-      }).catch(function (failure) {
-        error.textContent = '提交失败：' + (failure && failure.message ? failure.message : String(failure))
-      }).then(function () {
-        buttons.forEach(function (button) { button.disabled = false })
-      })
-    }
-
-    function card(item) {
-      var root = el('section', 'card')
-      var head = el('div', 'card-head')
-      var label = el('div', 'card-repo')
-      label.appendChild(el('span', 'repo', item.repo))
-      label.appendChild(el('span', 'pr', ' #' + item.pr))
-      head.appendChild(label)
-      if (item.state) head.appendChild(el('span', 'pill state-' + String(item.state).toLowerCase(), String(item.state)))
-      root.appendChild(head)
-      root.appendChild(el('h2', 'card-title', item.title))
-      root.appendChild(el('p', 'card-meta', '+' + item.additions + ' -' + item.deletions + ', ' + item.changedFiles + ' files'))
-
-      var body = el('details', 'body')
-      body.appendChild(el('summary', null, 'PR 说明'))
-      body.appendChild(el('pre', 'body-text', item.body || '（PR 正文为空）'))
-      root.appendChild(body)
-
-      var reviews = Array.isArray(item.review) ? item.review : []
-      if (reviews.length > 0) {
-        var list = el('div', 'reviews')
-        list.appendChild(el('div', 'reviews-title', '已有评论（' + reviews.length + '）'))
-        reviews.forEach(function (review) { list.appendChild(reviewRow(review)) })
-        root.appendChild(list)
-      }
-
-      var form = el('div', 'form')
-      var textarea = el('textarea', 'comment')
-      textarea.rows = 3
-      textarea.placeholder = '写一条整体评论；提问和要改都会转成任务。'
-      form.appendChild(textarea)
-      var actions = el('div', 'actions')
-      var question = el('button', 'btn', '提问')
-      question.type = 'button'
-      var fix = el('button', 'btn primary', '要改')
-      fix.type = 'button'
-      var error = el('p', 'form-error')
-      question.addEventListener('click', function () { submit(item.id, 'question', textarea, [question, fix], error) })
-      fix.addEventListener('click', function () { submit(item.id, 'fix', textarea, [question, fix], error) })
-      actions.appendChild(question)
-      actions.appendChild(fix)
-      form.appendChild(actions)
-      form.appendChild(error)
-      root.appendChild(form)
-
-      var url = safeUrl(item.url)
-      if (url) {
-        var link = el('a', 'open-link', '打开 PR')
-        link.href = url
-        link.target = '_blank'
-        link.rel = 'noreferrer noopener'
-        root.appendChild(link)
-      }
-      return root
-    }
-
-    var loading = false
-    var rerun = false
-    function load(force) {
-      if (loading) {
-        // 提交成功后的强制刷新不能被“正在加载”吞掉，否则新评论要等下一次手动刷新才出现。
-        if (force) rerun = true
-        return Promise.resolve()
-      }
-      loading = true
-      status.textContent = '加载中…'
-      return fetch('/wheelchair-inbox/items', { headers: { accept: 'application/json' }, cache: 'no-store' })
-        .then(function (response) {
-          if (!response.ok) throw new Error('HTTP ' + response.status)
-          return response.json()
-        })
-        .then(function (payload) {
-          var items = Array.isArray(payload.items) ? payload.items : []
-          cards.textContent = ''
-          if (items.length === 0) {
-            cards.appendChild(el('p', 'empty', '收件箱是空的。先运行 “wheelchair-agent inbox watch --once” 拉取 PR。'))
-          } else {
-            items.forEach(function (item) { cards.appendChild(card(item)) })
-          }
-          status.textContent = items.length + ' 个 PR · 更新于 ' + new Date().toLocaleTimeString('zh-CN', { hour12: false })
-        })
-        .catch(function (error) {
-          status.textContent = '加载失败：' + (error && error.message ? error.message : String(error))
-        })
-        .then(function () {
-          loading = false
-          if (rerun) {
-            rerun = false
-            return load(true)
-          }
-          return undefined
-        })
-    }
-
-    refresh.addEventListener('click', load)
-    load()
-  }
-
-  buildNavigation()
-  if (SECTIONS.length > 0) showSection(SECTIONS[0].id)
-})()
-</script>
-</body>
-</html>`
 }

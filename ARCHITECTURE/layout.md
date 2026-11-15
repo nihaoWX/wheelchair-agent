@@ -30,14 +30,14 @@ wheelchair-agent/
 │       ├── outbox.js             # 读/消费 outbox/ 的原语（没有阻塞读取器）
 │       ├── injector.js           # 后台注入器：新 reply/notice 消费后注入会话
 │       ├── health.js             # 探健康端点，服务没跑就拒绝派活
-│       ├── inbox.js              # 收件箱：item 存储、gh 轮询、评论→队列、面板 HTTP/页面
+│       ├── inbox.js              # 收件箱：item 存储、gh 轮询、评论→队列、面板 JSON 路由
 │       ├── cron.js               # `/spv-cron` 逻辑（纯逻辑，注入依赖）
 │       ├── tools.js              # 插件入口：spv_dispatch / spv_status + 持有注入器
 │       └── cron-plugin.js        # 插件入口：`/spv-cron` 薄壳
 ├── webui/                        # 独立 dsh web client 包 wheelchair-agent-webui
 │   ├── package.json              # dsh.client + exports ".", "./client", "./package.json"
-│   ├── lib/index.js              # host 半身：三个 /wheelchair-inbox/* 路由
-│   ├── lib/client.js             # 手写预构建 bundle（prebuilt；不能用 JSX）
+│   ├── lib/index.js              # host 半身：两个 /wheelchair-inbox/* JSON 路由
+│   ├── lib/client.js             # 手写预构建 bundle：React 页面 + 自带 Markdown 渲染器（不用 JSX）
 │   └── README.md                 # 为什么独立、怎么加载、怎么加 section
 ├── preset/                       # 原 dsh/：装到 ~/.dsh/.agent-presets/spv/
 │   ├── preset.yml
@@ -111,7 +111,8 @@ CLI 薄壳把 preset 目录路径烧进去（和 `spv` 启动器同样的 `sed s
 
 **`webui/` 是第四种安装目标，不是第五个 CLI 子命令包。** 它必须落在 profile 的 `node_modules` 里，因为
 `dsh-client-modules` 从 profile 的 module 解析基址找 `dsh.client`；preset 目录不在那条解析链上。它的
-`lib/client.js` 是**预构建 bundle**（`window.__ModuleLoader__.load(...)`），本仓库没有 TS/构建链，所以手写。
+`lib/client.js` 是**预构建 bundle**（`window.__ModuleLoader__.load(...)`），本仓库没有 TS/构建链，所以手写；
+它只 require `react` / `react/jsx-runtime`，自带 Markdown 渲染器与控件，页面直接渲染在 host 的 `main` slot。
 host 半身 `lib/index.js` 在 profile 里运行，**可以** import dsh 服务；`src/` 与 `bin/` 的规则 3 不适用于它。
 `install.sh` 把 `src/spv/inbox.js` + `dispatch.js` + `paths.js` + `src/shared/queue.js` 拷进包的
 `lib/core/`、`lib/shared/`，让面板不依赖共享 preset。

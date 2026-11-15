@@ -94,16 +94,31 @@ worker 环境里的 `DSH_SUPERAGENT_GITHUB_REPOSITORY` 永远是面板那一个�
 ## UI 主页：独立包 + 区块数组 + 自包含 core（2026-11-14）
 
 - **面板叫 `wheelchair-agent`，不叫"审查收件箱"**：它是 UI 主页，收件箱只是第一个 section。`PANEL_ID`、
-  左侧栏 label、页面 `<title>`/`<h1>` 都是 `wheelchair-agent`；包名仍是 `wheelchair-agent-webui`
+  左侧栏 label、页面 `<h1>` 都是 `wheelchair-agent`；包名仍是 `wheelchair-agent-webui`
   （`dsh-client-modules` 只扫裸包名，而 `wheelchair-agent` 已被主包占用且以子路径挂载）。
-- **页面骨架由 `SECTIONS` 数组驱动**：`{ id, label, render }`；加 section = 一个数组项 + 一个
-  `render(container)`，不改 rail/tab/body 骨架。不引入插件系统。
+- **页面骨架由 `SECTIONS` 数组驱动**：`{ id, labelKey, Component }`；加 section = 一个数组项 +
+  一个 React 组件，tab 条与内容区都从它生成。不引入插件系统。
 - **安装后的包必须自包含**：`install.sh` 把 `src/spv/inbox.js`、`dispatch.js`、`paths.js`、
   `src/shared/queue.js` 拷进包的 `lib/core/`、`lib/shared/`。理由（实测）：22:55 另一个 worktree 的
   `install.sh` 覆盖了共享 preset，删掉了 `src/spv/inbox.js`；若包用 `file://<preset>/...` import，
   下次重启就会 mount 失败。现在的包不依赖 preset 也能加载。
 - **每个 PR item 的 read-modify-write 走跨进程锁**：watcher 与评论 POST 是两个进程，单靠原子 rename
   只能防半文件，防不了丢更新；锁文件 + `randomUUID` 临时名同时解决两者。
+
+## UI 主页改为原生 React 页面（2026-11-15）
+
+- **页面在 `main` slot 里渲染 React，不用 iframe**：官方 `cordis-plugin-development` 的 `practices.md`
+  明确禁止「Host 发 HTML 再 iframe 嵌入」——iframe 文档拿不到 host 的 theme token、light/dark 与
+  `ctx.locale`。旧的 `pageHtml()`、`/wheelchair-inbox/page` 与独立页因此删除；Host 只保留
+  `/wheelchair-inbox/items`、`/wheelchair-inbox/review` 两个 JSON 路由。
+- **不 require `@deepseek-ai/dsh-client-ui-primitives`**：同一份规范禁止把 Harness Client 包当模块加载
+  （无类型检查、随版本变动、组件抛错会清空 slot）。控件、Markdown 渲染器与 CSS 都写在
+  `lib/client.js`，只 require `react` / `react/jsx-runtime`；class 一律加 `wca-` 前缀。
+- **PR 正文用自带的 Markdown → React 渲染器**（标题、嵌套列表、fenced code、行内代码、粗斜体、链接、
+  引用、水平线、GFM 表格、段落；不支持 HTML 透传/图片/脚注/公式）。产出 React 元素而非 `innerHTML`，
+  所以 GitHub 正文不会变成 HTML 注入；默认折叠，展开才解析。
+- **样式只用 `--dsw-alias-*` 等 host token**（颜色、边框、圆角、字号、代码字体），抄 Plugin Manager
+  页的间距/字号节奏，不写死颜色，因此浅色/深色都跟 host 走。
 
 ## SPV preset：普通 dsh 会话 + `spv_*`，纯增量（2026-11-14）
 

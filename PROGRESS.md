@@ -16,9 +16,12 @@
 
 **审查收件箱 / `wheelchair-agent` UI 主页**：`webui/` 是独立 dsh client 包 `wheelchair-agent-webui`
 （superagent profile 左侧栏一行 `wheelchair-agent`）；核心只有一份 `src/spv/inbox.js`，CLI 与面板共用。
-`wheelchair-agent inbox` 起 127.0.0.1 独立页，`wheelchair-agent inbox watch` 轮询五个工具仓的
-`gh pr list` 写 `~/.dsh/state/superagent/inbox/`；评论追加进 item 并派 `inbox-<pr>` 任务。
-**面板要在 :3082 出现需重启 superagent 服务**（本次未重启）。
+面板是 `main` slot 里的**原生 React 页面**（不是 iframe）：PR 正文由 `lib/client.js` 自带的
+Markdown → React 渲染器展开渲染，控件与配色走 host 的 `--dsw-alias-*` token。
+`wheelchair-agent inbox` 现在只打印「面板在 dsh web 里」的指引；`wheelchair-agent inbox watch` 轮询
+工具仓的 `gh pr list` 写 `~/.dsh/state/superagent/inbox/`，评论追加进 item 并派 `inbox-<pr>` 任务。
+Client bundle 由 `dsh-client-hmr` 热更新，不需要为改页面重启服务；删除旧的
+`/wheelchair-inbox/page` 路由要等下一次正常重启。
 
 **CI**：`.github/workflows/ci.yml` 在 push 到 `main` 和所有 PR 上跑 `npm run check`、
 `bash tests/test-layout.sh`、`sh tests/test-prepare.sh`（无 secret、无安装步）。`main` 分支保护要求
@@ -26,6 +29,13 @@
 
 # Completed
 
+- **UI 主页改为原生 React 页面**（2026-11-15，分支 `agent/webui-native`）：删除 iframe、`pageHtml()`、
+  `/wheelchair-inbox/page` 与独立页；`webui/lib/client.js` 在 `main` slot 渲染 React，PR 正文由自带的
+  Markdown → React 渲染器（标题/嵌套列表/代码块/行内码/粗斜体/链接/引用/表格等，不支持 HTML 透传与
+  图片）展开渲染；只 require `react` / `react/jsx-runtime`，不 require primitives；样式全走 host token，
+  浅/深色实测。`inbox` CLI 改为打印面板位置，`inbox watch` 保留。`install.sh` / `--check`、`npm run
+  check`、layout 4/4、prepare 77/77 全绿；:3082 面板实测（client-hmr 热更新）并把 before/after 截图
+  放进 `webui/docs/`。
 - **dsh 锁 `0.2.1-rc.3`**：superagent 的 `engines.dsh` 不满足 `0.2.2-rc.1`；`dsh-tui@0.19.0`
   兼容该版本，两 profile 共用同一全局 dsh。见 `docs/setup/dsh-commandcode.md`。
 - **superagent 落地**：clone 到 `tools/dsh-superagent/` 构建；profile `superagent`（stateDir、
@@ -105,14 +115,15 @@
 
 # In Progress
 
+- **UI 主页改为原生 React 页面**（分支 `agent/webui-native`，PR 待创建）：实现、安装与面板实测完成，
+  见 `ARCHITECTURE/decisions.md` 的「UI 主页改为原生 React 页面」。
 - **SPV preset 纯增量**（PR #9，分支 `agent/spv-standard-tools`）：实现、安装与全套验证完成，CI 已过，
   等合并。见 `ARCHITECTURE/decisions.md` 的「SPV preset：普通 dsh 会话 + `spv_*`」。
 
 # Known Issues
 
-- **inbox 面板要重启 superagent 服务才出现在 :3082**：本次按要求没有重启（会杀掉执行中的 worker）。
-  `--dump-config` 已证明加载器行在；`wheelchair-agent inbox` 是同一条代码的即时入口。重启不是安装步骤
-  的一部分，操作者下次重启服务即生效。
+- **运行中的服务仍注册着旧的 `/wheelchair-inbox/page` 路由**：Host 代码已从 checkout 删除并装进
+  profile，但服务进程没有重启（重启会杀掉执行中的 worker）。新面板不依赖它；下一次正常重启后该路由消失。
 - **共享 preset 会被并发 worker 的 `install.sh` 覆盖**（2026-11-14 22:55 实测）：另一个 worktree 把
   `~/.dsh/.agent-presets/spv/` 换成不含 inbox 的版本，`wheelchair-agent inbox` 暂时消失。webui 包已
   自包含（core 文件拷进 profile 包，不依赖 preset），但 CLI 仍来自 preset；从本 checkout 重跑

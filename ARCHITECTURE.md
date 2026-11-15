@@ -108,21 +108,24 @@ superagent 侧的 `src/superagent/` **从不进 preset 目录**：那个 profile
 `webui/` 是**第四种安装目标**：`install.sh` 把包拷进 `~/.dsh/profiles/superagent/node_modules/wheelchair-agent-webui/`，
 并往该 profile 的 `cordis.patch.yml` 追加一行 loader（见下）。
 
-## 审查收件箱 / `wheelchair-agent` UI 主页（2026-11-14）
+## 审查收件箱 / `wheelchair-agent` UI 主页（2026-11-14，2026-11-15 改为原生 React）
 
 面板不是"一个 PR 列表页"，而是 **`wheelchair-agent` 的 UI 主页**；收件箱只是它当前的第一个 section。
-页面骨架由内联 JS 的一个 `SECTIONS` 数组驱动（`{ id, label, render }`），rail、顶部 tab 条、内容区都从它生成；
-加第二个 section = 加一个数组项 + 一个 `render(container)` 函数，不改骨架。详见 `webui/README.md`。
+页面是一个**原生 React 组件**（渲染在 `main` slot，因此继承 host 的 theme token、light/dark 与 `ctx.locale`），
+骨架由 `SECTIONS` 数组驱动（`{ id, labelKey, Component }`），tab 条与内容区都从它生成；加第二个 section =
+加一个数组项 + 一个 React 组件。PR 正文由 `lib/client.js` 自带的小 Markdown → React 渲染器生成，不写
+`innerHTML`、不 require `@deepseek-ai/dsh-client-ui-primitives`。详见 `webui/README.md`。
 
 为什么是**独立包**：`dsh-client-modules` 的 `exactPackageSpecifier()` 只认裸包名，`wheelchair-agent/webui`
 这种子路径不会成为 loader 行、扫不到 `dsh.client`。所以包名 `wheelchair-agent-webui`、自己的 `package.json`
 与自己的 loader 行。面板 id、左侧栏标签、页面标题都是 `wheelchair-agent`，包名只是内部实现细节。
 
 同一个实现两面用：`install.sh` 把 `src/spv/inbox.js`、`dispatch.js`、`paths.js`、`src/shared/queue.js`
-拷进已安装包（`lib/core/`、`lib/shared/`），CLI（`wheelchair-agent inbox`）与面板都从这一份源生成。面板因此
-**不依赖共享的 preset 目录**——另一个 worktree 的 `install.sh` 覆盖 preset 时，面板不会被带坏。
-`webui/lib/client.js` 是手写的预构建 bundle（本仓库无 TS/构建链，不能用 JSX），
-host 半身用 `ctx.webServer.register` 注册三个 `/wheelchair-inbox/*` 精确路由，client 用 `fetch()` 调。
+拷进已安装包（`lib/core/`、`lib/shared/`），CLI（`wheelchair-agent inbox watch`）与面板都从这一份源生成。
+面板因此**不依赖共享的 preset 目录**——另一个 worktree 的 `install.sh` 覆盖 preset 时，面板不会被带坏。
+`webui/lib/client.js` 是手写的预构建 bundle（本仓库无 TS/构建链，不能用 JSX），host 半身用
+`ctx.webServer.register` 注册两个 `/wheelchair-inbox/*` 精确 JSON 路由（`items` / `review`），client 用
+`fetch()` 调；旧的 `pageHtml()`、`/wheelchair-inbox/page` 与独立页已删除。
 
 ## CLI
 

@@ -33,8 +33,6 @@ const PREPARE = INSTALLED ? join(ROOT, 'prepare.sh') : join(ROOT, 'commands', 'p
 const LAUNCHER = INSTALLED ? join(ROOT, 'spv-launcher.sh') : join(ROOT, 'preset', 'spv-launcher.sh')
 const SERVICE = join(ROOT, 'commands', 'superagent-service.py')
 const JOBCTL = join(ROOT, 'commands', 'jobctl.py')
-/** 浏览器打开脚本：安装后与 checkout 里都在 `commands/` 下（install.sh 会把它装进 preset）。 */
-const OPEN_URL = join(ROOT, 'commands', 'open-url.py')
 
 /** 面板与 `check` 都按命令名引用本程序，所以默认 preset 目录由 DSH_HOME 推出。 */
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh')
@@ -57,8 +55,7 @@ commands:
   dispatch --project <p> --task <t> [--thread <n>] [--preset <id>]
                                write one task into the queue and return
   status [--thread <n>]        show the queue without waiting
-  inbox [--port <n>] [--no-open]
-                               serve the review inbox page on 127.0.0.1 (default port 3099)
+  inbox                        print where the review inbox lives (the dsh Web UI panel)
   inbox watch [--once] [--interval <seconds>]
                                poll the tools repos and write PR items into the inbox (default 60s)
   check                        runtime health: service, preset, panel prepare value, prepare dry run
@@ -67,13 +64,16 @@ commands:
 
 Run "wheelchair-agent <command> --help" for one command's options.`
 
-const INBOX_SERVE_USAGE = `usage: wheelchair-agent inbox [--port <n>] [--no-open]
+const INBOX_USAGE = `usage: wheelchair-agent inbox
 
-Serve the review inbox page on 127.0.0.1 and open it in the browser.
+The review inbox is a section of the wheelchair-agent panel in the dsh Web UI.
+Open the superagent service, then pick "wheelchair-agent" in the sidebar:
 
-options:
-  --port <n>   port to listen on (default 3099, or $SPV_INBOX_PORT)
-  --no-open    do not open a browser; the server keeps running until Ctrl-C`
+  wheelchair-agent service start
+  wheelchair-agent service open
+
+To poll the tools/ repos into the inbox:
+  wheelchair-agent inbox watch [--once] [--interval <seconds>]`
 
 const INBOX_WATCH_USAGE = `usage: wheelchair-agent inbox watch [--once] [--interval <seconds>]
 
@@ -306,65 +306,6 @@ async function commandStatus(argv) {
   process.stdout.write(`${lines.join('\n')}\n`)
 }
 
-/** 用 `commands/open-url.py` 打开浏览器；打开失败只提示——面板服务已经在跑，不该因此退出。 */
-function openBrowser(url) {
-  if (!existsSync(OPEN_URL)) {
-    process.stderr.write(`note: ${OPEN_URL} is missing, so the browser was not opened; open ${url} by hand\n`)
-    return
-  }
-  const child = spawnSync('python3', [OPEN_URL, url], { encoding: 'utf8' })
-  if (child.error || child.status !== 0) {
-    process.stderr.write(`note: could not open a browser automatically; open ${url} by hand\n`)
-    const detail = String(child.stderr ?? '').trim()
-    if (detail !== '') process.stderr.write(`${detail}\n`)
-    return
-  }
-  const detail = String(child.stdout ?? '').trim()
-  if (detail !== '') process.stdout.write(`${detail}\n`)
-}
-
-/** `inbox`：起独立面板服务，前台跑到 SIGINT/SIGTERM。 */
-async function commandInboxServe(argv) {
-  let portText = String(process.env.SPV_INBOX_PORT ?? '').trim() || '3099'
-  let port = Number(portText)
-  let open = true
-  for (let index = 0; index < argv.length; index += 1) {
-    const word = argv[index]
-    if (word === '--help' || word === '-h') {
-      process.stdout.write(`${INBOX_SERVE_USAGE}\n`)
-      process.exit(0)
-    }
-    if (word === '--no-open') {
-      open = false
-      continue
-    }
-    if (word === '--port') {
-      const value = argv[index + 1]
-      if (value === undefined || value.startsWith('--')) throw new UsageError('--port needs a value')
-      portText = value
-      port = Number(value)
-      index += 1
-      continue
-    }
-    throw new UsageError(`unknown option ${JSON.stringify(word)} for "inbox"`)
-  }
-  if (!Number.isInteger(port) || port < 0 || port > 65535) {
-    // The raw text, not JSON.stringify(port): NaN would print as "null" and hide what was typed.
-    throw new UsageError(`--port must be an integer between 0 and 65535, got ${JSON.stringify(portText)}`)
-  }
-  const { resolveInboxRoot, startInboxServer } = await load('src', 'spv', 'inbox.js')
-  const { server, url } = await startInboxServer({ root: resolveInboxRoot(), host: '127.0.0.1', port })
-  process.stdout.write(`inbox: ${url}\n`)
-  if (open) openBrowser(url)
-  const stop = () => {
-    // 先关监听再退出；残留的 keep-alive 连接不能把 Ctrl-C 变成挂起。
-    server.close(() => process.exit(0))
-    setTimeout(() => process.exit(0), 1000).unref()
-  }
-  process.once('SIGINT', stop)
-  process.once('SIGTERM', stop)
-}
-
 /** `inbox watch`：先立刻轮询一轮，然后按间隔循环；`--once` 只跑一轮。 */
 async function commandInboxWatch(argv) {
   let once = false
@@ -420,13 +361,22 @@ async function commandInboxWatch(argv) {
   process.exit(0)
 }
 
-/** `inbox`：`inbox watch ...` 是轮询，其余形态是独立面板。 */
+/**
+ * `inbox`：`inbox watch ...` 仍是轮询；其余形态只说明面板在哪里。
+ *
+ * 面板现在是 dsh Web UI 里的 Client React 页面（`webui/lib/client.js`），Host 不再发 HTML，
+ * 所以独立页与 `--port` 都已移除。
+ */
 async function commandInbox(argv) {
   if (argv[0] === 'watch') {
     await commandInboxWatch(argv.slice(1))
     return
   }
-  await commandInboxServe(argv)
+  if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') {
+    process.stdout.write(`${INBOX_USAGE}\n`)
+    return
+  }
+  throw new UsageError(`unknown option ${JSON.stringify(argv[0])} for "inbox"`)
 }
 
 /** `check`：四项运行时健康检查，任一项失败退出 1。 */
