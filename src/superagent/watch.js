@@ -8,11 +8,12 @@
 import { join } from 'node:path'
 import { Queue, SOURCE, health, spvKind, triggerOf } from './spv.js'
 import { consumeTask, ensureDirs, pendingNames, quarantineTask, readTask } from '../shared/queue.js'
-import { megabytes, reclaimWork, resolveWorkRoot } from '../shared/work.js'
+import { megabytes, openTicketDirectories, reclaimWork, resolveWorkRoot } from '../shared/work.js'
 
 export const name = 'wheelchair-agent-spv'
 export const inject = ['orchestrator']
 export { SOURCE, channelFor, spvKind, triggerOf } from './spv.js'
+export { openTicketDirectories } from '../shared/work.js'
 
 /** Consecutive failed rounds tolerated before the Source reports an error; one bad round retries quietly. */
 const FAILURES_BEFORE_ERROR = 3
@@ -37,24 +38,11 @@ export function apply(ctx) {
   // not awaited: a large directory, a slow disk or a failed gate must never delay or break the Source's own startup.
   if (!reclaimedAtMount) {
     reclaimedAtMount = true
-    const skipDirectories = openTicketDirectories(ctx, kind)
-    reclaimAtMount(ctx, { skipDirectories }).catch(error => {
+    // The shared resolver turns this in-process provider into the same directory map the CLI gets from HTTP.
+    const openTickets = () => ({ tickets: ctx.orchestrator.context(kind).tickets.open() })
+    reclaimAtMount(ctx, { openTickets }).catch(error => {
       ctx.logger?.warn?.(`wheelchair-agent work gc failed: ${error?.message ?? error}`)
     })
-  }
-}
-
-/**
- * Directories an open Ticket still owns. The mount sweep deletes a clone only when it is reproducible, but an open
- * Ticket will resume in its directory, so the mount path additionally keeps it; the CLI cannot see Ticket state and
- * stays as aggressive as the gate allows. This makes the mount strictly less aggressive, never more.
- */
-function openTicketDirectories(ctx, kind) {
-  try {
-    const source = ctx.orchestrator.context(kind)
-    return new Set(source.tickets.open().map(ticket => ticket.execution?.directory).filter(Boolean))
-  } catch {
-    return new Set()
   }
 }
 
@@ -64,10 +52,10 @@ function openTicketDirectories(ctx, kind) {
  * The orchestrator service is provided before setup runs, and its `machine.stateDir` plus the settings store are
  * constructed with it. When both are readable, the reclaim happens before setup resumes any worker — the moment the
  * assignment calls the safe one. If the plugin is mounted later (or the store is not ready), the resolved deployment
- * from the orchestrator service is used instead, still under the same gate. Gate 1 (no process cwd inside the
- * directory) is what keeps a live worker safe, not the mount timing.
+ * from the orchestrator service is used instead, still under the same gate. A live worker is kept by the shared
+ * open-ticket map, not by the cwd scan alone: between tool calls its process cwd is not inside the clone.
  */
-export async function reclaimAtMount(ctx, { skipDirectories = new Set() } = {}) {
+export async function reclaimAtMount(ctx, { openTickets } = {}) {
   let stateDir = ''
   let directory = ''
   let early = false
@@ -92,10 +80,21 @@ export async function reclaimAtMount(ctx, { skipDirectories = new Set() } = {}) 
       // The default root is correct when the settings block cannot be read.
     }
   }
+  let skipDirectories = new Map()
+  let blockedReason
+  if (typeof openTickets === 'function') {
+    const open = await openTicketDirectories(openTickets)
+    if (open.ok) skipDirectories = open.directories
+    else {
+      blockedReason = `cannot read open tickets: ${open.reason}; keeping everything`
+      ctx.logger?.warn?.(`wheelchair-agent work gc: ${blockedReason}`)
+    }
+  }
   const result = await reclaimWork({
     root: resolveWorkRoot({ stateDir, directory }),
     stateDir,
     skipDirectories,
+    blockedReason,
   })
   ctx.logger?.info?.(
     `wheelchair-agent work gc: reclaimed ${result.reclaimed}, kept ${result.kept}, freed ${megabytes(result.freedBytes)} MB`,

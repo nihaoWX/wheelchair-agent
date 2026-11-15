@@ -16,9 +16,9 @@ const HEALTH_PATH = '/orchestrator/api/state'
 /** 单次探测的超时（毫秒）。本机回环，失败也应当立刻返回。 */
 const PROBE_TIMEOUT = 2500
 
-/** 部署地址，缺省与 superagent 自己的 `api.url` 一致。 */
-function baseUrl(env = process.env) {
-  const configured = String(env.SPV_SUPERAGENT_URL ?? '').trim()
+/** 部署地址：沿用 `dispatch` 的健康探测环境，兼容服务管理器的 `DSH_SUPERAGENT_URL`。 */
+export function serviceBaseUrl(env = process.env) {
+  const configured = String(env.SPV_SUPERAGENT_URL ?? env.DSH_SUPERAGENT_URL ?? '').trim()
   if (configured) return configured.replace(/\/+$/, '')
   const port = String(env.SPV_SUPERAGENT_PORT ?? '').trim() || '3082'
   return `http://127.0.0.1:${port}`
@@ -30,7 +30,7 @@ function baseUrl(env = process.env) {
  * 返回 `{ alive: true }` 或 `{ alive: false, reason }`；`reason` 直接说清观察到了什么，供错误文案引用。
  * 不抛异常：调用方要的是"能不能派活"，不是"探测本身有没有出错"。
  */
-export function probe(url = baseUrl()) {
+export function probe(url = serviceBaseUrl()) {
   return new Promise(resolve => {
     const req = request(`${url}${HEALTH_PATH}`, { method: 'GET', timeout: PROBE_TIMEOUT }, res => {
       // 任何 HTTP 应答都说明进程在监听。401 也算活着——它只是要求面板 token，不影响 Source 消费队列。
@@ -55,12 +55,69 @@ export function probe(url = baseUrl()) {
 }
 
 /**
+ * Ask the running service which Tickets are still open. `work gc` uses this to keep a live ticket's clone even when
+ * its worker has no process cwd inside it between tool calls.
+ *
+ * Never throws: the caller must distinguish "nothing is listening" (nothing can be working, so reclamation may
+ * proceed) from every other outcome (malformed body, unexpected shape, HTTP error, timeout), which must keep
+ * everything. The management route trusts only a same-origin request carrying `x-orchestrator-request: 1`.
+ */
+export function fetchOpenTickets(url = serviceBaseUrl(), timeout = PROBE_TIMEOUT) {
+  const target = `${url}/orchestrator/api/tickets?state=open`
+  return new Promise(resolve => {
+    let req
+    try {
+      req = request(target, {
+        method: 'GET',
+        timeout,
+        headers: { 'x-orchestrator-request': '1' },
+      })
+    } catch (error) {
+      resolve({ error: `cannot request ${target}: ${error.message}` })
+      return
+    }
+    req.on('response', res => {
+      let body = ''
+      res.setEncoding('utf8')
+      res.on('data', chunk => {
+        body += chunk
+        if (body.length > 4 * 1024 * 1024) req.destroy(new Error('response too large'))
+      })
+      res.on('end', () => {
+        if (res.statusCode < 200 || res.statusCode >= 300) {
+          resolve({ error: `the service answered HTTP ${res.statusCode}` })
+          return
+        }
+        let value
+        try {
+          value = JSON.parse(body)
+        } catch {
+          resolve({ error: 'the service answered with invalid JSON' })
+          return
+        }
+        if (!value || !Array.isArray(value.items)) {
+          resolve({ error: 'the response has no items list' })
+          return
+        }
+        resolve({ tickets: value.items })
+      })
+    })
+    req.on('timeout', () => req.destroy(new Error(`no answer within ${timeout}ms`)))
+    req.on('error', error => {
+      if (error.code === 'ECONNREFUSED') resolve({ down: true, reason: `nothing is listening on ${url}` })
+      else resolve({ error: `requesting ${target} failed: ${error.message}` })
+    })
+    req.end()
+  })
+}
+
+/**
  * 服务没在跑时的错误：说清缺什么、为什么这件事必须挡住、以及能照抄的命令。
  *
  * 刻意**不**返回成功——把任务写进一个没人读的目录，比直接报错糟得多：用户会以为活已经在干了。
  */
 export function serviceDown(result) {
-  const where = result.url ?? baseUrl()
+  const where = result.url ?? serviceBaseUrl()
   return new Error(
     `the superagent service is not running (${result.reason}), so nothing would read the task you are about to ` +
       'dispatch. Its spv queue directory survives a stop, which is why this is checked against the health ' +

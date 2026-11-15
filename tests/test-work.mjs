@@ -26,6 +26,7 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
+import { createServer } from 'node:http'
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -38,6 +39,7 @@ import {
   cwdHolders,
   formatBytes,
   megabytes,
+  openTicketDirectories,
   planWork,
   readReclaimed,
   reclaimWork,
@@ -45,10 +47,15 @@ import {
   restoreCommands,
   shellQuote,
 } from '../src/shared/work.js'
-import { apply, reclaimAtMount } from '../src/superagent/watch.js'
+import {
+  apply,
+  openTicketDirectories as watchOpenTicketDirectories,
+  reclaimAtMount,
+} from '../src/superagent/watch.js'
 
 const CLI = fileURLToPath(new URL('../bin/wheelchair-agent.mjs', import.meta.url))
 const SANDBOXES = []
+const SERVERS = []
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -96,6 +103,8 @@ async function sandbox() {
     GIT_CONFIG_GLOBAL: box.config,
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_TERMINAL_PROMPT: '0',
+    // Deterministic default for CLI cases: an unreachable management API means "nothing can be working".
+    SPV_SUPERAGENT_URL: 'http://127.0.0.1:1',
   }
   return box
 }
@@ -114,7 +123,7 @@ function gitIn(box, dir, ...args) {
   return git(box, ['-C', dir, ...args])
 }
 
-/** Run the CLI with the sandbox state dir; returns the completion result. */
+/** Run the CLI synchronously; used when no in-process server must answer during the run. */
 function cli(box, args, options = {}) {
   const result = spawnSync(process.execPath, [CLI, ...args], {
     cwd: options.cwd ?? box.base,
@@ -129,6 +138,31 @@ function cli(box, args, options = {}) {
     )
   }
   return result
+}
+
+/**
+ * Run the CLI without blocking the test's event loop, so a fake HTTP server in this process can answer it.
+ * Mirrors `cli()`'s environment and failure check.
+ */
+function cliAsync(box, args, options = {}) {
+  return new Promise(resolve => {
+    const child = spawn(process.execPath, [CLI, ...args], {
+      cwd: options.cwd ?? box.base,
+      env: { ...box.env, DSH_SUPERAGENT_STATE_DIR: box.state, ...(options.env ?? {}) },
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.setEncoding('utf8')
+    child.stderr.setEncoding('utf8')
+    child.stdout.on('data', chunk => { stdout += chunk })
+    child.stderr.on('data', chunk => { stderr += chunk })
+    child.on('close', status => {
+      if (options.expectFailure !== true) {
+        assert.equal(status, 0, `wheelchair-agent ${args.join(' ')} failed: ${stderr || stdout}`)
+      }
+      resolve({ status, stdout, stderr })
+    })
+  })
 }
 
 /** A local bare repository plus a seed history on `main` and `agent/<name>`, reachable as the https URL. */
@@ -174,6 +208,22 @@ async function records(box) {
     if (error.code === 'ENOENT') return []
     throw error
   }
+}
+
+/** Fake management API for open tickets; returns its base URL. The caller closes it via SERVERS. */
+async function serveTickets({ body, status = 200, onRequest } = {}) {
+  const server = createServer((req, res) => {
+    onRequest?.(req)
+    res.statusCode = status
+    res.setHeader('content-type', 'application/json')
+    res.end(body)
+  })
+  await new Promise((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+  SERVERS.push(server)
+  return `http://127.0.0.1:${server.address().port}`
 }
 
 /** Plan/delete through the library entry point, with the retention cushions disabled for the case under test. */
@@ -393,28 +443,99 @@ async function testUnknownSurvives() {
   assert.ok((await readFile(join(stray, 'residue.txt'), 'utf8')).includes('not a ticket'))
 }
 
-/** The mount-only skip list keeps a clone an open ticket still owns. */
+/** The shared open-ticket resolver is the same export in the mount hook, and reads both ticket shapes. */
+async function testSharedOpenTickets() {
+  assert.equal(watchOpenTicketDirectories, openTicketDirectories, 'the mount hook re-exports the shared resolver')
+  const directories = await openTicketDirectories(async () => ({
+    tickets: [
+      { id: 'ticket-api', directory: '/work/api-0123456789ab' },
+      { id: 'ticket-domain', execution: { directory: '/work/domain-0123456789ab' } },
+    ],
+  }))
+  assert.equal(directories.ok, true)
+  assert.deepEqual([...directories.directories], [
+    ['/work/api-0123456789ab', 'ticket-api'],
+    ['/work/domain-0123456789ab', 'ticket-domain'],
+  ])
+  assert.deepEqual(await openTicketDirectories(async () => ({ down: true, reason: 'nothing is listening' })), {
+    ok: false,
+    down: true,
+    reason: 'nothing is listening',
+  })
+  const invalid = await openTicketDirectories(async () => ({ tickets: [{ id: 'no-directory' }] }))
+  assert.equal(invalid.ok, false)
+  assert.match(invalid.reason, /execution\.directory/)
+  const thrown = await openTicketDirectories(async () => { throw new Error('boom') })
+  assert.equal(thrown.ok, false)
+  assert.match(thrown.reason, /boom/)
+}
+
+/** A directory an open ticket owns is kept, with a reason naming that ticket, even when it is newest. */
 async function testOpenTicketSkipped() {
   const box = await sandbox()
   const dir = await cloneTicket(box, 'nu')
-  const plan = await planWork({
-    root: box.work,
-    keep: 0,
-    keepDays: 0,
-    skipDirectories: new Set([dir]),
-  })
+  const skipDirectories = new Map([[dir, 'ticket-open-1']])
+  const plan = await planWork({ root: box.work, keep: 0, keepDays: 0, skipDirectories })
   const entry = entryOf(plan, 'nu-0123456789ab')
   assert.equal(entry.action, 'keep')
-  assert.equal(entry.reason, 'an open ticket still uses this directory')
+  assert.equal(entry.reason, 'open ticket ticket-open-1 is using this directory')
   const summary = await reclaimWork({
     root: box.work,
     stateDir: box.state,
     keep: 0,
     keepDays: 0,
-    skipDirectories: new Set([dir]),
+    skipDirectories,
   })
   assert.equal(summary.reclaimed, 0)
   assert.ok((await gitIn(box, dir, 'rev-parse', 'HEAD')).length > 0)
+}
+
+/** The CLI reads the tickets endpoint; a directory it lists is kept and the response shape is validated. */
+async function testCliOpenTicketSkip() {
+  const box = await sandbox()
+  const open = await cloneTicket(box, 'open')
+  await cloneTicket(box, 'free')
+  let seen
+  const url = await serveTickets({
+    body: JSON.stringify({ items: [{ id: 'ticket-open-1', title: 'active work', directory: open }] }),
+    onRequest: req => { seen = req },
+  })
+  const result = await cliAsync(box, ['work', 'gc', '--dry-run'], { env: { SPV_SUPERAGENT_URL: url } })
+  assert.equal(seen.url, '/orchestrator/api/tickets?state=open')
+  assert.equal(seen.headers['x-orchestrator-request'], '1')
+  assert.match(result.stdout, /open tickets: 1 directory\(s\) in use/)
+  assert.match(result.stdout, /keep\s+[\d.]+ [KMG]?B\s+open-0123456789ab \(open ticket ticket-open-1 is using this directory\)/)
+  assert.match(result.stdout, /would reclaim 1, kept 1/)
+  assert.ok((await gitIn(box, open, 'rev-parse', 'HEAD')).length > 0, 'the open ticket clone survives')
+}
+
+/** Service down is not a malformed answer: nothing can be working, so the newest clone is reclaimed by default. */
+async function testCliServiceDownAndDefault() {
+  const box = await sandbox()
+  const newest = await cloneTicket(box, 'newest')
+  await setAge(newest, 0)
+  const dry = cli(box, ['work', 'gc', '--dry-run'])
+  assert.match(dry.stdout, /open-ticket check skipped: nothing is listening on http:\/\/127\.0\.0\.1:1/)
+  assert.match(dry.stdout, /would reclaim 1, kept 0/)
+  const live = cli(box, ['work', 'gc'])
+  assert.match(live.stdout, /^reclaimed 1, kept 0/m, '--keep defaults to 0, so the newest passing clone goes')
+  await assert.rejects(readFile(join(newest, '.git', 'HEAD')), { code: 'ENOENT' })
+}
+
+/** A 2xx answer without the expected shape keeps everything and says so (nonzero exit). */
+async function testCliMalformedTickets() {
+  const box = await sandbox()
+  const dir = await cloneTicket(box, 'guard')
+  const url = await serveTickets({ body: JSON.stringify({ items: 'not-a-list' }) })
+  const result = await cliAsync(box, ['work', 'gc', '--dry-run'], {
+    env: { SPV_SUPERAGENT_URL: url },
+    expectFailure: true,
+  })
+  assert.equal(result.status, 1)
+  assert.match(result.stdout, /cannot read open tickets: the response has no items list; keeping everything/)
+  assert.match(result.stdout, /would reclaim 0, kept 1/)
+  assert.ok((await gitIn(box, dir, 'rev-parse', 'HEAD')).length > 0, 'nothing is reclaimed on an invalid answer')
+  assert.deepEqual(await records(box), [])
 }
 
 /** `--dry-run` prints the plan, keeps the reasons, and writes/deletes nothing. */
@@ -481,6 +602,8 @@ async function testKeepFloor() {
     await setAge(dir, 30 - index * 10)
     dirs.push(dir)
   }
+  const dry = cli(box, ['work', 'gc', '--dry-run', '--keep', '2'])
+  assert.match(dry.stdout, /would reclaim 1, kept 2/, '--keep 2 still protects the newest two when asked')
   const summary = await reclaimWork({ root: box.work, stateDir: box.state, keep: 2 })
   assert.equal(summary.reclaimed, 1, 'only the clone below the floor is reclaimed')
   assert.equal(summary.kept, 2)
@@ -544,12 +667,13 @@ async function testMountApply() {
   }
   const lines = []
   const effects = []
+  const openTicket = { id: 'ticket-open-1', title: 'active', execution: { directory: dirs[10] } }
   const ctx = {
     effect: (fn, label) => effects.push({ fn, label }),
     // No `ready`, `configured()` or `deployment` on the plugin context: the early path must be used.
     orchestrator: {
       sources: { register: () => {} },
-      context: () => ({ tickets: { open: () => [] } }),
+      context: () => ({ tickets: { open: () => [openTicket] } }),
       machine: { stateDir: box.state },
       settings: { current: () => ({ executor: { directory: box.work } }) },
     },
@@ -557,9 +681,11 @@ async function testMountApply() {
   }
   apply(ctx)
   await waitFor(() => lines.length === 1, 'the mount summary line')
-  assert.match(lines[0], /wheelchair-agent work gc: reclaimed 1, kept 10, freed [\d.]+ MB/)
-  await assert.rejects(readFile(join(dirs[0], '.git', 'HEAD')), { code: 'ENOENT' }, 'the oldest clone is gone')
-  assert.ok((await readFile(join(dirs[10], '.git', 'HEAD'), 'utf8')).length > 0, 'the newest 10 are kept')
+  assert.match(lines[0], /wheelchair-agent work gc: reclaimed 10, kept 1, freed [\d.]+ MB/)
+  for (const dir of dirs.slice(0, 10)) {
+    await assert.rejects(readFile(join(dir, '.git', 'HEAD')), { code: 'ENOENT' }, `${dir} is reclaimed`)
+  }
+  assert.ok((await readFile(join(dirs[10], '.git', 'HEAD'), 'utf8')).length > 0, 'the open ticket clone is kept')
 
   apply(ctx)
   await sleep(150)
@@ -584,7 +710,7 @@ async function testMountFallback() {
   }
   await reclaimAtMount(ctx)
   assert.equal(lines.length, 1)
-  assert.match(lines[0], /reclaimed 0, kept 1/, 'the default floor keeps the only clone')
+  assert.match(lines[0], /reclaimed 1, kept 0/, 'with no floor the only passing clone goes')
 }
 
 /** Root resolution and formatting helpers: documented defaults and overrides, and unsafe roots refused. */
@@ -602,7 +728,7 @@ function testHelpers() {
     assert.throws(() => resolveWorkRoot({ stateDir: '/s', directory: '/' }), /refusing/)
     assert.throws(() => resolveWorkRoot({ stateDir: '/s', directory: homedir() }), /refusing/)
     assert.equal(KEEP_DAYS_DEFAULT, 0, 'no age retention by default')
-    assert.equal(KEEP_DEFAULT, 10, 'the newest ten passing clones are a hard floor')
+    assert.equal(KEEP_DEFAULT, 0, 'no count floor by default')
     assert.equal(formatBytes(512), '512 B')
     assert.equal(formatBytes(12 * 1024), '12.0 KB')
     assert.equal(formatBytes(3 * 1024 * 1024), '3.0 MB')
@@ -626,7 +752,11 @@ try {
   await testNoUpstreamFallback()
   await testNonOriginRemote()
   await testUnknownSurvives()
+  await testSharedOpenTickets()
   await testOpenTicketSkipped()
+  await testCliOpenTicketSkip()
+  await testCliServiceDownAndDefault()
+  await testCliMalformedTickets()
   await testDryRun()
   await testRestored()
   await testKeepFloor()
@@ -640,5 +770,9 @@ try {
   process.stderr.write(`not ok: ${error?.stack ?? error}\n`)
   process.exitCode = 1
 } finally {
+  for (const server of SERVERS) {
+    server.closeAllConnections?.()
+    await new Promise(resolve => server.close(resolve))
+  }
   for (const base of SANDBOXES) await rm(base, { recursive: true, force: true })
 }

@@ -32,11 +32,10 @@ export const RECLAIMED_FILE = 'work-reclaimed.jsonl'
 export const KEEP_DAYS_DEFAULT = 0
 
 /**
- * Hard floor: the newest N directories that pass the gate are kept regardless of age. A recent ticket's worker
- * session still remembers its old commit, while re-preparing it clones the current `main`, so a few newest clones are
- * worth keeping for a while.
+ * Opt-in count floor: `--keep N` protects the newest N passing directories when someone asks for it. The default is
+ * 0 because `work restored` rebuilds a clone from the record in a moment; recency alone buys nothing.
  */
-export const KEEP_DEFAULT = 10
+export const KEEP_DEFAULT = 0
 
 /** A Ticket directory is `<short name>-<hex>`; `state/` and other residue must not match. */
 const TICKET_DIR = /^[A-Za-z0-9][A-Za-z0-9._-]*-[0-9a-f]{8,64}$/
@@ -98,6 +97,42 @@ export function megabytes(bytes) {
 /** Quote one value for a POSIX shell. The rebuild commands are meant to be pasted, so this matters. */
 export function shellQuote(value) {
   return `'${String(value).replace(/'/g, `'\\''`)}'`
+}
+
+// ------------------------------------------------------------- open tickets
+
+/**
+ * The one implementation of "which directories may not be reclaimed because an open Ticket owns them".
+ *
+ * `provider` is the only part that differs between the two callers:
+ *   - the CLI passes `() => fetchOpenTickets()` (HTTP to the running service);
+ *   - the mount hook passes `() => ({ tickets: source.tickets.open() })` (in-process).
+ *
+ * The result is deliberately three-state: `{ ok: true, directories }`, `{ ok: false, down: true }` when nothing is
+ * listening (nothing can be working, so the caller proceeds), and `{ ok: false, reason }` for every other failure
+ * (malformed response, unexpected shape, thrown provider), which must keep everything. A ticket may expose its
+ * directory as `execution.directory` (the domain record) or `directory` (the management API view).
+ */
+export async function openTicketDirectories(provider) {
+  let value
+  try {
+    value = await provider()
+  } catch (error) {
+    return { ok: false, reason: error?.message ?? String(error) }
+  }
+  if (value === undefined || value === null) return { ok: false, reason: 'the provider returned no response' }
+  if (value.down === true) return { ok: false, down: true, reason: value.reason ?? 'the service is not running' }
+  if (value.error !== undefined) return { ok: false, reason: String(value.error) }
+  if (!Array.isArray(value.tickets)) return { ok: false, reason: 'the response is not a list of tickets' }
+  const directories = new Map()
+  for (const ticket of value.tickets) {
+    const directory = ticket?.execution?.directory ?? ticket?.directory
+    if (typeof directory !== 'string' || directory === '') {
+      return { ok: false, reason: 'a ticket has no execution.directory' }
+    }
+    directories.set(directory, String(ticket.id ?? ticket.title ?? directory))
+  }
+  return { ok: true, directories }
 }
 
 // ------------------------------------------------------------------ the gate
@@ -322,16 +357,17 @@ async function sizeOf(path) {
  * Build the plan: every direct child of `root`, its size, and either `reclaim` or the reason it is kept.
  *
  * Unknown entries (no `.git`, or a name that is not `<name>-<hex>`, or a plain file) are never reclaimed. `--keep`
- * and `--keep-days` only delay an otherwise passing entry; they never override a failed gate. `skipDirectories`
- * names clones an open Ticket still works in (the mount hook passes them); they are kept for that reason even when
- * the gate passes, which only makes the sweep less aggressive.
+ * and `--keep-days` only delay an otherwise passing entry; they never override a failed gate. `skipDirectories` maps
+ * a directory to the open Ticket that owns it; those are kept for that reason even when the gate passes, which only
+ * makes the sweep less aggressive. `blockedReason` (an unreadable open-ticket answer) keeps every passing entry.
  */
 export async function planWork({
   root,
   keep = KEEP_DEFAULT,
   keepDays = KEEP_DAYS_DEFAULT,
   now = Date.now(),
-  skipDirectories = new Set(),
+  skipDirectories = new Map(),
+  blockedReason,
 }) {
   const entries = []
   let children = []
@@ -342,7 +378,9 @@ export async function planWork({
     else throw new Error(`cannot read the work root ${root}: ${error.code ?? error.message}`)
   }
   children.sort((a, b) => a.name.localeCompare(b.name))
-  const skip = new Set([...skipDirectories].map(item => resolve(item)))
+  const skip = new Map(
+    [...skipDirectories].map(([directory, ticket]) => [resolve(directory), String(ticket)]),
+  )
 
   for (const child of children) {
     const path = join(root, child.name)
@@ -369,7 +407,7 @@ export async function planWork({
         continue
       }
       if (skip.has(resolve(path))) {
-        entries.push({ ...base, action: 'keep', reason: 'an open ticket still uses this directory' })
+        entries.push({ ...base, action: 'keep', reason: `open ticket ${skip.get(resolve(path))} is using this directory` })
         continue
       }
       const inspected = await inspectClone(path)
@@ -404,6 +442,14 @@ export async function planWork({
     }
     if (passing[index].reason !== undefined) passing[index].action = 'keep'
   }
+  if (blockedReason !== undefined) {
+    for (const entry of entries) {
+      if (entry.action === 'reclaim') {
+        entry.action = 'keep'
+        entry.reason = blockedReason
+      }
+    }
+  }
   const reclaimable = entries.filter(entry => entry.action === 'reclaim')
   return {
     root,
@@ -435,9 +481,10 @@ export async function reclaimWork({
   keepDays = KEEP_DAYS_DEFAULT,
   dryRun = false,
   now = Date.now(),
-  skipDirectories = new Set(),
+  skipDirectories = new Map(),
+  blockedReason,
 }) {
-  const plan = await planWork({ root, keep, keepDays, now, skipDirectories })
+  const plan = await planWork({ root, keep, keepDays, now, skipDirectories, blockedReason })
   if (dryRun) {
     return {
       root,

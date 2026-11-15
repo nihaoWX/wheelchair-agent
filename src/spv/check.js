@@ -36,6 +36,7 @@ export const PRESET_FILES = [
   'commands/superagent-service.py',
   'src/shared/queue.js',
   'src/shared/schema.js',
+  'src/shared/work.js',
   'src/spv/check.js',
   'src/spv/cron-plugin.js',
   'src/spv/cron.js',
