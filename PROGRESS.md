@@ -42,7 +42,7 @@ Client bundle 由 `dsh-client-hmr` 热更新，不需要为改页面重启服务
   （client-hmr 热更新）并把 pending/issue/approved/筛选/正文截图放进 `webui/docs/`。
 - **dsh 锁 `0.2.1-rc.3`**：superagent 的 `engines.dsh` 不满足 `0.2.2-rc.1`；`dsh-tui@0.19.0`
   兼容该版本，两 profile 共用同一全局 dsh。见 `docs/setup/dsh-commandcode.md`。
-- **superagent 落地**：clone 到 `tools/dsh-superagent/` 构建；profile `superagent`（stateDir、
+- **superagent 落地**：开发树在 `~/opt/dsh-plugins/dsh-superagent/` 构建；profile `superagent`（stateDir、
   端口 3082、模型 provider 走 commandcode）。`dsh plugin add` 不写 `bundles`，需手动补。
 - **GitHub Source**：`nihaoWX/bioagentforge`，CLI `~/.local/bin/gh`，60s 轮询。
 - **`spv` Source 插件**（`src/superagent/watch.js` + `src/superagent/spv.js`）：文件队列 pending→done（rename 即消费
@@ -192,7 +192,9 @@ wheelchair-agent check             # 运行时健康：服务 / preset / 面板 
 `dsh web authentication required`。用 `superagent-service open`，或从 `status` 的 `panel:` 行取当前地址。
 
 改 `provider/`、`src/`、`preset/`、`commands/`、`bin/` 之后：重跑 `bash install.sh`（幂等）；
-改 `dsh-superagent/` 之后：`pnpm build` + `wheelchair-agent service restart`。
+改 `~/opt/dsh-plugins/dsh-superagent/` 之后：`pnpm build` + `wheelchair-agent service restart`。
+它不在 `tools/` 下，是插件安装树而不是 `tools/<name>` 项目，所以由 SPV 直接改，不派 worker——它是跑 worker 的
+那个服务本身，重启会打断正在跑的工单，闭环在 worker 手里合不上。
 
 # 长任务
 

@@ -212,7 +212,7 @@ Ticket 状态（progress 不转发；ready/blocked/failed 才上浮）
 | **审查收件箱 / UI 主页** | **`webui/README.md`** |
 | superagent 设计文档（9 篇） | `docs/repositories/dsh-superagent-prototype/docs/` |
 | DSH 安装与 GOAT 接入 | `docs/setup/dsh-commandcode.md` |
-| superagent 源码 | `tools/dsh-superagent/`（独立仓库） |
+| superagent 源码 | `~/opt/dsh-plugins/dsh-superagent/`（独立仓库，在 bioagentforge 工作区之外） |
 | **spv Source 设计与踩坑** | **`docs/spv-source.md`** |
 | **交付目标：仓库随项目走** | **`docs/delivery-target.md`** |
 | AGENTS.md 模板（项目开发 / 研究任务） | `docs/agentsmd-examples/` |
