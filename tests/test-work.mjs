@@ -32,7 +32,6 @@ import {
   cwdHolders,
   formatBytes,
   megabytes,
-  planWork,
   readReclaimed,
   reclaimWork,
   resolveWorkRoot,
@@ -361,7 +360,9 @@ async function testKeepFloor() {
     'among the newest 2 directories (--keep)',
   ])
   assert.deepEqual((await records(box)).map(record => record.name), ['one-000000000001'])
-  assert.ok(dirs[1].length > 0)
+  for (const dir of dirs.slice(1)) {
+    assert.ok((await readFile(join(dir, '.git', 'HEAD'), 'utf8')).length > 0, `${dir} survives the floor`)
+  }
 }
 
 /** Age retention is opt-in: a fresh clean clone is kept only when the caller asks for a window. */
@@ -424,8 +425,6 @@ function testHelpers() {
     assert.equal(formatBytes(3 * 1024 * 1024), '3.0 MB')
     assert.equal(megabytes(2_500_000), '2.5')
     assert.equal(shellQuote(`a'b`), `'a'\\''b'`)
-    const plan = planWork
-    assert.equal(typeof plan, 'function')
   } finally {
     if (saved === undefined) delete process.env.DSH_SUPERAGENT_WORK_DIR
     else process.env.DSH_SUPERAGENT_WORK_DIR = saved
