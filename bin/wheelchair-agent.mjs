@@ -109,6 +109,10 @@ Reclaim ticket clones under the execution root. A clone is reclaimed only when n
 inside it, its working tree is clean, and every commit is already pushed. The record it leaves in
 <stateDir>/work-reclaimed.jsonl is enough to rebuild it.
 
+environment:
+  DSH_SUPERAGENT_STATE_DIR  deployment state dir (default ~/.dsh/state/superagent)
+  DSH_SUPERAGENT_WORK_DIR   settings.executor.directory, when it is not <stateDir>/work
+
 commands:
   gc [--dry-run] [--keep <n>] [--keep-days <d>]
                                print the plan, or reclaim every directory that passes the gate
@@ -121,7 +125,11 @@ Reclaim ticket directories that are reproducible duplicates of their source repo
 options:
   --dry-run          print every directory and the reason it is kept; delete nothing
   --keep <n>         never delete the newest n passing directories (default 10; 0 disables the floor)
-  --keep-days <d>    keep passing directories modified less than d days ago (default 0)`
+  --keep-days <d>    keep passing directories modified less than d days ago (default 0)
+
+environment:
+  DSH_SUPERAGENT_STATE_DIR  deployment state dir (default ~/.dsh/state/superagent)
+  DSH_SUPERAGENT_WORK_DIR   settings.executor.directory, when it is not <stateDir>/work`
 
 const WORK_RESTORED_USAGE = `usage: wheelchair-agent work restored <ticket>
 

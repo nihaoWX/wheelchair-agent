@@ -37,9 +37,24 @@ export function apply(ctx) {
   // not awaited: a large directory, a slow disk or a failed gate must never delay or break the Source's own startup.
   if (!reclaimedAtMount) {
     reclaimedAtMount = true
-    reclaimAtMount(ctx).catch(error => {
+    const skipDirectories = openTicketDirectories(ctx, kind)
+    reclaimAtMount(ctx, { skipDirectories }).catch(error => {
       ctx.logger?.warn?.(`wheelchair-agent work gc failed: ${error?.message ?? error}`)
     })
+  }
+}
+
+/**
+ * Directories an open Ticket still owns. The mount sweep deletes a clone only when it is reproducible, but an open
+ * Ticket will resume in its directory, so the mount path additionally keeps it; the CLI cannot see Ticket state and
+ * stays as aggressive as the gate allows. This makes the mount strictly less aggressive, never more.
+ */
+function openTicketDirectories(ctx, kind) {
+  try {
+    const source = ctx.orchestrator.context(kind)
+    return new Set(source.tickets.open().map(ticket => ticket.execution?.directory).filter(Boolean))
+  } catch {
+    return new Set()
   }
 }
 
@@ -49,10 +64,10 @@ export function apply(ctx) {
  * The orchestrator service is provided before setup runs, and its `machine.stateDir` plus the settings store are
  * constructed with it. When both are readable, the reclaim happens before setup resumes any worker — the moment the
  * assignment calls the safe one. If the plugin is mounted later (or the store is not ready), the resolved deployment
- * after `ctx.ready` is used instead, still under the same gate. Gate 1 (no process cwd inside the directory) is what
- * keeps a live worker safe, not the mount timing.
+ * from the orchestrator service is used instead, still under the same gate. Gate 1 (no process cwd inside the
+ * directory) is what keeps a live worker safe, not the mount timing.
  */
-export async function reclaimAtMount(ctx) {
+export async function reclaimAtMount(ctx, { skipDirectories = new Set() } = {}) {
   let stateDir = ''
   let directory = ''
   let early = false
@@ -67,16 +82,21 @@ export async function reclaimAtMount(ctx) {
     // A store that is not ready yet falls through to the resolved deployment below.
   }
   if (!early) {
-    await ctx.ready
-    if (!ctx.configured()) return
-    stateDir = ctx.deployment.stateDir
+    // A plugin context has no `ready`/`configured()`/`deployment`; those live on the orchestrator service.
+    await ctx.orchestrator.ready
+    if (!ctx.orchestrator.configured()) return
+    stateDir = ctx.orchestrator.deployment.stateDir
     try {
-      directory = String(ctx.orchestrator?.settings?.current?.()?.executor?.directory ?? '')
+      directory = String(ctx.orchestrator.settings.current()?.executor?.directory ?? '')
     } catch {
       // The default root is correct when the settings block cannot be read.
     }
   }
-  const result = await reclaimWork({ root: resolveWorkRoot({ stateDir, directory }), stateDir })
+  const result = await reclaimWork({
+    root: resolveWorkRoot({ stateDir, directory }),
+    stateDir,
+    skipDirectories,
+  })
   ctx.logger?.info?.(
     `wheelchair-agent work gc: reclaimed ${result.reclaimed}, kept ${result.kept}, freed ${megabytes(result.freedBytes)} MB`,
   )

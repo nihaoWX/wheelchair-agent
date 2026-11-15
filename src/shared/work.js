@@ -13,10 +13,17 @@
  *
  * Nothing here reads or writes dsh-superagent's database. The record file is our own:
  *   `<stateDir>/work-reclaimed.jsonl`, one JSON object per reclaimed directory.
+ *
+ * Every git call is asynchronous (`execFile`, with a timeout) because the mount hook runs this inside the service
+ * process: a synchronous spawn would stall the Source's own event loop.
  */
-import { spawnSync } from 'node:child_process'
+import { execFile } from 'node:child_process'
 import { appendFile, lstat, mkdir, readFile, readdir, readlink, realpath, rm, stat } from 'node:fs/promises'
-import { dirname, join, resolve, sep } from 'node:path'
+import { homedir } from 'node:os'
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
+import { promisify } from 'node:util'
+
+const execFileAsync = promisify(execFile)
 
 /** Name of the append-only rebuild record inside the deployment's state directory. */
 export const RECLAIMED_FILE = 'work-reclaimed.jsonl'
@@ -37,22 +44,39 @@ const TICKET_DIR = /^[A-Za-z0-9][A-Za-z0-9._-]*-[0-9a-f]{8,64}$/
 /** Absolute milliseconds in one day, used by the `--keep-days` window. */
 const DAY_MS = 86_400_000
 
+/** Git variables that would make `git -C <clone>` operate on the caller's repository instead of the clone. */
+const GIT_CALLER_ENV = [
+  'GIT_DIR',
+  'GIT_WORK_TREE',
+  'GIT_INDEX_FILE',
+  'GIT_COMMON_DIR',
+  'GIT_OBJECT_DIRECTORY',
+  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
+  'GIT_NAMESPACE',
+  'GIT_PREFIX',
+]
+
 /**
  * Work root of the deployment: the configured executor directory, else `$DSH_SUPERAGENT_WORK_DIR`, else
  * `<stateDir>/work`.
  *
  * The CLI cannot read dsh-superagent's panel settings, so the environment variable is the documented bridge for a
- * deployment that moved `executor.directory`; the mount hook passes the real setting directly.
+ * deployment that moved `executor.directory`; the mount hook passes the real setting directly. A relative override
+ * and the filesystem roots are refused: this path is handed to `rm`.
  */
 export function resolveWorkRoot({ stateDir, directory = '', env = process.env }) {
   const configured = String(directory ?? '').trim()
-  if (configured) return configured
   const fromEnv = String(env.DSH_SUPERAGENT_WORK_DIR ?? '').trim()
-  if (fromEnv) return fromEnv
-  return join(stateDir, 'work')
+  const chosen = configured || fromEnv
+  if (chosen === '') return join(stateDir, 'work')
+  if (!isAbsolute(chosen)) throw new Error(`the work root must be an absolute path, got ${JSON.stringify(chosen)}`)
+  const root = resolve(chosen)
+  const blocked = [resolve('/'), resolve(homedir()), stateDir ? resolve(stateDir) : '']
+  if (blocked.includes(root)) throw new Error(`refusing to reclaim inside ${root}: it is not a ticket-clone root`)
+  return root
 }
 
-/** Another program's terminal-friendly size: bytes under 1 KB stay exact, then one decimal place. */
+/** Terminal-friendly size: bytes under 1 KB stay exact, then one decimal place with binary units. */
 export function formatBytes(bytes) {
   if (!Number.isFinite(bytes) || bytes < 0) return 'unknown'
   if (bytes < 1024) return `${bytes} B`
@@ -66,9 +90,9 @@ export function formatBytes(bytes) {
   return `${value.toFixed(1)} ${units[index]}`
 }
 
-/** A size in decimal megabytes with one decimal place, for the mount log line. */
+/** A size in binary megabytes with one decimal place, for the mount log line (same unit as `formatBytes`). */
 export function megabytes(bytes) {
-  return (Number(bytes || 0) / 1_000_000).toFixed(1)
+  return (Number(bytes || 0) / 1024 / 1024).toFixed(1)
 }
 
 /** Quote one value for a POSIX shell. The rebuild commands are meant to be pasted, so this matters. */
@@ -78,30 +102,69 @@ export function shellQuote(value) {
 
 // ------------------------------------------------------------------ the gate
 
+/** Environment for a child git that must inspect exactly the clone at `-C`, not the caller's repository. */
+function gitEnv() {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' }
+  for (const key of GIT_CALLER_ENV) delete env[key]
+  return env
+}
+
+/** True when the proc mount hides process details (`hidepid=`), where an unreadable pid could hide a live worker. */
+async function hidepidActive(procMounts) {
+  try {
+    const text = await readFile(procMounts, 'utf8')
+    for (const line of text.split('\n')) {
+      const fields = line.split(/\s+/)
+      if (fields[1] !== '/proc') continue
+      const options = String(fields[3] ?? '').split(',')
+      if (options.some(option => option === 'hidepid' || option.startsWith('hidepid='))) return true
+    }
+  } catch {
+    // No mounts table: fall back to treating same-user unreadable pids as benign (the systemd case).
+  }
+  return false
+}
+
 /**
  * Processes whose cwd is `path` (or below it). `readlink /proc/<pid>/cwd` follows the kernel's symlink, which is
  * exactly the runtime fact the gate wants: a live process cannot be inferred from ticket state.
  *
- * A kernel without `/proc` returns `unavailable`; callers keep the directory, because "cannot prove unused" must not
- * be treated as unused.
+ * An unreadable pid of another user cannot own one of our private ticket directories, so it is skipped. An
+ * unreadable pid of *our* user is the dangerous case (a hidden live worker): if the proc mount uses `hidepid`, the
+ * whole scan becomes unavailable and callers keep everything, because "cannot prove unused" must not be treated as
+ * unused. Without hidepid, unreadable same-user pids are the normal systemd/`dumpable=0` case and are skipped. A
+ * kernel without `/proc` is unavailable for the same reason.
  */
-export async function cwdHolders(path, { procRoot = '/proc' } = {}) {
+export async function cwdHolders(path, { procRoot = '/proc', procMounts = '/proc/mounts' } = {}) {
   const target = await realpath(path).catch(() => resolve(path))
   let names
   try {
     names = await readdir(procRoot)
   } catch (error) {
     if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return { unavailable: true, pids: [] }
+    if (error.code === 'EACCES' || error.code === 'EPERM') return { unavailable: true, pids: [] }
     throw error
   }
   const pids = []
+  const uid = typeof process.getuid === 'function' ? process.getuid() : undefined
+  const hiding = await hidepidActive(procMounts)
   for (const name of names) {
     if (!/^\d+$/.test(name)) continue
     let cwd
     try {
       cwd = await readlink(join(procRoot, name, 'cwd'))
-    } catch {
-      // A process that exited between readdir and readlink, or one we may not inspect: skip it.
+    } catch (error) {
+      if (error.code === 'ENOENT' || error.code === 'ESRCH') continue
+      if (error.code !== 'EACCES' && error.code !== 'EPERM') return { unavailable: true, pids: [] }
+      let owner = uid
+      try {
+        owner = (await stat(join(procRoot, name))).uid
+      } catch {
+        if (hiding || uid === undefined) return { unavailable: true, pids: [] }
+        continue
+      }
+      if (uid !== undefined && owner !== uid) continue
+      if (hiding) return { unavailable: true, pids: [] }
       continue
     }
     const current = cwd.endsWith(' (deleted)') ? cwd.slice(0, -' (deleted)'.length) : cwd
@@ -115,13 +178,23 @@ function cwdReason(pids) {
   return `cwd in use by pid ${pids[0]}`
 }
 
-/** Run git in `path` with no terminal or optional locks; returns its status and output. */
-function git(path, args) {
-  const result = spawnSync('git', ['-C', path, ...args], {
-    encoding: 'utf8',
-    env: { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' },
-  })
-  return { ok: result.status === 0, out: result.stdout ?? '', err: result.stderr ?? '' }
+/** Run git in `path` without a terminal, optional locks, or the caller's repository variables. */
+async function git(path, args) {
+  try {
+    const { stdout, stderr } = await execFileAsync('git', ['-C', path, ...args], {
+      encoding: 'utf8',
+      env: gitEnv(),
+      timeout: 60_000,
+      maxBuffer: 4 * 1024 * 1024,
+    })
+    return { ok: true, out: stdout, err: stderr }
+  } catch (error) {
+    if (error?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
+      return { ok: false, out: error.stdout ?? '', err: 'git output exceeded 4 MiB' }
+    }
+    if (error?.killed) return { ok: false, out: error.stdout ?? '', err: 'timed out after 60s' }
+    return { ok: false, out: error?.stdout ?? '', err: error?.stderr ?? error?.message ?? '' }
+  }
 }
 
 /** One porcelain line count, split into untracked and tracked changes for a readable reason. */
@@ -140,22 +213,36 @@ function dirtyReason(porcelain) {
 }
 
 /** The unpushed commit count, or an error reason when the comparison itself cannot run. */
-function unpublishedReason(path) {
-  const upstream = git(path, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
+async function unpublishedReason(path) {
+  const upstream = await git(path, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
   if (upstream.ok && upstream.out.trim() !== '') {
-    const count = git(path, ['rev-list', '--count', `${upstream.out.trim()}..HEAD`])
+    const count = await git(path, ['rev-list', '--count', `${upstream.out.trim()}..HEAD`])
     if (!count.ok) return { reason: `cannot compare HEAD with ${upstream.out.trim()}` }
     const commits = Number(count.out.trim())
     if (commits > 0) return { reason: `${commits} commit${commits === 1 ? '' : 's'} not pushed` }
     return { upstream: upstream.out.trim() }
   }
-  const originMain = git(path, ['rev-parse', 'origin/main'])
+  const originMain = await git(path, ['rev-parse', 'origin/main'])
   if (!originMain.ok) return { reason: 'no upstream and no origin/main to compare' }
-  const count = git(path, ['rev-list', '--count', 'origin/main..HEAD'])
+  const count = await git(path, ['rev-list', '--count', 'origin/main..HEAD'])
   if (!count.ok) return { reason: 'cannot compare HEAD with origin/main' }
   const commits = Number(count.out.trim())
   if (commits > 0) return { reason: `${commits} commit${commits === 1 ? '' : 's'} not pushed` }
   return { upstream: null }
+}
+
+/**
+ * The remote a branch actually tracks, so the record names the repository that holds the published commit rather
+ * than assuming `origin`. Falls back to `origin`, then to the first configured remote.
+ */
+async function trackedRemote(path, branch, names) {
+  if (branch !== null) {
+    const configured = await git(path, ['config', '--get', `branch.${branch}.remote`])
+    const name = configured.ok ? configured.out.trim() : ''
+    if (name !== '' && name !== '.') return name
+  }
+  if (names.includes('origin')) return 'origin'
+  return names[0]
 }
 
 /**
@@ -167,37 +254,39 @@ async function inspectClone(path) {
   if (holders.unavailable) return { ok: false, reason: 'cannot scan /proc to prove nothing is using it' }
   if (holders.pids.length > 0) return { ok: false, reason: cwdReason(holders.pids) }
 
-  const status = git(path, ['status', '--porcelain'])
+  const status = await git(path, ['status', '--porcelain'])
   if (!status.ok) return { ok: false, reason: `git status failed: ${firstLine(status.err) || 'unknown error'}` }
   if (status.out.trim() !== '') return { ok: false, reason: dirtyReason(status.out) }
 
-  const remotes = git(path, ['remote'])
+  const remotes = await git(path, ['remote'])
   if (!remotes.ok) return { ok: false, reason: `git remote failed: ${firstLine(remotes.err) || 'unknown error'}` }
   const names = remotes.out.split('\n').map(name => name.trim()).filter(Boolean)
   if (names.length === 0) return { ok: false, reason: 'no remote (the clone is the only copy)' }
 
-  const pushed = unpublishedReason(path)
+  const pushed = await unpublishedReason(path)
   if (pushed.reason) return { ok: false, reason: pushed.reason }
 
-  const head = git(path, ['rev-parse', 'HEAD'])
-  const branch = git(path, ['rev-parse', '--abbrev-ref', 'HEAD'])
-  const originMain = git(path, ['rev-parse', 'origin/main'])
-  const remoteName = names.includes('origin') ? 'origin' : names[0]
-  const remoteUrl = git(path, ['remote', 'get-url', remoteName])
+  const head = await git(path, ['rev-parse', 'HEAD'])
+  const branch = await git(path, ['rev-parse', '--abbrev-ref', 'HEAD'])
+  const originMain = await git(path, ['rev-parse', 'origin/main'])
+  const branchName = branch.ok ? branch.out.trim() : ''
+  const name = branchName === '' || branchName === 'HEAD' ? null : branchName
+  const remoteName = await trackedRemote(path, name, names)
+  const remoteUrl = await git(path, ['remote', 'get-url', remoteName])
   if (!head.ok || !remoteUrl.ok) {
     return { ok: false, reason: `cannot read HEAD or the ${remoteName} remote URL` }
   }
-  const branchName = branch.ok ? branch.out.trim() : ''
   return {
     ok: true,
     record: {
-      name: path.slice(path.lastIndexOf(sep) + 1),
+      name: basename(path),
       path,
       head: head.out.trim(),
       originMain: originMain.ok ? originMain.out.trim() : null,
-      branch: branchName === '' || branchName === 'HEAD' ? null : branchName,
+      branch: name,
       upstream: pushed.upstream,
       remote: remoteUrl.out.trim(),
+      remoteName,
     },
   }
 }
@@ -233,57 +322,75 @@ async function sizeOf(path) {
  * Build the plan: every direct child of `root`, its size, and either `reclaim` or the reason it is kept.
  *
  * Unknown entries (no `.git`, or a name that is not `<name>-<hex>`, or a plain file) are never reclaimed. `--keep`
- * and `--keep-days` only delay an otherwise passing entry; they never override a failed gate.
+ * and `--keep-days` only delay an otherwise passing entry; they never override a failed gate. `skipDirectories`
+ * names clones an open Ticket still works in (the mount hook passes them); they are kept for that reason even when
+ * the gate passes, which only makes the sweep less aggressive.
  */
-export async function planWork({ root, keep = KEEP_DEFAULT, keepDays = KEEP_DAYS_DEFAULT, now = Date.now() }) {
+export async function planWork({
+  root,
+  keep = KEEP_DEFAULT,
+  keepDays = KEEP_DAYS_DEFAULT,
+  now = Date.now(),
+  skipDirectories = new Set(),
+}) {
   const entries = []
   let children = []
   try {
     children = await readdir(root, { withFileTypes: true })
   } catch (error) {
-    if (error.code !== 'ENOENT') throw error
+    if (error.code === 'ENOENT') children = []
+    else throw new Error(`cannot read the work root ${root}: ${error.code ?? error.message}`)
   }
   children.sort((a, b) => a.name.localeCompare(b.name))
+  const skip = new Set([...skipDirectories].map(item => resolve(item)))
 
   for (const child of children) {
     const path = join(root, child.name)
-    const bytes = await sizeOf(path)
-    const base = { name: child.name, path, bytes }
-    if (!child.isDirectory()) {
-      entries.push({ ...base, action: 'unknown', reason: 'not a directory' })
-      continue
-    }
-    let hasGit
     try {
-      await lstat(join(path, '.git'))
-      hasGit = true
-    } catch {
-      hasGit = false
+      const bytes = await sizeOf(path)
+      const base = { name: child.name, path, bytes }
+      if (!child.isDirectory()) {
+        entries.push({ ...base, action: 'unknown', reason: 'not a directory' })
+        continue
+      }
+      let hasGit
+      try {
+        await lstat(join(path, '.git'))
+        hasGit = true
+      } catch {
+        hasGit = false
+      }
+      if (!hasGit) {
+        entries.push({ ...base, action: 'unknown', reason: 'not a ticket clone: no .git' })
+        continue
+      }
+      if (!TICKET_DIR.test(child.name)) {
+        entries.push({ ...base, action: 'unknown', reason: 'not a ticket clone: name is not <name>-<hex>' })
+        continue
+      }
+      if (skip.has(resolve(path))) {
+        entries.push({ ...base, action: 'keep', reason: 'an open ticket still uses this directory' })
+        continue
+      }
+      const inspected = await inspectClone(path)
+      if (!inspected.ok) {
+        entries.push({ ...base, action: 'keep', reason: inspected.reason })
+        continue
+      }
+      entries.push({
+        ...base,
+        action: 'reclaim',
+        mtimeMs: (await stat(path)).mtimeMs,
+        record: {
+          version: 1,
+          ...inspected.record,
+          bytes,
+          when: new Date(now).toISOString(),
+        },
+      })
+    } catch (error) {
+      entries.push({ name: child.name, path, bytes: 0, action: 'keep', reason: `cannot inspect: ${error.message}` })
     }
-    if (!hasGit) {
-      entries.push({ ...base, action: 'unknown', reason: 'not a ticket clone: no .git' })
-      continue
-    }
-    if (!TICKET_DIR.test(child.name)) {
-      entries.push({ ...base, action: 'unknown', reason: 'not a ticket clone: name is not <name>-<hex>' })
-      continue
-    }
-    const inspected = await inspectClone(path)
-    if (!inspected.ok) {
-      entries.push({ ...base, action: 'keep', reason: inspected.reason })
-      continue
-    }
-    entries.push({
-      ...base,
-      action: 'reclaim',
-      mtimeMs: (await stat(path)).mtimeMs,
-      record: {
-        version: 1,
-        ...inspected.record,
-        bytes,
-        when: new Date(now).toISOString(),
-      },
-    })
   }
 
   // The recency cushions only decide *when* a passing entry is eligible. Sort the passing entries newest first so
@@ -310,10 +417,16 @@ export async function planWork({ root, keep = KEEP_DEFAULT, keepDays = KEEP_DAYS
 
 // ------------------------------------------------------------------ reclaim
 
+/** Append one record line; the caller decides whether a failure keeps the directory. */
+function appendRecord(file, value) {
+  return appendFile(file, `${JSON.stringify(value)}\n`, 'utf8')
+}
+
 /**
  * Plan and (unless `dryRun`) reclaim. The record line is appended **before** the delete: if the write fails, the
  * directory stays, so no reclaimed directory can be missing from the record. A cwd recheck happens immediately before
- * each delete as well, closing the window between planning and removal.
+ * each delete as well, closing the window between planning and removal. A failed delete appends a retraction line, so
+ * `work restored` never claims a directory that is still there.
  */
 export async function reclaimWork({
   root,
@@ -322,8 +435,9 @@ export async function reclaimWork({
   keepDays = KEEP_DAYS_DEFAULT,
   dryRun = false,
   now = Date.now(),
+  skipDirectories = new Set(),
 }) {
-  const plan = await planWork({ root, keep, keepDays, now })
+  const plan = await planWork({ root, keep, keepDays, now, skipDirectories })
   if (dryRun) {
     return {
       root,
@@ -350,7 +464,7 @@ export async function reclaimWork({
     }
     try {
       await mkdir(stateDir, { recursive: true })
-      await appendFile(file, `${JSON.stringify(entry.record)}\n`, 'utf8')
+      await appendRecord(file, entry.record)
     } catch (error) {
       entry.action = 'keep'
       entry.reason = `cannot write the reclaim record: ${error.code ?? error.message}`
@@ -361,6 +475,13 @@ export async function reclaimWork({
     } catch (error) {
       entry.action = 'keep'
       entry.reason = `delete failed: ${error.code ?? error.message}`
+      // The record was already written; retract it so a later `work restored` does not target a surviving directory.
+      await appendRecord(file, {
+        name: entry.name,
+        retracted: true,
+        retractedAt: new Date().toISOString(),
+        error: entry.reason,
+      }).catch(() => {})
       continue
     }
     reclaimed += 1
@@ -379,7 +500,10 @@ export async function reclaimWork({
 
 // ------------------------------------------------------------------ restore
 
-/** The last record for `ticket`, or an error that names the exact file that was searched. */
+/**
+ * The last record for `ticket`, or an error that names the exact file that was searched. A retraction line
+ * (`retracted: true`) cancels the record before it, so a failed delete never produces rebuild instructions.
+ */
 export async function readReclaimed({ stateDir, ticket }) {
   const file = join(stateDir, RECLAIMED_FILE)
   let text
@@ -398,9 +522,14 @@ export async function readReclaimed({ stateDir, ticket }) {
       // A truncated final line from a crash is skipped rather than hiding earlier records.
     }
   }
-  const matches = records.filter(record => record?.name === ticket)
-  if (matches.length === 0) throw new Error(`no reclaim record for ${ticket} in ${file}`)
-  return { file, record: matches[matches.length - 1] }
+  let chosen
+  for (const record of records) {
+    if (record?.name !== ticket) continue
+    if (record.retracted === true) chosen = undefined
+    else chosen = record
+  }
+  if (chosen === undefined) throw new Error(`no reclaim record for ${ticket} in ${file}`)
+  return { file, record: chosen }
 }
 
 /** Copy-paste commands that clone the source repository at the recorded commit. */
@@ -417,6 +546,7 @@ export function restoreCommands(record, { root = process.cwd() } = {}) {
     `git clone ${shellQuote(record.remote)} ${shellQuote(target)}`,
     `cd ${shellQuote(target)}`,
   ]
+  // The clone's `origin` is exactly `record.remote`, whatever the original remote was named.
   lines.push(record.branch ? `git fetch origin ${shellQuote(record.branch)}` : 'git fetch origin')
   lines.push(`git checkout --detach ${shellQuote(record.head)}`)
   return lines.join('\n')

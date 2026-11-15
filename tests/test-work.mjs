@@ -5,12 +5,18 @@
  * Covers:
  *   - a clean, fully pushed ticket clone is reclaimed and its JSONL record holds HEAD / origin/main / branch / remote;
  *   - a clone with an unpushed commit, a dirty clone and a clone with no remote are kept with a readable reason;
- *   - a directory held by a live process cwd is kept and names that pid;
+ *   - the no-upstream fallback (`git rev-list origin/main..HEAD`) reclaims a clone whose HEAD is on origin/main and
+ *     keeps one that is one local commit ahead;
+ *   - a directory held by a live process cwd is kept and names that pid, and an unreadable /proc entry keeps everything;
+ *   - a directory an open ticket still owns is kept by the mount-only skip list;
+ *   - the tracked remote (not a hard-coded origin) is recorded, so `work restored` rebuilds a fork clone;
  *   - an unknown directory is reported and survives even when it is old;
  *   - `--dry-run` prints the plan and deletes nothing; a second run is a no-op;
+ *   - the keep floor is a hard floor regardless of age, and `--keep-days` reclaims old clones while keeping fresh ones;
+ *   - a failed delete retracts its record so `work restored` does not target a surviving directory;
  *   - `work restored` prints commands that actually rebuild the clone from the record;
- *   - the mount hook runs the same implementation and logs one summary line;
- *   - the work root defaults to `<stateDir>/work` and follows the documented overrides.
+ *   - the mount hook runs through `apply()` before setup, uses the same defaults, logs one summary line and only
+ *     sweeps once; its fallback path uses the orchestrator service, not plugin-context members.
  *
  * Everything is offline: local bare repositories are exposed as `https://github.com/testowner/<name>` through
  * `url.<local-bare>.insteadOf` in a throwaway GIT_CONFIG_GLOBAL, so no credential or network is involved.
@@ -20,8 +26,8 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, rm, utimes, writeFile } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -32,13 +38,14 @@ import {
   cwdHolders,
   formatBytes,
   megabytes,
+  planWork,
   readReclaimed,
   reclaimWork,
   resolveWorkRoot,
   restoreCommands,
   shellQuote,
 } from '../src/shared/work.js'
-import { reclaimAtMount } from '../src/superagent/watch.js'
+import { apply, reclaimAtMount } from '../src/superagent/watch.js'
 
 const CLI = fileURLToPath(new URL('../bin/wheelchair-agent.mjs', import.meta.url))
 const SANDBOXES = []
@@ -107,7 +114,7 @@ function gitIn(box, dir, ...args) {
   return git(box, ['-C', dir, ...args])
 }
 
-/** Run the CLI with the sandbox state dir; returns stdout, and optionally the status. */
+/** Run the CLI with the sandbox state dir; returns the completion result. */
 function cli(box, args, options = {}) {
   const result = spawnSync(process.execPath, [CLI, ...args], {
     cwd: options.cwd ?? box.base,
@@ -144,12 +151,18 @@ async function makeRemote(box, name) {
   return bare
 }
 
-/** A ticket-shaped clone of one attribute branch; `hex` is the ticket id suffix. */
+/** A ticket-shaped clone of one branch of a fresh remote; `hex` is the ticket id suffix. */
 async function cloneTicket(box, name, hex = '0123456789ab', branch = `agent/${name}`) {
   await makeRemote(box, name)
   const dir = join(box.work, `${name}-${hex}`)
   git(box, ['clone', '-q', '--branch', branch, `https://github.com/testowner/${name}.git`, dir])
   return dir
+}
+
+/** Backdate a directory, which the retention rules read from its mtime. */
+async function setAge(dir, days) {
+  const stamp = new Date(Date.now() - days * 86_400_000)
+  await utimes(dir, stamp, stamp)
 }
 
 /** Parse the record file into objects; a missing file reads as empty. */
@@ -163,9 +176,16 @@ async function records(box) {
   }
 }
 
-/** Plan/delete through the library entry point, with the retention window disabled for the case under test. */
+/** Plan/delete through the library entry point, with the retention cushions disabled for the case under test. */
 function reclaim(box, overrides = {}) {
   return reclaimWork({ root: box.work, stateDir: box.state, keep: 0, keepDays: 0, ...overrides })
+}
+
+/** The plan entry for one directory, by name. */
+function entryOf(summary, name) {
+  const entry = summary.entries.find(item => item.name === name)
+  assert.ok(entry, `the plan has an entry for ${name}`)
+  return entry
 }
 
 /** A clean, fully pushed clone is reclaimed, and the record has the shas and remote. */
@@ -192,6 +212,7 @@ async function testCleanCloneReclaimed() {
   assert.equal(lines[0].originMain, originMain, 'the record holds origin/main')
   assert.equal(lines[0].branch, branch, 'the record holds the branch')
   assert.equal(lines[0].remote, remote, 'the record holds the remote URL')
+  assert.equal(lines[0].remoteName, 'origin', 'the record holds the tracked remote name')
   assert.ok(lines[0].bytes > 0, 'the record holds the absolute size')
   assert.ok(Number.isFinite(Date.parse(lines[0].when)), 'the record holds an ISO timestamp')
 
@@ -210,7 +231,7 @@ async function testUnpushedKept() {
 
   const summary = await reclaim(box)
   assert.equal(summary.reclaimed, 0)
-  const entry = summary.entries.find(item => item.name === 'beta-0123456789ab')
+  const entry = entryOf(summary, 'beta-0123456789ab')
   assert.equal(entry.action, 'keep')
   assert.equal(entry.reason, '1 commit not pushed')
   assert.deepEqual(await records(box), [], 'no record is written for a kept directory')
@@ -224,7 +245,7 @@ async function testDirtyKept() {
   await writeFile(join(dir, 'untracked.txt'), 'dirty\n', 'utf8')
 
   const summary = await reclaim(box)
-  const entry = summary.entries.find(item => item.name === 'gamma-0123456789ab')
+  const entry = entryOf(summary, 'gamma-0123456789ab')
   assert.equal(summary.reclaimed, 0)
   assert.equal(entry.action, 'keep')
   assert.equal(entry.reason, '1 untracked path')
@@ -242,7 +263,7 @@ async function testNoRemoteKept() {
   gitIn(box, dir, 'commit', '-qm', 'init')
 
   const summary = await reclaim(box)
-  const entry = summary.entries.find(item => item.name === 'delta-0123456789ab')
+  const entry = entryOf(summary, 'delta-0123456789ab')
   assert.equal(summary.reclaimed, 0)
   assert.equal(entry.action, 'keep')
   assert.equal(entry.reason, 'no remote (the clone is the only copy)')
@@ -260,7 +281,7 @@ async function testCwdHeldKept() {
     }, 'the sleep process to enter the directory')
 
     const summary = await reclaim(box)
-    const entry = summary.entries.find(item => item.name === 'epsilon-0123456789ab')
+    const entry = entryOf(summary, 'epsilon-0123456789ab')
     assert.equal(summary.reclaimed, 0)
     assert.equal(entry.action, 'keep')
     assert.equal(entry.reason, `cwd in use by pid ${child.pid}`)
@@ -271,22 +292,129 @@ async function testCwdHeldKept() {
   }
 }
 
+/**
+ * An unreadable same-user pid is dangerous only under `hidepid`; without it (systemd's dumpable=0 processes) the scan
+ * still works. A missing /proc is always unprovable.
+ */
+async function testUnreadableProc() {
+  if (typeof process.getuid === 'function' && process.getuid() === 0) return
+  const box = await sandbox()
+  const target = join(box.work, 'held-dir')
+  await mkdir(target, { recursive: true })
+  const fakeProc = join(box.base, 'proc')
+  const pidDir = join(fakeProc, '4242')
+  await mkdir(pidDir, { recursive: true })
+  await symlink(target, join(pidDir, 'cwd'))
+  await chmod(pidDir, 0o000)
+  const mountsWithHidepid = join(box.base, 'mounts-hidepid')
+  const mountsPlain = join(box.base, 'mounts-plain')
+  await writeFile(mountsWithHidepid, 'proc /proc proc rw,nosuid,nodev,noexec,relatime,hidepid=2 0 0\n', 'utf8')
+  await writeFile(mountsPlain, 'proc /proc proc rw,nosuid,nodev,noexec,relatime 0 0\n', 'utf8')
+  try {
+    assert.deepEqual(
+      await cwdHolders(target, { procRoot: fakeProc, procMounts: mountsWithHidepid }),
+      { unavailable: true, pids: [] },
+      'hidepid plus an unreadable same-user pid keeps everything',
+    )
+    assert.deepEqual(
+      await cwdHolders(target, { procRoot: fakeProc, procMounts: mountsPlain }),
+      { unavailable: false, pids: [] },
+      'without hidepid a dumpable=0 process is skipped',
+    )
+  } finally {
+    await chmod(pidDir, 0o755)
+  }
+  assert.deepEqual(
+    await cwdHolders(target, { procRoot: join(box.base, 'missing'), procMounts: mountsPlain }),
+    { unavailable: true, pids: [] },
+    'a missing /proc is unavailable, not empty',
+  )
+}
+
+/** Without an upstream, the recorded origin/main fallback decides: on main reclaims, one ahead keeps. */
+async function testNoUpstreamFallback() {
+  const box = await sandbox()
+  const onMain = await cloneTicket(box, 'kappa', '000000000001', 'main')
+  gitIn(box, onMain, 'branch', '--unset-upstream')
+  const ahead = await cloneTicket(box, 'lambda', '000000000002')
+  gitIn(box, ahead, 'branch', '--unset-upstream')
+
+  const summary = await reclaim(box)
+  assert.equal(summary.reclaimed, 1, 'the clone exactly on origin/main is reclaimed')
+  assert.equal(entryOf(summary, 'kappa-000000000001').action, 'reclaim')
+  const kept = entryOf(summary, 'lambda-000000000002')
+  assert.equal(kept.action, 'keep')
+  assert.equal(kept.reason, '1 commit not pushed')
+  await assert.rejects(readFile(join(onMain, '.git', 'HEAD')), { code: 'ENOENT' })
+  assert.ok((await gitIn(box, ahead, 'rev-parse', 'HEAD')).length > 0)
+}
+
+/** The record names the remote the branch actually tracks, so a non-origin upstream still rebuilds. */
+async function testNonOriginRemote() {
+  const box = await sandbox()
+  const dir = await cloneTicket(box, 'mu')
+  const head = gitIn(box, dir, 'rev-parse', 'HEAD').trim()
+  gitIn(box, dir, 'remote', 'rename', 'origin', 'fork')
+  const empty = join(box.remotes, 'empty.git')
+  git(box, ['init', '-q', '--bare', '-b', 'main', empty])
+  gitIn(box, dir, 'remote', 'add', 'origin', 'https://github.com/testowner/empty.git')
+
+  await reclaim(box)
+  const lines = await records(box)
+  assert.equal(lines.length, 1)
+  assert.equal(lines[0].remoteName, 'fork', 'the tracked remote name is recorded')
+  assert.equal(lines[0].remote, 'https://github.com/testowner/mu.git', 'the tracked remote URL is recorded')
+
+  const result = cli(box, ['work', 'restored', 'mu-0123456789ab'])
+  assert.match(result.stdout, new RegExp(`git fetch origin 'agent/mu'`))
+  execFileSync('sh', ['-c', result.stdout], {
+    cwd: box.base,
+    encoding: 'utf8',
+    env: box.env,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  assert.equal(gitIn(box, dir, 'rev-parse', 'HEAD').trim(), head, 'the fork clone is rebuilt at the recorded commit')
+}
+
 /** An unknown directory is reported, not reclaimed, even when it is old. */
 async function testUnknownSurvives() {
   const box = await sandbox()
   const stray = join(box.work, 'state')
   await mkdir(stray, { recursive: true })
   await writeFile(join(stray, 'residue.txt'), 'not a ticket\n', 'utf8')
-  const old = new Date('2020-01-01T00:00:00Z')
-  await utimes(stray, old, old)
+  await utimes(stray, new Date('2020-01-01T00:00:00Z'), new Date('2020-01-01T00:00:00Z'))
 
   const summary = await reclaim(box)
-  const entry = summary.entries.find(item => item.name === 'state')
+  const entry = entryOf(summary, 'state')
   assert.equal(summary.reclaimed, 0)
   assert.equal(summary.unknown, 1)
   assert.equal(entry.action, 'unknown')
   assert.match(entry.reason, /not a ticket clone: no \.git/)
   assert.ok((await readFile(join(stray, 'residue.txt'), 'utf8')).includes('not a ticket'))
+}
+
+/** The mount-only skip list keeps a clone an open ticket still owns. */
+async function testOpenTicketSkipped() {
+  const box = await sandbox()
+  const dir = await cloneTicket(box, 'nu')
+  const plan = await planWork({
+    root: box.work,
+    keep: 0,
+    keepDays: 0,
+    skipDirectories: new Set([dir]),
+  })
+  const entry = entryOf(plan, 'nu-0123456789ab')
+  assert.equal(entry.action, 'keep')
+  assert.equal(entry.reason, 'an open ticket still uses this directory')
+  const summary = await reclaimWork({
+    root: box.work,
+    stateDir: box.state,
+    keep: 0,
+    keepDays: 0,
+    skipDirectories: new Set([dir]),
+  })
+  assert.equal(summary.reclaimed, 0)
+  assert.ok((await gitIn(box, dir, 'rev-parse', 'HEAD')).length > 0)
 }
 
 /** `--dry-run` prints the plan, keeps the reasons, and writes/deletes nothing. */
@@ -310,7 +438,7 @@ async function testDryRun() {
   assert.match(live.stdout, /^reclaimed 1, kept 2 \(1 unknown\), freed /m)
   await assert.rejects(readFile(join(clean, '.git', 'HEAD')), { code: 'ENOENT' })
   const second = cli(box, ['work', 'gc', '--keep', '0'])
-  assert.match(second.stdout, /^reclaimed 0, kept 2 \(1 unknown\), freed 0 B/m)
+  assert.match(second.stdout, /^reclaimed 0, kept 2 \(1 unknown\)/m)
   assert.equal((await records(box)).length, 1, 'the second run appended nothing')
 }
 
@@ -323,7 +451,10 @@ async function testRestored() {
 
   const result = cli(box, ['work', 'restored', 'eta-0123456789ab'])
   assert.match(result.stdout, /^mkdir -p '.*\/state\/work'$/m)
-  assert.match(result.stdout, new RegExp(`git clone 'https://github\\.com/testowner/eta\\.git' '${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`))
+  assert.match(
+    result.stdout,
+    new RegExp(`git clone 'https://github\\.com/testowner/eta\\.git' '${dir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}'`),
+  )
   assert.match(result.stdout, /^git fetch origin 'agent\/eta'$/m)
   assert.match(result.stdout, new RegExp(`git checkout --detach '${head}'`))
 
@@ -347,67 +478,116 @@ async function testKeepFloor() {
   const dirs = []
   for (const [index, name] of ['one', 'two', 'three'].entries()) {
     const dir = await cloneTicket(box, name, `00000000000${index + 1}`)
-    const stamp = Date.now() - 1000 * (3 - index)
-    await utimes(dir, new Date(stamp), new Date(stamp))
+    await setAge(dir, 30 - index * 10)
     dirs.push(dir)
   }
   const summary = await reclaimWork({ root: box.work, stateDir: box.state, keep: 2 })
   assert.equal(summary.reclaimed, 1, 'only the clone below the floor is reclaimed')
   assert.equal(summary.kept, 2)
-  const kept = summary.entries.filter(entry => entry.action === 'keep')
-  assert.deepEqual(kept.map(entry => entry.reason), [
-    'among the newest 2 directories (--keep)',
-    'among the newest 2 directories (--keep)',
-  ])
+  assert.deepEqual(
+    summary.entries.filter(entry => entry.action === 'keep').map(entry => entry.reason),
+    ['among the newest 2 directories (--keep)', 'among the newest 2 directories (--keep)'],
+  )
   assert.deepEqual((await records(box)).map(record => record.name), ['one-000000000001'])
   for (const dir of dirs.slice(1)) {
     assert.ok((await readFile(join(dir, '.git', 'HEAD'), 'utf8')).length > 0, `${dir} survives the floor`)
   }
 }
 
-/** Age retention is opt-in: a fresh clean clone is kept only when the caller asks for a window. */
+/** Age retention is opt-in and two-sided: an old clone is reclaimed, a fresh one is kept. */
 async function testAgeRetention() {
   const box = await sandbox()
-  await cloneTicket(box, 'iota')
+  const fresh = await cloneTicket(box, 'iota')
+  const old = await cloneTicket(box, 'kappa')
+  await setAge(old, 30)
   const summary = await reclaimWork({ root: box.work, stateDir: box.state, keep: 0, keepDays: 7 })
-  assert.equal(summary.reclaimed, 0)
-  const entry = summary.entries.find(item => item.name === 'iota-0123456789ab')
-  assert.equal(entry.reason, 'modified less than 7 days ago (--keep-days)')
-  assert.deepEqual(await records(box), [])
+  assert.equal(summary.reclaimed, 1, 'the old clone is reclaimed')
+  const kept = entryOf(summary, 'iota-0123456789ab')
+  assert.equal(kept.action, 'keep')
+  assert.equal(kept.reason, 'modified less than 7 days ago (--keep-days)')
+  await assert.rejects(readFile(join(old, '.git', 'HEAD')), { code: 'ENOENT' })
+  assert.ok((await gitIn(box, fresh, 'rev-parse', 'HEAD')).length > 0)
 }
 
-/** The mount hook uses the same defaults as the CLI: the newest 10 passing clones stay. */
-async function testMountHook() {
+/** A failed delete retracts the record written before it. */
+async function testDeleteFailureRetracts() {
+  if (typeof process.getuid === 'function' && process.getuid() === 0) return
+  const box = await sandbox()
+  await cloneTicket(box, 'xi')
+  await chmod(box.work, 0o555)
+  try {
+    const summary = await reclaim(box)
+    assert.equal(summary.reclaimed, 0)
+    assert.match(entryOf(summary, 'xi-0123456789ab').reason, /^delete failed:/)
+  } finally {
+    await chmod(box.work, 0o755)
+  }
+  const lines = await records(box)
+  assert.equal(lines.length, 2, 'the record and its retraction are both append-only')
+  assert.equal(lines[1].retracted, true)
+  await assert.rejects(
+    readReclaimed({ stateDir: box.state, ticket: 'xi-0123456789ab' }),
+    /no reclaim record/,
+  )
+}
+
+/** `apply()` sweeps before setup, uses the CLI defaults, logs once, and only once per process. */
+async function testMountApply() {
   const box = await sandbox()
   await makeRemote(box, 'theta')
   const dirs = []
   for (let index = 1; index <= 11; index += 1) {
     const dir = join(box.work, `theta-${String(index).padStart(12, '0')}`)
     git(box, ['clone', '-q', '--branch', 'agent/theta', 'https://github.com/testowner/theta.git', dir])
-    await utimes(dir, new Date(Date.now() - 1000 * (12 - index)), new Date(Date.now() - 1000 * (12 - index)))
+    await setAge(dir, 40 - index)
     dirs.push(dir)
   }
   const lines = []
-  // The early path must not wait for setup: a rejecting `ready` proves the mount pass ran before it. The catch keeps
-  // Node from treating the unawaited rejection as a crash while still failing the test if the fallback is taken.
-  const ready = Promise.reject(new Error('reclaimAtMount waited for setup instead of running at mount'))
-  ready.catch(() => {})
+  const effects = []
   const ctx = {
-    ready,
+    effect: (fn, label) => effects.push({ fn, label }),
+    // No `ready`, `configured()` or `deployment` on the plugin context: the early path must be used.
     orchestrator: {
+      sources: { register: () => {} },
+      context: () => ({ tickets: { open: () => [] } }),
       machine: { stateDir: box.state },
       settings: { current: () => ({ executor: { directory: box.work } }) },
     },
     logger: { info: line => lines.push(String(line)), warn: line => lines.push(String(line)) },
   }
-  await reclaimAtMount(ctx)
-  assert.equal(lines.length, 1, 'the mount logs one summary line')
+  apply(ctx)
+  await waitFor(() => lines.length === 1, 'the mount summary line')
   assert.match(lines[0], /wheelchair-agent work gc: reclaimed 1, kept 10, freed [\d.]+ MB/)
   await assert.rejects(readFile(join(dirs[0], '.git', 'HEAD')), { code: 'ENOENT' }, 'the oldest clone is gone')
   assert.ok((await readFile(join(dirs[10], '.git', 'HEAD'), 'utf8')).length > 0, 'the newest 10 are kept')
+
+  apply(ctx)
+  await sleep(150)
+  assert.equal(lines.length, 1, 'a hot remount does not sweep again')
+  assert.ok(effects.length >= 2, 'the Source still registers its effects')
 }
 
-/** Root resolution and formatting helpers: documented defaults and overrides. */
+/** The fallback path waits on the orchestrator service, not on plugin-context members. */
+async function testMountFallback() {
+  const box = await sandbox()
+  await cloneTicket(box, 'omicron')
+  const lines = []
+  const ctx = {
+    // No `machine` and a settings store that is not ready: the fallback must use the orchestrator service.
+    orchestrator: {
+      ready: Promise.resolve(),
+      configured: () => true,
+      deployment: { stateDir: box.state },
+      settings: { current: () => { throw new Error('store not ready') } },
+    },
+    logger: { info: line => lines.push(String(line)), warn: line => lines.push(String(line)) },
+  }
+  await reclaimAtMount(ctx)
+  assert.equal(lines.length, 1)
+  assert.match(lines[0], /reclaimed 0, kept 1/, 'the default floor keeps the only clone')
+}
+
+/** Root resolution and formatting helpers: documented defaults and overrides, and unsafe roots refused. */
 function testHelpers() {
   const saved = process.env.DSH_SUPERAGENT_WORK_DIR
   try {
@@ -418,12 +598,15 @@ function testHelpers() {
     assert.equal(resolveWorkRoot({ stateDir: '/s' }), '/from-env')
     assert.equal(resolveWorkRoot({ stateDir: '/s', directory: '/custom' }), '/custom', 'the setting wins')
     delete process.env.DSH_SUPERAGENT_WORK_DIR
+    assert.throws(() => resolveWorkRoot({ stateDir: '/s', directory: 'relative' }), /absolute/)
+    assert.throws(() => resolveWorkRoot({ stateDir: '/s', directory: '/' }), /refusing/)
+    assert.throws(() => resolveWorkRoot({ stateDir: '/s', directory: homedir() }), /refusing/)
     assert.equal(KEEP_DAYS_DEFAULT, 0, 'no age retention by default')
     assert.equal(KEEP_DEFAULT, 10, 'the newest ten passing clones are a hard floor')
     assert.equal(formatBytes(512), '512 B')
     assert.equal(formatBytes(12 * 1024), '12.0 KB')
     assert.equal(formatBytes(3 * 1024 * 1024), '3.0 MB')
-    assert.equal(megabytes(2_500_000), '2.5')
+    assert.equal(megabytes(10 * 1024 * 1024), '10.0')
     assert.equal(shellQuote(`a'b`), `'a'\\''b'`)
   } finally {
     if (saved === undefined) delete process.env.DSH_SUPERAGENT_WORK_DIR
@@ -439,12 +622,18 @@ try {
   await testDirtyKept()
   await testNoRemoteKept()
   await testCwdHeldKept()
+  await testUnreadableProc()
+  await testNoUpstreamFallback()
+  await testNonOriginRemote()
   await testUnknownSurvives()
+  await testOpenTicketSkipped()
   await testDryRun()
   await testRestored()
   await testKeepFloor()
   await testAgeRetention()
-  await testMountHook()
+  await testDeleteFailureRetracts()
+  await testMountFallback()
+  await testMountApply()
   testHelpers()
   process.stdout.write('ok\n')
 } catch (error) {
