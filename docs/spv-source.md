@@ -98,7 +98,8 @@ worker preset）。`triggerOf()` 把除 `text` / `thread` / `actor` 之外的字
 `<stateDir>/work-reclaimed.jsonl`；`work restored <ticket>` 从这份记录打印可粘贴的重建命令。CLI 与挂载时
 `src/superagent/watch.js` 都通过 `src/shared/work.js` 的同一个 `openTicketDirectories()` 保留 open ticket 的
 目录（CLI 从服务的 `/orchestrator/api/tickets?state=open` 读取；服务没跑时跳过检查，其它失败则整次保留）。
-完整说明见 [work-gc.md](work-gc.md)。
+挂载时还会删除 work root 内目录已消失的 dsh workspace 记录（只删注册行，会话与日志保留）。完整说明见
+[work-gc.md](work-gc.md)。
 
 ## 6. 收件箱里的 SPV 决策信
 
