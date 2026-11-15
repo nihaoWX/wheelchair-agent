@@ -63,7 +63,7 @@ DSH_TUI_PRESET=spv dsh-tui --patch ~/.dsh/.agent-presets/spv/preset-default.patc
 
 ## 用
 
-SPV 挂的是**普通 dsh 会话的全套工具**再加两个自己的：文件（`read` / `write` / `edit` / `glob` / `grep` /
+SPV 挂的是**普通 dsh 会话的全套工具**再加三个自己的：文件（`read` / `write` / `edit` / `glob` / `grep` /
 `str_replace_editor`）、`bash`、`subagent` / `subagent_fork`、`todo_write`、`web_search`、`goal`、
 `ask_user_question`、后台作业、skills、plan mode、`/compact`。写文件与跑命令都能用，但**交付**仍然只有一条路：
 改代码并需要 PR 的活走 `spv_dispatch`，派给 worker；`subagent` 用于不落盘、不出 PR 的研究与查询。
@@ -74,7 +74,12 @@ SPV 挂的是**普通 dsh 会话的全套工具**再加两个自己的：文件�
 | 工具 | 参数 | 行为 |
 |---|---|---|
 | `spv_dispatch` | `project`（`tools/<name>` 或 `research/<name>`）、`task`、`thread?`（默认 `main`） | 写 `pending/`，立刻返回 `{id, thread, project}`；worker 的答复稍后自己回到该 thread |
+| `spv_notify` | `title`、Markdown `body`、`thread?`（默认 `main`） | 往操作者的审查收件箱写一封 `spv_message` 决策信并返回 `{id, thread}`；不派 worker、不等待答复 |
 | `spv_status` | `thread?` | 非阻塞：`pending/` 里没被取走的任务 + 已到未读的消息 |
+
+`spv_notify` 不派活：它把 SPV 在无人看管时自己做出的决定写成一封 `spv_message` 信，放进操作者的审查收件箱
+（`wheelchair-agent` 面板）。操作者之后在面板里**通过**或**质疑**；质疑会作为一条 `notice` 回到这封信的
+thread，让 SPV 回顾当时的判断。
 
 任务文件里的 `actor` 固定是 `operator`，**不是** `spv_dispatch` 的参数 —— 见 `src/spv/dispatch.js` 里
 `ACTOR` 的注释。
@@ -100,6 +105,7 @@ SPV 挂的是**普通 dsh 会话的全套工具**再加两个自己的：文件�
 ```sh
 wheelchair-agent dispatch --project tools/foo --task "..." --thread t1
 wheelchair-agent status [--thread t1]
+wheelchair-agent inbox add --title "决定" --body "正文 / @文件" [--thread t1]
 wheelchair-agent check          # 运行时健康：服务 / preset / 面板 prepare 值 / prepare dry run
 ```
 

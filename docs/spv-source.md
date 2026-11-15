@@ -17,7 +17,7 @@
 
 - 需要的 helper（`health`、`key`、`threadKey`）在 `src/superagent/spv.js` 里重写了等价的小函数。
 - `SourceContext` 用 `ctx.orchestrator.context(kind)` 拿，不导入 `sourceContext`（`lib/` 没导出它）。
-- schema 用自己写的 `src/shared/schema.js`（只实现 `parse`/`safeParse`），**故意不依赖 zod**。理由见第 6 节。
+- schema 用自己写的 `src/shared/schema.js`（只实现 `parse`/`safeParse`），**故意不依赖 zod**。理由见 7.2。
 
 ## 2. 队列布局与"无 cursor"的消费标记
 
@@ -76,6 +76,7 @@ worker 的 `progress` 在 `app/notices.ts:reportRelay()` 里 `return undefined`�
 ```bash
 wheelchair-agent dispatch --project tools/foo --task "任务正文" [--thread main] [--preset cordis]
 wheelchair-agent status [--thread main]
+wheelchair-agent inbox add --title "决定" --body "正文 / @文件" [--thread main]   # 写一封 SPV 决策信
 ```
 
 任务记录的顶层字段是 `id` / `thread` / `text` / `at` / `source` / `project` / `actor`，外加可选的 `preset`
@@ -91,9 +92,35 @@ worker preset）。`triggerOf()` 把除 `text` / `thread` / `actor` 之外的字
 `unreadMessages` / `pendingTasks` 把 ENOENT 当成空队列，CLI 打印空列表。`dispatch` 只在 superagent 服务未运行
 时失败（健康探针），队列目录本身不是它的前提——`submitTask` 会自己建 `pending/`。
 
-## 6. 踩过的坑
+## 6. 收件箱里的 SPV 决策信
 
-### 6.1 插件入口的相对路径
+操作者的审查收件箱（`src/spv/inbox.js`）不再只装 GitHub PR。每个 item 有 `kind`：
+
+| item | 来源 | 字段 |
+|---|---|---|
+| `pr` | `wheelchair-agent inbox watch` 轮询 `gh pr list` | `repo` / `pr` / diff / `url` / `body` / `createdAt` / `updatedAt` / `at` |
+| `spv_message` | `wheelchair-agent inbox add` 或 SPV 的 `spv_notify` 工具 | `title` / Markdown `body` / `thread` / `at`；没有 `repo`、没有 `pr` |
+
+`spv_message` 的语义是：SPV 在无人看管时碰到需要操作者的事，它自己先做决定，然后写一封信记录**决定了
+什么、为什么**。操作者之后在面板里接受（`approve`）或质疑（`issue`）。两条写入入口共用
+`createSpvMessage()`，id 形如 `spv-<thread>-<UTC 时间戳>-<4 个随机字符>`，同一秒写两封也不会撞名。
+
+审查语义：
+
+- `approve` 的评论是**可选**的，只追加到 `review`，不派任务、不发 outbox —— 它是操作者接受的理由。
+- `issue` on `pr` 与以前一样：写 `review`，然后派 `inbox-<pr>` worker 任务，不发 outbox。
+- `issue` on `spv_message`：写 `review`，然后通过 `writeMessage()` 往 spv outbox 写**恰好一条**
+  `kind: "notice"` 的消息。id 由信件 id 与 review index 派生（`inbox-<item id>-review-<index>`），
+  `thread` 是信件自己的 thread；正文带信件标题、id 与操作者评论原文，所以 SPV 知道被质疑的是哪个决定。
+  **不派 worker 任务**，也完全不经过 `checkProject()` 的 repo/pr 预检。
+
+这条 `notice` 由 `src/spv/injector.js` 在 SPV 会话里消费，作为一条新消息出现；它和 worker 停下来的
+`notice` 走同一个 outbox 通道，因此队列格式没有第二种。与 worker 的答复一样，注入器只投递**会话挂载之后**
+到达的消息：SPV 会话关闭期间写下的质疑会留在 `outbox/`，`spv_status` 能看到，但不会在下次启动时补投。
+
+## 7. 踩过的坑
+
+### 7.1 插件入口的相对路径
 
 插件入口是 `src/superagent/watch.js`，Source kind 在 `src/superagent/spv.js`，队列在 `src/shared/`。
 第一版把入口放在包根、源码放在 `src/`，写成 `from './spv.js'`，服务日志里 `ERR_MODULE_NOT_FOUND` 直接让
@@ -103,13 +130,13 @@ entry 不激活（`dsh: warning: 1 entry did not activate`）——但进程照�
 `package.json` 的 exports 键（`./spv-watch` 等）是公开 API，`~/.dsh/profiles/superagent/cordis.patch.yml`
 用 bare specifier 引用它们；键名不能改，只能改它指向的文件。
 
-### 6.2 不要导入 zod
+### 7.2 不要导入 zod
 
 dsh-superagent 自带一份 zod。插件如果 import 另一个副本的 zod，抛出的 `ZodError` 在它的
 `failure()`（`app/http.ts:82`）里 `instanceof` 判定失败，一个"设置值非法"的 400 会变成 500。
 `src/shared/schema.js` 用自定义 `SchemaError` 绕开这个问题，同时省掉一个依赖。
 
-### 6.3 `pids: []` 但服务在跑
+### 7.3 `pids: []` 但服务在跑
 
 `scripts/dsh-superagent status|stop` 用 `ps` 的 `ucomm` 判断进程名，在 WSL2 下 node 进程的 comm 是
 `MainThread`，于是脚本认为"没有服务"。表现：`restart` 打印 "An existing orchestrator answers at this URL;
@@ -119,7 +146,7 @@ refusing duplicate startup"，实际没重启。可靠做法是直接按端口�
 kill -INT $(ss -ltnp 2>/dev/null | grep 3082 | sed -n 's/.*pid=\([0-9]*\).*/\1/p')
 ```
 
-### 6.4 主会话的模型凭据是既有缺口
+### 7.4 主会话的模型凭据是既有缺口
 
 `~/.dsh/profiles/superagent` 原来**没有挂 provider**，`agent-default-model` 落到 `deepseek-official`，
 而本机没有 `DEEPSEEK_API_KEY`。后果：任何 Eval 都 `MISSING_CREDENTIAL`，两分钟超时后记 `unavailable`。
@@ -129,9 +156,9 @@ kill -INT $(ss -ltnp 2>/dev/null | grep 3082 | sed -n 's/.*pid=\([0-9]*\).*/\1/p
 zstd -dc ~/.dsh/sessions/--home-nihao-.dsh-state-superagent--/orchestrator-*/session.v4.jsonl.zstd | grep MISSING
 ```
 
-修法是在 profile 的 `cordis.patch.yml` 挂 commandcode provider 并把 `agent-default-model` 指过去（见第 7 节）。
+修法是在 profile 的 `cordis.patch.yml` 挂 commandcode provider 并把 `agent-default-model` 指过去。
 
-### 6.5 主会话会固化第一次的 request header
+### 7.5 主会话会固化第一次的 request header
 
 主会话的 `model/selection` 一旦写入 session 记录，`initializeRoleModel()` 就不再覆盖
 （`if (agent.session.requestHeader() || snapshotEvents().some(e => e.type === 'model/selection')) return`）。
@@ -139,7 +166,7 @@ zstd -dc ~/.dsh/sessions/--home-nihao-.dsh-state-superagent--/orchestrator-*/ses
 处理：删掉 `~/.dsh/sessions/--home-nihao-.dsh-state-superagent--/orchestrator-*` 与对应的
 `~/.dsh/storages/session_projcache/sessions/orchestrator-*.json`，让它重建。Ticket/Thread 全在 SQLite 里，不丢。
 
-### 6.6 消费标记只有一个：rename
+### 7.6 消费标记只有一个：rename
 
 `outbox/` 的消息靠 `rename(outbox/x.json → outbox/read/x.json)` 标记已读。注入器（`src/spv/injector.js`）
 先 `consumeMessage` 再注入；`consumeMessage` 只在真正搬走文件时返回 id，被别的读者抢先时返回 `undefined`，

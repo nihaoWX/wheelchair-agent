@@ -28,32 +28,56 @@ window.__ModuleLoader__.load({
 			"sections.label": "功能",
 			"section.inbox": "收件箱",
 			"feature.inbox.title": "收件箱",
-			"feature.inbox.description": "审查 GitHub PR：通过，或指出问题并派给 worker。",
+			"feature.inbox.description": "复查 GitHub PR 与 SPV 的自主决策。SPV 在无人看管时自己做的决定会写成一封信，记录决定了什么、为什么；你之后通过或质疑。",
 			refresh: "刷新",
 			"filter.label": "筛选",
 			"filter.all": "全部",
 			"filter.pending": "待审",
 			"filter.issue": "有问题",
 			"filter.approved": "已通过",
-			"filter.empty": "这个筛选下没有 PR。",
+			"filter.empty": "这个筛选下没有信件。",
+			"filter.kind": "信件类型",
+			"filter.kind.all": "全部",
+			"filter.kind.pr": "PR",
+			"filter.kind.spv_message": "SPV 决策",
+			"filter.repo": "仓库",
+			"filter.repo.all": "全部仓库",
+			"filter.time": "时间",
+			"filter.time.all": "全部",
+			"filter.time.day": "近 24 小时",
+			"filter.time.week": "近 7 天",
+			"filter.time.custom": "自定义区间",
+			"filter.time.since": "起始日期",
+			"filter.time.until": "结束日期",
+			"kind.pr": "PR",
+			"kind.spv_message": "SPV 决策",
 			"status.loading": "加载中…",
-			"status.loaded": "{count} 个 PR · 更新于 {time}",
+			"status.loaded": "{count} 封信 · 更新于 {time}",
 			"status.failed": "加载失败：{message}",
-			"inbox.empty": "收件箱是空的。先运行 “wheelchair-agent inbox watch --once” 拉取 PR。",
+			"inbox.empty": "收件箱是空的。先运行 “wheelchair-agent inbox watch --once” 拉取 PR，或用 “inbox add” 写一封 SPV 决策信。",
 			"card.untitled": "（无标题）",
 			"card.files": "{count} 个文件",
 			"card.body": "PR 说明",
 			"card.bodyEmpty": "（PR 正文为空）",
+			"card.letter": "决策说明",
+			"card.letterEmpty": "（信件正文为空）",
+			"card.thread": "线程：{thread}",
 			"card.open": "打开 PR",
 			"card.reviews": "审查记录（{count}）",
 			"status.pending": "待审",
 			"status.approved": "已通过",
 			"status.issue": "有问题",
 			"form.pass": "通过",
+			"form.passHint": "理由可选，只会记录在收件箱里，不会通知智能体。",
+			"form.passPlaceholder": "可选：记下你通过的理由（只记录，不通知智能体）。",
 			"form.issue": "有问题",
-			"form.issuePlaceholder": "写清楚问题在哪；提交后会派给 worker。",
+			"form.issueHint.pr": "提交后会派给 worker 处理。",
+			"form.issueHint.spv_message": "提交后会通知 SPV。",
+			"form.issuePlaceholder.pr": "写清楚问题在哪；提交后会派给 worker。",
+			"form.issuePlaceholder.spv_message": "写清楚你质疑的地方；提交后会通知 SPV。",
 			"form.issueEmpty": "请写下问题再提交。",
 			"form.submit": "提交评论",
+			"form.approveSubmit": "记录通过",
 			"form.cancel": "取消",
 			"form.failed": "提交失败：{message}",
 			"form.inflight": "提交中…",
@@ -68,32 +92,56 @@ window.__ModuleLoader__.load({
 			"sections.label": "Features",
 			"section.inbox": "Inbox",
 			"feature.inbox.title": "Inbox",
-			"feature.inbox.description": "Review GitHub pull requests: approve them, or flag an issue and dispatch it to a worker.",
+			"feature.inbox.description": "Review GitHub pull requests and SPV decisions. When SPV runs unattended, each call it makes on your behalf becomes a letter recording what it decided and why; you later accept it or object.",
 			refresh: "Refresh",
 			"filter.label": "Filter",
 			"filter.all": "All",
 			"filter.pending": "Pending",
 			"filter.issue": "Issues",
 			"filter.approved": "Approved",
-			"filter.empty": "No pull requests in this filter.",
+			"filter.empty": "No letters in this filter.",
+			"filter.kind": "Letter type",
+			"filter.kind.all": "All",
+			"filter.kind.pr": "PR",
+			"filter.kind.spv_message": "SPV decision",
+			"filter.repo": "Repository",
+			"filter.repo.all": "All repositories",
+			"filter.time": "Time",
+			"filter.time.all": "All",
+			"filter.time.day": "Last 24 hours",
+			"filter.time.week": "Last 7 days",
+			"filter.time.custom": "Custom range",
+			"filter.time.since": "From",
+			"filter.time.until": "To",
+			"kind.pr": "PR",
+			"kind.spv_message": "SPV decision",
 			"status.loading": "Loading…",
-			"status.loaded": "{count} PRs · updated {time}",
+			"status.loaded": "{count} letters · updated {time}",
 			"status.failed": "Could not load: {message}",
-			"inbox.empty": "The inbox is empty. Run “wheelchair-agent inbox watch --once” to fetch pull requests.",
+			"inbox.empty": "The inbox is empty. Run “wheelchair-agent inbox watch --once” to fetch pull requests, or “inbox add” to write an SPV decision letter.",
 			"card.untitled": "(untitled)",
 			"card.files": "{count} files",
 			"card.body": "PR description",
 			"card.bodyEmpty": "(No PR description)",
+			"card.letter": "Decision note",
+			"card.letterEmpty": "(No decision note)",
+			"card.thread": "Thread: {thread}",
 			"card.open": "Open PR",
 			"card.reviews": "Review history ({count})",
 			"status.pending": "Pending",
 			"status.approved": "Approved",
 			"status.issue": "Issue",
 			"form.pass": "Approve",
+			"form.passHint": "The reason is optional and is only recorded in the inbox; it does not notify the agent.",
+			"form.passPlaceholder": "Optional: why you accepted it (recorded only, no notification).",
 			"form.issue": "Flag issue",
-			"form.issuePlaceholder": "Describe the problem; submitting dispatches it to a worker.",
+			"form.issueHint.pr": "Submitting dispatches it to a worker.",
+			"form.issueHint.spv_message": "Submitting notifies SPV.",
+			"form.issuePlaceholder.pr": "Describe the problem; submitting dispatches it to a worker.",
+			"form.issuePlaceholder.spv_message": "Describe what you question; submitting notifies SPV.",
 			"form.issueEmpty": "Describe the issue before submitting.",
 			"form.submit": "Submit comment",
+			"form.approveSubmit": "Record approval",
 			"form.cancel": "Cancel",
 			"form.failed": "Could not submit: {message}",
 			"form.inflight": "Submitting…",
@@ -845,6 +893,8 @@ window.__ModuleLoader__.load({
 				font-weight: 600;
 			}
 			.wca-tab:focus-visible,
+			.wca-select:focus-visible,
+			.wca-date:focus-visible,
 			.wca-segment:focus-visible,
 			.wca-btn:focus-visible,
 			.wca-disclosure-toggle:focus-visible,
@@ -934,6 +984,36 @@ window.__ModuleLoader__.load({
 				line-height: 16px;
 				font-variant-numeric: tabular-nums;
 			}
+			.wca-filterbar {
+				display: flex;
+				align-items: flex-end;
+				gap: 10px 16px;
+				flex-wrap: wrap;
+				padding: 12px 0 0;
+			}
+			.wca-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+			.wca-field-label { color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
+			.wca-select,
+			.wca-date {
+				box-sizing: border-box;
+				height: 30px;
+				padding: 0 8px;
+				border: .5px solid var(--dsw-alias-border-l3);
+				border-radius: var(--dsw-radius-sm);
+				background: var(--dsw-alias-bg-base);
+				color: var(--dsw-alias-label-primary);
+				font: inherit;
+				font-size: 13px;
+				line-height: 20px;
+			}
+			.wca-select:disabled { opacity: .5; cursor: not-allowed; }
+			.wca-date { color-scheme: light dark; }
+			.wca-hint {
+				margin: 0;
+				color: var(--dsw-alias-label-secondary);
+				font-size: 12px;
+				line-height: 18px;
+			}
 			.wca-feature-body {
 				display: flex;
 				flex-direction: column;
@@ -959,6 +1039,7 @@ window.__ModuleLoader__.load({
 			}
 			.wca-item:first-child { border-top: 0; }
 			.wca-item-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+			.wca-item-origin { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
 			.wca-repo { color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; }
 			.wca-repo strong { color: var(--dsw-alias-label-primary); font-weight: 500; }
 			.wca-item-title { margin: 0; font-size: 15px; font-weight: 600; line-height: 22px; }
@@ -1313,13 +1394,20 @@ window.__ModuleLoader__.load({
 			);
 		}
 
+		/** The letter type of an item; legacy records without `kind` are PRs. */
+		function kindOfItem(item) {
+			return item?.kind === "spv_message" ? "spv_message" : "pr";
+		}
+
 		/**
-		* The review actions: Approve submits directly; Flag issue reveals the comment box and
-		* dispatches only after text is submitted.
+		* The two review actions. "Approve" opens an optional comment box; its text is recorded
+		* only and never notifies the agent. "Flag issue" opens a required comment box whose hint
+		* says what submitting will do for this letter type.
 		*/
 		function ReviewForm(props) {
 			const t = props.t;
-			const [open, setOpen] = react.useState(false);
+			const kind = props.kind;
+			const [mode, setMode] = react.useState(null);
 			const [text, setText] = react.useState("");
 			const [busy, setBusy] = react.useState(false);
 			const [error, setError] = react.useState("");
@@ -1332,11 +1420,16 @@ window.__ModuleLoader__.load({
 				};
 			}, []);
 			react.useEffect(() => {
-				if (open && textarea.current !== null) textarea.current.focus();
-			}, [open]);
-			const submit = async (kind) => {
-				const value = kind === "issue" ? text.trim() : "";
-				if (kind === "issue" && value === "") {
+				if (mode !== null && textarea.current !== null) textarea.current.focus();
+			}, [mode]);
+			const openMode = (next) => {
+				setError("");
+				setText("");
+				setMode(next);
+			};
+			const submit = async (reviewKind) => {
+				const value = text.trim();
+				if (reviewKind === "issue" && value === "") {
 					setError(t("form.issueEmpty"));
 					if (textarea.current !== null) textarea.current.focus();
 					return;
@@ -1347,7 +1440,7 @@ window.__ModuleLoader__.load({
 					const response = await fetch(REVIEW_URL, {
 						method: "POST",
 						headers: { "content-type": "application/json" },
-						body: JSON.stringify({ id: props.item.id, kind, text: value })
+						body: JSON.stringify({ id: props.item.id, kind: reviewKind, text: value })
 					});
 					const payload = await response.json().catch(() => ({}));
 					if (!response.ok || payload.ok !== true) {
@@ -1355,7 +1448,7 @@ window.__ModuleLoader__.load({
 					}
 					if (!mounted.current) return;
 					setText("");
-					setOpen(false);
+					setMode(null);
 					props.onSubmitted();
 				} catch (failure) {
 					if (!mounted.current) return;
@@ -1364,6 +1457,18 @@ window.__ModuleLoader__.load({
 					if (mounted.current) setBusy(false);
 				}
 			};
+			const hint =
+				mode === "approve"
+					? t("form.passHint")
+					: mode === "issue"
+						? t(`form.issueHint.${kind}`)
+						: "";
+			const placeholder =
+				mode === "approve"
+					? t("form.passPlaceholder")
+					: mode === "issue"
+						? t(`form.issuePlaceholder.${kind}`)
+						: "";
 			return jsxs(
 				"div",
 				{
@@ -1381,8 +1486,9 @@ window.__ModuleLoader__.load({
 											className: "wca-btn",
 											"data-variant": "outline",
 											disabled: busy || props.status === "approved",
-											onClick: () => submit("approve"),
-											children: busy ? t("form.inflight") : t("form.pass")
+											"aria-expanded": mode === "approve",
+											onClick: () => openMode("approve"),
+											children: t("form.pass")
 										},
 										"approve"
 									),
@@ -1393,11 +1499,8 @@ window.__ModuleLoader__.load({
 											className: "wca-btn",
 											"data-variant": "primary",
 											disabled: busy,
-											"aria-expanded": open,
-											onClick: () => {
-												setError("");
-												setOpen(true);
-											},
+											"aria-expanded": mode === "issue",
+											onClick: () => openMode("issue"),
 											children: t("form.issue")
 										},
 										"issue"
@@ -1406,18 +1509,20 @@ window.__ModuleLoader__.load({
 							},
 							"actions"
 						),
-						open
-							? jsxs(
+						mode === null
+							? null
+							: jsxs(
 									"div",
 									{
 										className: "wca-issue-box",
 										children: [
+											jsx("p", { className: "wca-hint", children: hint }, "hint"),
 											jsx("textarea", {
 												ref: textarea,
 												className: "wca-comment",
 												rows: 3,
-												placeholder: t("form.issuePlaceholder"),
-												"aria-label": t("form.issuePlaceholder"),
+												placeholder,
+												"aria-label": hint === "" ? placeholder : hint,
 												value: text,
 												disabled: busy,
 												onChange: (event) => {
@@ -1437,8 +1542,12 @@ window.__ModuleLoader__.load({
 																className: "wca-btn",
 																"data-variant": "primary",
 																disabled: busy,
-																onClick: () => submit("issue"),
-																children: busy ? t("form.inflight") : t("form.submit")
+																onClick: () => submit(mode),
+																children: busy
+																	? t("form.inflight")
+																	: mode === "approve"
+																		? t("form.approveSubmit")
+																		: t("form.submit")
 															},
 															"submit"
 														),
@@ -1450,7 +1559,8 @@ window.__ModuleLoader__.load({
 																"data-variant": "outline",
 																disabled: busy,
 																onClick: () => {
-																	setOpen(false);
+																	setMode(null);
+																	setText("");
 																	setError("");
 																},
 																children: t("form.cancel")
@@ -1464,8 +1574,7 @@ window.__ModuleLoader__.load({
 										]
 									},
 									"box"
-							  )
-							: null,
+							  ),
 						jsx("p", { className: "wca-form-error", role: "alert", children: error }, "error")
 					]
 				},
@@ -1473,11 +1582,13 @@ window.__ModuleLoader__.load({
 			);
 		}
 
-		/** The collapsed-by-default PR description disclosure with the rendered Markdown body. */
+		/** The collapsed-by-default body disclosure with the rendered Markdown body. */
 		function BodyDisclosure(props) {
 			const t = props.t;
 			const [open, setOpen] = react.useState(false);
 			const hasBody = typeof props.text === "string" && props.text.trim() !== "";
+			const labelKey = props.labelKey ?? "card.body";
+			const emptyKey = props.emptyKey ?? "card.bodyEmpty";
 			return jsxs(
 				"div",
 				{
@@ -1490,31 +1601,48 @@ window.__ModuleLoader__.load({
 								className: "wca-disclosure-toggle",
 								"aria-expanded": open,
 								onClick: () => setOpen((value) => !value),
-								children: [jsx(ChevronIcon, { open }, "chevron"), jsx("span", { children: t("card.body") }, "label")]
+								children: [jsx(ChevronIcon, { open }, "chevron"), jsx("span", { children: t(labelKey) }, "label")]
 							},
 							"toggle"
 						),
-						open ? jsx(Markdown, { text: hasBody ? props.text : t("card.bodyEmpty") }, "body") : null
+						open ? jsx(Markdown, { text: hasBody ? props.text : t(emptyKey) }, "body") : null
 					]
 				},
 				"disclosure"
 			);
 		}
 
-		/** One PR row inside the inbox feature panel. */
-		function PrItem(props) {
+		/** One letter row inside the inbox feature panel: a PR or an SPV decision note. */
+		function InboxItem(props) {
 			const item = props.item;
 			const t = props.t;
+			const kind = kindOfItem(item);
+			const isMessage = kind === "spv_message";
 			const reviews = Array.isArray(item.review) ? item.review : [];
 			const status = statusOf(item);
-			const href = safeWebHref(item.url);
+			const href = isMessage ? undefined : safeWebHref(item.url);
 			const additions = Number.isFinite(Number(item.additions)) ? Number(item.additions) : 0;
 			const deletions = Number.isFinite(Number(item.deletions)) ? Number(item.deletions) : 0;
 			const files = Number.isFinite(Number(item.changedFiles)) ? Number(item.changedFiles) : 0;
+			const origin = isMessage
+				? jsx(
+						"span",
+						{ className: "wca-repo", children: t("card.thread", { thread: String(item.thread || "main") }) },
+						"thread"
+				  )
+				: jsxs(
+						"span",
+						{
+							className: "wca-repo",
+							children: [jsx("strong", { children: String(item.repo ?? "") }), ` #${String(item.pr ?? "")}`]
+						},
+						"repo"
+				  );
 			return jsxs(
 				"article",
 				{
 					className: "wca-item",
+					"data-kind": kind,
 					"data-status": status,
 					children: [
 						jsxs(
@@ -1525,10 +1653,21 @@ window.__ModuleLoader__.load({
 									jsxs(
 										"div",
 										{
-											className: "wca-repo",
-											children: [jsx("strong", { children: String(item.repo ?? "") }), ` #${String(item.pr ?? "")}`]
+											className: "wca-item-origin",
+											children: [
+												jsx(
+													"span",
+													{
+														className: "wca-tag",
+														"data-tone": isMessage ? "info" : "neutral",
+														children: t(isMessage ? "kind.spv_message" : "kind.pr")
+													},
+													"kind"
+												),
+												origin
+											]
 										},
-										"repo"
+										"origin"
 									),
 									jsx(StatusBadge, { status, t }, "status")
 								]
@@ -1536,21 +1675,32 @@ window.__ModuleLoader__.load({
 							"head"
 						),
 						jsx("h3", { className: "wca-item-title", children: String(item.title ?? "") || t("card.untitled") }, "title"),
-						jsxs(
-							"p",
+						isMessage
+							? null
+							: jsxs(
+									"p",
+									{
+										className: "wca-meta",
+										children: [
+											jsx("span", { className: "wca-diff wca-added", children: `+${additions}` }, "add"),
+											" ",
+											jsx("span", { className: "wca-diff wca-removed", children: `−${deletions}` }, "del"),
+											" ",
+											jsx("span", { children: t("card.files", { count: files }) }, "files")
+										]
+									},
+									"meta"
+							  ),
+						jsx(
+							BodyDisclosure,
 							{
-								className: "wca-meta",
-								children: [
-									jsx("span", { className: "wca-diff wca-added", children: `+${additions}` }, "add"),
-									" ",
-									jsx("span", { className: "wca-diff wca-removed", children: `−${deletions}` }, "del"),
-									" ",
-									jsx("span", { children: t("card.files", { count: files }) }, "files")
-								]
+								text: item.body,
+								t,
+								labelKey: isMessage ? "card.letter" : "card.body",
+								emptyKey: isMessage ? "card.letterEmpty" : "card.bodyEmpty"
 							},
-							"meta"
+							"body"
 						),
-						jsx(BodyDisclosure, { text: item.body, t }, "body"),
 						reviews.length === 0
 							? null
 							: jsxs(
@@ -1564,7 +1714,7 @@ window.__ModuleLoader__.load({
 									},
 									"reviews"
 							  ),
-						jsx(ReviewForm, { item, t, status, onSubmitted: props.onSubmitted }, "form"),
+						jsx(ReviewForm, { item, t, kind, status, onSubmitted: props.onSubmitted }, "form"),
 						href === undefined
 							? null
 							: jsx(
@@ -1592,9 +1742,42 @@ window.__ModuleLoader__.load({
 			{ id: "approved", labelKey: "filter.approved" }
 		];
 
+		/** ISO start/end of one `<input type="date">` value, in the operator's local time. */
+		function dayStartIso(value) {
+			const date = new Date(`${String(value)}T00:00:00`);
+			return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+		}
+		function dayEndIso(value) {
+			const date = new Date(`${String(value)}T23:59:59.999`);
+			return Number.isNaN(date.getTime()) ? undefined : date.toISOString();
+		}
+
 		/**
-		* The inbox feature panel: feature header and toolbar, a derived-status filter, and the
-		* PR rows. It owns its own controls so a future feature does not inherit them.
+		* The items query for the current filter state. Built on every load (not memoized) so
+		* "last 24 hours" / "last 7 days" slide when the operator presses Refresh instead of
+		* freezing the window at the moment the option was selected.
+		*/
+		function itemsQuery(filters) {
+			const params = new URLSearchParams();
+			if (filters.kind !== "all") params.set("kind", filters.kind);
+			if (filters.repo !== "all") params.set("repo", filters.repo);
+			if (filters.time === "day" || filters.time === "week") {
+				const hours = filters.time === "day" ? 24 : 24 * 7;
+				params.set("since", new Date(Date.now() - hours * 60 * 60 * 1000).toISOString());
+			} else if (filters.time === "custom") {
+				const from = filters.since === "" ? undefined : dayStartIso(filters.since);
+				const to = filters.until === "" ? undefined : dayEndIso(filters.until);
+				if (from !== undefined) params.set("since", from);
+				if (to !== undefined) params.set("until", to);
+			}
+			const encoded = params.toString();
+			return encoded === "" ? "" : `?${encoded}`;
+		}
+
+		/**
+		* The inbox feature panel: feature header and toolbar, the three server-side filters
+		* (letter type, repository, time), the derived-status filter, and the letter rows. It
+		* owns its own controls so a future feature does not inherit them.
 		*/
 		function InboxSection(props) {
 			const t = props.t;
@@ -1603,42 +1786,47 @@ window.__ModuleLoader__.load({
 			const [loading, setLoading] = react.useState(true);
 			const [error, setError] = react.useState("");
 			const [updatedAt, setUpdatedAt] = react.useState(null);
-			const [filter, setFilter] = react.useState("pending");
+			const [statusFilter, setStatusFilter] = react.useState("pending");
+			const [kind, setKind] = react.useState("all");
+			const [repo, setRepo] = react.useState("all");
+			const [time, setTime] = react.useState("all");
+			const [since, setSince] = react.useState("");
+			const [until, setUntil] = react.useState("");
+			const [repos, setRepos] = react.useState([]);
 			const alive = react.useRef(true);
-			const inflight = react.useRef(null);
-			const rerun = react.useRef(false);
+			const requestId = react.useRef(0);
 			const load = react.useCallback(() => {
-				if (inflight.current !== null) {
-					rerun.current = true;
-					return inflight.current;
-				}
+				const current = ++requestId.current;
+				const query = itemsQuery({ kind, repo, time, since, until });
 				setLoading(true);
-				const request = (async () => {
+				return (async () => {
 					try {
-						const response = await fetch(ITEMS_URL, { headers: { accept: "application/json" }, cache: "no-store" });
+						const response = await fetch(`${ITEMS_URL}${query}`, {
+							headers: { accept: "application/json" },
+							cache: "no-store"
+						});
 						if (!response.ok) throw new Error(`HTTP ${response.status}`);
 						const payload = await response.json();
-						if (!alive.current) return;
-						setItems(Array.isArray(payload.items) ? payload.items : []);
+						if (!alive.current || current !== requestId.current) return;
+						const list = Array.isArray(payload.items) ? payload.items : [];
+						setItems(list);
+						setRepos((previous) => {
+							const next = new Set(previous);
+							for (const item of list) {
+								if (typeof item.repo === "string" && item.repo !== "") next.add(item.repo);
+							}
+							return Array.from(next).sort();
+						});
 						setUpdatedAt(new Date());
 						setError("");
 					} catch (failure) {
-						if (!alive.current) return;
+						if (!alive.current || current !== requestId.current) return;
 						setError(t("status.failed", { message: failure instanceof Error ? failure.message : String(failure) }));
 					} finally {
-						if (alive.current) setLoading(false);
+						if (alive.current && current === requestId.current) setLoading(false);
 					}
 				})();
-				inflight.current = request;
-				request.finally(() => {
-					if (inflight.current === request) inflight.current = null;
-					if (rerun.current) {
-						rerun.current = false;
-						load();
-					}
-				});
-				return request;
-			}, [t]);
+			}, [t, kind, repo, time, since, until]);
 			react.useEffect(() => {
 				alive.current = true;
 				load();
@@ -1656,8 +1844,8 @@ window.__ModuleLoader__.load({
 			}, [items]);
 			const visible = react.useMemo(() => {
 				const list = items ?? [];
-				return filter === "all" ? list : list.filter((item) => statusOf(item) === filter);
-			}, [items, filter]);
+				return statusFilter === "all" ? list : list.filter((item) => statusOf(item) === statusFilter);
+			}, [items, statusFilter]);
 			const status =
 				error !== ""
 					? error
@@ -1668,6 +1856,10 @@ window.__ModuleLoader__.load({
 								time: updatedAt === null ? "" : updatedAt.toLocaleTimeString(undefined, { hour12: false })
 							});
 			const titleId = `wca-feature-${feature.id}`;
+			const hasServerFilter =
+				kind !== "all" ||
+				repo !== "all" ||
+				(time !== "all" && (time !== "custom" || since !== "" || until !== ""));
 			return jsxs(
 				"section",
 				{
@@ -1707,15 +1899,15 @@ window.__ModuleLoader__.load({
 																{
 																	type: "button",
 																	className: "wca-segment",
-																	"aria-pressed": filter === option.id,
-																	onClick: () => setFilter(option.id),
+																	"aria-pressed": statusFilter === option.id,
+																	onClick: () => setStatusFilter(option.id),
 																	children: [
 																		t(option.labelKey),
 																		jsx("span", { className: "wca-segment-count", children: counts[option.id] }, "count")
 																	]
 																},
 																option.id
-															)
+																)
 														)
 													},
 													"filters"
@@ -1745,6 +1937,138 @@ window.__ModuleLoader__.load({
 							{
 								className: "wca-feature-body",
 								children: [
+									jsxs(
+										"div",
+										{
+											className: "wca-filterbar",
+											role: "group",
+											"aria-label": t("filter.label"),
+											children: [
+												jsxs(
+													"label",
+													{
+														className: "wca-field",
+														children: [
+															jsx("span", { className: "wca-field-label", children: t("filter.kind") }, "label"),
+															jsxs(
+																"select",
+																{
+																	className: "wca-select",
+																	value: kind,
+																	onChange: (event) => {
+																		const next = event.target.value;
+																		setKind(next);
+																		if (next === "spv_message") setRepo("all");
+																	},
+																	children: [
+																		jsx("option", { value: "all", children: t("filter.kind.all") }, "all"),
+																		jsx("option", { value: "pr", children: t("filter.kind.pr") }, "pr"),
+																		jsx("option", { value: "spv_message", children: t("filter.kind.spv_message") }, "spv_message")
+																	]
+																},
+																"kind"
+															)
+														]
+													},
+													"kind-field"
+												),
+												jsxs(
+													"label",
+													{
+														className: "wca-field",
+														children: [
+															jsx("span", { className: "wca-field-label", children: t("filter.repo") }, "label"),
+															jsxs(
+																"select",
+																{
+																	className: "wca-select",
+																	value: repo,
+																	disabled: kind === "spv_message",
+																	onChange: (event) => setRepo(event.target.value),
+																	children: [
+																		jsx("option", { value: "all", children: t("filter.repo.all") }, "all"),
+																		...repos.map((value) =>
+																			jsx("option", { value, children: value }, value)
+																		)
+																	]
+																},
+																"repo"
+															)
+														]
+													},
+													"repo-field"
+												),
+												jsxs(
+													"label",
+													{
+														className: "wca-field",
+														children: [
+															jsx("span", { className: "wca-field-label", children: t("filter.time") }, "label"),
+															jsxs(
+																"select",
+																{
+																	className: "wca-select",
+																	value: time,
+																	onChange: (event) => setTime(event.target.value),
+																	children: [
+																		jsx("option", { value: "all", children: t("filter.time.all") }, "all"),
+																		jsx("option", { value: "day", children: t("filter.time.day") }, "day"),
+																		jsx("option", { value: "week", children: t("filter.time.week") }, "week"),
+																		jsx("option", { value: "custom", children: t("filter.time.custom") }, "custom")
+																	]
+																},
+																"time"
+															)
+														]
+													},
+													"time-field"
+												),
+												time === "custom"
+													? jsxs(
+															react.Fragment,
+															{
+																children: [
+																	jsxs(
+																		"label",
+																		{
+																			className: "wca-field",
+																			children: [
+																				jsx("span", { className: "wca-field-label", children: t("filter.time.since") }, "label"),
+																				jsx("input", {
+																					type: "date",
+																					className: "wca-date",
+																					value: since,
+																					onChange: (event) => setSince(event.target.value)
+																				})
+																			]
+																		},
+																		"since"
+																	),
+																	jsxs(
+																		"label",
+																		{
+																			className: "wca-field",
+																			children: [
+																				jsx("span", { className: "wca-field-label", children: t("filter.time.until") }, "label"),
+																				jsx("input", {
+																					type: "date",
+																					className: "wca-date",
+																					value: until,
+																					onChange: (event) => setUntil(event.target.value)
+																				})
+																			]
+																		},
+																		"until"
+																	)
+																]
+																},
+																"custom"
+															  )
+													: null
+											]
+										},
+										"filterbar"
+									),
 									jsx(
 										"p",
 										{
@@ -1755,10 +2079,10 @@ window.__ModuleLoader__.load({
 										},
 										"status"
 									),
-									items !== null && items.length === 0
+									items !== null && items.length === 0 && !hasServerFilter
 										? jsx("p", { className: "wca-empty", children: t("inbox.empty") }, "empty")
 										: null,
-									items !== null && items.length > 0 && visible.length === 0
+									items !== null && (hasServerFilter || items.length > 0) && visible.length === 0
 										? jsx("p", { className: "wca-empty", children: t("filter.empty") }, "filtered-empty")
 										: null,
 									items !== null && visible.length > 0
@@ -1767,7 +2091,7 @@ window.__ModuleLoader__.load({
 												{
 													className: "wca-items",
 													children: visible.map((item, index) =>
-														jsx(PrItem, { item, t, onSubmitted: () => load() }, String(item.id ?? index))
+														jsx(InboxItem, { item, t, onSubmitted: () => load() }, String(item.id ?? index))
 													)
 												},
 												"items"
