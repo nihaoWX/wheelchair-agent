@@ -723,26 +723,34 @@ function checkIntervalSeconds(raw) {
  * 有效收件箱间隔（秒）：设置文件 > 插件 config（这里的 `configured`）> 环境变量 > 60。每次调用都重读文件。
  *
  * - `0` 表示关闭自动轮询（CLI 的 `inbox watch` 仍然可用）；
- * - **显式传入的 `configured` 非法时仍然抛错**，这是改造前的契约（host 半身 catch 后回退到 60 并告警）；
- *   环境变量非法同样抛错，避免「写错一个 env 却看起来生效了」；
- * - 设置文件里的坏值由 `resolveSettings` 自己忽略并告警，不会抛。
+ * - **文件里有合法的显式值就直接用它**，不再校验低层：否则会出现「设置页显示 30s、轮询器却因一个写坏的
+ *   环境变量回退 60s」——正是「看起来生效其实没生效」的失败模式；
+ * - 文件没有该值（缺失 / 坏文件 / 坏值被忽略）时，才按改造前的契约校验低层：显式 `configured` 非法抛错
+ *   （host 半身 catch 后回退 60 并告警），环境变量非法同样抛错，避免静默接受拼写错误；
+ * - 设置文件本身的问题由 `resolveSettings` 忽略并告警，不会抛。
  *
  * `stateDir` 省略时用 `$DSH_SUPERAGENT_STATE_DIR` / `~/.dsh/state/superagent`（与 `paths.js` 同一条规则）。
  */
 export function resolveInboxIntervalSeconds(configured, { stateDir, env = process.env } = {}) {
   const hasConfigured = !(configured === undefined || configured === null || String(configured).trim() === '')
-  const config = {}
+  // 先解析一次（不预先校验低层）：行来源为 file 就说明磁盘上有合法的显式值，直接返回。
+  const settings = resolveSettings({
+    stateDir,
+    env,
+    config: hasConfigured ? { 'inbox.intervalSeconds': configured } : {},
+  })
+  const row = settings.rows.find(item => item.key === 'inbox.intervalSeconds')
+  if (row?.source === 'file') return row.value
+  // 没有文件值：保留旧行为，坏 configured / 坏 env 仍然大声报错，而不是静默回退。
   if (hasConfigured) {
-    config['inbox.intervalSeconds'] = checkIntervalSeconds(configured)
+    checkIntervalSeconds(configured)
   } else {
-    // 保留旧行为：没有显式值时，坏的环境变量也要报错，而不是静默回退。
     const fromEnv = env?.SPV_INBOX_INTERVAL_SECONDS
     if (fromEnv !== undefined && fromEnv !== null && String(fromEnv).trim() !== '') {
       checkIntervalSeconds(fromEnv)
     }
   }
-  const settings = resolveSettings({ stateDir, env, config })
-  return settings.effective['inbox.intervalSeconds']
+  return row?.value ?? INBOX_INTERVAL_DEFAULT
 }
 
 /**

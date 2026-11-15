@@ -1178,6 +1178,23 @@ async function testIntervalPrecedence() {
     30,
     'the file wins over the environment too',
   )
+  // A valid saved value must never be broken by a typo in a lower layer: that is the
+  // "looks applied but is not" failure mode this function has to avoid.
+  assert.equal(
+    resolveInboxIntervalSeconds(undefined, { stateDir: box.state, env: { SPV_INBOX_INTERVAL_SECONDS: 'soon' } }),
+    30,
+    'a valid file value wins without validating a broken environment variable',
+  )
+  assert.equal(
+    resolveInboxIntervalSeconds('soon', { stateDir: box.state, env: {} }),
+    30,
+    'a valid file value wins without validating a broken plugin config',
+  )
+  assert.equal(
+    resolveInboxIntervalSeconds('soon', { stateDir: box.state, env: { SPV_INBOX_INTERVAL_SECONDS: 'soon' } }),
+    30,
+    'a valid file value wins even when both lower layers are broken',
+  )
 
   const empty = await sandbox()
   assert.equal(resolveInboxIntervalSeconds(undefined, { stateDir: empty.state, env: {} }), 60)
@@ -1190,13 +1207,44 @@ async function testIntervalPrecedence() {
   assert.equal(resolveInboxIntervalSeconds(0, { stateDir: empty.state, env: {} }), 0, '0 still disables')
   assert.equal(resolveInboxIntervalSeconds(0.02, { stateDir: empty.state, env: {} }), 0.02, 'a fractional configured value is kept')
   assert.throws(() => resolveInboxIntervalSeconds(-1, { stateDir: empty.state, env: {} }), /non-negative/)
-  assert.throws(() => resolveInboxIntervalSeconds('soon', { stateDir: empty.state, env: {} }), /non-negative/)
+  assert.throws(
+    () => resolveInboxIntervalSeconds('soon', { stateDir: empty.state, env: {} }),
+    /non-negative/,
+    'an invalid configured value still throws when there is no file value',
+  )
   assert.throws(
     () => resolveInboxIntervalSeconds(undefined, { stateDir: empty.state, env: { SPV_INBOX_INTERVAL_SECONDS: 'soon' } }),
     /non-negative/,
+    'an invalid environment variable still throws when there is no file value',
   )
+
+  // A corrupt file has no usable override, so the old loud behaviour is preserved.
   await writeFile(settingsFile(empty.state), 'not json', 'utf8')
   assert.equal(resolveInboxIntervalSeconds(undefined, { stateDir: empty.state, env: {} }), 60, 'a corrupt file falls back to 60')
+  assert.throws(
+    () => resolveInboxIntervalSeconds(undefined, { stateDir: empty.state, env: { SPV_INBOX_INTERVAL_SECONDS: 'soon' } }),
+    /non-negative/,
+    'a corrupt file does not swallow an invalid environment variable',
+  )
+  assert.throws(
+    () => resolveInboxIntervalSeconds('soon', { stateDir: empty.state, env: {} }),
+    /non-negative/,
+    'a corrupt file does not swallow an invalid configured value',
+  )
+
+  // An invalid *file* value is ignored like a missing one: it falls through to configured / env / default.
+  await writeJson(settingsFile(empty.state), { version: 1, revision: 1, values: { 'inbox.intervalSeconds': 'soon' } })
+  assert.equal(resolveInboxIntervalSeconds(undefined, { stateDir: empty.state, env: { SPV_INBOX_INTERVAL_SECONDS: '20' } }), 20)
+  assert.throws(
+    () => resolveInboxIntervalSeconds(undefined, { stateDir: empty.state, env: { SPV_INBOX_INTERVAL_SECONDS: 'soon' } }),
+    /non-negative/,
+    'an invalid file value still falls through to the existing env validation',
+  )
+  assert.throws(
+    () => resolveInboxIntervalSeconds('soon', { stateDir: empty.state, env: {} }),
+    /non-negative/,
+    'an invalid file value still falls through to the existing configured validation',
+  )
 }
 
 /** 动态间隔：0 暂停（一个 gh 都不跑），改回 0.02 后无需重启就恢复。 */

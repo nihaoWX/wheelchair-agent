@@ -665,6 +665,21 @@ async function testHostStartsPoller() {
     pausedStop()
   }
 
+  // A valid saved interval wins over a broken plugin config: the poller must use exactly what the
+  // Settings page shows, rather than falling back to 60s on the config typo.
+  const brokenConfig = hostContextWithFence()
+  apply(brokenConfig.ctx, { intervalSeconds: 'soon' })
+  assert.ok(
+    brokenConfig.lines.some(line => line.includes('refreshing every 1s')),
+    'a valid saved interval wins over an invalid plugin config',
+  )
+  const brokenConfigPoller = brokenConfig.effects.find(effect => effect.label.includes('wheelchair-agent-webui: inbox poller'))
+  const brokenConfigStop = brokenConfigPoller.fn()
+  brokenConfigStop()
+
+  // With no settings-file value, the old loud fallback still applies: an invalid config logs once and
+  // the poller still registers at 60s.
+  await rm(join(box.state, 'panel-settings.json'))
   const invalid = hostContextWithFence()
   apply(invalid.ctx, { intervalSeconds: 'soon' })
   assert.ok(invalid.lines.some(line => line.includes('using 60s')), 'an invalid interval falls back to 60s')
