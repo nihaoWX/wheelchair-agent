@@ -8,15 +8,18 @@
  *   - the no-upstream fallback (`git rev-list origin/main..HEAD`) reclaims a clone whose HEAD is on origin/main and
  *     keeps one that is one local commit ahead;
  *   - a directory held by a live process cwd is kept and names that pid, and an unreadable /proc entry keeps everything;
- *   - a directory an open ticket still owns is kept by the mount-only skip list;
+ *   - the shared open-ticket resolver keeps the clone of an open ticket (both `directory` and `execution.directory`)
+ *     from the CLI and the mount hook; a directory-less queued ticket is skipped, an unusable one fails closed;
  *   - the tracked remote (not a hard-coded origin) is recorded, so `work restored` rebuilds a fork clone;
  *   - an unknown directory is reported and survives even when it is old;
  *   - `--dry-run` prints the plan and deletes nothing; a second run is a no-op;
- *   - the keep floor is a hard floor regardless of age, and `--keep-days` reclaims old clones while keeping fresh ones;
+ *   - the keep floor is opt-in (default 0), and `--keep-days` reclaims old clones while keeping fresh ones;
  *   - a failed delete retracts its record so `work restored` does not target a surviving directory;
  *   - `work restored` prints commands that actually rebuild the clone from the record;
  *   - the mount hook runs through `apply()` before setup, uses the same defaults, logs one summary line and only
- *     sweeps once; its fallback path uses the orchestrator service, not plugin-context members.
+ *     sweeps once; its fallback path uses the orchestrator service, not plugin-context members;
+ *   - the mount pass prunes stale workspace rows with strict path/inside/exists guards, fails soft on a bad registry,
+ *     and logs the summary plus one line per pruned path.
  *
  * Everything is offline: local bare repositories are exposed as `https://github.com/testowner/<name>` through
  * `url.<local-bare>.insteadOf` in a throwaway GIT_CONFIG_GLOBAL, so no credential or network is involved.
@@ -27,7 +30,7 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:http'
-import { chmod, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -48,6 +51,7 @@ import {
   restoreCommands,
   shellQuote,
 } from '../src/shared/work.js'
+import { fetchOpenTickets } from '../src/spv/health.js'
 import {
   apply,
   openTicketDirectories as watchOpenTicketDirectories,
@@ -214,7 +218,7 @@ async function records(box) {
 /** Fake management API for open tickets; returns its base URL. The caller closes it via SERVERS. */
 async function serveTickets({ body, status = 200, onRequest } = {}) {
   const server = createServer((req, res) => {
-    onRequest?.(req)
+    if (onRequest?.(req, res) === true) return
     res.statusCode = status
     res.setHeader('content-type', 'application/json')
     res.end(body)
@@ -463,9 +467,16 @@ async function testSharedOpenTickets() {
     down: true,
     reason: 'nothing is listening',
   })
-  const invalid = await openTicketDirectories(async () => ({ tickets: [{ id: 'no-directory' }] }))
+  const queued = await openTicketDirectories(async () => ({
+    tickets: [{ id: 'queued' }, { id: 'ticket-api', directory: '/work/api-0123456789ab' }],
+  }))
+  assert.equal(queued.ok, true, 'a queued ticket without an execution owns no clone')
+  assert.deepEqual([...queued.directories], [['/work/api-0123456789ab', 'ticket-api']])
+  const invalid = await openTicketDirectories(async () => ({ tickets: [{ id: 'bad', directory: 42 }] }))
   assert.equal(invalid.ok, false)
-  assert.match(invalid.reason, /execution\.directory/)
+  assert.match(invalid.reason, /unusable execution\.directory/)
+  const notObject = await openTicketDirectories(async () => ({ tickets: [null] }))
+  assert.equal(notObject.ok, false)
   const thrown = await openTicketDirectories(async () => { throw new Error('boom') })
   assert.equal(thrown.ok, false)
   assert.match(thrown.reason, /boom/)
@@ -508,6 +519,7 @@ async function testCliOpenTicketSkip() {
   assert.match(result.stdout, /open tickets: 1 directory\(s\) in use/)
   assert.match(result.stdout, /keep\s+[\d.]+ [KMG]?B\s+open-0123456789ab \(open ticket ticket-open-1 is using this directory\)/)
   assert.match(result.stdout, /would reclaim 1, kept 1/)
+  assert.ok((await stat(open)).mtimeMs >= (await stat(box.work + '/free-0123456789ab')).mtimeMs, 'the open clone is newest')
   assert.ok((await gitIn(box, open, 'rev-parse', 'HEAD')).length > 0, 'the open ticket clone survives')
 }
 
@@ -524,6 +536,33 @@ async function testCliServiceDownAndDefault() {
   await assert.rejects(readFile(join(newest, '.git', 'HEAD')), { code: 'ENOENT' })
 }
 
+/** A response that aborts mid-body settles as an error instead of leaving the CLI hung or silent. */
+async function testCliAbortedTickets() {
+  const box = await sandbox()
+  const dir = await cloneTicket(box, 'abort')
+  const url = await serveTickets({
+    body: '',
+    onRequest: (req, res) => {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.write('{"items":[')
+      res.socket?.destroy()
+      return true
+    },
+  })
+  // serveTickets ends the response too; the raw fetch must already have settled with an error.
+  const direct = await fetchOpenTickets(url, 500)
+  assert.equal(direct.tickets, undefined)
+  assert.match(String(direct.error), /aborted|closed|failed|items/)
+  const result = await cliAsync(box, ['work', 'gc', '--dry-run'], {
+    env: { SPV_SUPERAGENT_URL: url },
+    expectFailure: true,
+  })
+  assert.equal(result.status, 1)
+  assert.match(result.stdout, /cannot read open tickets/)
+  assert.match(result.stdout, /would reclaim 0, kept 1/)
+  assert.ok((await gitIn(box, dir, 'rev-parse', 'HEAD')).length > 0)
+}
+
 /** A 2xx answer without the expected shape keeps everything and says so (nonzero exit). */
 async function testCliMalformedTickets() {
   const box = await sandbox()
@@ -538,6 +577,24 @@ async function testCliMalformedTickets() {
   assert.match(result.stdout, /would reclaim 0, kept 1/)
   assert.ok((await gitIn(box, dir, 'rev-parse', 'HEAD')).length > 0, 'nothing is reclaimed on an invalid answer')
   assert.deepEqual(await records(box), [])
+
+  // The real delete path, not only the dry run, must keep everything when the answer is unusable.
+  const live = await cliAsync(box, ['work', 'gc'], { env: { SPV_SUPERAGENT_URL: url }, expectFailure: true })
+  assert.equal(live.status, 1)
+  assert.match(live.stdout, /reclaimed 0, kept 1/)
+  assert.ok((await gitIn(box, dir, 'rev-parse', 'HEAD')).length > 0, 'the live run kept the clone')
+  assert.deepEqual(await records(box), [])
+
+  // A direct blocked run is the same guard without the CLI.
+  const blocked = await reclaimWork({
+    root: box.work,
+    stateDir: box.state,
+    keep: 0,
+    keepDays: 0,
+    blockedReason: 'cannot read open tickets: test',
+  })
+  assert.equal(blocked.reclaimed, 0)
+  assert.equal(blocked.entries.find(entry => entry.name === 'guard-0123456789ab').reason, 'cannot read open tickets: test')
 }
 
 /** `--dry-run` prints the plan, keeps the reasons, and writes/deletes nothing. */
@@ -670,8 +727,13 @@ async function testMountApply() {
   const lines = []
   const effects = []
   const openTicket = { id: 'ticket-open-1', title: 'active', execution: { directory: dirs[10] } }
+  const registryCalls = []
   const ctx = {
     effect: (fn, label) => effects.push({ fn, label }),
+    workspaceRegistry: {
+      list: () => [{ id: 'w-apply', path: dirs[0] }],
+      delete: async id => { registryCalls.push(id); return true },
+    },
     // No `ready`, `configured()` or `deployment` on the plugin context: the early path must be used.
     orchestrator: {
       sources: { register: () => {} },
@@ -682,16 +744,20 @@ async function testMountApply() {
     logger: { info: line => lines.push(String(line)), warn: line => lines.push(String(line)) },
   }
   apply(ctx)
-  await waitFor(() => lines.length === 1, 'the mount summary line')
-  assert.match(lines[0], /wheelchair-agent work gc: reclaimed 10 clones, pruned 0 workspaces, freed [\d.]+ MB/)
+  await waitFor(() => lines.some(line => line.includes('reclaimed')), 'the mount summary line')
+  const summaryLine = lines.find(line => line.includes('reclaimed'))
+  assert.match(summaryLine, /wheelchair-agent work gc: reclaimed 10 clones, pruned 1 workspaces, freed [\d.]+ MB/)
+  assert.deepEqual(registryCalls, ['w-apply'], 'apply() reads ctx.workspaceRegistry and prunes the reclaimed row')
+  assert.ok(lines.some(line => line.includes(`pruned workspace ${dirs[0]}`)))
   for (const dir of dirs.slice(0, 10)) {
     await assert.rejects(readFile(join(dir, '.git', 'HEAD')), { code: 'ENOENT' }, `${dir} is reclaimed`)
   }
   assert.ok((await readFile(join(dirs[10], '.git', 'HEAD'), 'utf8')).length > 0, 'the open ticket clone is kept')
 
+  const firstCount = lines.length
   apply(ctx)
   await sleep(150)
-  assert.equal(lines.length, 1, 'a hot remount does not sweep again')
+  assert.equal(lines.length, firstCount, 'a hot remount does not sweep again')
   assert.ok(effects.length >= 2, 'the Source still registers its effects')
 }
 
@@ -710,7 +776,10 @@ async function testMountFallback() {
     },
     logger: { info: line => lines.push(String(line)), warn: line => lines.push(String(line)) },
   }
-  await reclaimAtMount(ctx)
+  await reclaimAtMount(ctx, {
+    openTickets: async () => ({ tickets: [] }),
+    workspaceRegistry: registryOf([]).registry,
+  })
   assert.equal(lines.length, 1)
   assert.match(lines[0], /reclaimed 1 clones, pruned 0 workspaces, freed [\d.]+ MB/, 'with no floor the only passing clone goes')
 }
@@ -739,17 +808,26 @@ async function testPruneWorkspaces() {
   const gone = join(box.work, 'gone-0123456789ab')
   const kept = join(box.work, 'kept-0123456789ab')
   await mkdir(kept, { recursive: true })
+  const filePath = join(box.work, 'file-0123456789ab')
+  await writeFile(filePath, 'not a directory\n', 'utf8')
   const { registry, calls } = registryOf([
     { id: 'w-gone', path: gone },
     { id: 'w-kept', path: kept },
+    { id: 'w-file', path: filePath },
     { id: 'w-outside', path: join(box.base, 'outside-home') },
     { id: 'w-root', path: box.work },
+    { id: 'w-relative', path: 'relative-0123456789ab' },
+    { id: 'w-empty', path: '' },
     { id: 'w-shape', title: 'no path or id' },
   ])
   const result = await pruneStaleWorkspaces({ registry, root: box.work })
-  assert.deepEqual(result.pruned.map(item => item.id), ['w-gone'])
+  assert.deepEqual(result.pruned.map(item => item.id), ['w-gone', 'w-file'])
   assert.equal(result.pruned[0].path, gone)
-  assert.deepEqual(calls, ['w-gone'], 'the registry is never asked to delete an outside or existing path')
+  assert.deepEqual(
+    calls,
+    ['w-gone', 'w-file'],
+    'the registry is never asked to delete an outside, existing, relative or empty path',
+  )
 }
 
 /** A missing, throwing or malformed registry keeps everything and never throws; one failed delete does not stop the rest. */
@@ -783,6 +861,72 @@ async function testPruneFailSoft() {
   const partial = await pruneStaleWorkspaces({ registry, root: box.work })
   assert.deepEqual(partial.pruned.map(item => item.id), ['w-ok'])
   assert.deepEqual(calls, ['w-throws', 'w-ok'], 'a failed delete does not stop the other records')
+
+  const refusedCalls = []
+  const refused = {
+    list: () => [{ id: 'w-refused', path: join(box.work, 'refused-0123456789ab') }],
+    delete: async id => {
+      refusedCalls.push(id)
+      return false
+    },
+  }
+  const notPruned = await pruneStaleWorkspaces({ registry: refused, root: box.work })
+  assert.deepEqual(notPruned.pruned, [], 'a false delete result is not counted as pruned')
+  assert.deepEqual(refusedCalls, ['w-refused'])
+
+  const getterThrows = {}
+  Object.defineProperty(getterThrows, 'list', { get() { throw new Error('getter') } })
+  Object.defineProperty(getterThrows, 'delete', { value: async () => true })
+  const getterResult = await pruneStaleWorkspaces({ registry: getterThrows, root: box.work })
+  assert.deepEqual(getterResult.pruned, [])
+  assert.match(getterResult.error, /could not be read/)
+}
+
+/** A symlinked work root is skipped rather than widening the canonical child guard. */
+async function testPruneSymlinkRoot() {
+  const box = await sandbox()
+  const real = join(box.base, 'real-root')
+  await mkdir(real, { recursive: true })
+  const link = join(box.base, 'link-root')
+  await symlink(real, link)
+  const { registry, calls } = registryOf([{ id: 'w-link', path: join(real, 'gone-0123456789ab') }])
+  const result = await pruneStaleWorkspaces({ registry, root: link })
+  assert.deepEqual(result.pruned, [])
+  assert.match(result.skipped, /symlink/)
+  assert.deepEqual(calls, [])
+}
+
+/** The mount pass waits for the asynchronously-initialized registry instead of reading it once in apply(). */
+async function testPruneRegistryAcquiredLate() {
+  const box = await sandbox()
+  const dir = await cloneTicket(box, 'late')
+  const calls = []
+  const registry = {
+    list: () => [{ id: 'w-late', path: dir }],
+    delete: async id => {
+      calls.push(id)
+      return true
+    },
+  }
+  let looks = 0
+  const lines = []
+  const ctx = {
+    get: name => {
+      if (name !== 'workspaceRegistry') return undefined
+      looks += 1
+      return looks > 2 ? registry : undefined
+    },
+    orchestrator: {
+      machine: { stateDir: box.state },
+      settings: { current: () => ({ executor: { directory: box.work } }) },
+    },
+    logger: { info: line => lines.push(String(line)), warn: line => lines.push(String(line)) },
+  }
+  await reclaimAtMount(ctx, { openTickets: async () => ({ tickets: [] }) })
+  assert.ok(looks >= 3, 'the pass retried the lazy lookup instead of taking the first undefined')
+  assert.deepEqual(calls, ['w-late'])
+  assert.ok(lines.some(line => line.includes(`pruned workspace ${dir}`)))
+  assert.ok(lines.some(line => /reclaimed 1 clones, pruned 1 workspaces/.test(line)))
 }
 
 /** The prune runs after the clone pass, so a clone reclaimed now has its row removed in the same pass. */
@@ -809,7 +953,7 @@ async function testPruneAfterReclaim() {
 /** A bad registry does not disturb the mount path, and the clone pass still completes. */
 async function testPruneDoesNotBreakMount() {
   const cases = [
-    ['missing', undefined],
+    ['missing', null],
     ['throwing', { list: () => { throw new Error('boom') }, delete: async () => true }],
     ['non-array', { list: () => ({}), delete: async () => true }],
   ]
@@ -830,10 +974,29 @@ async function testPruneDoesNotBreakMount() {
       lines.some(line => /reclaimed 1 clones, pruned 0 workspaces/.test(line)),
       `${label}: the summary still reports zero prunes`,
     )
-    if (label !== 'missing') {
-      assert.ok(lines.some(line => line.includes('workspace prune skipped')), `${label}: the failure is logged`)
-    }
+    assert.ok(lines.some(line => line.includes('workspace prune skipped')), `${label}: the skip is logged`)
   }
+}
+
+/** At mount, a provider that throws is fail-closed and does not escape the mount path. */
+async function testMountProviderThrows() {
+  const box = await sandbox()
+  const dir = await cloneTicket(box, 'guard')
+  const lines = []
+  const ctx = {
+    orchestrator: {
+      machine: { stateDir: box.state },
+      settings: { current: () => ({ executor: { directory: box.work } }) },
+    },
+    logger: { info: line => lines.push(String(line)), warn: line => lines.push(String(line)) },
+  }
+  await reclaimAtMount(ctx, {
+    openTickets: async () => { throw new Error('boom') },
+    workspaceRegistry: registryOf([]).registry,
+  })
+  assert.ok((await gitIn(box, dir, 'rev-parse', 'HEAD')).length > 0, 'the clone is kept')
+  assert.ok(lines.some(line => line.includes('cannot read open tickets: boom; keeping everything')))
+  assert.ok(lines.some(line => /reclaimed 0 clones, pruned 0 workspaces/.test(line)))
 }
 
 /** Root resolution and formatting helpers: documented defaults and overrides, and unsafe roots refused. */
@@ -879,6 +1042,7 @@ try {
   await testOpenTicketSkipped()
   await testCliOpenTicketSkip()
   await testCliServiceDownAndDefault()
+  await testCliAbortedTickets()
   await testCliMalformedTickets()
   await testDryRun()
   await testRestored()
@@ -886,8 +1050,11 @@ try {
   await testAgeRetention()
   await testDeleteFailureRetracts()
   await testMountFallback()
+  await testMountProviderThrows()
   await testPruneWorkspaces()
   await testPruneFailSoft()
+  await testPruneSymlinkRoot()
+  await testPruneRegistryAcquiredLate()
   await testPruneAfterReclaim()
   await testPruneDoesNotBreakMount()
   await testMountApply()

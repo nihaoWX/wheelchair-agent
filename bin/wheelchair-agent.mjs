@@ -112,6 +112,9 @@ inside it, its working tree is clean, and every commit is already pushed. The re
 environment:
   DSH_SUPERAGENT_STATE_DIR  deployment state dir (default ~/.dsh/state/superagent)
   DSH_SUPERAGENT_WORK_DIR   settings.executor.directory, when it is not <stateDir>/work
+  SPV_SUPERAGENT_URL        management API base URL (default http://127.0.0.1:3082)
+  DSH_SUPERAGENT_URL        service-manager fallback base URL
+  SPV_SUPERAGENT_PORT       management API port when no URL is set (default 3082)
 
 commands:
   gc [--dry-run] [--keep <n>] [--keep-days <d>]
@@ -135,7 +138,9 @@ options:
 environment:
   DSH_SUPERAGENT_STATE_DIR  deployment state dir (default ~/.dsh/state/superagent)
   DSH_SUPERAGENT_WORK_DIR   settings.executor.directory, when it is not <stateDir>/work
-  SPV_SUPERAGENT_URL        management API base URL (default http://127.0.0.1:3082)`
+  SPV_SUPERAGENT_URL        management API base URL (default http://127.0.0.1:3082)
+  DSH_SUPERAGENT_URL        service-manager fallback base URL
+  SPV_SUPERAGENT_PORT       management API port when no URL is set (default 3082)`
 
 const WORK_RESTORED_USAGE = `usage: wheelchair-agent work restored <ticket>
 

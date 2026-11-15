@@ -67,7 +67,7 @@ export function resolveWorkRoot({ stateDir, directory = '', env = process.env })
   const configured = String(directory ?? '').trim()
   const fromEnv = String(env.DSH_SUPERAGENT_WORK_DIR ?? '').trim()
   const chosen = configured || fromEnv
-  if (chosen === '') return join(stateDir, 'work')
+  if (chosen === '') return resolve(join(stateDir, 'work'))
   if (!isAbsolute(chosen)) throw new Error(`the work root must be an absolute path, got ${JSON.stringify(chosen)}`)
   const root = resolve(chosen)
   const blocked = [resolve('/'), resolve(homedir()), stateDir ? resolve(stateDir) : '']
@@ -126,9 +126,15 @@ export async function openTicketDirectories(provider) {
   if (!Array.isArray(value.tickets)) return { ok: false, reason: 'the response is not a list of tickets' }
   const directories = new Map()
   for (const ticket of value.tickets) {
-    const directory = ticket?.execution?.directory ?? ticket?.directory
+    if (ticket === null || typeof ticket !== 'object') {
+      return { ok: false, reason: 'a ticket is not an object' }
+    }
+    const directory = ticket.execution?.directory ?? ticket.directory
+    // A queued ticket may have no execution yet; it owns no clone, so there is nothing to protect. A *present* but
+    // unusable directory is a different thing: the answer cannot be trusted, so keep everything.
+    if (directory === undefined || directory === null) continue
     if (typeof directory !== 'string' || directory === '') {
-      return { ok: false, reason: 'a ticket has no execution.directory' }
+      return { ok: false, reason: 'a ticket has an unusable execution.directory' }
     }
     directories.set(directory, String(ticket.id ?? ticket.title ?? directory))
   }
@@ -150,41 +156,81 @@ export async function openTicketDirectories(provider) {
  * Fail-soft: a missing, throwing, or malformed registry returns zero prunes and an optional reason; a failed delete
  * for one record does not stop the others. This function never throws.
  */
-export async function pruneStaleWorkspaces({ registry, root }) {
-  if (!registry || typeof registry.list !== 'function' || typeof registry.delete !== 'function') {
-    return { pruned: [], skipped: 'no workspace registry' }
-  }
-  let records
-  try {
-    records = registry.list()
-  } catch (error) {
-    return { pruned: [], error: `workspace registry list failed: ${error?.message ?? error}` }
-  }
-  if (!Array.isArray(records)) return { pruned: [], error: 'workspace registry list is not an array' }
-  const rootPath = await realpath(root).catch(() => resolve(root))
+export async function pruneStaleWorkspaces({ registry, root } = {}) {
   const pruned = []
-  for (const record of records) {
-    const id = record?.id
-    const path = record?.path
-    if (typeof id !== 'string' || id === '' || typeof path !== 'string' || path === '') continue
-    const target = resolve(path)
-    if (!target.startsWith(`${rootPath}${sep}`)) continue
+  try {
+    if (typeof root !== 'string' || root === '') return { pruned, error: 'no work root' }
+    let list
+    let remove
     try {
-      await stat(target)
-      continue
-    } catch (error) {
-      if (error.code !== 'ENOENT') continue
-    }
-    try {
-      const deleted = await registry.delete(id)
-      if (deleted !== false) {
-        pruned.push({ id, path: target, title: typeof record.title === 'string' ? record.title : '' })
-      }
+      list = registry?.list
+      remove = registry?.delete
     } catch {
-      // One bad row must not stop the rest; the summary simply reports fewer prunes.
+      return { pruned, error: 'the workspace registry could not be read' }
     }
+    if (typeof list !== 'function' || typeof remove !== 'function') {
+      return { pruned, skipped: 'no workspace registry' }
+    }
+    const rootPath = resolve(root)
+    // A symlinked work root would make the canonical prefix a different (possibly broader) subtree. Skipping keeps
+    // the hard "child of the work root" promise; the operator can point DSH_SUPERAGENT_WORK_DIR at the real path.
+    let rootInfo
+    try {
+      rootInfo = await lstat(rootPath)
+    } catch {
+      rootInfo = undefined
+    }
+    if (rootInfo?.isSymbolicLink() === true) {
+      return { pruned, skipped: 'the work root is a symlink; workspace prune skipped' }
+    }
+    const canonicalRoot = await realpath(rootPath).catch(() => rootPath)
+    if (canonicalRoot !== rootPath) {
+      return { pruned, skipped: 'the work root is not canonical; workspace prune skipped' }
+    }
+    let records
+    try {
+      records = list.call(registry)
+    } catch (error) {
+      return { pruned, error: `workspace registry list failed: ${error?.message ?? error}` }
+    }
+    if (!Array.isArray(records)) return { pruned, error: 'workspace registry list is not an array' }
+    for (const record of records) {
+      const id = record?.id
+      const path = record?.path
+      if (typeof id !== 'string' || id === '' || typeof path !== 'string' || path === '') continue
+      // dsh stores canonical absolute paths; anything else is an unexpected shape and is left alone.
+      if (!isAbsolute(path)) continue
+      const target = resolve(path)
+      if (!target.startsWith(`${rootPath}${sep}`)) continue
+      let missing = false
+      try {
+        const info = await stat(target)
+        if (info.isDirectory()) continue
+        missing = true
+      } catch (error) {
+        if (error.code !== 'ENOENT') continue
+        missing = true
+      }
+      if (!missing) continue
+      // Re-check immediately before the registry write; this narrows the recreate race but cannot remove it.
+      try {
+        if ((await stat(target)).isDirectory()) continue
+      } catch (error) {
+        if (error.code !== 'ENOENT') continue
+      }
+      try {
+        const deleted = await remove.call(registry, id)
+        if (deleted !== false) {
+          pruned.push({ id, path: target, title: typeof record.title === 'string' ? record.title : '' })
+        }
+      } catch {
+        // One bad row must not stop the rest; the summary simply reports fewer prunes.
+      }
+    }
+    return { pruned }
+  } catch (error) {
+    return { pruned, error: `workspace prune failed: ${error?.message ?? error}` }
   }
-  return { pruned }
 }
 
 // ------------------------------------------------------------------ the gate
@@ -430,9 +476,10 @@ export async function planWork({
     else throw new Error(`cannot read the work root ${root}: ${error.code ?? error.message}`)
   }
   children.sort((a, b) => a.name.localeCompare(b.name))
-  const skip = new Map(
-    [...skipDirectories].map(([directory, ticket]) => [resolve(directory), String(ticket)]),
-  )
+  const pairs = skipDirectories instanceof Map
+    ? [...skipDirectories]
+    : [...skipDirectories].map(directory => [directory, directory])
+  const skip = new Map(pairs.map(([directory, ticket]) => [resolve(directory), String(ticket)]))
 
   for (const child of children) {
     const path = join(root, child.name)

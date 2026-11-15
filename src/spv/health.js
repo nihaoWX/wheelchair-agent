@@ -65,6 +65,14 @@ export function probe(url = serviceBaseUrl()) {
 export function fetchOpenTickets(url = serviceBaseUrl(), timeout = PROBE_TIMEOUT) {
   const target = `${url}/orchestrator/api/tickets?state=open`
   return new Promise(resolve => {
+    let settled = false
+    let timer
+    const settle = value => {
+      if (settled) return
+      settled = true
+      if (timer !== undefined) clearTimeout(timer)
+      resolve(value)
+    }
     let req
     try {
       req = request(target, {
@@ -73,39 +81,59 @@ export function fetchOpenTickets(url = serviceBaseUrl(), timeout = PROBE_TIMEOUT
         headers: { 'x-orchestrator-request': '1' },
       })
     } catch (error) {
-      resolve({ error: `cannot request ${target}: ${error.message}` })
+      settle({ error: `cannot request ${target}: ${error.message}` })
       return
     }
+    // A socket timeout only fires while the socket is alive; this deadline also covers a body that aborts mid-stream.
+    timer = setTimeout(() => {
+      req.destroy(new Error(`no answer within ${timeout}ms`))
+      settle({ error: `requesting ${target} failed: no answer within ${timeout}ms` })
+    }, timeout + 50)
+    timer.unref?.()
     req.on('response', res => {
       let body = ''
+      let bytes = 0
       res.setEncoding('utf8')
       res.on('data', chunk => {
         body += chunk
-        if (body.length > 4 * 1024 * 1024) req.destroy(new Error('response too large'))
+        bytes += Buffer.byteLength(chunk, 'utf8')
+        if (bytes > 4 * 1024 * 1024) {
+          req.destroy(new Error('response too large'))
+          settle({ error: 'the service response exceeded 4 MiB' })
+        }
       })
+      res.on('aborted', () => settle({ error: 'the service aborted the response' }))
+      res.on('error', error => settle({ error: `reading the service response failed: ${error.message}` }))
       res.on('end', () => {
         if (res.statusCode < 200 || res.statusCode >= 300) {
-          resolve({ error: `the service answered HTTP ${res.statusCode}` })
+          settle({ error: `the service answered HTTP ${res.statusCode}` })
           return
         }
         let value
         try {
           value = JSON.parse(body)
         } catch {
-          resolve({ error: 'the service answered with invalid JSON' })
+          settle({ error: 'the service answered with invalid JSON' })
           return
         }
         if (!value || !Array.isArray(value.items)) {
-          resolve({ error: 'the response has no items list' })
+          settle({ error: 'the response has no items list' })
           return
         }
-        resolve({ tickets: value.items })
+        settle({ tickets: value.items })
       })
     })
-    req.on('timeout', () => req.destroy(new Error(`no answer within ${timeout}ms`)))
+    req.on('timeout', () => {
+      req.destroy(new Error(`no answer within ${timeout}ms`))
+      settle({ error: `requesting ${target} failed: no answer within ${timeout}ms` })
+    })
     req.on('error', error => {
-      if (error.code === 'ECONNREFUSED') resolve({ down: true, reason: `nothing is listening on ${url}` })
-      else resolve({ error: `requesting ${target} failed: ${error.message}` })
+      if (error.code === 'ECONNREFUSED') settle({ down: true, reason: `nothing is listening on ${url}` })
+      else settle({ error: `requesting ${target} failed: ${error.message}` })
+    })
+    // A reset before/while responding can emit only 'close'; never leave the promise unsettled.
+    req.on('close', () => {
+      if (!settled) settle({ error: `the connection closed before ${target} answered` })
     })
     req.end()
   })

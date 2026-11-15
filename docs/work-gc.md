@@ -66,9 +66,12 @@ same defaults and the same shared open-ticket resolver as the CLI, prunes stale 
 one summary line plus one line per pruned workspace path:
 
 ```
-wheelchair-agent work gc: reclaimed N clones, pruned M workspaces, freed X MB
 wheelchair-agent work gc: pruned workspace /home/.../work/<ticket>
+wheelchair-agent work gc: reclaimed N clones, pruned M workspaces, freed X MB
 ```
+
+If the registry itself is unavailable, malformed, or points at a symlinked work root, the prune logs one
+`workspace prune skipped: <reason>` line instead of silently reporting zero prunes.
 
 ## Stale workspace rows
 
@@ -77,7 +80,13 @@ clones. The mount pass removes such records after the clone pass: a record is de
 a **child of the work root** and the directory is missing. Paths outside the work root (for example the operator's own
 `~/bioagentforge`) are never considered; only the registry row is removed, so session ids, session logs and the
 directories themselves are untouched, and dsh moves orphaned sessions to "Ungrouped" by itself. A missing, throwing or
-malformed registry leaves everything alone, and one failed delete does not stop the others.
+malformed registry leaves everything alone, and one failed delete does not stop the others. A symlinked work root is
+skipped rather than widening the canonical "child of the root" check.
+
+The prune runs a few seconds after mount if the registry's asynchronous initialization has not finished yet, so it
+does not silently miss the rows for the whole process. Like dsh itself, it treats a missing directory as gone: a
+workspace whose directory is temporarily unmounted or renamed loses its row (the sessions remain, as "Ungrouped"), so
+keep external workspaces mounted while the service starts if their grouping matters.
 
 The CLI has no dsh context and therefore cannot prune workspace records. The stale rows go away at the next service
 start, or immediately through dsh's own "Delete workspace" (删除工作区) action.

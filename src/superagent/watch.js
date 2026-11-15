@@ -46,22 +46,38 @@ export function apply(ctx) {
     reclaimedAtMount = true
     // The shared resolver turns this in-process provider into the same directory map the CLI gets from HTTP.
     const openTickets = () => ({ tickets: ctx.orchestrator.context(kind).tickets.open() })
-    let workspaceRegistry
-    try {
-      workspaceRegistry = ctx.workspaceRegistry
-    } catch {
-      // The registry may not be composed yet; the prune then reports a skip instead of blocking the mount.
-    }
-    if (workspaceRegistry === undefined && typeof ctx.get === 'function') {
-      try {
-        workspaceRegistry = ctx.get('workspaceRegistry')
-      } catch {
-        // Same: a missing registry is a soft skip.
-      }
-    }
-    reclaimAtMount(ctx, { openTickets, workspaceRegistry }).catch(error => {
+    reclaimAtMount(ctx, { openTickets }).catch(error => {
       ctx.logger?.warn?.(`wheelchair-agent work gc failed: ${error?.message ?? error}`)
     })
+  }
+}
+
+/** The workspace registry if it is available, without throwing when the service is not injected or not ready. */
+function currentWorkspaceRegistry(ctx) {
+  try {
+    if (ctx.workspaceRegistry !== undefined) return ctx.workspaceRegistry
+  } catch {
+    // Reading an un-injected Cordis service throws; ctx.get below is the supported lazy lookup.
+  }
+  try {
+    return typeof ctx.get === 'function' ? ctx.get('workspaceRegistry') : undefined
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Wait a few seconds for the workspace registry's asynchronous init. `apply` runs before `loader.await()`, so the
+ * service can be absent on the first look even though it is part of the same profile; a one-shot read would silently
+ * disable the prune for the whole process. The wait is inside the detached mount pass, never on startup.
+ */
+async function waitForWorkspaceRegistry(ctx, timeout = 5000) {
+  const deadline = Date.now() + timeout
+  for (;;) {
+    const registry = currentWorkspaceRegistry(ctx)
+    if (registry !== undefined) return registry
+    if (Date.now() >= deadline) return undefined
+    await new Promise(resolve => { const timer = setTimeout(resolve, 100); timer.unref?.() })
   }
 }
 
@@ -108,6 +124,10 @@ export async function reclaimAtMount(ctx, { openTickets, workspaceRegistry } = {
       blockedReason = `cannot read open tickets: ${open.reason}; keeping everything`
       ctx.logger?.warn?.(`wheelchair-agent work gc: ${blockedReason}`)
     }
+  } else {
+    // The exported helper must never become more aggressive just because a caller forgot the provider.
+    blockedReason = 'no open-ticket provider; keeping everything'
+    ctx.logger?.warn?.(`wheelchair-agent work gc: ${blockedReason}`)
   }
   const root = resolveWorkRoot({ stateDir, directory })
   const result = await reclaimWork({
@@ -117,15 +137,20 @@ export async function reclaimAtMount(ctx, { openTickets, workspaceRegistry } = {
     blockedReason,
   })
   // Run after the clone pass so a directory reclaimed in this same pass has its stale workspace row removed now.
+  // The prune is row-only, so it is safe even when an unreadable open-ticket answer blocked clone reclamation.
+  let registry = workspaceRegistry
+  if (registry === undefined) registry = await waitForWorkspaceRegistry(ctx)
   // `pruneStaleWorkspaces` is written not to throw; this catch keeps an unforeseen registry failure off the mount path.
   let prune = { pruned: [] }
   try {
-    prune = await pruneStaleWorkspaces({ registry: workspaceRegistry, root })
+    prune = await pruneStaleWorkspaces({ registry, root })
   } catch (error) {
     ctx.logger?.warn?.(`wheelchair-agent work gc: workspace prune failed: ${error?.message ?? error}`)
   }
   if (prune.error !== undefined) {
     ctx.logger?.warn?.(`wheelchair-agent work gc: workspace prune skipped: ${prune.error}`)
+  } else if (prune.skipped !== undefined) {
+    ctx.logger?.warn?.(`wheelchair-agent work gc: workspace prune skipped: ${prune.skipped}`)
   }
   for (const item of prune.pruned) {
     ctx.logger?.info?.(`wheelchair-agent work gc: pruned workspace ${item.path}`)
