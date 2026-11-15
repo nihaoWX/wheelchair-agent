@@ -22,7 +22,7 @@
  * 用原始 JSON Schema 直接注册就没有任何 dsh 包依赖：参数校验由各 `execute` 自己做（校验文案本来也该写在这里）。
  */
 import { dirsOf } from '../shared/queue.js'
-import { checkProject, checkTask, checkThread, submitTask } from './dispatch.js'
+import { checkPreset, checkProject, checkTask, checkThread, submitTask } from './dispatch.js'
 import { probe, serviceDown } from './health.js'
 import { startResultInjector } from './injector.js'
 import { pendingTasks, unreadMessages } from './outbox.js'
@@ -57,7 +57,8 @@ export function defineSpvTools(root, state) {
         'outside this conversation - a code change, a test run, a repository inspection - so you stay responsive ' +
         'while it runs. The task is a single natural-language instruction; the worker has its own filesystem ' +
         'access and reports once. The project argument selects which project the worker gets: "tools/<name>" or ' +
-        '"research/<name>". The call returns as soon as the task is queued: the worker reply arrives later by ' +
+        '"research/<name>". The optional preset selects the dsh agent preset the worker runs; omit it for ' +
+        'superagent\'s default. The call returns as soon as the task is queued: the worker reply arrives later by ' +
         'itself as a new message on the same conversation thread. Do not wait for it, do not poll, and do not ' +
         'call a tool to read it. Fails instead of queuing when the service is not running, because a queued task ' +
         'with no reader looks dispatched but never runs.',
@@ -77,6 +78,10 @@ export function defineSpvTools(root, state) {
           thread: {
             type: 'string',
             description: 'Conversation thread for this work; defaults to "main". Replies come back on the same thread.',
+          },
+          preset: {
+            type: 'string',
+            description: 'dsh agent preset the worker runs, e.g. "cordis" (creator mode, for dsh plugin or web UI work), "ptc", "standard". Omit to use superagent\'s default worker preset.',
           },
         },
       },
@@ -102,10 +107,11 @@ export function defineSpvTools(root, state) {
         const project = checkProject(args.project)
         const task = checkTask(args.task)
         const thread = checkThread(args.thread)
+        const preset = checkPreset(args.preset)
         const health = await probe()
         if (!health.alive) throw serviceDown(health)
         try {
-          const record = await submitTask(dirs, { project, task, thread })
+          const record = await submitTask(dirs, { project, task, thread, preset })
           // 记下会话的 agent：后台注入器靠它决定把结果投给谁。第一次派活之前没有会话可投。
           if (exec?.agent) state.agent = exec.agent
           return { id: record.id, thread: record.thread, project: record.project }

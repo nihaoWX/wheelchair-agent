@@ -97,6 +97,11 @@
   （`skill-filesystem` + `tool-skill`，内容来自从未进过 `main` 的 PR #3 commit `6f38eef`）。行数
   `^- id:` / `^    - id:` 13 → 37；`install.sh` / `--check` exit 0，`dsh --dump-config` 里新行都落在
   `preset-spv` 块内，三个测试套件与 `npm run check` 全绿。
+- **dispatch 可选 `preset`**（2026-11-15，PR #11）：`spv_dispatch` 与 `wheelchair-agent dispatch --preset <id>`
+  把 dsh agent preset id 写进任务记录顶层 `preset`，经 `triggerOf()` spread 成 `trigger.meta.preset`，由
+  superagent 按工单选 worker preset；省略/空串不写该字段。`checkPreset` 只校验形状
+  （`^[a-z0-9][a-z0-9-]*$`），不校验存在性。persona 规定 dsh 插件 / dsh web UI / 面板类任务用 `cordis`
+  （创造模式），其余用默认。
 
 # In Progress
 

@@ -4,7 +4,8 @@
  * 记录形状就是 `src/superagent/spv.js:triggerOf` 读的那个；`spv_dispatch` 工具与 `wheelchair-agent dispatch` 都走这里，
  * 所以队列格式只有一份实现。
  * `project` 会进入 Trigger 的 meta，最终以 `$DSH_SUPERAGENT_SPV_PROJECT` 交给 executor 的 prepare 命令，用来决定 clone
- * 哪个项目。
+ * 哪个项目。可选的 `preset` 同样随 spread 进入 meta（`trigger.meta.preset`），由 superagent 决定 worker 跑哪个 dsh
+ * agent preset；省略时 superagent 用自己的默认值。
  */
 import { randomUUID } from 'node:crypto'
 import { mkdir, rename, writeFile } from 'node:fs/promises'
@@ -24,6 +25,8 @@ export const ACTOR = 'operator'
 const PROJECT_PATTERN = /^(?:tools|research)\/[A-Za-z0-9][A-Za-z0-9._-]*$/
 /** 队列线程名：短、可作文件名、可作 `spv:<id>` Thread key。 */
 const THREAD_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+/** dsh agent preset id 的形状（`standard` / `minimal` / `ptc` / `cordis` 都是小写字母、数字与连字符）。 */
+const PRESET_PATTERN = /^[a-z0-9][a-z0-9-]*$/
 /** 任务正文上限；远低于模型单次请求预算。 */
 const TASK_LIMIT = 20000
 
@@ -60,6 +63,24 @@ export function checkThread(value) {
   return thread
 }
 
+/**
+ * 校验可选的 `preset` 并返回规范形式；省略/空串返回 `undefined`，表示让 superagent 用它的默认 worker preset。
+ *
+ * 只校验 id 的形状，**不校验 preset 是否存在**：registry 在 superagent 侧，本包不该耦合进去。
+ */
+export function checkPreset(value) {
+  const preset = String(value ?? '').trim()
+  if (preset === '') return undefined
+  if (!PRESET_PATTERN.test(preset)) {
+    throw new Error(
+      `invalid preset ${JSON.stringify(preset)}: this is a dsh agent preset id, e.g. "cordis" / "ptc" / ` +
+        '"standard", written as lowercase letters, digits and hyphens. Omit it to use the superagent default ' +
+        'worker preset.',
+    )
+  }
+  return preset
+}
+
 /** 校验 `task` 并返回去空白后的正文；空正文直接报错说明什么才算可用的任务。 */
 export function checkTask(value) {
   const task = String(value ?? '').trim()
@@ -84,7 +105,7 @@ export function checkTask(value) {
  * 原子写入一个任务文件并返回 Source 将读到的记录。
  * 临时文件名以点开头，Source 扫描 `pending/` 时会跳过，因此半写的文件不可能被取走。
  */
-export async function submitTask(dirs, { project, task, thread }) {
+export async function submitTask(dirs, { project, task, thread, preset }) {
   const id = randomUUID().replaceAll('-', '')
   const record = {
     id,
@@ -95,6 +116,8 @@ export async function submitTask(dirs, { project, task, thread }) {
     project,
     actor: ACTOR,
   }
+  // 省略时不要留下 `preset: undefined`：下游按 `trigger.meta.preset` 取值，缺省即用 superagent 的默认 preset。
+  if (preset !== undefined) record.preset = preset
   await mkdir(dirs.pending, { recursive: true })
   const temporary = join(dirs.pending, `.${id}.tmp`)
   await writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, { encoding: 'utf8', mode: 0o644 })

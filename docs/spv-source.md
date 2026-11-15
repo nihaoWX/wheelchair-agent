@@ -74,9 +74,14 @@ worker 的 `progress` 在 `app/notices.ts:reportRelay()` 里 `return undefined`�
 （`scripts/spv_send.py` / `spv_read.py`）各写一份，已删除**：两份实现必须永远保持字节兼容，是个真隐患。
 
 ```bash
-wheelchair-agent dispatch --project tools/foo --task "任务正文" [--thread main]
+wheelchair-agent dispatch --project tools/foo --task "任务正文" [--thread main] [--preset cordis]
 wheelchair-agent status [--thread main]
 ```
+
+任务记录的顶层字段是 `id` / `thread` / `text` / `at` / `source` / `project` / `actor`，外加可选的 `preset`
+（dsh agent preset id，例如 `cordis` / `ptc` / `standard`；省略时不写这个字段，superagent 用自己的默认
+worker preset）。`triggerOf()` 把除 `text` / `thread` / `actor` 之外的字段整体 spread 进 `meta`，所以
+`preset` 自动成为 `trigger.meta.preset`。
 
 **结果不由 CLI 读**：`outbox/` 里的 `reply` / `notice` 由 SPV 会话里的注入器（`src/spv/injector.js`）在后台
 消费，并作为一条新的 user 消息推进对话。所以 CLI 只有 `dispatch` / `status`（外加 `check`），没有、也不需要

@@ -54,7 +54,7 @@ commands:
                                start, stop, restart or inspect the superagent service
   jobctl <submit|status|log|verify|cancel>
                                hand a long job to systemd so it outlives the worker's turn
-  dispatch --project <p> --task <t> [--thread <n>]
+  dispatch --project <p> --task <t> [--thread <n>] [--preset <id>]
                                write one task into the queue and return
   status [--thread <n>]        show the queue without waiting
   inbox [--port <n>] [--no-open]
@@ -247,10 +247,11 @@ function commandPython(script, argv, name) {
 async function commandDispatch(argv) {
   const parsed = options(argv, {
     command: 'dispatch',
-    usage: 'usage: wheelchair-agent dispatch --project <tools/<name>|research/<name>> --task <text> [--thread <name>]',
-    flags: { '--project': 'project', '--task': 'task', '--thread': 'thread' },
+    usage: 'usage: wheelchair-agent dispatch --project <tools/<name>|research/<name>> --task <text> ' +
+      '[--thread <name>] [--preset <id>]',
+    flags: { '--project': 'project', '--task': 'task', '--thread': 'thread', '--preset': 'preset' },
   })
-  const { checkProject, checkTask, checkThread, submitTask } = await load('src', 'spv', 'dispatch.js')
+  const { checkPreset, checkProject, checkTask, checkThread, submitTask } = await load('src', 'spv', 'dispatch.js')
   const { probe, serviceDown } = await load('src', 'spv', 'health.js')
   const { missingQueue, resolveRoot } = await load('src', 'spv', 'paths.js')
   const { dirsOf } = await load('src', 'shared', 'queue.js')
@@ -258,11 +259,12 @@ async function commandDispatch(argv) {
   const project = checkProject(parsed.project)
   const task = checkTask(parsed.task)
   const thread = checkThread(parsed.thread)
+  const preset = checkPreset(parsed.preset)
   // 与 spv_dispatch 工具同样的理由：队列目录在服务停止后仍然存在，只查目录会把任务写进没人读的地方。
   const health = await probe()
   if (!health.alive) throw serviceDown(health)
   try {
-    const record = await submitTask(dirsOf(root), { project, task, thread })
+    const record = await submitTask(dirsOf(root), { project, task, thread, preset })
     process.stdout.write(`dispatched ${record.id} on thread "${record.thread}" for project ${record.project}\n`)
   } catch (error) {
     if (error.code === 'ENOENT') throw missingQueue(root)

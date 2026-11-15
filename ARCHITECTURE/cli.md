@@ -33,7 +33,7 @@
 | `wheelchair-agent prepare` | 面板的 prepare 命令：clone 项目 → 受管 `AGENTS.md` → `tools/` 私有远端 | `exec sh commands/prepare.sh "$@"` |
 | `wheelchair-agent service <start\|stop\|restart\|status\|open>` | 服务启停与面板 | `exec python3 commands/superagent-service.py "$@"` |
 | `wheelchair-agent jobctl <submit\|status\|log\|verify\|cancel>` | 长任务交给 systemd | `exec python3 commands/jobctl.py "$@"` |
-| `wheelchair-agent dispatch --project <p> --task <t> [--thread <n>]` | 往队列写一个任务 | `import src/spv/dispatch.js` |
+| `wheelchair-agent dispatch --project <p> --task <t> [--thread <n>] [--preset <id>]` | 往队列写一个任务 | `import src/spv/dispatch.js` |
 | `wheelchair-agent status [--thread <n>]` | 非阻塞看队列 | `import src/spv/outbox.js` |
 | `wheelchair-agent check` | **运行时**健康：服务在跑吗、preset 能加载吗、`prepare` 在假环境里能跑通吗 | 见下 |
 | `wheelchair-agent --help` / `--version` | 用法与版本 | — |
