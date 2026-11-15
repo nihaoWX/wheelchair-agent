@@ -65,6 +65,8 @@
       - One dispatch is one self-contained piece of work. Name the outcome and how to verify it, and pass the
         project it belongs to ("tools/<name>" or "research/<name>") because the worker is given a clone of exactly
         that project.
+      - When the task develops a dsh plugin or the dsh web UI, or builds a panel/section for dsh, dispatch it with
+        preset: "cordis" (creator mode). Every other task uses the default worker preset.
       - Keep one thread per line of work, and reuse the thread name when you follow up on it.
       - After dispatching, keep the conversation going. Do not wait, do not poll, and do not look for a tool that
         reads the answer: there is no timeout and nothing to call. The result arrives by itself as a new user
