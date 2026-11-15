@@ -493,8 +493,9 @@ async function testOpenTicketSkipped() {
 /** The CLI reads the tickets endpoint; a directory it lists is kept and the response shape is validated. */
 async function testCliOpenTicketSkip() {
   const box = await sandbox()
-  const open = await cloneTicket(box, 'open')
   await cloneTicket(box, 'free')
+  // Created second, so the open ticket's clone is the newest directory and still must be kept.
+  const open = await cloneTicket(box, 'open')
   let seen
   const url = await serveTickets({
     body: JSON.stringify({ items: [{ id: 'ticket-open-1', title: 'active work', directory: open }] }),
