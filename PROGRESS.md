@@ -31,6 +31,17 @@ Client bundle 由 `dsh-client-hmr` 热更新，不需要为改页面重启服务
 
 # Completed
 
+- **面板样式 / 卡片版面 / 草稿**（2026-11-16，分支 `agent/webui-style-salvage-aa94cf538ca9`，
+  基于 salvage `d589c26` + 当前 `main`）：`webui.style`（`fluid` 默认 / `minimal`）、两页卡片版面、
+  两列设置行、每封信状态 spine、卡片底部操作、去掉全部分隔线；设置说明统一为
+  「是什么 → 改了什么 → 推荐值」+ `?` 技术细节；PR 与 SPV 决策信的维度差固定为 radius 8/14、
+  inset +4、spine 4/5、glyph、brand/info tint；fluid 动效按 enter/exit 曲线、120ms press、240ms 展开
+  （内容 +40ms）、200ms pill wipe、approve 1px settle、轮询新增 30ms 错峰且按 id 只播一次；
+  `prefers-reduced-motion` 全关；收件箱与设置表单草稿按 item id / revision 存 `localStorage`（被拒时
+  内存兜底），提交/保存后清；`install.sh` 与 host mount 用 `wx` 补空设置文件，安装测试改为完全
+  sandbox 化并覆盖 0644、默认值回读、手改文件不覆盖。验证：`npm run check`、`npm test`（全部 11 个
+  套件）、layout 4/4、prepare 88/88、install 74/74、restart 61/61；截图见
+  `webui/docs/panel-style-*.png`（1440×900 before/after、1440 全页、1000 响应式、dark）。
 - **功能宿主 + 原生 React 面板**（2026-11-15，PR #10，分支 `agent/webui-native`）：删除 iframe、
   `pageHtml()`、`/wheelchair-inbox/page` 与独立页；`webui/lib/client.js` 在 `main` slot 渲染功能宿主，
   收件箱是带边框的功能面板（标题/说明/筛选/刷新/行列表）；审查模型改为 `approve`（不派任务）/`issue`
@@ -119,6 +130,9 @@ Client bundle 由 `dsh-client-hmr` 热更新，不需要为改页面重启服务
 
 # In Progress
 
+- **面板样式 / 卡片版面 / 草稿**（分支 `agent/webui-style-salvage-aa94cf538ca9`）：实现、截图、
+  全部离线套件与安装 sandbox 测试完成；等 PR 评审/合并。合并后需下一次冷安装 + 服务重启才把
+  host 半身与 `webui.style` 装进运行中的 :3082（client bundle 可热更，但本轮没有动 live 安装）。
 - **功能宿主 + approve/issue 面板**（PR #10，分支 `agent/webui-native`）：实现、安装、pending/issues/
   approved/筛选的浏览器实测、approve/issue 的隔离 review/队列验证与 CI 完成；等人工评审/合并。重启服务后
   Host 侧的 approve/issue 才在 :3082 生效。见 `ARCHITECTURE/decisions.md` 的「UI 主页改为原生 React 页面」。
@@ -165,15 +179,17 @@ Client bundle 由 `dsh-client-hmr` 热更新，不需要为改页面重启服务
 
 # Next Steps
 
-1. **合并 PR #9**（SPV preset 纯增量，`agent/spv-standard-tools`）；合并后重启 SPV 会话即生效。
-2. **重启一次 superagent 服务**（`wheelchair-agent service restart`），确认 :3082 左侧栏出现
+1. **评审并合并面板样式 PR**（分支 `agent/webui-style-salvage-aa94cf538ca9`），然后在下一次
+   冷安装（停服务 → 退 SPV → `bash install.sh` → 起服务）后到 Settings → 面板样式 切 `fluid`/`minimal`。
+3. **合并 PR #9**（SPV preset 纯增量，`agent/spv-standard-tools`）；合并后重启 SPV 会话即生效。
+4. **重启一次 superagent 服务**（`wheelchair-agent service restart`），确认 :3082 左侧栏出现
    `wheelchair-agent` 并打开面板（PR #8 已合并）。
-3. **面板的 prepare 值已改成 `wheelchair-agent prepare`**（2026-11-14，经管理 API 保存，revision 8）。
+5. **面板的 prepare 值已改成 `wheelchair-agent prepare`**（2026-11-14，经管理 API 保存，revision 8）。
    换机器或换 `DSH_HOME` 后重跑 `wheelchair-agent check` 确认它仍然正确。
-4. 给 `tools/` 下缺远端的那 15 个项目建私有 GitHub 仓库（操作者自己的事，不是 agent 的）。
-5. 收缩 worker 的目录约束（prompt 层或项目 `AGENTS.md`）。
-6. 视消耗决定是否给 worker 换更便宜的模型。
-7. 稳定后再考虑 `accept mode` 从 `observe` → `auto`。
+6. 给 `tools/` 下缺远端的那 15 个项目建私有 GitHub 仓库（操作者自己的事，不是 agent 的）。
+7. 收缩 worker 的目录约束（prompt 层或项目 `AGENTS.md`）。
+8. 视消耗决定是否给 worker 换更便宜的模型。
+9. 稳定后再考虑 `accept mode` 从 `observe` → `auto`。
 
 日常命令：
 

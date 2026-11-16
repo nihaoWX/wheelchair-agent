@@ -1134,8 +1134,9 @@ window.__ModuleLoader__.load({
 			.wca-btn:focus-visible,
 			.wca-disclosure-toggle:focus-visible,
 			.wca-comment:focus-visible,
+			.wca-input:focus-visible,
+			.wca-textarea:focus-visible,
 			.wca-open:focus-visible,
-			.wca-switch input:focus-visible,
 			.wca-tech summary:focus-visible {
 				outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
 				outline-offset: 2px;
@@ -1246,19 +1247,9 @@ window.__ModuleLoader__.load({
 			}
 			.wca-status[data-tone="error"] { color: var(--dsw-alias-state-error-primary); }
 
-			/* Inbox: one card per letter, days separated by a vertical rail, never by rules. */
+			/* Inbox: one card per letter; day groups are separated by a label and spacing, never by a rule. */
 			.wca-days { display: flex; flex-direction: column; gap: 16px; padding-top: 10px; }
 			.wca-day { position: relative; display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 18px; }
-			.wca-day::before {
-				content: "";
-				position: absolute;
-				left: 49px;
-				top: 30px;
-				bottom: -16px;
-				width: 1px;
-				background: color-mix(in oklab, var(--dsw-alias-border-l2) 80%, transparent);
-			}
-			.wca-day:last-child::before { bottom: 8px; }
 			.wca-day-rail { position: relative; min-width: 0; }
 			.wca-day-sentinel { display: block; height: 1px; }
 			.wca-day-label {
@@ -1357,7 +1348,6 @@ window.__ModuleLoader__.load({
 				gap: 8px;
 				min-width: 0;
 				padding-top: 10px;
-				box-shadow: inset 0 1px 0 color-mix(in oklab, var(--dsw-alias-border-l2) 78%, transparent);
 			}
 			.wca-letter-foot .wca-form { flex: 1 1 260px; }
 			.wca-letter-foot {
@@ -1492,8 +1482,7 @@ window.__ModuleLoader__.load({
 			.wca-reviews-title { color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
 			.wca-review {
 				padding: 8px 10px;
-				border-left: 3px solid var(--dsw-alias-border-l2);
-				border-radius: 0 var(--dsw-radius-sm) var(--dsw-radius-sm) 0;
+				border-radius: var(--dsw-radius-sm);
 				background: var(--dsw-alias-bg-module-platform);
 			}
 			.wca-review-head { display: flex; align-items: center; gap: 8px; font-size: 12px; line-height: 18px; }
@@ -1778,6 +1767,10 @@ window.__ModuleLoader__.load({
 			}
 			.wca-switch input:checked + .wca-switch-track { background: var(--dsw-alias-state-business-primary); }
 			.wca-switch input:checked + .wca-switch-track::after { transform: translateX(14px); }
+			.wca-switch input:focus-visible + .wca-switch-track {
+				outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
+				outline-offset: 2px;
+			}
 			.wca-setting-note {
 				margin: 0;
 				color: var(--dsw-alias-label-tertiary);
@@ -1855,11 +1848,6 @@ window.__ModuleLoader__.load({
 			/* Fluid: token-only material and physical motion. This is the only block allowed to animate. */
 			.wca-page[data-wca-style="fluid"] {
 				--wca-ease-enter: cubic-bezier(.22, 1, .36, 1);
-				background-image: radial-gradient(
-					color-mix(in oklab, var(--dsw-alias-label-primary) 2%, transparent) 1px,
-					transparent 1px
-				);
-				background-size: 3px 3px;
 				--wca-ease-exit: cubic-bezier(.4, 0, .2, 1);
 				--wca-shadow-contact: 0 1px 2px color-mix(in oklab, var(--dsw-alias-label-primary) 6%, transparent);
 				--wca-shadow-ambient: 0 10px 30px -18px color-mix(in oklab, var(--dsw-alias-label-primary) 24%, transparent);
@@ -1892,8 +1880,6 @@ window.__ModuleLoader__.load({
 			}
 			.wca-page[data-wca-style="fluid"] .wca-letter[data-status="approved"] { transform: translateY(1px); }
 			.wca-page[data-wca-style="fluid"] .wca-day-label {
-				-webkit-backdrop-filter: blur(12px) saturate(1.1);
-				backdrop-filter: blur(12px) saturate(1.1);
 				transition: opacity 200ms var(--wca-ease-exit);
 			}
 			.wca-page[data-wca-style="fluid"] .wca-chevron,
@@ -1935,7 +1921,7 @@ window.__ModuleLoader__.load({
 				transition: opacity 160ms var(--wca-ease-enter) 40ms;
 			}
 			.wca-page[data-wca-style="fluid"] .wca-letter[data-new="true"] {
-				animation: wca-arrive 280ms var(--wca-ease-enter) both;
+				animation: wca-arrive 280ms var(--wca-ease-enter) backwards;
 				animation-delay: calc(var(--wca-new-index, 0) * 30ms);
 			}
 			.wca-page[data-wca-style="fluid"] .wca-letter[data-settling="true"] { animation: wca-settle 220ms var(--wca-ease-enter); }
@@ -1955,11 +1941,16 @@ window.__ModuleLoader__.load({
 			   same two shadow layers, so the material never silently turns into a flat rectangle. */
 			@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
 				.wca-page[data-wca-style="fluid"] .wca-letter,
-				.wca-page[data-wca-style="fluid"] .wca-settings-group,
-				.wca-page[data-wca-style="fluid"] .wca-day-label {
+				.wca-page[data-wca-style="fluid"] .wca-settings-group {
 					-webkit-backdrop-filter: none;
 					backdrop-filter: none;
-					background: var(--dsw-alias-bg-layer-1);
+					background:
+						linear-gradient(
+							180deg,
+							color-mix(in oklab, var(--wca-tint, var(--dsw-alias-bg-layer-1)) 7%, transparent),
+							transparent 44%
+						),
+						var(--dsw-alias-bg-layer-1);
 				}
 			}
 			.wca-page[data-wca-style="minimal"] .wca-letter,
@@ -1973,7 +1964,6 @@ window.__ModuleLoader__.load({
 			}
 			@media (max-width: 920px) {
 				.wca-day { grid-template-columns: minmax(0, 1fr); gap: 8px; }
-				.wca-day::before { display: none; }
 				.wca-day-label { width: fit-content; position: static; padding-left: 0; }
 				.wca-day-label::after { display: none; }
 			}
@@ -1998,6 +1988,10 @@ window.__ModuleLoader__.load({
 		const INBOX_DRAFT_KEY = "wheelchair-agent:inbox-drafts:v1";
 		const SETTINGS_DRAFT_KEY = "wheelchair-agent:settings-drafts:v1";
 		const DRAFT_MODES = new Set(["approve", "issue"]);
+		/** The settings draft survives section switches even when localStorage is denied. */
+		let settingsDraftMemory = null;
+		/** How often the panel re-reads the inbox while it is open (the host poller runs separately). */
+		const INBOX_REFRESH_MS = 60000;
 
 		/**
 		* The stored style with a safe default. Unknown values are passed through so a third style added
@@ -2012,6 +2006,21 @@ window.__ModuleLoader__.load({
 		/** A stable draft key: the item id, exactly as the inbox list keys its rows. */
 		function itemDraftKey(item) {
 			return String(item?.id ?? item?.pr ?? "");
+		}
+
+		/**
+		* The arrival indexes for one refresh: only ids absent from the previous response animate, and the
+		* index gives each one its 30ms stagger. A whole-list refresh therefore never replays the animation.
+		*/
+		function freshItemIndices(previousIds, list) {
+			const next = new Map();
+			if (previousIds === null) return next;
+			let index = 0;
+			for (const item of list) {
+				const id = itemDraftKey(item);
+				if (!previousIds.has(id)) next.set(id, index++);
+			}
+			return next;
 		}
 
 		/** One review draft in the only shape the form understands; anything else is discarded. */
@@ -2326,6 +2335,7 @@ window.__ModuleLoader__.load({
 				if (mode !== null && textarea.current !== null) textarea.current.focus();
 			}, [mode]);
 			const openMode = (next) => {
+				if (mode === next) return;
 				setError("");
 				props.onDraft(next, "");
 			};
@@ -2348,8 +2358,8 @@ window.__ModuleLoader__.load({
 					if (!response.ok || payload.ok !== true) {
 						throw new Error(payload?.message ?? `HTTP ${response.status}`);
 					}
-					if (!mounted.current) return;
 					props.onSubmitted(reviewKind);
+					if (!mounted.current) return;
 				} catch (failure) {
 					if (!mounted.current) return;
 					setError(t("form.failed", { message: failure instanceof Error ? failure.message : String(failure) }));
@@ -2909,10 +2919,10 @@ window.__ModuleLoader__.load({
 			const requestId = react.useRef(0);
 			const lastIds = react.useRef(null);
 			const lastQuery = react.useRef(null);
-			const load = react.useCallback(() => {
+			const load = react.useCallback((silent = false) => {
 				const current = ++requestId.current;
 				const query = itemsQuery({ kind, repo, time, since, until });
-				setLoading(true);
+				if (!silent) setLoading(true);
 				return (async () => {
 					try {
 						const response = await fetch(`${ITEMS_URL}${query}`, {
@@ -2924,15 +2934,8 @@ window.__ModuleLoader__.load({
 						if (!alive.current || current !== requestId.current) return;
 						const list = Array.isArray(payload.items) ? payload.items : [];
 						const keys = new Set(list.map((item) => itemDraftKey(item)));
-						if (lastQuery.current === query && lastIds.current !== null) {
-							// Animate only ids this refresh added, never the whole list on a 60-second poll.
-							const fresh = list.filter((item) => !lastIds.current.has(itemDraftKey(item)));
-							const next = new Map();
-							fresh.forEach((item, index) => next.set(itemDraftKey(item), index));
-							setNewIds(next);
-						} else {
-							setNewIds(new Map());
-						}
+						if (lastQuery.current === query) setNewIds(freshItemIndices(lastIds.current, list));
+						else setNewIds(new Map());
 						lastQuery.current = query;
 						lastIds.current = keys;
 						setItems(list);
@@ -2959,6 +2962,14 @@ window.__ModuleLoader__.load({
 				return () => {
 					alive.current = false;
 				};
+			}, [load]);
+			// The host poller writes new letters; this quiet refresh makes them visible without a click.
+			// Back-off on a hidden tab keeps a background panel from fetching every minute for nothing.
+			react.useEffect(() => {
+				const timer = setInterval(() => {
+					if (typeof document === "undefined" || document.visibilityState !== "hidden") load(true);
+				}, INBOX_REFRESH_MS);
+				return () => clearInterval(timer);
 			}, [load]);
 			const counts = react.useMemo(() => {
 				const next = { all: 0, pending: 0, issue: 0, approved: 0 };
@@ -4058,26 +4069,38 @@ window.__ModuleLoader__.load({
 			const requestId = react.useRef(0);
 			const storage = react.useRef(null);
 			if (storage.current === null) storage.current = browserStorage();
+			const draftsRef = react.useRef(drafts);
+			draftsRef.current = drafts;
 
 			/** The settings form survives a section switch in localStorage, scoped to its revision. */
 			const readEnvelope = () => {
+				let raw = null;
 				try {
-					const raw = storage.current === null ? null : storage.current.getItem(SETTINGS_DRAFT_KEY);
+					raw = storage.current === null ? settingsDraftMemory : storage.current.getItem(SETTINGS_DRAFT_KEY);
+				} catch {
+					raw = settingsDraftMemory;
+				}
+				try {
 					return typeof raw === "string" && raw !== "" ? JSON.parse(raw) : null;
 				} catch {
 					return null;
 				}
 			};
 			const writeEnvelope = (envelope) => {
+				const text = JSON.stringify(envelope);
+				settingsDraftMemory = text;
 				try {
-					if (storage.current !== null) storage.current.setItem(SETTINGS_DRAFT_KEY, JSON.stringify(envelope));
+					if (storage.current !== null) storage.current.setItem(SETTINGS_DRAFT_KEY, text);
 				} catch {
-					/* storage unavailable: drafts survive this mount only */
+					/* storage unavailable: the in-memory copy still survives section switches */
 				}
 			};
 
+			const applyStyle = (value) => {
+				if (typeof props.onStyleChange === "function") props.onStyleChange(String(value));
+			};
 			const adopt = react.useCallback(
-				(payload, restore) => {
+				(payload, restore, keepDrafts = false) => {
 					setSnapshot(payload);
 					if (restore === true) {
 						const stored = readEnvelope();
@@ -4085,27 +4108,48 @@ window.__ModuleLoader__.load({
 						setDrafts({ ...valueDraftsOf(payload), ...restored.valueDrafts });
 						setTemplateDrafts({ ...templateDraftsOf(payload), ...restored.templateDrafts });
 						setResets(restored.resets);
+						applyStyle(restored.valueDrafts["webui.style"] ?? styleOf(payload));
+					} else if (keepDrafts === true) {
+						// A 409 says the server moved on, not that the operator's work is disposable. Rebase the
+						// in-memory drafts onto the fresh snapshot so Reload keeps them, then filter out keys /
+						// templates the other writer deleted.
+						const rows = new Set((Array.isArray(payload.rows) ? payload.rows : []).map((row) => String(row.key)));
+						const templates = new Set(Object.keys(payload.templates ?? {}));
+						setDrafts((previous) => {
+							const next = { ...valueDraftsOf(payload) };
+							for (const [key, value] of Object.entries(previous)) if (rows.has(key)) next[key] = value;
+							return next;
+						});
+						setTemplateDrafts((previous) => {
+							const next = { ...templateDraftsOf(payload) };
+							for (const [id, draft] of Object.entries(previous)) if (templates.has(id)) next[id] = draft;
+							return next;
+						});
+						setResets((previous) => new Set([...previous].filter((key) => rows.has(key))));
+						applyStyle(draftsRef.current["webui.style"] ?? styleOf(payload));
 					} else {
 						setDrafts(valueDraftsOf(payload));
 						setTemplateDrafts(templateDraftsOf(payload));
 						setResets(new Set());
+						settingsDraftMemory = null;
 						try {
 							if (storage.current !== null) storage.current.removeItem(SETTINGS_DRAFT_KEY);
 						} catch {
 							/* nothing to clear */
 						}
+						applyStyle(styleOf(payload));
 					}
 					setFieldErrors({});
 					setPageError("");
 					setConflict(null);
 					setSavedRevision(null);
-					if (typeof props.onStyleChange === "function") props.onStyleChange(styleOf(payload));
 				},
+				// reads the current drafts through refs; including them here would re-run the mount load
 				[props.onStyleChange]
 			);
 
 			const load = react.useCallback(
-				(restore = false) => {
+				(restore = false, keepDrafts = false) => {
 					const current = ++requestId.current;
 					setLoading(true);
 					return (async () => {
@@ -4117,7 +4161,7 @@ window.__ModuleLoader__.load({
 							const payload = await response.json().catch(() => ({}));
 							if (!alive.current || current !== requestId.current) return;
 							if (!response.ok) throw new Error(payload?.message ?? `HTTP ${response.status}`);
-							adopt(payload, restore);
+							adopt(payload, restore, keepDrafts);
 						} catch (failure) {
 							if (!alive.current || current !== requestId.current) return;
 							setPageError(
@@ -4356,7 +4400,7 @@ window.__ModuleLoader__.load({
 												className: "wca-btn",
 												"data-variant": "outline",
 												disabled: saving,
-												onClick: () => load(false),
+												onClick: () => load(false, conflict !== null),
 												children: t("settings.reload")
 											},
 											"reload"
@@ -4720,6 +4764,8 @@ window.__ModuleLoader__.load({
 			STYLES,
 			styleOf,
 			itemDraftKey,
+			freshItemIndices,
+			INBOX_REFRESH_MS,
 			sanitizeInboxDraft,
 			createDraftStore,
 			restoreSettingsDrafts,

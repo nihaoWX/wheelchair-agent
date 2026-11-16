@@ -164,6 +164,32 @@ Only `tools/` directories with a GitHub origin are candidates. `research/` is lo
 never polled, pulled or pushed. The cold install is always performed by the operator (or the SPV
 session after the notice), never by the running service.
 
+### Panel style
+
+`webui.style` selects the visual variant and defaults to **fluid**. Both variants share the same
+layout, so switching never moves a control:
+
+- **fluid** — Apple-like material and motion: translucent cards with a backdrop blur, two shadow
+  layers, an enter curve with a little spring, a `scale(.985)` press, a 240ms disclosure whose content
+  follows 40ms behind, a `clip-path` wipe on the status pill, an approve settle of 1px, and a 30ms
+  staggered arrival for letters a poll just added. Separation comes from cards and spacing; there are
+  no divider rules between groups or inside cards, and no stamp, flag, paper texture, rotated card or
+  console/HUD chrome.
+- **minimal** — the escape hatch: the same cards on a flat token background, with no blur, shadow or
+  animation. It stays fully usable and keeps the status spine and all controls.
+
+The panel reads the saved style on load. The Settings select previews a change immediately; Save
+makes it stick. Every animation and transition is disabled under `prefers-reduced-motion: reduce`.
+
+### Drafts
+
+An inbox review comment is keyed by item id, persisted to `localStorage`, restored when the operator
+returns to the section, and cleared only after a successful submit; a visible `Draft` tag marks the
+card while it differs. The Settings form uses the same pattern (revision-scoped): a section switch
+keeps the staged edits and their `Draft` tags, a successful save clears them, and a 409 keeps them
+while the operator reloads the newer snapshot. When `localStorage` is denied, both fall back to an
+in-memory copy for the life of the page.
+
 ## Settings
 
 The second feature is **Settings** (设置): a page for the knobs that exist because wheelchair-agent
@@ -226,15 +252,19 @@ changes the built-in text and never produces a warning.
 `<root>` is `$WHEELCHAIR_AGENT_HOME`, else `~/.wheelchair-agent` (see `src/shared/home.js`); the
 superagent state directory is only where the old `panel-settings.json` is read from once and moved to
 `<root>/settings.json`. `values` holds only explicit overrides, so changing a built-in default is not
-pinned by an old file. Writes are atomic (temp file + rename; the directory is created first). A corrupt
-file or a failed move keeps working through the old path and says so in the snapshot's `warning`.
+pinned by an old file. Settings writes are atomic (temp file + rename; the directory is created first).
+Creating a missing file is the one exception: `ensureSettingsFile()` opens it with `wx` so concurrent
+first runs cannot overwrite each other, and never replaces an existing file. A corrupt file or a failed
+move keeps working through the old path and says so in the snapshot's `warning`.
 
 A corrupt file, a missing one, an unsupported `version` or a bad field never throws: `resolveSettings()`
 ignores it, falls back to the next precedence layer, and reports `fileState`
-(`ok`/`missing`/`corrupt`) plus a `warning` that the page shows as a banner. A missing file is a
-neutral "no settings file yet" note, and a warning on an otherwise valid file is shown too — the page
-never silently pretends fallback values were saved. A consumer such as the poller or the injector
-keeps working.
+(`ok`/`missing`/`corrupt`) plus a `warning` that the page shows as a banner. A warning on an
+otherwise valid file is shown too — the page never silently pretends fallback values were saved. A
+consumer such as the poller or the injector keeps working. A normal install no longer has a missing
+file: `install.sh` and the host mount both ship the empty-but-valid `{version, revision: 0, values: {},
+templates: {}}` file, so the Settings page starts from the built-in defaults without a banner. A
+missing file is still handled for hand-built deployments, but it is no longer the first-run state.
 
 ### Precedence
 
@@ -262,6 +292,7 @@ files); `lib/client.js` hot-reloads through dsh's client-bundle watcher.
 
 | Key | Default | What it changes |
 |---|---|---|
+| `webui.style` | `fluid` | Panel variant: `fluid` (translucent cards, layered shadows and motion) or `minimal` (flat cards, no blur or motion). Read when the panel loads; a save applies without a reload. |
 | `inbox.intervalSeconds` | `60` | Seconds between inbox polls. Every tick runs one `gh pr list` per repository. `0` pauses automatic refresh (the CLI still works). Env `SPV_INBOX_INTERVAL_SECONDS`; plugin config `intervalSeconds`. |
 | `merge.installRepo` | `wheelchair-agent` | Merges of this repository queue the cold-install notice instead of a plain pull. `owner/name` or `name`. Env `SPV_INSTALL_REPO`. |
 | `injection.intervalMs` | `1000` | How often the SPV-session result injector checks the outbox. |
@@ -383,10 +414,17 @@ install, `--check` therefore reports the installed tree as different (exit 2); t
 cold-install state, not a panel regression. A cold install into a throwaway `DSH_HOME` followed by
 `--check` is the offline proof of the checkout.
 
+The settings-file step is also a first reader. On a machine upgrading from the pre-#21 layout it can
+therefore complete the one-shot move of `panel-settings.json` and the old inbox into the data root,
+exactly as the service's first mount or the CLI would; the move is logged in `<root>/logs/migration.log`.
+It never rewrites an existing `settings.json` (the helper opens with `wx`), so a hand-edited file
+survives a re-install unchanged.
+
 ## Screenshots
 
-All captures use the same dsh web composition (`dsh-web-app`, 1440×900), light unless the file name
-says dark. The letter-types comparison uses the same scenario — the real inbox with its PR rows —
+All captures use the same dsh web composition (`dsh-web-app`, 1440×900 unless a file name says
+otherwise), light unless the file name says dark. The letter-types comparison uses the same scenario —
+the real inbox with its PR rows —
 and the same viewport/theme: `before-letter-types.png` is commit `f301111` (the PR-only list), and
 `after-letter-types.png` is PR #13 (`c5ab828`). That after capture also shows one temporary `spv_message`
 fixture, written with the new `inbox add`; it was removed after the capture. No submission was sent
@@ -447,6 +485,41 @@ route registration itself is covered by the test suite.
   history.
 - `docs/after-pr-body.png` — a PR description expanded in the new chrome, rendering Markdown.
 - `docs/after-panel.png` / `docs/after-panel-dark.png` — earlier feature-host captures in light and dark; the current status/chip UI is shown above.
+
+### Panel style, cards and drafts (this change)
+
+The before/after pair uses the **same throwaway `superagent` profile, the same seeded inbox, the same
+1440×900 viewport and light theme**, so only the panel changes:
+
+- **before** — `main` @ `60661a8`: one boxed surface, one-column settings rows, rule dividers between
+  groups and rows, no style setting.
+- **after** — `agent/webui-style-salvage` @ `04a5e82`: group cards, two-column settings rows, a status
+  spine per letter, actions at the card foot, no divider rules, the `Panel style` select, and the
+  review/form drafts.
+
+The captures were taken in a copy of the profile under a `mkdtemp` root, not against the live service:
+`DSH_HOME`, `WHEELCHAIR_AGENT_HOME`, `DSH_SUPERAGENT_STATE_DIR`, `SPV_QUEUE_DIR` and `SPV_INBOX_DIR`
+pointed inside the sandbox, `SPV_INBOX_INTERVAL_SECONDS=0`, and the superagent orchestrator row was
+disabled so no Source or model was mounted. The inbox items were seeded fixtures; no submission was
+sent, so no SPV notice or worker task was produced.
+
+- `docs/panel-style-before-inbox-1440.png` — the baseline inbox on `main` @ `60661a8`, **Pending
+  review**, 1440×900.
+- `docs/panel-style-after-inbox-1440.png` — the same view on the branch: letter cards, one spine per
+  letter, PR / SPV decision dimensions, actions at the card bottom, no rules between groups.
+- `docs/panel-style-after-inbox-draft-1440.png` — a review comment typed on the first card, then
+  Settings → Inbox: the text and the `Draft` tag are back.
+- `docs/panel-style-after-inbox-minimal-1440.png` — the same inbox with the `Panel style` select
+  previewing `Minimal`: flat cards, no blur/shadow/motion, same layout.
+- `docs/panel-style-before-settings-1440.png` — the baseline Settings page on `main` @ `60661a8`,
+  1440×900: one column, rule dividers, explanation inline.
+- `docs/panel-style-after-settings-1440.png` — the same Settings page on the branch at 1440×900: the
+  Appearance card with the `Panel style` select and two-column rows.
+- `docs/panel-style-after-settings-full-1440.png` — the whole after Settings page at 1440px wide
+  (1440×3140), showing every group card and the three template editors.
+- `docs/panel-style-after-settings-1000.png` — the same page at 1000×3852: the responsive single-column
+  fallback below 1100px.
+- `docs/panel-style-after-settings-dark-1440.png` — the after Settings page in the host's dark theme.
 
 Earlier captures (`before-panel.png`, `before-sidebar.png` / `after-sidebar.png`,
 `after-pr-table.png`, `after-pr-code-dark.png`, `before-pr-body-dark.png` /

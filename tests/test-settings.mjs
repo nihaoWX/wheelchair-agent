@@ -3,7 +3,7 @@
  * tests/test-settings.mjs：面板设置存储与全部后端消费方的离线可跑证据。
  *
  * 覆盖：
- *   - 默认值解析：没有文件时 revision 0、`fileState: "missing"`、七行都是内置默认；
+ *   - 默认值解析：没有文件时 revision 0、`fileState: "missing"`、八行都是内置默认；
  *   - 内置模板：`injection` / `spvObjection` 与改造前逐字节一致；`prIssue` 是新的 SPV notice 正文；
  *   - 保存：部分保存合并、revision 递增、文件只有 version/revision/values/templates、原子写不留临时文件；
  *     过期 revision 抛 SETTINGS_CONFLICT 且**磁盘一个字节都不动**；未知键/坏值整体拒绝；
@@ -1839,12 +1839,21 @@ async function testStyleSetting() {
   )
   assert.equal(resolveSettings({ home: box.root, stateDir: box.state, env: {} }).revision, 1, 'a refused value writes nothing')
 
+  const persisted = JSON.parse(await readFile(settingsPath(box), 'utf8'))
+  assert.deepEqual(persisted.values, { 'webui.style': 'minimal' }, 'the style key round-trips through the store file')
+
   const handler = createSettingsHandler({ home: box.root, stateDir: box.state, env: {} })
   const put = await call(handler, { method: 'PUT', body: { revision: 1, values: { 'webui.style': 'fluid' } } })
   assert.equal(put.status, 200)
   assert.equal(put.body.effective['webui.style'], 'fluid')
   assert.deepEqual(put.body.values, { 'webui.style': 'fluid' })
   assert.equal(put.body.rows.find(row => row.key === 'webui.style').source, 'file')
+  assert.equal(put.body.rows.find(row => row.key === 'webui.style').default, 'fluid')
+  assert.deepEqual(put.body.rows.find(row => row.key === 'webui.style').options, ['minimal', 'fluid'])
+
+  const reset = save(box, { reset: { values: ['webui.style'] } })
+  assert.deepEqual(reset.values, {}, 'resetting the style removes the stored override')
+  assert.equal(reset.effective['webui.style'], 'fluid', 'reset falls back to the fluid default')
 }
 
 /** Install/first run ships the empty-but-valid settings file; it never overwrites or pins defaults. */
@@ -1880,22 +1889,64 @@ async function testEnsureSettingsFile() {
 /** CSS gates: token-only colour, reduced-motion guards, no linear easing, one root style attribute. */
 async function testClientStyleAndDraftHelpers() {
   const client = await loadClient()
-  const { STYLES, styleOf, itemDraftKey, createDraftStore, restoreSettingsDrafts, sourceSummary } = client.__test
+  const { STYLES, styleOf, itemDraftKey, createDraftStore, restoreSettingsDrafts, sourceSummary, stagedChanges, freshItemIndices, INBOX_REFRESH_MS } = client.__test
+  const source = await readFile(fileURLToPath(new URL('../webui/lib/client.js', import.meta.url)), 'utf8')
   assert.equal(typeof STYLES, 'string', 'the client exposes its stylesheet for the offline CSS checks')
-  assert.doesNotMatch(STYLES, /#[0-9a-f]{3,8}/i, 'no hardcoded hex anywhere in the bundle')
-  assert.match(STYLES, /@media \(prefers-reduced-motion: reduce\)/, 'reduced motion has a guard')
-  assert.match(STYLES, /animation: none !important/)
-  assert.match(STYLES, /transition: none !important/)
+  assert.doesNotMatch(source, /#[0-9a-f]{3,8}\b/i, 'no hardcoded hex anywhere in the bundle')
+  assert.doesNotMatch(STYLES, /radial-gradient/, 'the fluid style ships no dot/paper texture')
+  assert.doesNotMatch(STYLES, /\.wca-day::before/, 'day groups are separated by cards and spacing, never a rail rule')
+  assert.doesNotMatch(STYLES, /inset 0 1px 0/, 'letter cards have no inset seam rule')
+  assert.doesNotMatch(STYLES, /\.wca-review\s*\{[^}]*border-left/, 'review records have no divider rule inside the card')
+  assert.doesNotMatch(STYLES, /\.wca-day-label[^{}]*\{[^}]*backdrop-filter/, 'backdrop-filter is limited to cards')
+  assert.match(STYLES, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*?animation: none !important;[\s\S]*?transition: none !important;/, 'reduced motion disables every animation and transition')
   assert.equal((STYLES.match(/@keyframes/g) ?? []).length, 3, 'the fluid style introduces exactly three keyframes')
   assert.doesNotMatch(STYLES, /(?:transition|animation):[^;]*\blinear\b/, 'linear easing is banned')
   assert.match(STYLES, /\[data-wca-style="fluid"\]/, 'a variant is scoped by one root attribute')
+  assert.doesNotMatch(STYLES, /^\s*\.(?!wca-)/m, 'every CSS rule is wca- prefixed')
+  assert.match(STYLES, /\[data-wca-style="minimal"\] \.wca-letter/, 'the minimal variant keeps the same cards')
   assert.match(STYLES, /backdrop-filter: blur\(12px\)/, 'the fluid material uses the specified blur')
   assert.match(STYLES, /@supports not \(\(backdrop-filter/, 'a no-backdrop-filter fallback ships')
+  assert.match(STYLES, /@supports not \(\(backdrop-filter[\s\S]*?var\(--wca-tint/, 'the fallback keeps the brand/info tint')
+  // The motion contract: enter/exit curves, press, expand, wipe, approve settle, and the 30ms arrival stagger.
+  assert.match(STYLES, /--wca-ease-enter: cubic-bezier\(\.22, 1, \.36, 1\)/)
+  assert.match(STYLES, /--wca-ease-exit: cubic-bezier\(\.4, 0, \.2, 1\)/)
+  assert.match(STYLES, /\.wca-btn:active[^{]*\{[^}]*transform: scale\(\.985\)/)
+  assert.match(STYLES, /grid-template-rows 240ms/)
+  assert.match(STYLES, /opacity 160ms var\(--wca-ease-enter\) 40ms/)
+  assert.match(STYLES, /wca-wipe 200ms/)
+  assert.match(STYLES, /animation-delay: calc\(var\(--wca-new-index, 0\) \* 30ms\)/)
+  assert.match(STYLES, /wca-arrive 280ms var\(--wca-ease-enter\) backwards/, 'the arrival animation does not pin the card after it ends')
+  // The two letter kinds differ by exactly the documented dimension set.
+  assert.match(STYLES, /\.wca-letter \{[^}]*border-radius: 8px;[^}]*\}/)
+  assert.match(STYLES, /\.wca-letter::before \{[^}]*width: 4px;[^}]*\}/)
+  assert.match(STYLES, /\.wca-letter\[data-kind="spv_message"\] \{[^}]*border-radius: 14px;[^}]*padding-inline: 22px 20px;[^}]*\}/)
+  assert.match(STYLES, /\.wca-letter\[data-kind="spv_message"\]::before \{[^}]*width: 5px;[^}]*\}/)
+  assert.match(STYLES, /\.wca-letter\[data-kind="pr"\] \{ --wca-tint: var\(--dsw-alias-button-primary-fill\); \}/)
+  assert.match(STYLES, /\.wca-letter\[data-kind="spv_message"\] \{\s*--wca-tint: var\(--dsw-alias-state-business-primary\);/)
 
   assert.equal(styleOf({ effective: { 'webui.style': 'minimal' } }), 'minimal')
   assert.equal(styleOf({ values: { 'webui.style': 'fluid' } }), 'fluid')
   assert.equal(styleOf({}), 'fluid', 'the default is fluid')
   assert.equal(styleOf({ effective: { 'webui.style': 'future' } }), 'future', 'a third style needs only its CSS block')
+  const stagedStyle = stagedChanges(
+    { rows: [{ key: 'webui.style', value: 'fluid', default: 'fluid', options: ['minimal', 'fluid'] }], templates: {} },
+    { 'webui.style': 'minimal' },
+    {},
+    new Set(),
+    key => key,
+  )
+  assert.deepEqual(stagedStyle.values, { 'webui.style': 'minimal' }, 'the enum row stages through the real save path')
+  assert.deepEqual(stagedStyle.valueErrors, {})
+
+  // A ~60s refresh exists and only ids new to that response animate, each with its stagger index.
+  assert.equal(INBOX_REFRESH_MS, 60000)
+  assert.match(source, /setInterval\(\(\) => \{[\s\S]*?\}, INBOX_REFRESH_MS\)/, 'the panel polls the inbox on a timer')
+  assert.equal(freshItemIndices(null, [{ id: 'a' }]).size, 0, 'the first load does not animate')
+  assert.deepEqual(
+    [...freshItemIndices(new Set(['a']), [{ id: 'a' }, { id: 'b' }, { id: 'c' }])],
+    [['b', 0], ['c', 1]],
+    'only added ids animate, staggered by their order',
+  )
 
   const data = new Map()
   const storage = {
