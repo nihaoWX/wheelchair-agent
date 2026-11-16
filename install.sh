@@ -683,6 +683,33 @@ create_data_root() {
   return 1
 }
 
+# Create the settings file ship-empty instead of warning about it. Empty `values` means "use the
+# built-in defaults", so a later default change still reaches this machine; the installer must never
+# write resolved values. Existing files are left untouched (the Node helper opens with `wx`).
+#
+# This is a reader, so it can also complete the one-shot data migration when an old layout exists
+# (`settingsFile()`/`resolveData()` do that before the existence test); the helper returns the path it
+# actually used, and we report that path rather than assuming the new one. The Node URL is built with
+# pathToFileURL so a checkout path containing `#`, `?` or `%` cannot corrupt the import.
+ensure_settings_file() {
+  local out
+  if out=$(node --input-type=module -e \
+      'import { pathToFileURL } from "node:url"; const { ensureSettingsFile } = await import(pathToFileURL(process.argv[1]).href); const result = ensureSettingsFile(); process.stdout.write(result.file)' \
+      "$SELF_DIR/src/shared/settings.js" 2>&1); then
+    if [ -f "$out" ]; then
+      ok "settings file: $out"
+      return 0
+    fi
+    fail "the settings helper reported $out, but no file exists there"
+    fix "check the data root and its permissions, then rerun this script"
+    return 1
+  fi
+  fail "cannot create the settings file under $DATA_ROOT"
+  printf '%s\n' "$out" | sed 's/^/      /'
+  fix "check that $DATA_ROOT is writable, fix the error above, then rerun this script"
+  return 1
+}
+
 install_preset() {
   local staged backup
   staged=$(mktemp -d) || { fail 'could not create a staging directory'; return 1; }
@@ -886,6 +913,10 @@ if [ -n "$SERVICE_PIDS" ] || [ -n "$SPV_PIDS" ]; then
 fi
 
 if ! create_data_root; then
+  printf '\n1 problem(s) blocked the install.\n'
+  exit 1
+fi
+if ! ensure_settings_file; then
   printf '\n1 problem(s) blocked the install.\n'
   exit 1
 fi

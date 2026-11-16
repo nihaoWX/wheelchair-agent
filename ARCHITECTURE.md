@@ -117,8 +117,9 @@ superagent 侧的 `src/superagent/` **从不进 preset 目录**：那个 profile
 React 组件。PR 正文由 `lib/client.js` 自带的小 Markdown → React 渲染器生成，不写 `innerHTML`、不 require
 `@deepseek-ai/dsh-client-ui-primitives`。详见 `webui/README.md`。
 
-审查决定只有两种：`approve`（通过，`text` 为空，**不派任务**）和 `issue`（有问题，正文必填，派
-`inbox-<pr>` 任务）。item 状态不落盘，由最新一条 review 派生：无 → `pending`、`approve` → `approved`、
+审查决定只有两种：`approve`（通过，`text` 为空，**只记录、不发消息**）和 `issue`（有问题，正文必填，
+发**一条** `notice` 给 SPV 入口会话：PR 用 thread `inbox-<pr>`，SPV 决策信回到自己的 thread；**不派
+worker 任务**）。item 状态不落盘，由最新一条 review 派生：无 → `pending`、`approve` → `approved`、
 `issue` → `issue`；旧数据的 `question`/`fix` 只在读取时归一成 `issue`，不改磁盘记录。UI 按派生状态提供
 全部 / 待审 / 有问题 / 已通过筛选（默认待审）。
 

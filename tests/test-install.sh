@@ -44,6 +44,14 @@ trap cleanup EXIT
 
 mkdir -p "$SB/home" "$SB/tools" "$SB/dsh/profiles/superagent"
 
+# The harness is hermetic even when the operator who runs it has real paths exported: install.sh
+# honors WHEELCHAIR_AGENT_HOME / DSH_SUPERAGENT_STATE_DIR (and the explicit SPV_* overrides), so the
+# environment is pinned below and the "inherited root" case proves nothing leaks into them.
+INHERITED_ROOT=$SB/inherited-home
+INHERITED_STATE=$SB/inherited-state
+export WHEELCHAIR_AGENT_HOME="$INHERITED_ROOT"
+export DSH_SUPERAGENT_STATE_DIR="$INHERITED_STATE"
+
 # The only thing install.sh needs from dsh-tui is that it resolves on PATH.
 cat > "$SB/tools/dsh-tui" <<'FAKE'
 #!/bin/sh
@@ -86,7 +94,10 @@ run_install() {
     export HOME="$SB/home" DSH_HOME="$SB/dsh" SPV_BIN_DIR="$SB/local-bin" \
       SPV_QUEUE_DIR="$SB/queue" SPV_INSTALL_PROBE="$SB/tools/fake-probe" \
       FAKE_PROBE_SERVICE="$SERVICE_MARKER" FAKE_PROBE_SPV="$SPV_MARKER" \
-      SPV_SERVICE_PORT=3082 PATH="$SB/tools:$PATH"
+      SPV_SERVICE_PORT=3082 PATH="$SB/tools:$PATH" \
+      WHEELCHAIR_AGENT_HOME="$SB/home/.wheelchair-agent" \
+      DSH_SUPERAGENT_STATE_DIR="$SB/dsh/state/superagent"
+    unset SPV_INBOX_DIR SPV_PREPARE_LOG
     bash "$INSTALL" "$@"
   ) >"$SB/stdout" 2>"$SB/stderr"
 }
@@ -158,11 +169,27 @@ check '(2) the webui package landed' \
   "$([ -f "$SB/dsh/profiles/superagent/node_modules/wheelchair-agent-webui/package.json" ] && echo yes || echo no)" yes
 check '(2) the data root and its subdirectories were created' \
   "$([ -d "$SB/home/.wheelchair-agent/logs" ] && [ -d "$SB/home/.wheelchair-agent/records" ] && [ -d "$SB/home/.wheelchair-agent/inbox" ] && echo yes || echo no)" yes
+check '(2) install created the settings file' \
+  "$([ -f "$SB/home/.wheelchair-agent/settings.json" ] && echo yes || echo no)" yes
+check '(2) the shipped settings file is empty-but-valid' \
+  "$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(s.version===1&&s.revision===0&&Object.keys(s.values).length===0&&Object.keys(s.templates).length===0?"yes":"no")' "$SB/home/.wheelchair-agent/settings.json" 2>/dev/null)" yes
+check '(2) the shipped settings file reads back the built-in defaults' \
+  "$(WHEELCHAIR_AGENT_HOME="$SB/home/.wheelchair-agent" DSH_SUPERAGENT_STATE_DIR="$SB/dsh/state/superagent" node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { resolveSettings } = await import(pathToFileURL(process.argv[1]).href); const s = resolveSettings(); process.stdout.write(s.fileState === "ok" && s.effective["webui.style"] === "fluid" && s.effective["inbox.intervalSeconds"] === 60 ? "yes" : "no")' "$REPO/src/shared/settings.js" 2>/dev/null)" yes
+check '(2) the shipped settings file is mode 0644' \
+  "$(stat -c '%a' "$SB/home/.wheelchair-agent/settings.json" 2>/dev/null)" 644
+check '(2) an inherited data root was not used' \
+  "$([ -e "$INHERITED_ROOT/settings.json" ] && echo yes || echo no)" no
+check '(2) an inherited state dir was not used' \
+  "$([ -e "$INHERITED_STATE/panel-settings.json" ] && echo yes || echo no)" no
+# A hand-edited settings file survives a re-install: the helper opens with `wx` and never rewrites.
+printf '{"version":1,"revision":9,"values":{"webui.style":"minimal"},"templates":{}}\n' > "$SB/home/.wheelchair-agent/settings.json"
 run_install
 check '(2) the second cold install exits 0' "$?" 0
 check '(2) the second cold install reports up to date' \
   "$(grep -q 'up to date' "$SB/stdout" && echo yes || echo no)" yes
 check '(2) the second cold install replaced nothing' "$(grep -c '^OK: installed' "$SB/stdout")" 0
+check '(2) a hand-edited settings file is left alone' \
+  "$(grep -c '"webui.style":"minimal"' "$SB/home/.wheelchair-agent/settings.json")" 1
 run_install --check
 check '(2) --check exits 0 on a cold install' "$?" 0
 check '(2) --check says a cold install is allowed' "$(grep -c 'a cold install is allowed' "$SB/stdout")" 1

@@ -122,7 +122,8 @@ worker 环境里的 `DSH_SUPERAGENT_GITHUB_REPOSITORY` 永远是面板那一个�
   页的间距/字号节奏，不写死颜色，因此浅色/深色都跟 host 走。
 - **页面是功能宿主，不是收件箱页**：导航列功能（`SECTIONS`），活动功能渲染在自己的带边框面板里（标题、
   说明、筛选/刷新工具栏、行列表）；PR 列表嵌在收件箱功能面板内。加功能 = 一个数组项 + 一个组件。
-- **审查模型只有 `approve` / `issue`**：通过不写正文、不派任务；有问题正文必填并派 `inbox-<pr>` 任务。
+- **审查模型只有 `approve` / `issue`**：通过只记录、不发消息；有问题正文必填并给 SPV 入口会话发一条
+  `notice`（PR 的 thread 是 `inbox-<pr>`，SPV 决策信回到自己的 thread），不派 worker 任务。
   状态不落盘，由最新 review 派生（`pending` / `approved` / `issue`）；旧 `question`/`fix` 只在读取时
   映射成 `issue`，不改磁盘记录。筛选默认「待审」，另有全部 / 有问题 / 已通过；已通过行降低对比度。
 
@@ -148,3 +149,24 @@ base 是 `agent/cli-restructure`，从未进过 `main`）。
 **验证**：`install.sh` 与 `install.sh --check` exit 0；`dsh --dump-config --patch …` exit 0 且新行
 都落在 `preset-spv` 块内；`tests/test-layout.sh` / `tests/test-prepare.sh` /
 `tests/test-injector.mjs` / `npm run check` 全绿。
+
+## 面板样式：fluid 默认，minimal 是逃生口（2026-11-16）
+
+**结论**：`webui.style` 是普通 enum 设置，`fluid` 默认、`minimal` 可切，两者共用同一版面和控件；换样式
+只换材质/动效，不换结构。版面用卡片和间距分组，**不用分隔线**：没有 day rail、卡片内的 inset seam 或
+review 左侧竖线；分隔靠 group card、留白和字重。每封信有状态 spine，操作固定在卡片底部；PR 与
+`spv_message` 只差 radius 8/14px、inset +4px、spine 4/5px、glyph 与 brand/info tint。
+
+**材质**：颜色/边框/圆角全部走 `--dsw-alias-*` token；`backdrop-filter` 只给卡片，不支持的浏览器退回
+不透明 token 背景 + 同一组两层阴影（tint 仍在）。动效只在 fluid 下：enter `cubic-bezier(.22,1,.36,1)`、
+exit `cubic-bezier(.4,0,.2,1)`、无 `linear`、press `scale(.985)` 120ms、展开 240ms（内容晚 40ms）、
+状态 pill `clip-path` 200ms、approve 让 spine 交叉淡入并让卡片下沉 1px、轮询新增信件按 id 做一次 30ms
+错峰入场；`prefers-reduced-motion: reduce` 全部关掉，焦点只用 `:focus-visible` ring。
+
+**草稿**：收件箱审查草稿按 item id 存 `localStorage`，切页回来还在，提交成功才清，卡片上有 `Draft`
+标记；设置表单同样按 revision 存，409 后 Reload 保留草稿并重挂到新 snapshot。localStorage 被拒时两者
+退回内存副本。空设置文件由 `install.sh` 与 host mount 以 `wx` 补上，绝不用解析后的默认值回写。
+
+**证据**：`webui/docs/panel-style-{before,after}-*.png`（同 fixture、1440×900、light；另有 1000px 与
+dark 截图），`tests/test-settings.mjs` 的 CSS/轮询/草稿断言，`tests/test-install.sh` 的 0644/空文件/
+不覆盖断言。`fluid` 的 backdrop blur 在 dsh 的滚动侧栏里实测正常；`@supports` 退回分支保留。
