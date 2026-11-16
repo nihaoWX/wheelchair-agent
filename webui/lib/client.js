@@ -105,7 +105,7 @@ window.__ModuleLoader__.load({
 			"settings.notes.live": "设置文件由服务和 SPV 会话在使用时重读，所以保存后立即生效；只有 host 半身的代码改动（lib/index.js 与复制进包的 core 文件）才需要等下一次正常的服务重启，浏览器 bundle 会热重载。",
 			"setting.webui.style.label": "面板样式",
 			"setting.webui.style.desc": "决定面板看起来和动起来的样子。",
-			"setting.webui.style.changes": "「流体」用模糊、层次阴影和轻微回弹；「简洁」关掉这些，只留平面卡片。切换只改变材质与动效，版面结构不变。",
+			"setting.webui.style.changes": "「流体」用可见的淡色底纹、分层阴影、悬停抬升和交错入场；「简洁」关掉这些，只留平面卡片。切换只改变材质与动效，版面结构不变。",
 			"setting.webui.style.recommended": "推荐先用「流体」；如果觉得晃眼或卡顿，切回「简洁」。",
 			"setting.webui.style.tech": "键 webui.style，取值 minimal | fluid；面板加载时读取，保存后即时生效，不需要重启。",
 			"setting.inbox.intervalSeconds.label": "收件箱刷新间隔（秒）",
@@ -290,7 +290,7 @@ window.__ModuleLoader__.load({
 			"settings.notes.live": "The settings file is re-read by the service and the SPV session on use, so a save applies live; only a host-half code change (lib/index.js and the copied core files) needs the next normal service restart, while the browser bundle hot-reloads.",
 			"setting.webui.style.label": "Panel style",
 			"setting.webui.style.desc": "Decides how the panel looks and moves.",
-			"setting.webui.style.changes": "Fluid adds blur, layered shadows and a little spring; Minimal turns those off and keeps flat cards. Switching changes material and motion, never the layout.",
+			"setting.webui.style.changes": "Fluid adds a visible tonal wash, layered shadows, a hover lift and a staggered arrival; Minimal turns those off and keeps flat cards. Switching changes material and motion, never the layout.",
 			"setting.webui.style.recommended": "Start with Fluid; switch to Minimal if it feels busy or slow.",
 			"setting.webui.style.tech": "Key webui.style, values minimal | fluid; read when the panel loads and applied live after a save, with no restart.",
 			"setting.inbox.intervalSeconds.label": "Inbox refresh interval (seconds)",
@@ -1061,6 +1061,10 @@ window.__ModuleLoader__.load({
 			/* Layout is the same in every style. A variant block may change material, radius and motion,
 			   never the structure; adding a third style is one more [data-wca-style] block. */
 			.wca-page {
+				/* The one width knob for the inbox and the settings page: both are children of this
+				   page, so a single custom property moves both frames together and they cannot drift.
+				   960 was the old frame; 1200 is the operator's 1.25x request. */
+				--wca-content-max: 1200px;
 				box-sizing: border-box;
 				height: 100%;
 				min-height: 100%;
@@ -1072,7 +1076,7 @@ window.__ModuleLoader__.load({
 				overflow: auto;
 				color: var(--dsw-alias-label-primary);
 			}
-			.wca-page > * { width: 100%; max-width: 960px; }
+			.wca-page > * { width: 100%; max-width: var(--wca-content-max); }
 			.wca-head {
 				box-sizing: border-box;
 				display: flex;
@@ -1247,39 +1251,10 @@ window.__ModuleLoader__.load({
 			}
 			.wca-status[data-tone="error"] { color: var(--dsw-alias-state-error-primary); }
 
-			/* Inbox: one card per letter; day groups are separated by a label and spacing, never by a rule. */
-			.wca-days { display: flex; flex-direction: column; gap: 16px; padding-top: 10px; }
-			.wca-day { position: relative; display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 18px; }
-			.wca-day-rail { position: relative; min-width: 0; }
-			.wca-day-sentinel { display: block; height: 1px; }
-			.wca-day-label {
-				position: sticky;
-				top: 0;
-				z-index: 3;
-				display: inline-flex;
-				align-items: center;
-				justify-content: center;
-				width: 100%;
-				padding: 4px 8px;
-				border-radius: 999px;
-				color: var(--dsw-alias-label-tertiary);
-				font-size: 11px;
-				line-height: 16px;
-				font-weight: 600;
-				letter-spacing: .06em;
-				text-transform: uppercase;
-				font-variant-numeric: tabular-nums;
-			}
-			.wca-day-label::after {
-				content: "";
-				position: absolute;
-				inset: 0;
-				z-index: -1;
-				border-radius: inherit;
-				background: color-mix(in oklab, var(--dsw-alias-bg-base) 82%, transparent);
-				opacity: 0;
-			}
-			.wca-day-label[data-stuck="true"]::after { opacity: 1; }
+			/* Inbox: one card per letter; days are separated by spacing only. Each card carries its
+			   own timestamp, so there is no date rail and no empty column on the left. */
+			.wca-days { display: flex; flex-direction: column; gap: 24px; padding-top: 10px; }
+			.wca-day { display: flex; flex-direction: column; min-width: 0; }
 			.wca-cards { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
 
 			.wca-letter {
@@ -1338,7 +1313,23 @@ window.__ModuleLoader__.load({
 			.wca-repo { color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; }
 			.wca-repo strong { color: var(--dsw-alias-label-primary); font-weight: 500; }
 			.wca-letter-title { margin: 0; font-size: 15px; font-weight: 600; line-height: 22px; }
-			.wca-meta { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 20px; }
+			.wca-meta {
+				display: flex;
+				align-items: baseline;
+				gap: 10px;
+				margin: 0;
+				color: var(--dsw-alias-label-tertiary);
+				font-size: 13px;
+				line-height: 20px;
+			}
+			.wca-meta-diff { min-width: 0; }
+			.wca-letter-time {
+				flex: none;
+				margin-inline-start: auto;
+				color: var(--dsw-alias-label-tertiary);
+				font-variant-numeric: tabular-nums;
+				white-space: nowrap;
+			}
 			.wca-diff { font: var(--dsw-font-markdown-code-block-small); }
 			.wca-added { color: var(--dsw-alias-state-success-primary); }
 			.wca-removed { color: var(--dsw-alias-state-error-primary); }
@@ -1422,7 +1413,6 @@ window.__ModuleLoader__.load({
 				color: var(--dsw-alias-state-error-primary);
 				--wca-pill: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent);
 			}
-			.wca-status-pill[data-wipe="true"]::before { animation: wca-wipe 200ms var(--wca-ease-enter); }
 			.wca-btn {
 				box-sizing: border-box;
 				display: inline-flex;
@@ -1845,43 +1835,54 @@ window.__ModuleLoader__.load({
 			.wca-template-new { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
 			.wca-settings-notes { display: flex; flex-direction: column; gap: 6px; padding: 4px 2px 0; }
 
-			/* Fluid: token-only material and physical motion. This is the only block allowed to animate. */
+			/* Fluid: token-only material and physical motion. This is the only block allowed to animate.
+			   The page under a card is an opaque token surface, so a backdrop blur would blur nothing;
+			   the material instead comes from a visible tinted wash, a tinted hairline border and a
+			   two-layer shadow that reads as elevation on that surface. */
 			.wca-page[data-wca-style="fluid"] {
 				--wca-ease-enter: cubic-bezier(.22, 1, .36, 1);
 				--wca-ease-exit: cubic-bezier(.4, 0, .2, 1);
-				--wca-shadow-contact: 0 1px 2px color-mix(in oklab, var(--dsw-alias-label-primary) 6%, transparent);
-				--wca-shadow-ambient: 0 10px 30px -18px color-mix(in oklab, var(--dsw-alias-label-primary) 24%, transparent);
+				--wca-shadow-contact: 0 1px 2px color-mix(in oklab, var(--dsw-alias-label-primary) 10%, transparent);
+				--wca-shadow-ambient: 0 16px 34px -18px color-mix(in oklab, var(--dsw-alias-label-primary) 38%, transparent);
+				--wca-shadow-hover: 0 22px 44px -18px color-mix(in oklab, var(--dsw-alias-label-primary) 54%, transparent);
 			}
 			.wca-page[data-wca-style="fluid"] .wca-letter,
 			.wca-page[data-wca-style="fluid"] .wca-settings-group {
-				border-color: color-mix(in oklab, var(--dsw-alias-border-l2) 65%, transparent);
+				/* PR and SPV letters set --wca-tint; settings groups and any other surface fall back to
+				   the info family, so every fluid card carries a wash instead of matching the page. */
+				--wca-wash: var(--wca-tint, var(--dsw-alias-state-business-primary));
+				border-color: color-mix(in oklab, var(--wca-wash) 24%, var(--dsw-alias-border-l2));
 				background:
 					linear-gradient(
-						180deg,
-						color-mix(in oklab, var(--wca-tint, var(--dsw-alias-bg-layer-1)) 7%, transparent),
-						transparent 44%
-					),
-					color-mix(in oklab, var(--dsw-alias-bg-layer-1) 88%, transparent);
-				-webkit-backdrop-filter: blur(12px) saturate(1.1);
-				backdrop-filter: blur(12px) saturate(1.1);
+						165deg,
+						color-mix(in oklab, var(--wca-wash) 18%, var(--dsw-alias-bg-layer-1)),
+						color-mix(in oklab, var(--wca-wash) 5%, var(--dsw-alias-bg-layer-1)) 52%,
+						var(--dsw-alias-bg-layer-1)
+					);
 				box-shadow: var(--wca-shadow-contact), var(--wca-shadow-ambient);
 				transition:
 					box-shadow 220ms var(--wca-ease-enter),
 					transform 220ms var(--wca-ease-enter),
 					border-color 220ms var(--wca-ease-exit);
 			}
+			.wca-page[data-wca-style="fluid"] .wca-letter[data-draft="true"] {
+				border-color: color-mix(in oklab, var(--dsw-alias-state-warn-primary) 45%, var(--dsw-alias-border-l2));
+			}
 			.wca-page[data-wca-style="fluid"] .wca-letter:hover,
 			.wca-page[data-wca-style="fluid"] .wca-settings-group:hover {
-				--wca-shadow-ambient: 0 11px 30px -18px color-mix(in oklab, var(--dsw-alias-label-primary) 26%, transparent);
-				transform: translateY(-1px);
+				border-color: color-mix(in oklab, var(--wca-wash) 38%, var(--dsw-alias-border-l2));
+				box-shadow: var(--wca-shadow-contact), var(--wca-shadow-hover);
+				transform: translateY(-2px);
+			}
+			.wca-page[data-wca-style="fluid"] .wca-letter:active {
+				box-shadow: var(--wca-shadow-contact);
+				transform: translateY(0) scale(.998);
 			}
 			.wca-page[data-wca-style="fluid"] .wca-letter::before {
 				transition: background-color 220ms var(--wca-ease-exit);
 			}
-			.wca-page[data-wca-style="fluid"] .wca-letter[data-status="approved"] { transform: translateY(1px); }
-			.wca-page[data-wca-style="fluid"] .wca-day-label {
-				transition: opacity 200ms var(--wca-ease-exit);
-			}
+			.wca-page[data-wca-style="fluid"] .wca-letter[data-status="approved"]:not(:hover):not(:active) { transform: translateY(1px); }
+			.wca-page[data-wca-style="fluid"] .wca-status-pill[data-wipe="true"]::before { animation: wca-wipe 200ms var(--wca-ease-enter); }
 			.wca-page[data-wca-style="fluid"] .wca-chevron,
 			.wca-page[data-wca-style="fluid"] .wca-switch-track,
 			.wca-page[data-wca-style="fluid"] .wca-switch-track::after {
@@ -1920,7 +1921,10 @@ window.__ModuleLoader__.load({
 			.wca-page[data-wca-style="fluid"] .wca-disclosure-inner {
 				transition: opacity 160ms var(--wca-ease-enter) 40ms;
 			}
-			.wca-page[data-wca-style="fluid"] .wca-letter[data-new="true"] {
+			/* Every letter animates in once on mount and on a browser refresh; the 30ms stagger comes
+			   from the item's position, not from "this id is new", so an ordinary load moves too.
+			   The marker is cleared on animation end so a later status re-render cannot replay it. */
+			.wca-page[data-wca-style="fluid"] .wca-letter[data-arriving="true"] {
 				animation: wca-arrive 280ms var(--wca-ease-enter) backwards;
 				animation-delay: calc(var(--wca-new-index, 0) * 30ms);
 			}
@@ -1937,35 +1941,18 @@ window.__ModuleLoader__.load({
 				0% { transform: translateY(0); }
 				100% { transform: translateY(1px); }
 			}
-			/* The fallback for a browser/webview without backdrop-filter: opaque token background and the
-			   same two shadow layers, so the material never silently turns into a flat rectangle. */
-			@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-				.wca-page[data-wca-style="fluid"] .wca-letter,
-				.wca-page[data-wca-style="fluid"] .wca-settings-group {
-					-webkit-backdrop-filter: none;
-					backdrop-filter: none;
-					background:
-						linear-gradient(
-							180deg,
-							color-mix(in oklab, var(--wca-tint, var(--dsw-alias-bg-layer-1)) 7%, transparent),
-							transparent 44%
-						),
-						var(--dsw-alias-bg-layer-1);
-				}
-			}
 			.wca-page[data-wca-style="minimal"] .wca-letter,
 			.wca-page[data-wca-style="minimal"] .wca-settings-group {
 				background: var(--dsw-alias-bg-layer-1);
 				box-shadow: none;
+				animation: none;
 			}
+			/* Settings rows collapse where the wider frame is still close to the old 960px comfortable
+			   width; going lower would squeeze the 240px control column on tablets. The removed day
+			   rail no longer needs its own breakpoint. */
 			@media (max-width: 1100px) {
 				.wca-setting { grid-template-columns: minmax(0, 1fr); gap: 6px; }
 				.wca-setting-side { width: 100%; }
-			}
-			@media (max-width: 920px) {
-				.wca-day { grid-template-columns: minmax(0, 1fr); gap: 8px; }
-				.wca-day-label { width: fit-content; position: static; padding-left: 0; }
-				.wca-day-label::after { display: none; }
 			}
 			@media (prefers-reduced-motion: reduce) {
 				.wca-page,
@@ -2144,6 +2131,41 @@ window.__ModuleLoader__.load({
 			const date = new Date(String(value ?? ""));
 			if (Number.isNaN(date.getTime())) return String(value ?? "");
 			return date.toLocaleString(undefined, { hour12: false });
+		}
+
+		/**
+		* One letter's own timestamp. It reads the same field `groupByDay` sorts by and includes the
+		* time of day because the day heading is no longer painted as a rail label. `title` keeps the
+		* complete value that the compact label trims.
+		* @param item - inbox item.
+		* @returns `{ label, title, datetime }`; `datetime` is undefined for an unparseable value.
+		*/
+		function letterTimeOf(item) {
+			const value = item?.at ?? item?.createdAt ?? item?.updatedAt;
+			const date = new Date(String(value ?? ""));
+			if (Number.isNaN(date.getTime())) {
+				const raw = String(value ?? "");
+				return { label: raw, title: raw, datetime: undefined };
+			}
+			return {
+				label: date.toLocaleString(undefined, {
+					month: "short",
+					day: "numeric",
+					hour: "2-digit",
+					minute: "2-digit",
+					hour12: false
+				}),
+				title: date.toLocaleString(undefined, { dateStyle: "full", timeStyle: "short" }),
+				datetime: date.toISOString()
+			};
+		}
+
+		/**
+		* Whether one `animationend` event is this card's own arrival. The article also runs the
+		* approve settle and can host child animations; neither may clear the arrival marker.
+		*/
+		function clearsArrival(event) {
+			return event?.target === event?.currentTarget && event?.animationName === "wca-arrive";
 		}
 
 		/**
@@ -2558,6 +2580,17 @@ window.__ModuleLoader__.load({
 			const deletions = Number.isFinite(Number(item.deletions)) ? Number(item.deletions) : 0;
 			const files = Number.isFinite(Number(item.changedFiles)) ? Number(item.changedFiles) : 0;
 			const draft = props.draft;
+			const stamp = letterTimeOf(item);
+			const stampLabel = stamp.label === "" ? t("day.unknown") : stamp.label;
+			// The entry animation runs once per mounted card. Clearing the marker when its own
+			// animation ends keeps a later settle/wipe re-render from replaying the arrival. A
+			// timer covers minimal and reduced-motion, where no animation event ever fires.
+			const [arriving, setArriving] = react.useState(true);
+			react.useEffect(() => {
+				if (!arriving) return undefined;
+				const timer = setTimeout(() => setArriving(false), 900);
+				return () => clearTimeout(timer);
+			}, [arriving]);
 			const [wipe, setWipe] = react.useState(false);
 			const [settling, setSettling] = react.useState(false);
 			const lastStatus = react.useRef(status);
@@ -2593,9 +2626,13 @@ window.__ModuleLoader__.load({
 					"data-kind": kind,
 					"data-status": status,
 					"data-draft": draft === undefined ? "false" : "true",
-					"data-new": props.newIndex === undefined ? undefined : "true",
+					"data-new": props.isNew === true ? "true" : undefined,
+					"data-arriving": arriving ? "true" : undefined,
 					"data-settling": settling ? "true" : undefined,
-					style: props.newIndex === undefined ? undefined : { "--wca-new-index": String(props.newIndex) },
+					onAnimationEnd: (event) => {
+						if (clearsArrival(event)) setArriving(false);
+					},
+					style: { "--wca-new-index": String(props.arrivalIndex ?? 0) },
 					children: [
 						jsxs(
 							"div",
@@ -2647,22 +2684,41 @@ window.__ModuleLoader__.load({
 							"head"
 						),
 						jsx("h3", { className: "wca-letter-title", children: String(item.title ?? "") || t("card.untitled") }, "title"),
-						isMessage
-							? null
-							: jsxs(
-									"p",
-									{
-										className: "wca-meta",
-										children: [
-											jsx("span", { className: "wca-diff wca-added", children: `+${additions}` }, "add"),
-											" ",
-											jsx("span", { className: "wca-diff wca-removed", children: `−${deletions}` }, "del"),
-											" ",
-											jsx("span", { children: t("card.files", { count: files }) }, "files")
-										]
-									},
-									"meta"
-							  ),
+						jsxs(
+							"p",
+							{
+								className: "wca-meta",
+								children: [
+									isMessage
+										? null
+										: jsxs(
+												"span",
+												{
+													className: "wca-meta-diff",
+													children: [
+														jsx("span", { className: "wca-diff wca-added", children: `+${additions}` }, "add"),
+														" ",
+														jsx("span", { className: "wca-diff wca-removed", children: `−${deletions}` }, "del"),
+														" ",
+														jsx("span", { children: t("card.files", { count: files }) }, "files")
+													]
+												},
+												"diff"
+										  ),
+									jsx(
+										"time",
+										{
+											className: "wca-letter-time",
+											dateTime: stamp.datetime,
+											title: stamp.title === "" ? stampLabel : stamp.title,
+											children: stampLabel
+										},
+										"time"
+									)
+								]
+							},
+							"meta"
+						),
 						jsxs(
 							"div",
 							{
@@ -2815,70 +2871,39 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		* One day group: a vertical rail with a sticky date label, and the letter cards. The label's blur
-		* backdrop fades in only once content has scrolled beneath it.
+		* One day's letters. The day is now only structure and an accessible name: there is no date
+		* rail, sticky label or sentinel, so the cards start at the same left edge as the settings
+		* groups and use the full content width. Every card carries its own timestamp.
 		*/
 		function DayGroup(props) {
-			const [stuck, setStuck] = react.useState(false);
-			const sentinel = react.useRef(null);
-			react.useEffect(() => {
-				const element = sentinel.current;
-				if (element === null || typeof IntersectionObserver === "undefined") return undefined;
-				const root = element.closest(".wca-page");
-				const observer = new IntersectionObserver(
-					(entries) => setStuck(!entries[0].isIntersecting),
-					{ root, rootMargin: "0px 0px -1px 0px", threshold: 0 }
-				);
-				observer.observe(element);
-				return () => observer.disconnect();
-			}, []);
 			return jsxs(
 				"section",
 				{
 					className: "wca-day",
 					"data-day": props.day,
-					children: [
-						jsxs(
-							"div",
-							{
-								className: "wca-day-rail",
-								children: [
-									jsx("span", { ref: sentinel, className: "wca-day-sentinel", "aria-hidden": "true" }, "sentinel"),
-									jsx(
-										"span",
-										{
-											className: "wca-day-label",
-											"data-stuck": stuck ? "true" : "false",
-											children: props.label
-										},
-										"label"
-									)
-								]
-							},
-							"rail"
-						),
-						jsx(
-							"div",
-							{
-								className: "wca-cards",
-								children: props.items.map((item, index) =>
-									jsx(
-										InboxItem,
-										{
-											item,
-											t: props.t,
-											draft: props.drafts[itemDraftKey(item)],
-											newIndex: props.newIds.get(itemDraftKey(item)),
-											onDraft: (mode, text) => props.onDraft(item, mode, text),
-											onSubmitted: () => props.onSubmitted(item)
-										},
-										String(item.id ?? index)
-									)
+					"aria-label": props.label,
+					children: jsx(
+						"div",
+						{
+							className: "wca-cards",
+							children: props.items.map((item, index) =>
+								jsx(
+									InboxItem,
+									{
+										item,
+										t: props.t,
+										draft: props.drafts[itemDraftKey(item)],
+										isNew: props.newIds.get(itemDraftKey(item)) !== undefined,
+										arrivalIndex: Math.min((props.startIndex ?? 0) + index, 8),
+										onDraft: (mode, text) => props.onDraft(item, mode, text),
+										onSubmitted: () => props.onSubmitted(item)
+									},
+									String(item.id ?? index)
 								)
-							},
-							"cards"
-						)
-					]
+							)
+						},
+						"cards"
+					)
 				},
 				props.day
 			);
@@ -2983,7 +3008,14 @@ window.__ModuleLoader__.load({
 				const list = items ?? [];
 				return statusFilter === "all" ? list : list.filter((item) => statusOf(item) === statusFilter);
 			}, [items, statusFilter]);
-			const days = react.useMemo(() => groupByDay(visible), [visible]);
+			const days = react.useMemo(() => {
+				let start = 0;
+				return groupByDay(visible).map((day) => {
+					const startIndex = start;
+					start += day.items.length;
+					return { ...day, startIndex };
+				});
+			}, [visible]);
 			const setDraft = (item, mode, text) => {
 				const id = itemDraftKey(item);
 				const next = { ...drafts };
@@ -3255,6 +3287,7 @@ window.__ModuleLoader__.load({
 																day: day.key,
 																label: dayLabelOf(day.key, t),
 																items: day.items,
+																startIndex: day.startIndex,
 																t,
 																drafts,
 																newIds,
@@ -4771,7 +4804,11 @@ window.__ModuleLoader__.load({
 			restoreSettingsDrafts,
 			sourceSummary,
 			groupByDay,
-			dayKeyOf
+			dayKeyOf,
+			letterTimeOf,
+			clearsArrival,
+			InboxItem,
+			DayGroup
 		};
 		return module.exports;
 	}
