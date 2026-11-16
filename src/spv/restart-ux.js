@@ -29,7 +29,16 @@ import {
   writeFileSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
+
+import {
+  encodeSegment,
+  leaseTimeoutMs,
+  resolveSession,
+  resumeIdFromArgv,
+  sessionHolders,
+  waitForLeaseFree,
+} from './session.js'
 
 /** Marker written by `restart-all --detach`; also the file the narrator watches after the TUI exits. */
 export const ARMED_FILE = 'restart-armed.json'
@@ -288,10 +297,13 @@ export function stripResumeArgs(argv) {
 /**
  * The argv for a relaunch we own: the operator's non-session args plus `--resume <id>` from resume.txt.
  * When no usable id exists, the stale session flags stay stripped, the caller prints one note and the TUI
- * starts fresh rather than dead-ending.
+ * starts fresh rather than dead-ending. `blocked` is the orchestrator's `leaseBlockedPid`: it already
+ * printed the fresh-session line and cleared nothing about the reason, so the relaunch must not add
+ * `--resume` again (that would make the CLI wait the whole lease window a second time).
  */
-function prepareRelaunch(argv, resolve = resolveResume) {
+function prepareRelaunch(argv, resolve = resolveResume, { blocked = false } = {}) {
   const base = stripResumeArgs(argv)
+  if (blocked) return { argv: base, addedResume: false }
   const resume = resolve()
   if (!resume.ok) {
     return {
@@ -460,6 +472,7 @@ const PRIVATE_ENV = [
   'WHEELCHAIR_RESTART_CHAIN',
   'WHEELCHAIR_RESTART_PARENT_PID',
   'WHEELCHAIR_RESTART_PRESET_PATCH',
+  'WHEELCHAIR_RESTART_SESSION_DIR',
   'WHEELCHAIR_AGENT_LAUNCHER',
 ]
 
@@ -502,11 +515,17 @@ function waitForClose(child) {
  * ends the CLI with that outcome's code, and a normal exit is never turned into a relaunch.
  *
  * A relaunch we own appends `--resume <id>` from `~/.dsh-tui/resume.txt` so the TUI comes back in the same
- * SPV conversation. If dsh-tui rejects that resume (a non-zero exit within `RESUME_FAIL_MS`), the CLI says so
- * and retries once without the flag; the operator's own first start and normal long-running exits are never
- * retried.
+ * SPV conversation. Before any launch that carries a resume id (ours or the tmux fallback's `spv --resume`),
+ * the loop waits for the old session's kernel lease to be released; if it cannot be freed in time, the
+ * launch drops `--resume`, prints one line and starts a fresh session instead of racing the old holder into
+ * dsh-tui's safe-mode prompt. If dsh-tui rejects a resume we added (a non-zero exit within
+ * `RESUME_FAIL_MS`), the CLI says so and retries once without the flag; the operator's own first start and
+ * normal long-running exits are never retried.
  *
- * Options: `{ launcher, launcherArgv, stateDir, env, spawn, stdout, stderr, now, sleep, resolveResume }`.
+ * Options: `{ launcher, launcherArgv, stateDir, sessionDir, presetPatch, cwd, env, spawn, stdout, stderr,
+ * now, sleep, resolveResume }`. `sessionDir` is an already-resolved hint for this launch's id;
+ * `presetPatch` is the installed preset patch the CLI owns (kept with the session options so one caller
+ * decides both).
  */
 export async function runSpvSession(options = {}) {
   const launcher = options.launcher
@@ -518,14 +537,73 @@ export async function runSpvSession(options = {}) {
   const warn = options.stderr ?? (line => process.stderr.write(`${line}\n`))
   const now = options.now ?? (() => Date.now())
   const resolve = options.resolveResume ?? resolveResume
+  const cwd = options.cwd ?? process.cwd()
 
   let launchArgv = [...launcherArgv]
   let addedResume = false
   let retriedResume = false
   const childEnv = launcherEnvironment(env)
 
+  /** The session directory for one launch id: the CLI's hint when it names the same id, else a lookup. */
+  const sessionFor = id => {
+    if (
+      typeof options.sessionDir === 'string' &&
+      basename(options.sessionDir) === encodeSegment(id)
+    ) {
+      return { id, dir: options.sessionDir }
+    }
+    return resolveSession({ env, cwd, id })
+  }
+
+  /**
+   * Wait out the previous holder before this launch takes the session. Returns the (possibly stripped)
+   * argv and whether the resume was dropped; a blocked lease is reported once, never retried for the same
+   * launch.
+   */
+  const guardLease = async launch => {
+    const resume = resolve()
+    const id = resumeIdFromArgv(launch, resume.ok ? resume.id : undefined)
+    if (id === undefined) return { argv: launch, blocked: false }
+    const session = sessionFor(id)
+    // No directory means no lease we can name: the launch proceeds and dsh-tui decides.
+    if (session === undefined) return { argv: launch, blocked: false }
+    const lease = await waitForLeaseFree({
+      sessionDir: session.dir,
+      timeoutMs: leaseTimeoutMs(env),
+      say,
+      selfPid: process.pid,
+    })
+    if (lease.ok) return { argv: launch, blocked: false }
+    const pid = lease.holder?.pid ?? 'unknown'
+    say(`restart: the previous session is still mounted by pid ${pid}; starting a fresh session`)
+    return { argv: stripResumeArgs(launch), blocked: true }
+  }
+
   for (;;) {
     const launchedAt = now()
+    // The orchestrator records a failed lease wait in the marker. If the marker names this same resume id
+    // and the named holder still holds the resolved session, this launch did not need to wait: drop
+    // --resume and go fresh, saying so (the orchestrator's line is only in the log on this path). The
+    // holder check, not the marker's age, makes an old marker harmless: the tmux fallback starts long after
+    // the marker was armed, while a leftover pid that is gone is ignored.
+    const pending = readArmed(stateDir)
+    const pendingBlocked = Number(pending?.leaseBlockedPid)
+    if (Number.isInteger(pendingBlocked) && pendingBlocked > 0) {
+      const resume = resolve()
+      const pendingId = resumeIdFromArgv(launchArgv, resume.ok ? resume.id : undefined)
+      const session = pendingId === undefined ? undefined : sessionFor(pendingId)
+      const markerMatches = pendingId !== undefined && pending.sessionId === pendingId
+      const stillHeld = session !== undefined &&
+        sessionHolders({ sessionDir: session.dir }).some(holder => holder.pid === pendingBlocked)
+      if (markerMatches && stillHeld) {
+        say(`restart: the previous session is still mounted by pid ${pendingBlocked}; starting a fresh session`)
+        launchArgv = stripResumeArgs(launchArgv)
+        addedResume = false
+      }
+    }
+    const guarded = await guardLease(launchArgv)
+    if (guarded.blocked) addedResume = false
+    launchArgv = guarded.argv
     let child
     try {
       child = spawnChild('sh', [launcher, ...launchArgv], { stdio: 'inherit', env: childEnv })
@@ -563,6 +641,11 @@ export async function runSpvSession(options = {}) {
       clearRestartState(stateDir)
       return closed.status ?? 1
     }
+    // Capture the orchestrator's blocked-lease hint before narrating: `narrateRestart` clears the marker
+    // on completion, and the next iteration would otherwise re-add `--resume` and wait the whole lease
+    // window a second time.
+    const leaseBlockedPid = Number(marker.leaseBlockedPid)
+    const blocked = Number.isInteger(leaseBlockedPid) && leaseBlockedPid > 0
     const outcome = await narrateRestart({
       stateDir,
       env,
@@ -571,8 +654,9 @@ export async function runSpvSession(options = {}) {
       sleep: options.sleep,
     })
     if (outcome.kind === 'done') {
-      // Back in this terminal, and back in the same conversation when resume.txt names one.
-      const next = prepareRelaunch(launcherArgv, resolve)
+      // Back in this terminal, and back in the same conversation when resume.txt names one. A blocked
+      // lease (already announced by the orchestrator and echoed by the narrator) means fresh argv only.
+      const next = prepareRelaunch(launcherArgv, resolve, { blocked })
       if (next.note !== undefined) say(next.note)
       launchArgv = next.argv
       addedResume = next.addedResume

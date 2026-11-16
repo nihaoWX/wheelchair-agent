@@ -140,8 +140,10 @@ wheelchair-agent where [--json] # 只读列出数据根、preset、四个 wrappe
 wheelchair-agent check          # 运行时健康：服务 / preset / 面板 prepare 值 / prepare dry run
 wheelchair-agent work gc --dry-run   # 回收可重建的 ticket 克隆；挂载时同一实现自动跑一次
 wheelchair-agent work restored <ticket>  # 从 work-reclaimed.jsonl 打印重建命令
-wheelchair-agent restart-all --dry-run   # 重启计划：服务 pid、SPV 链、checkout、日志与每一步命令
+wheelchair-agent restart-all --dry-run   # 重启计划：服务 pid、SPV 链、会话租约持有者、checkout、日志与每一步命令
 wheelchair-agent restart-all             # 停服务 → 停 SPV 链 → 冷安装 → 起服务 → 本终端重开 TUI
+wheelchair-agent session release --dry-run          # 默认 resume.txt 的会话（否则 workspace 最新）：列出内核 fd 持有者
+wheelchair-agent session release --session <id>     # 释放卡住的会话租约（TERM → 等待 → KILL；服务持有时拒绝）
 ```
 
 `work gc` 的门禁与记录格式见 `docs/work-gc.md`。
@@ -166,7 +168,23 @@ resume 时再打印一行，去掉 `--resume` 重试一次。tmux session `dsh-s
 `install.sh` 冷安装 → 服务启动 → 本终端重开 TUI**；这个顺序是 `install.sh` 的冷安装守卫唯一接受的
 （服务或活着的 SPV 会话占用时它会拒绝，且半安装的服务比停着的服务更糟）。它只接受 `--force`：打断
 正在跑的 worker 与排队的 ticket（会先打印打断了什么）。安装失败或服务起不来时只打印原因、日志路径和
-手工修复命令，不 relaunch。每一步连同命令与退出码写进 `<root>/logs/restart-all.log`（默认
+手工修复命令，不 relaunch。
+
+kill set 不只按 `--patch` 认进程：还会扫 `/proc/<pid>/fd`，把**内核**认定的会话租约持有者
+（`<session dir>/session.lock` / `session.v4.jsonl.zstd` 的打开 fd）一并算进去；链杀完之后等待这些 fd
+关闭（`WHEELCHAIR_RESTART_LEASE_MS`，默认 15s），打印 `restart: waiting for pid <pid> to release the
+session…`。等不到就**不带 `--resume`** 开新会话，并打印 `restart: the previous session is still mounted
+by pid <pid>; starting a fresh session`，所以不会再撞上 dsh-tui 的 "mounted by another TUI terminal" 而掉进
+safe-mode。服务停掉之后、链杀之前，如果 `tmux has-session -t =dsh-spv` 成功还会先
+`tmux kill-session -t =dsh-spv` 清掉上次兜底留下的陈旧会话（失败只警告；CLI 自己在 `dsh-spv` 里时绝不杀）。
+手工处理卡住的租约用 `wheelchair-agent session release [--session <id>] [--dry-run]`：默认取
+`~/.dsh-tui/resume.txt` 里的会话（与 restart-all 同样跨项目解析）；resume.txt 有 id 但找不到目录时直接失败，
+不会改挑别的会话；只有 resume.txt 缺失/无效/不可读时才退回当前 workspace 最新的会话。
+`--dry-run` 列出 `pid <pid>  <cmdline>` 与目录，并标记不会发的持有者（服务/本进程/祖先），不加时按
+TERM → 等待 → KILL 释放。持有者只有本进程/祖先链时拒绝；任何持有者是 superagent 服务时整体拒绝
+（`--dry-run` 会标记 `(superagent service; not released)`）——服务不是本命令该停的，跳过它又会留下锁；
+跳过的本进程/祖先在其余持有者释放后仍持有租约时报告 `FAIL` 并退出 1，不谎报 `released`。
+每一步连同命令与退出码写进 `<root>/logs/restart-all.log`（默认
 `~/.wheelchair-agent/logs/restart-all.log`）。详见 `docs/restart.md`。
 
 ## 标准工具从哪来
