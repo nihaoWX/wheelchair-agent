@@ -424,6 +424,15 @@ export const HOOK_TIMEOUT_DEFAULT = 10_000
  */
 export const HOOK_TIMEOUT_CAP = 300_000
 
+/**
+ * 服务侧 runner 的默认轮询间隔（秒）：`hooks.intervalSeconds`。`0` 表示暂停（runner 仍挂着，改回正数
+ * 不用重启），上限一天——再长就没有"自动"的意思了。默认值不落盘，未来的默认值升级才能到达旧文件。
+ */
+export const HOOK_INTERVAL_DEFAULT = 15
+
+/** `hooks.intervalSeconds` 的硬上限（一天）。读盘超限夹住并 warning，写入直接拒绝。 */
+export const HOOK_INTERVAL_MAX = 86_400
+
 /** 行名 / 标签的长度上限；CLI 与模板名用的是同一档。 */
 const HOOK_NAME_LIMIT = 120
 
@@ -434,11 +443,17 @@ const HOOK_SCRIPT_LIMIT = 20_000
 const HOOK_ITEM_ID = /^hook-[A-Za-z0-9][A-Za-z0-9._:-]{0,74}$/
 
 /** `hooks` 子块认识的字段；多出来的按坏字段处理（读时 warning、写时拒绝）。 */
-const HOOK_FIELDS = ['enabled', 'scriptTimeoutMs', 'items', 'labels']
+const HOOK_FIELDS = ['enabled', 'scriptTimeoutMs', 'intervalSeconds', 'items', 'labels']
 
-/** 默认的 `hooks` 子块：全开、10 秒、没有自定义行、没有改名。 */
+/** 默认的 `hooks` 子块：全开、10 秒超时、15 秒轮询、没有自定义行、没有改名。 */
 export function defaultHooks() {
-  return { enabled: true, scriptTimeoutMs: HOOK_TIMEOUT_DEFAULT, items: [], labels: {} }
+  return {
+    enabled: true,
+    scriptTimeoutMs: HOOK_TIMEOUT_DEFAULT,
+    intervalSeconds: HOOK_INTERVAL_DEFAULT,
+    items: [],
+    labels: {},
+  }
 }
 
 /** 一个可改的深拷贝，保存路径在它上面做合并。 */
@@ -446,6 +461,7 @@ function cloneHooks(hooks) {
   return {
     enabled: hooks.enabled,
     scriptTimeoutMs: hooks.scriptTimeoutMs,
+    intervalSeconds: hooks.intervalSeconds,
     items: hooks.items.map(item => ({ ...item })),
     labels: { ...hooks.labels },
   }
@@ -470,6 +486,31 @@ function normalizeHookTimeout(raw, { clamp = false } = {}) {
     // 读文件时夹住（并 warning），写入时拒绝：磁盘上的手改可以救，API/CLI 的输入不行。
     if (clamp) return HOOK_TIMEOUT_CAP
     throw invalid(`a hook timeout must be at most ${HOOK_TIMEOUT_CAP} ms (the hard cap), got ${describeValue(raw)}.`)
+  }
+  return value
+}
+
+/**
+ * 轮询间隔（秒）：整数、至少 0、至多一天。`0` 是"暂停"而不是错误；负数与小数是显式错误。
+ * 与超时同一条规则：读盘超限夹住（并 warning），写入直接拒绝。
+ */
+function normalizeHookInterval(raw, { clamp = false } = {}) {
+  if (typeof raw === 'boolean' || raw === null || typeof raw === 'object' || String(raw).trim() === '') {
+    throw invalid(`a hook interval must be a whole number of seconds, got ${describeValue(raw)}.`)
+  }
+  const value = typeof raw === 'number' ? raw : Number(String(raw).trim())
+  if (!Number.isFinite(value) || !Number.isInteger(value)) {
+    throw invalid(`a hook interval must be a whole number of seconds, got ${describeValue(raw)}.`)
+  }
+  if (value < 0) {
+    throw invalid(`a hook interval must be zero (paused) or more seconds, got ${describeValue(raw)}.`)
+  }
+  if (value > HOOK_INTERVAL_MAX) {
+    // 读文件时夹住（并 warning），写入时拒绝：磁盘上的手改可以救，API/CLI 的输入不行。
+    if (clamp) return HOOK_INTERVAL_MAX
+    throw invalid(
+      `a hook interval must be at most ${HOOK_INTERVAL_MAX} seconds (one day), got ${describeValue(raw)}.`,
+    )
   }
   return value
 }
@@ -595,6 +636,7 @@ function applyHooks(raw, hooks) {
     hooks.enabled = raw.enabled
   }
   if (raw.scriptTimeoutMs !== undefined) hooks.scriptTimeoutMs = normalizeHookTimeout(raw.scriptTimeoutMs)
+  if (raw.intervalSeconds !== undefined) hooks.intervalSeconds = normalizeHookInterval(raw.intervalSeconds)
   if (raw.items !== undefined) {
     if (!Array.isArray(raw.items)) throw invalid('hooks.items must be an array of hook rows.')
     const items = []
@@ -640,6 +682,16 @@ function readStoredHooks(raw, warnings) {
       }
     } catch (error) {
       warnings.push(`ignoring hooks.scriptTimeoutMs: ${error.message}`)
+    }
+  }
+  if (raw.intervalSeconds !== undefined) {
+    try {
+      hooks.intervalSeconds = normalizeHookInterval(raw.intervalSeconds, { clamp: true })
+      if (Number(raw.intervalSeconds) > HOOK_INTERVAL_MAX) {
+        warnings.push(`hooks.intervalSeconds is over the ${HOOK_INTERVAL_MAX}s cap; using the cap.`)
+      }
+    } catch (error) {
+      warnings.push(`ignoring hooks.intervalSeconds: ${error.message}`)
     }
   }
   if (raw.items !== undefined) {
@@ -698,6 +750,7 @@ function serializeHooks(hooks) {
   const stored = {}
   if (!hooks.enabled) stored.enabled = false
   if (hooks.scriptTimeoutMs !== HOOK_TIMEOUT_DEFAULT) stored.scriptTimeoutMs = hooks.scriptTimeoutMs
+  if (hooks.intervalSeconds !== HOOK_INTERVAL_DEFAULT) stored.intervalSeconds = hooks.intervalSeconds
   if (hooks.items.length > 0) stored.items = hooks.items.map(item => ({ ...item }))
   if (Object.keys(hooks.labels).length > 0) stored.labels = { ...hooks.labels }
   return stored
@@ -1015,6 +1068,7 @@ function compose({ stored, env, config }) {
     hooks: {
       enabled: stored.hooks.enabled,
       scriptTimeoutMs: stored.hooks.scriptTimeoutMs,
+      intervalSeconds: stored.hooks.intervalSeconds,
       items: stored.hooks.items.map(item => ({ ...item })),
       labels: { ...stored.hooks.labels },
     },

@@ -237,6 +237,13 @@ else
   fi
 fi
 
+# The spool payload promises an absolute workspace; normalize once the directory exists so a relative
+# DSH_SUPERAGENT_DIR (manual runs, the prepare test) does not leak a relative path into the spool.
+case $DIR in
+  /*) ;;
+  *) DIR=$(CDPATH= cd -- "$DIR" 2>/dev/null && pwd -P) || die "cannot resolve the Ticket directory $DIR to an absolute path" ;;
+esac
+
 # ------------------------------------------------------------------ AGENTS.md
 
 STEP=agentsmd
@@ -372,5 +379,56 @@ if [ "$KIND" = tools ]; then
   fi
 fi
 
+# --- hook spool: ticket.started ---------------------------------------------------------------
+#
+# The service-side hook runner is the only executor (see docs/hooks.md). prepare never runs a hook
+# inline: it writes one atomic JSON file under <data root>/records/hook-events/ and exits, so a slow
+# or failing script can never delay or fail a Ticket. Pure POSIX sh: no node, no python.
+json_escape() {
+  # Fold every line into one pattern space FIRST, then escape: escaping only the first line before the
+  # fold would leave quotes/backslashes on later lines unescaped. Other control characters are
+  # pathological (upstream ticket names are slugged); the runner quarantines any invalid spool file.
+  printf '%s' "$1" | sed -e ':a' -e '$!{N;ba}' \
+    -e 's/\\/\\\\/g' -e 's/"/\\"/g' -e 's/\r/\\r/g' -e 's/\t/\\t/g' -e 's/\n/\\n/g' || true
+}
+
+spool_ticket_started() {
+  [ -n "${DATA_ROOT:-}" ] || return 1
+  dir=$DATA_ROOT/records/hook-events
+  mkdir -p "$dir" 2>/dev/null || return 1
+  ticket=${DSH_SUPERAGENT_TICKET:-}
+  if [ -z "$ticket" ]; then
+    ticket=$(basename "$DIR" 2>/dev/null || echo ticket)
+  fi
+  name=${DSH_SUPERAGENT_NAME:-}
+  project=${DSH_SUPERAGENT_SPV_PROJECT:-$PROJECT}
+  at=$(date -u +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || return 1
+  event_id="$ticket:$at:$$"
+  payload="{\"version\":1,\"event\":\"ticket.started\",\"eventId\":\"$(json_escape "$event_id")\",\"at\":\"$(json_escape "$at")\",\"payload\":{\"ticketId\":\"$(json_escape "$ticket")\""
+  if [ -n "$name" ]; then
+    payload="$payload,\"name\":\"$(json_escape "$name")\""
+  fi
+  payload="$payload,\"project\":\"$(json_escape "$project")\",\"workspace\":\"$(json_escape "$DIR")\",\"at\":\"$(json_escape "$at")\"}}"
+  safe=$(printf '%s' "$event_id" | tr -c 'A-Za-z0-9._-' '_' 2>/dev/null) || safe=
+  [ -n "$safe" ] || safe=occurrence
+  tmp="$dir/.tmp-$$-$(date +%s 2>/dev/null || echo 0)"
+  if ! printf '%s\n' "$payload" > "$tmp" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  chmod 644 "$tmp" 2>/dev/null || true
+  if ! mv "$tmp" "$dir/ticket.started-$safe.json" 2>/dev/null; then
+    rm -f "$tmp" 2>/dev/null || true
+    return 1
+  fi
+  return 0
+}
+
+STEP=hook-spool
+if ! dry_run; then
+  if ! spool_ticket_started; then
+    step "warning: could not write the ticket.started hook spool; the Ticket continues (that hook will not run for this launch)"
+  fi
+fi
 STEP=done
 step "ready: $PROJECT -> $DIR"

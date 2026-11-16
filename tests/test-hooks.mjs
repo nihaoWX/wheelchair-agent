@@ -44,6 +44,7 @@ import {
   eventsCursorPath,
   hasEvent,
   hookCwd,
+  hookSpoolDir,
   readCursor,
   readHookRecords,
   readHooks,
@@ -52,7 +53,11 @@ import {
   runHooksFor,
   runOneHook,
   samplePayload,
+  writeHookSpoolEvent,
 } from '../src/shared/hooks.js'
+import { appendReview, writeItem } from '../src/spv/inbox.js'
+import { startHookRunner } from '../src/spv/hook-runner.js'
+import { submitTask } from '../src/spv/dispatch.js'
 import { dirsOf, writeMessage } from '../src/shared/queue.js'
 import { SETTINGS_FILE, resolveSettings, saveSettings } from '../src/shared/settings.js'
 
@@ -71,11 +76,12 @@ async function sandbox() {
     root: join(base, 'data'),
     state: join(base, 'state'),
     queue: join(base, 'state', 'spv'),
+    inbox: join(base, 'data', 'inbox'),
     workspace: join(base, 'workspace'),
     checkout: join(base, 'checkout'),
     home: join(base, 'home'),
   }
-  for (const dir of [box.root, box.state, box.queue, box.workspace, box.checkout, box.home]) {
+  for (const dir of [box.root, box.state, box.queue, box.inbox, box.workspace, box.checkout, box.home]) {
     await mkdir(dir, { recursive: true })
   }
   box.env = {
@@ -276,8 +282,17 @@ async function testTableView() {
 
   // 派生 eventId：每个事件用事实字段，都有稳定答案。
   assert.equal(eventIdFor('ticket.delivered', { messageId: 'm-1' }), 'm-1')
-  assert.equal(eventIdFor('inbox.issue', { itemId: 'i-1', reviewIndex: 2 }), 'review:i-1:2')
-  assert.equal(eventIdFor('inbox.issue', { itemId: 'i-1', reviewIndex: 2, messageId: 'n-1' }), 'n-1')
+  assert.equal(eventIdFor('inbox.issue', { itemId: 'i-1', reviewIndex: 2 }), 'inbox.issue:i-1:2')
+  assert.equal(
+    eventIdFor('inbox.issue', { itemId: 'i-1', reviewIndex: 2, messageId: 'n-1' }),
+    'inbox.issue:i-1:2',
+    'the notice message id is not the inbox occurrence id',
+  )
+  assert.notEqual(
+    eventIdFor('inbox.issue', { itemId: 'i-1', reviewIndex: 2, messageId: 'n-1' }),
+    eventIdFor('ticket.attention', { messageId: 'n-1' }),
+    'inbox.issue and ticket.attention use different cursor ids',
+  )
   assert.equal(eventIdFor('inbox.merged', { itemId: 'i-1', pulledSha: 'abc' }), 'merge:i-1:abc')
   assert.equal(eventIdFor('ticket.started', { ticketId: 't-1', at: 'now' }), 't-1:now')
   assert.equal(eventIdFor('ticket.started', { ticketId: 't-1' }), undefined, 'no at means no stable occurrence')
@@ -477,9 +492,9 @@ async function testPausedAndEmpty() {
   const emptyRun = await runHooksFor('inbox.approved', emptyPayload, { env: emptyBox.env, cwd: emptyBox.checkout })
   assert.equal(emptyRun.skipped, 'empty')
   assert.equal(emptyRun.ran, 0)
-  assert.equal(emptyRun.eventId, 'review:i-1:0')
+  assert.equal(emptyRun.eventId, 'inbox.approved:i-1:0')
   await assert.rejects(readFile(emptyBox.records, 'utf8'), error => error.code === 'ENOENT', 'empty items write no record')
-  assert.equal(hasEvent('review:i-1:0', { env: emptyBox.env }), true, 'an empty occurrence is still claimed')
+  assert.equal(hasEvent('inbox.approved:i-1:0', { env: emptyBox.env }), true, 'an empty occurrence is still claimed')
   // 同一个 occurrence 再来一次：cursor 命中，不再触发任何东西。
   assert.equal(
     (await runHooksFor('inbox.approved', emptyPayload, { env: emptyBox.env, cwd: emptyBox.checkout })).skipped,
@@ -497,7 +512,7 @@ async function testPausedAndEmpty() {
   const disabledRun = await runHooksFor('inbox.approved', emptyPayload, { env: disabledBox.env, cwd: disabledBox.checkout })
   assert.equal(disabledRun.skipped, 'empty')
   await assert.rejects(readFile(disabledBox.records, 'utf8'), error => error.code === 'ENOENT', 'a disabled row writes nothing')
-  assert.equal(hasEvent('review:i-1:0', { env: disabledBox.env }), true, 'an all-disabled occurrence is claimed too')
+  assert.equal(hasEvent('inbox.approved:i-1:0', { env: disabledBox.env }), true, 'an all-disabled occurrence is claimed too')
 }
 
 /** cursor：同一个 id 只跑一次，跨进程（重启）成立。 */
@@ -622,6 +637,7 @@ async function testQueuePrimitives() {
     kind: 'reply',
     text: '做完了',
     thread: 'inbox-1',
+    file: join(dirs.read, 'm-reply.json'),
     at: '2026-11-16T00:00:02.000Z',
     ticketId: 'tk-1',
   })
@@ -1153,6 +1169,13 @@ async function testExplicitTestRunsAnyway() {
   // still no real occurrence
   await assert.rejects(readFile(box.records, 'utf8'), error => error.code === 'ENOENT')
   await assert.rejects(readFile(box.cursor, 'utf8'), error => error.code === 'ENOENT')
+
+  // ticket.started's documented sample used to point at /home/operator/...; the test must use a real cwd.
+  const started = cli(box, ['hook', 'add', '--event', 'ticket.started', '--name', 'started', '--script', 'printf started'])
+  assert.equal(started.status, 0, started.stderr)
+  const startedTest = cli(box, ['hook', 'test', started.stdout.trim()])
+  assert.equal(startedTest.status, 0, startedTest.stderr)
+  assert.match(startedTest.stdout, /cwd: /)
 }
 
 /** 队列根的 ticket-clone 守卫：默认根从 clone 里必须拒绝，显式覆盖照旧。 */
@@ -1180,9 +1203,390 @@ async function testQueueRootCloneGuard() {
   assert.deepEqual(await cloned.readQueueEvents({ env, dirs: dirsOf(box.queue) }), [])
 }
 
-// ---------------------------------------------------------------------- main
+// ------------------------------------------------------------ stage-2 wiring
+
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
+
+async function waitFor(predicate, label, timeoutMs = 8000) {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await predicate()) return
+    await sleep(10)
+  }
+  throw new Error(`timed out after ${timeoutMs}ms waiting for ${label}`)
+}
+
+async function waitForText(file, label, timeoutMs = 8000) {
+  await waitFor(async () => {
+    try {
+      await stat(file)
+      return true
+    } catch {
+      return false
+    }
+  }, label, timeoutMs)
+  return readFile(file, 'utf8')
+}
+
+/** Wait until the hook wrote a complete JSON payload (the marker file appears before `cat` finishes). */
+async function waitForJson(file, label, timeoutMs = 8000) {
+  let value
+  await waitFor(async () => {
+    try {
+      value = JSON.parse(await readFile(file, 'utf8'))
+      return true
+    } catch {
+      return false
+    }
+  }, label, timeoutMs)
+  return value
+}
+
+function startTestRunner(box, { intervalSecondsOf = () => 0, log = () => {} } = {}) {
+  return startHookRunner({
+    env: box.env,
+    home: box.root,
+    stateDir: box.state,
+    queueRootOf: () => box.queue,
+    intervalSecondsOf,
+    log,
+    unref: true,
+  })
+}
+
+/** The inbox/dispatch wiring reads process.env directly; pin it to the sandbox for the duration. */
+async function withSandboxEnv(box, fn) {
+  const saved = { ...process.env }
+  for (const key of Object.keys(process.env)) {
+    if (!(key in box.env)) delete process.env[key]
+  }
+  Object.assign(process.env, box.env)
+  try {
+    return await fn()
+  } finally {
+    for (const key of Object.keys(process.env)) {
+      if (!(key in saved)) delete process.env[key]
+    }
+    Object.assign(process.env, saved)
+  }
+}
+
+/** `hooks.intervalSeconds`: default 15, 0 pauses, invalid rejected, over-cap read clamps with a warning. */
+async function testStage2IntervalSetting() {
+  const box = await sandbox()
+  assert.equal(snapshot(box).hooks.intervalSeconds, 15, 'the default runner interval is 15s')
+  const off = setHooks(box, { intervalSeconds: 0 })
+  assert.equal(off.hooks.intervalSeconds, 0)
+  assert.equal(readHooks({ env: box.env }).intervalSeconds, 0)
+  assert.deepEqual((await readJson(box.settings)).hooks, { intervalSeconds: 0 }, '0 is persisted, the 15 default is not')
+  assert.throws(() => setHooks(box, { intervalSeconds: -1 }), /zero .*or more seconds/)
+  assert.throws(() => setHooks(box, { intervalSeconds: 1.5 }), /whole number/)
+  assert.throws(() => setHooks(box, { intervalSeconds: 86401 }), /at most 86400/)
+  const raw = await readJson(box.settings)
+  raw.hooks = { ...(raw.hooks ?? {}), intervalSeconds: 900000 }
+  await writeFile(box.settings, `${JSON.stringify(raw, null, 2)}\n`, 'utf8')
+  const clamped = readHooks({ env: box.env })
+  assert.equal(clamped.intervalSeconds, 86400, 'a hand-edited over-cap interval clamps on read')
+  assert.match(clamped.warning, /over the 86400s cap/)
+}
+
+/** The runner reads the spool and the queue, maps the three ticket events, and is exactly-once. */
+async function testStage2RunnerAndSpool() {
+  const box = await sandbox()
+  const markers = join(box.base, 'markers')
+  await mkdir(markers, { recursive: true })
+  const marker = name => join(markers, `${name}.json`)
+  const add = (event, name, script = `cat > ${q(marker(name))}`) => addHook(box, { event, name, script })
+  await add('ticket.acknowledged', 'ack')
+  await add('ticket.started', 'started')
+  await add('spv.dispatch', 'dispatch')
+  await add(
+    'ticket.delivered',
+    'delivered',
+    `cat > ${q(marker('delivered'))}; printf 'x\n' >> ${q(join(markers, 'delivered.count'))}`,
+  )
+  await add(
+    'ticket.attention',
+    'attention',
+    `cat > ${q(marker('attention'))}; printf 'x\n' >> ${q(join(markers, 'attention.count'))}`,
+  )
+
+  const runner = startTestRunner(box)
+  try {
+    await writeMessage(dirsOf(box.queue), {
+      id: 'm-ack',
+      source: 'spv',
+      thread: 'main',
+      kind: 'acknowledgement',
+      text: 'ok',
+      at: '2026-11-16T00:00:01.000Z',
+    })
+    await runner.drainOnce()
+    const ack = await waitForJson(marker('ack'), 'the acknowledgement payload')
+    assert.equal(ack.messageId, 'm-ack')
+    assert.equal(ack.kind, 'acknowledgement')
+    assert.equal(ack.thread, 'main')
+    assert.equal(ack.file, join(box.queue, 'outbox', 'm-ack.json'))
+    assert.equal(ack.text, 'ok')
+
+    // A reply already consumed into outbox/read is replayed by the archive reader exactly once.
+    await mkdir(join(box.queue, 'outbox', 'read'), { recursive: true })
+    await writeMessage(dirsOf(box.queue), {
+      id: 'm-reply',
+      source: 'spv',
+      thread: 'main',
+      kind: 'reply',
+      text: 'done',
+      at: '2026-11-16T00:00:01.500Z',
+    })
+    await rename(join(box.queue, 'outbox', 'm-reply.json'), join(box.queue, 'outbox', 'read', 'm-reply.json'))
+    await runner.drainOnce()
+    await runner.drainOnce()
+    const delivered = await waitForJson(marker('delivered'), 'the delivered payload')
+    assert.equal(delivered.messageId, 'm-reply')
+    assert.equal(delivered.kind, 'reply')
+    assert.equal(delivered.text, 'done')
+    assert.equal(delivered.file, join(box.queue, 'outbox', 'read', 'm-reply.json'))
+    assert.equal(
+      (await readFile(join(markers, 'delivered.count'), 'utf8')).trim().split('\n').length,
+      1,
+      'an archived message runs exactly once',
+    )
+
+    const startedPayload = {
+      ticketId: 'tk-1',
+      name: 'n1',
+      project: 'tools/demo',
+      workspace: box.workspace,
+      at: '2026-11-16T00:00:02.000Z',
+    }
+    const spoolFile = writeHookSpoolEvent('ticket.started', startedPayload, {
+      eventId: 'tk-1:at-1',
+      env: box.env,
+    })
+    assert.ok(spoolFile, 'the spool writer returns the file')
+    await runner.drainOnce()
+    assert.deepEqual(await waitForJson(marker('started'), 'the ticket.started payload'), startedPayload)
+    await waitFor(async () => {
+      try {
+        await stat(spoolFile)
+        return false
+      } catch {
+        return true
+      }
+    }, 'the spool file to be removed after the run')
+
+    await withSandboxEnv(box, async () => {
+      await submitTask(dirsOf(box.queue), { project: 'tools/demo', task: 'do it', thread: 'main' })
+    })
+    await runner.drainOnce()
+    const dispatched = await waitForJson(marker('dispatch'), 'the spv.dispatch payload')
+    assert.equal(dispatched.project, 'tools/demo')
+    assert.equal(dispatched.thread, 'main')
+    assert.equal(dispatched.text, 'do it')
+    assert.match(dispatched.taskId, /^[0-9a-f]{32}$/)
+
+    // Exactly-once: one occurrence, two ticks, a fresh runner reading the same cursor.
+    await writeMessage(dirsOf(box.queue), {
+      id: 'm-notice',
+      source: 'spv',
+      thread: 'main',
+      kind: 'notice',
+      text: 'look',
+      at: '2026-11-16T00:00:03.000Z',
+    })
+    await runner.drainOnce()
+    await runner.drainOnce()
+    const attention = await waitForJson(marker('attention'), 'the attention payload')
+    assert.equal(attention.messageId, 'm-notice')
+    assert.equal(attention.kind, 'notice')
+    assert.equal(attention.text, 'look')
+    const countOf = async () => (await readFile(join(markers, 'attention.count'), 'utf8')).trim().split('\n').length
+    assert.equal(await countOf(), 1, 'two ticks, one occurrence, one run')
+    const fresh = startTestRunner(box)
+    await fresh.drainOnce()
+    fresh.stop()
+    await fresh.done
+    assert.equal(await countOf(), 1, 'a fresh runner (restart) does not re-run the occurrence')
+
+    // A malformed spool file is quarantined, not retried forever.
+    const spoolDir = hookSpoolDir({ env: box.env })
+    const bad = join(spoolDir, 'bad.json')
+    await writeFile(bad, '{not json', 'utf8')
+    await runner.drainOnce()
+    await waitFor(async () => {
+      try {
+        await stat(`${bad}.bad`)
+        return true
+      } catch {
+        return false
+      }
+    }, 'the bad spool file to be quarantined')
+
+    // A very long queue body is truncated and points at the file with the full text.
+    const long = 'x'.repeat(13000)
+    await writeMessage(dirsOf(box.queue), {
+      id: 'm-long',
+      source: 'spv',
+      thread: 'main',
+      kind: 'reply',
+      text: long,
+      at: '2026-11-16T00:00:04.000Z',
+    })
+    const events = await readQueueEvents({ env: box.env })
+    const longEvent = events.find(entry => entry.eventId === 'm-long')
+    assert.ok(longEvent, 'the long message is offered')
+    assert.equal(longEvent.payload.text.length, 12000)
+    assert.equal(longEvent.payload.textTruncated, true)
+    assert.equal(longEvent.payload.file, join(box.queue, 'outbox', 'm-long.json'))
+  } finally {
+    runner.stop()
+    await runner.done
+  }
+
+  // `hooks.intervalSeconds: 0` pauses the runner: no reads, no runs.
+  const pausedBox = await sandbox()
+  const pausedMarker = join(pausedBox.base, 'paused.marker')
+  await addHook(pausedBox, {
+    event: 'ticket.acknowledged',
+    name: 'paused',
+    script: `touch ${q(pausedMarker)}`,
+  })
+  await writeMessage(dirsOf(pausedBox.queue), {
+    id: 'm-paused',
+    source: 'spv',
+    thread: 'main',
+    kind: 'acknowledgement',
+    text: 'x',
+    at: '2026-11-16T00:00:05.000Z',
+  })
+  const paused = startTestRunner(pausedBox, { intervalSecondsOf: () => 0 })
+  await sleep(1200)
+  await assert.rejects(() => stat(pausedMarker), 'interval 0 runs nothing')
+  paused.stop()
+  await paused.done
+}
+
+/** approve / issue fire after the core write, and a failing or hanging hook cannot undo it. */
+async function testStage2InboxWiring() {
+  const box = await sandbox()
+  const marker = join(box.base, 'approved.json')
+  await addHook(box, { event: 'inbox.approved', name: 'approved', script: `cat > ${q(marker)}` })
+  const item = {
+    id: 'acme-demo-1',
+    kind: 'pr',
+    pr: 1,
+    repo: 'acme/demo',
+    title: 'demo',
+    url: 'https://github.com/acme/demo/pull/1',
+    state: 'OPEN',
+    body: '',
+    at: new Date().toISOString(),
+    review: [],
+  }
+  await writeItem(box.inbox, item)
+
+  await withSandboxEnv(box, async () => {
+    await appendReview(box.inbox, { id: item.id, kind: 'approve', text: 'ok' })
+  })
+  const approved = await waitForJson(marker, 'the inbox.approved payload')
+  assert.equal(approved.itemId, item.id)
+  assert.equal(approved.kind, 'pr')
+  assert.equal(approved.pr, 1)
+  assert.equal(approved.repo, 'acme/demo')
+  assert.equal(approved.reviewIndex, 0)
+  assert.equal(approved.comment, 'ok')
+  assert.equal((await readJson(join(box.inbox, `${item.id}.json`))).review.length, 1, 'the review is persisted')
+
+  const issueMarker = join(box.base, 'issue.json')
+  await addHook(box, { event: 'inbox.issue', name: 'issue', script: `cat > ${q(issueMarker)}` })
+  await withSandboxEnv(box, async () => {
+    await appendReview(box.inbox, { id: item.id, kind: 'issue', text: 'bad' })
+  })
+  const issue = await waitForJson(issueMarker, 'the inbox.issue payload')
+  assert.equal(issue.itemId, item.id)
+  assert.equal(issue.kind, 'pr')
+  assert.equal(issue.pr, 1)
+  assert.equal(issue.reviewIndex, 1)
+  assert.equal(issue.comment, 'bad')
+  assert.equal(issue.messageId, 'inbox-acme-demo-1-review-1')
+  assert.equal(issue.thread, 'inbox-1')
+  assert.ok((await readdir(join(box.queue, 'outbox'))).includes('inbox-acme-demo-1-review-1.json'), 'the notice is queued')
+
+  // Regression: the inbox.issue occurrence must not claim the notice's message id, or the queue reader's
+  // ticket.attention occurrence (same notice id) would be swallowed by the global cursor.
+  const attentionMarker = join(box.base, 'attention-after-issue.json')
+  await addHook(box, {
+    event: 'ticket.attention',
+    name: 'attention-after-issue',
+    script: `cat > ${q(attentionMarker)}`,
+  })
+  const attentionRunner = startTestRunner(box)
+  try {
+    await attentionRunner.drainOnce()
+  } finally {
+    attentionRunner.stop()
+    await attentionRunner.done
+  }
+  const attentionPayload = await waitForJson(attentionMarker, 'ticket.attention for the same notice')
+  assert.equal(attentionPayload.messageId, 'inbox-acme-demo-1-review-1')
+  assert.equal(attentionPayload.kind, 'notice')
+
+  // Failing + hanging hooks are recorded; the next hook still runs and the approve is still persisted.
+  const isoMarker = join(box.base, 'after-failure.json')
+  const failing = await addHook(box, { event: 'inbox.approved', name: 'fail', script: 'exit 1' })
+  const hanging = await addHook(box, { event: 'inbox.approved', name: 'hang', script: 'sleep 5', timeoutMs: 100 })
+  const after = await addHook(box, {
+    event: 'inbox.approved',
+    name: 'after',
+    script: `printf 'noise\\n' >&2; cat > ${q(isoMarker)}`,
+  })
+  await withSandboxEnv(box, async () => {
+    await appendReview(box.inbox, { id: item.id, kind: 'approve', text: 'again' })
+  })
+  await waitForText(isoMarker, 'the hook after the failing and timing-out ones')
+  const stored = await readJson(join(box.inbox, `${item.id}.json`))
+  assert.equal(stored.review.length, 3, 'the approve review is still persisted after the hook failures')
+  const records = await readHookRecords({ env: box.env })
+  assert.ok(records.some(record => record.hookId === failing.id && record.exit === 1), 'the exit-1 hook is recorded')
+  assert.ok(records.some(record => record.hookId === hanging.id && record.timedOut === true), 'the timeout is recorded')
+  assert.ok(records.some(record => record.hookId === after.id && record.exit === 0), 'the next hook ran')
+  assert.ok(
+    records.some(record => record.hookId === after.id && String(record.stderr).includes('noise')),
+    'a hook that writes to stderr still runs and is recorded',
+  )
+
+  // inbox.issue fires for a letter (spv_message) too; no repo/pr, the letter's own thread.
+  const letterMarker = join(box.base, 'letter-issue.json')
+  await addHook(box, { event: 'inbox.issue', name: 'letter', script: `cat > ${q(letterMarker)}` })
+  const letter = {
+    id: 'spv-main-20260101-0001',
+    kind: 'spv_message',
+    thread: 'main',
+    title: 'decision',
+    body: 'body',
+    at: new Date().toISOString(),
+    review: [],
+  }
+  await writeItem(box.inbox, letter)
+  await withSandboxEnv(box, async () => {
+    await appendReview(box.inbox, { id: letter.id, kind: 'issue', text: 'object' })
+  })
+  const letterPayload = await waitForJson(letterMarker, 'the letter inbox.issue payload')
+  assert.equal(letterPayload.itemId, letter.id)
+  assert.equal(letterPayload.kind, 'spv_message')
+  assert.equal(letterPayload.pr, undefined)
+  assert.equal(letterPayload.repo, undefined)
+  assert.equal(letterPayload.thread, 'main')
+  assert.equal(letterPayload.reviewIndex, 0)
+  assert.equal(letterPayload.messageId, `inbox-${letter.id}-review-0`)
+}
+
 
 try {
+  await testStage2IntervalSetting()
+  await testStage2RunnerAndSpool()
+  await testStage2InboxWiring()
   await testTableView()
   await testPayloadEnvAndCwd()
   await testFailureIsolation()

@@ -247,6 +247,7 @@ function commandEvents(argv, io) {
     `hook events: ${model.events.length} event(s), ${model.builtin.length} builtin row(s), ${custom} custom row(s)`,
     `enabled: ${model.enabled ? 'yes' : 'no (paused; nothing runs)'}   ` +
       `script timeout: ${model.scriptTimeoutMs} ms (cap ${model.timeoutCap} ms)   ` +
+      `runner interval: ${model.intervalSeconds} s (0 = paused)   ` +
       `settings revision: ${model.revision}`,
     model.recordsFile === undefined ? 'records: (the data root could not be resolved)' : `records: ${model.recordsFile}`,
     ...(model.warning === undefined ? [] : [`warning: ${model.warning}`]),
@@ -276,7 +277,7 @@ function commandList(argv, io) {
   const model = readHooks({ env: io.env })
   const lines = [
     `hooks: ${model.enabled ? 'enabled' : 'paused'}   script timeout: ${model.scriptTimeoutMs} ms   ` +
-      `revision: ${model.revision}`,
+      `runner interval: ${model.intervalSeconds} s   revision: ${model.revision}`,
     ...(model.warning === undefined ? [] : [`warning: ${model.warning}`]),
     '',
   ]
@@ -470,7 +471,7 @@ function commandTest(argv, io) {
   const event = parsed.event === undefined ? item.event : requireEventForArgv(parsed.event).id
   let payload
   if (parsed.payload === undefined) {
-    payload = samplePayload(event, { now: new Date().toISOString() })
+    payload = samplePayload(event, { now: new Date().toISOString(), workspace: io.cwd })
   } else {
     try {
       payload = JSON.parse(parsed.payload)

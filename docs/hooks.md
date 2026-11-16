@@ -12,8 +12,9 @@
 
 一条规则贯穿全文：**hook 从不包裹、不 gate、不重试 core path。** 一个坏脚本最多让自己那一条记录变成失败。
 
-stage 1 只交付引擎、设置面、CLI、队列原语与文档；**没有**接任何事件（stage 2 接），**没有**面板（stage 3 接）。
-但事件表、内建行与提示词文本已经在这里定型，stage 3 直接渲染，不许再抄一份。
+stage 1 交付引擎、设置面、CLI、队列原语与文档；stage 2 把八个事件接到各自 core path 完成之后，并由
+service 侧 runner 统一执行；stage 3 做面板。事件表、内建行与提示词文本已经在这里定型，stage 3 直接渲染，
+不许再抄一份。
 
 ---
 
@@ -109,6 +110,7 @@ core path 本身。
 |---|---|---|
 | `enabled` | `true` | 总开关。`false` 时**一个脚本都不跑**，每次 occurrence 只写一条 `paused` 记录 |
 | `scriptTimeoutMs` | `10000` | 默认超时；行内 `timeoutMs` 覆盖它；硬上限 `300000` |
+| `intervalSeconds` | `15` | service runner 的轮询间隔（秒）；`0` 暂停（每秒回看设置）；读盘超限夹到 `86400` 并 warning，写入直接拒绝 |
 | `items` | `[]` | 自定义行，**顺序就是每个事件内的执行顺序** |
 | `items[].id` | — | `hook-` 前缀、全局唯一；`builtin:` 前缀留给内建行，自定义行不能占用 |
 | `items[].event` | — | 必须是事件表里的 id |
@@ -149,8 +151,9 @@ core path 本身。
 
 | 事件 | cwd |
 |---|---|
-| `ticket.*` | `opts.workspace` → `payload.workspace` → `opts.cwd`（CLI 传 checkout 根） |
-| 其它事件 | `opts.cwd` |
+| `ticket.started` | `payload.workspace`（`prepare.sh` 写的工单目录，绝对路径） |
+| 其它 `ticket.*`（队列事件） | 负载没有 workspace；service runner 用 service 进程的 cwd（`opts.cwd`），CLI 用当前目录 |
+| 其它事件 | CLI 用当前目录；service runner 用 service 进程的 cwd |
 
 目录不存在时不提前报错：子进程以 ENOENT 失败，那一条记进记录，下一个照常跑。
 
@@ -229,7 +232,7 @@ stdout / stderr **各只保留最后 8 KiB**（内存里也只保留这么多：
 
 ### 队列读取
 
-`readQueueEvents()` 是 stage 2 的原语（`src/shared/hooks.js`）：
+`readQueueEvents()` 是 `src/shared/hooks.js` 的队列读取原语（stage 2 的 service runner 用它）：
 
 - 同时读 `outbox/*.json`（未消费）与 `outbox/read/*.json`（append-only 归档），所以 injector 先一步
   rename 走的消息仍然会被看到；
@@ -239,21 +242,61 @@ stdout / stderr **各只保留最后 8 KiB**（内存里也只保留这么多：
   mtime 派生的 ISO，再按 mtime、id 决出同刻顺序——一条没有 `at` 的消息不会排到所有日期之前；
 - 用 cursor 过滤；
 - **只读**：不 rename、不 unlink、不调用 `consumeMessage`，所以它和 injector 不会抢同一条消息，也不会
-  打断"rename 即已读"的原子消费。stage 2 接上以后，hook 引擎可以在 injector 之前/之后任意时刻读。
+  打断"rename 即已读"的原子消费。runner 可以在 injector 之前/之后任意时刻读。
+- 负载里的 `text` 超过 12000 个 Unicode code point 时截断并带 `textTruncated: true`；`file` 是这条消息在
+  `outbox/` 或 `outbox/read/` 的绝对路径，脚本可以自己读全文。`at` 缺失/写坏时给 mtime 派生的 ISO，
+  不会给一个空串。
 
-### stage 2 把 runner 放在哪
+### 服务侧 runner（唯一读者）
 
-**service 侧的 webui host，紧挨着 `startInboxWatcher()`**（`webui/lib/index.js`）。理由：
+`src/spv/hook-runner.js` 的 `startHookRunner()` 挂在 **service 侧的 webui host**，紧挨着
+`startInboxWatcher()`（`webui/lib/index.js`），由 `ctx.effect` 停止。理由：
 
 - 注入器（`src/spv/tools.js` 里的 `startResultInjector`）只在**活着的 SPV 会话**里跑；在会话里再开一个
   队列读取器会**双触发**（两个读者各跑一遍 hook），而且会话关掉 hook 就停了；
 - 一个进程内的 `ctx.effect` 轮询器（和 inbox watcher 同一层）是唯一"服务活着就一直在"的位置；
-- 因此 `install.sh` 把 `src/shared/hooks.js` 与 `src/shared/hook-events.js` 也拷进 webui 包的
-  `lib/shared/`，panel 的 host 半身可以直接 import。
+- **只有一个读者**：不要在 `src/spv/tools.js`、`inbox watch`、CLI 或 superagent 侧再起一个。
 
-`ticket.started` / `inbox.*` / `spv.dispatch` **不来自队列**：stage 2 在各自的发生点调用
-`runHooksFor(event, payload, {eventId, ...})`（superagent prepare 之后、`appendReview` 之后、
-`handleMergedPull` 之后、`dispatch` 之后）。stage 1 不接线。
+runner 的行为：
+
+- 启动时**先 drain 一次**（服务停着期间累积的 spool/队列事件不会等一个完整间隔），之后按
+  `hooks.intervalSeconds` 的 setTimeout 链调度；默认 15 秒，`0` 暂停（每秒回来看设置，改回正数不用重启），
+  非法值 warning 后回退 15 秒；每轮重新读设置，所以面板改间隔不需要重启；
+- 同一轮先 spool、再队列，串行执行；单条失败只记 `warning:`，不影响下一条、不影响下一轮；
+- `stop()` 清定时器；`unref` 让 host 的定时器不阻止进程退出。
+
+### spool 契约（`ticket.started` / `spv.dispatch`）
+
+这两个事件发生在任何服务 tick 之外（`prepare.sh`、`dispatch` 写 `pending/`），所以写一个**文件**而不是
+内联跑脚本：微秒级、不需要 node/python、慢脚本不可能拖住 ticket 启动。
+
+- 目录：`<数据根>/records/hook-events/`（`dataPaths().records` 下），一个 occurrence 一个 `.json`；
+- 文件内容：`{ "version": 1, "event": "<id>", "eventId": "<stable id>", "at": "<ISO>", "payload": { … } }`；
+- 写入：同目录点号临时文件 + `rename`（读者永远看不到半写 JSON）；**best effort**，写失败只记一行 warning，
+  绝不让 prepare / dispatch 失败；
+- `prepare.sh` 只在**成功且非 `SPV_PREPARE_DRY_RUN`** 时、在最后写一次，纯 POSIX sh，eventId 为
+  `<ticket>:<at>:<pid>`（同一秒的两次启动也区分得开）；它自己不跑任何 hook，所以工单启动不会被脚本拖慢；
+- `src/spv/dispatch.js` 在任务文件 `rename` 进 `pending/` 之后写 `spv.dispatch`，eventId 为
+  `dispatch:<taskId>`；
+- runner 认领 cursor 后**删除** spool 文件（即使 cursor 跳过也删，避免崩溃/重启后无限重试同一个
+  occurrence）；坏 JSON/未知事件/坏版本进 `<file>.bad` 并记 warning，不再重试。
+
+### 接线表（八个事件）
+
+| 事件 | 在哪里触发（core path 之后） | 负载 |
+|---|---|---|
+| `ticket.started` | `commands/prepare.sh` 成功结束时写 spool；service runner drain | `ticketId, name?, project, workspace, at` |
+| `ticket.acknowledged` | service runner 读队列 `kind: acknowledgement` | `messageId, kind, thread, ticketId?, text, file, at` (+ `textTruncated`) |
+| `ticket.delivered` | service runner 读队列 `kind: reply` | 同上，kind=reply |
+| `ticket.attention` | service runner 读队列 `kind: notice` | 同上，kind=notice |
+| `inbox.approved` | `src/spv/inbox.js:appendReview` 写完 review 之后 | `itemId, kind, pr?, repo?, reviewIndex, comment, at`；eventId `inbox.approved:<itemId>:<index>` |
+| `inbox.issue` | `appendReview` 把 notice 写进 SPV 队列之后（PR 与决策信都触发） | `itemId, kind, pr?, repo?, reviewIndex, comment, messageId, thread, at`；eventId `inbox.issue:<itemId>:<index>`（**不是** notice 的 message id：队列读取器用后者派生 `ticket.attention`，共用会吞掉那次 occurrence） |
+| `inbox.merged` | `pollOnce` 把成功 merge 的 item 写盘之后（pull 成功且冷安装提醒已排队） | `itemId, pr, repo, url, mergeCommit, pulledSha, localPath, at`；eventId `merge:<itemId>:<pulledSha>` |
+| `spv.dispatch` | `src/spv/dispatch.js` 任务文件落进 `pending/` 之后写 spool；service runner drain | `taskId, thread, project, text, preset?, at` |
+
+所有触发点都在 core action **完成之后**，并且是 fire-and-forget：hook 不 await、不阻塞 HTTP 响应或
+append/pull；失败/超时/输出洪水只进 `records/hooks.jsonl`。`inbox.merged` 只在最终成功时触发——pull 失败
+或冷安装 notice 失败都不触发，下一次轮询补上。
 
 ---
 
@@ -291,16 +334,17 @@ wheelchair-agent hook prompt <event>         # 可复制给 agent 的中文提�
 ### 「新增」是提示词，不是 shell 输入框
 
 操作者的话：*"用户可以新增脚本（点开新增是一段可复制的提示词，其实意思就是让用户叫 agent 改就行）"*。
-所以 `hook add` 是给 agent 用的；操作者拿 `hook prompt` 的文本去让 agent 加。stage 1 **不**提供从面板直接写
-shell 的路径。
+所以 `hook add` 是给 agent 用的；操作者拿 `hook prompt` 的文本去让 agent 加。stage 2 **不**提供从面板直接写
+shell 的路径；stage 3 的面板也只显示这段提示词。
 
 ---
 
-## 7. 已知缺口：PR 身份（stage 2 解决）
+## 7. 已知缺口：PR 身份（stage 2 仍未解决）
 
 `ticket.delivered` 的负载来自队列消息，只有 `ticketId` 与 `thread`——**没有 PR 号、仓库或 url**。想在
-worker 报告时自动合并 PR 的 hook，现在拿不到要合并哪一个。stage 2 必须解决这个问题（例如让 reply 消息
-携带 PR 身份，或由一个能查到工单→PR 映射的调用点补全负载），**stage 1 不猜、不解决**，只把问题写在这里。
+worker 报告时自动合并 PR 的 hook，现在拿不到要合并哪一个。stage 2 按 assignment 只搬运消息里真实存在的
+字段，**不发明** outcome/PR 字段，所以这个缺口仍然存在：要解决它，需要让 reply 消息携带 PR 身份，或由
+一个能查到工单→PR 映射的调用点补全负载。
 
 相关但不相同：`inbox.merged` 有完整 PR 字段（`pr` / `repo` / `url` / `mergeCommit` / `pulledSha`），
 所以合并后的动作应该挂在那里。
@@ -310,10 +354,10 @@ worker 报告时自动合并 PR 的 hook，现在拿不到要合并哪一个。s
 ## 8. 边界与安全
 
 - **不 import `dsh-superagent`**，不碰 `~/opt/dsh-plugins/dsh-superagent`；唯一跨项目接口是既有的文件队列。
-- `src/shared/hooks.js` 与 `src/shared/hook-events.js` 只用 Node builtins，被 `install.sh` 复制进 preset
-  与 webui 包，必须能单独存在（`tests/test-layout.sh` 规则 3）。
+- `src/shared/hooks.js`、`src/shared/hook-events.js` 与 `src/spv/hook-runner.js` 只用 Node builtins，被
+  `install.sh` 复制进 preset / webui 包，必须能单独存在（`tests/test-layout.sh` 规则 3）。
 - 脚本以**操作者**的权限运行：它和操作者自己的 shell 一样强。所以入口只有设置文件，而设置文件只能通过
-  CLI / 面板（revision 检查）写；stage 1 没有"面板直接执行 shell"的通道。
+  CLI / 面板（revision 检查）写；stage 2 没有"面板直接执行 shell"的通道，stage 3 的面板也只显示提示词。
 - 队列读取器只读，不消费；注入器仍然是唯一的消费者，"rename 即已读"的原子性没有被破坏。
 - 所有测试都在 `mkdtemp` 沙箱里，`WHEELCHAIR_AGENT_HOME` / `SPV_QUEUE_DIR` / `DSH_SUPERAGENT_STATE_DIR`
   全部指向沙箱；没有网络。
@@ -323,8 +367,13 @@ worker 报告时自动合并 PR 的 hook，现在拿不到要合并哪一个。s
 | 文件 | 职责 |
 |---|---|
 | `src/shared/hook-events.js` | 事件表 + 内建行（唯一契约；settings 与 hooks 都从它读） |
-| `src/shared/hooks.js` | 模型、执行、记录、cursor、队列原语、提示词生成 |
-| `src/shared/settings.js` | `hooks` 子块的校验、合并、落盘、HTTP 面 |
+| `src/shared/hooks.js` | 模型、执行、记录、cursor、队列原语、spool 原语、提示词生成 |
+| `src/shared/settings.js` | `hooks` 子块的校验、合并、落盘、HTTP 面（含 `intervalSeconds`） |
 | `src/spv/hook.js` | `wheelchair-agent hook ...` 的命令逻辑 |
+| `src/spv/hook-runner.js` | service 侧唯一 runner：drain spool + 队列，按 `hooks.intervalSeconds` 调度 |
+| `webui/lib/index.js` | 在 host 里挂 runner（与 `startInboxWatcher` 同一层，`ctx.effect` 停止） |
+| `src/spv/inbox.js` | review / notice / merge 的 core path，之后 fire `inbox.*` |
+| `src/spv/dispatch.js` | 任务落进 `pending/` 后写 `spv.dispatch` spool |
+| `commands/prepare.sh` | 成功结束时写 `ticket.started` spool（纯 sh、best effort、dry-run 不写） |
 | `bin/wheelchair-agent.mjs` | argv → 命令、退出码、`--help` |
-| `tests/test-hooks.mjs` / `tests/test-settings.mjs` | 离线证据 |
+| `tests/test-hooks.mjs` / `tests/test-settings.mjs` / `tests/test-inbox*.mjs` / `tests/test-prepare.sh` | 离线证据 |

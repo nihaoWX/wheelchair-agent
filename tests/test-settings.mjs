@@ -240,9 +240,11 @@ async function loadHostApply(box) {
   for (const [source, target] of [
     ['src/spv/inbox.js', 'lib/core/inbox.js'],
     ['src/spv/dispatch.js', 'lib/core/dispatch.js'],
+    ['src/spv/hook-runner.js', 'lib/core/hook-runner.js'],
     ['src/spv/paths.js', 'lib/core/paths.js'],
     ['src/shared/home.js', 'lib/shared/home.js'],
     ['src/shared/hook-events.js', 'lib/shared/hook-events.js'],
+    ['src/shared/hooks.js', 'lib/shared/hooks.js'],
     ['src/shared/queue.js', 'lib/shared/queue.js'],
     ['src/shared/settings.js', 'lib/shared/settings.js'],
     ['webui/lib/index.js', 'lib/index.js'],
@@ -1201,7 +1203,7 @@ async function testHostSettingsRoute() {
  */
 async function testHooksBlock() {
   const box = await sandbox()
-  const EMPTY = { enabled: true, scriptTimeoutMs: 10000, items: [], labels: {} }
+  const EMPTY = { enabled: true, scriptTimeoutMs: 10000, intervalSeconds: 15, items: [], labels: {} }
   const read = () => resolveSettings({ home: box.root, stateDir: box.state, env: {} })
   const item = {
     id: 'hook-ticket-delivered-abcd12',
@@ -1269,6 +1271,9 @@ async function testHooksBlock() {
     [{ items: [{ ...item, timeoutMs: 0 }] }, /at least 1 millisecond/],
     [{ items: [{ ...item, timeoutMs: 300001 }] }, /at most 300000/],
     [{ scriptTimeoutMs: 300001 }, /at most 300000/],
+    [{ intervalSeconds: -1 }, /zero .*or more seconds/],
+    [{ intervalSeconds: 1.5 }, /whole number/],
+    [{ intervalSeconds: 86401 }, /at most 86400/],
     [{ items: [{ ...item, name: 'bad\u0001name' }] }, /control character/],
     [{ labels: { 'builtin:injection': 'x'.repeat(121) } }, /over the 120 limit/],
     [{ items: 'nope' }, /must be an array/],
@@ -1306,6 +1311,14 @@ async function testHooksBlock() {
   assert.equal(invalidPut.status, 400)
   assert.match(invalidPut.body.message, /not a known event/)
   assert.equal(read().revision, put.body.revision, 'a rejected PUT is not a write')
+
+  const intervalPut = await call(handler, {
+    method: 'PUT',
+    body: { revision: put.body.revision, hooks: { intervalSeconds: 0 } },
+  })
+  assert.equal(intervalPut.status, 200)
+  assert.equal(intervalPut.body.hooks.intervalSeconds, 0)
+  assert.equal((await readJson(settingsPath(box))).hooks.intervalSeconds, 0)
 
   // A file that predates the block is still valid, and gets the defaults.
   await writeJson(settingsPath(box), { version: 1, revision: 9, values: {}, templates: {} })

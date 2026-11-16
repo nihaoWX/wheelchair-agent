@@ -30,6 +30,7 @@ import { promisify } from 'node:util'
 import { checkThread } from './dispatch.js'
 import { resolveRoot } from './paths.js'
 import { HOME_DIR_NAME, INBOX_DIR, INBOX_ENV, resolveData } from '../shared/home.js'
+import { runHooksFor } from '../shared/hooks.js'
 import { dirsOf, writeMessage } from '../shared/queue.js'
 import { KEY_SPECS, defaultSettings, renderTemplate, resolveSettings } from '../shared/settings.js'
 
@@ -363,6 +364,41 @@ function readPanelSettings() {
 }
 
 /**
+ * hook 引擎的数据根（settings / records / cursor）。与收件箱共用同一份设置；解析失败时交给引擎自己
+ * 按默认根再解析一次（此时它在 clone 里会拒绝，但 core path 不受影响）。
+ */
+function hookHome() {
+  try {
+    return resolveData({ migrate: false }).root
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * 跑一个 hook 事件：**fire-and-forget**。
+ *
+ * 调用点都在 core path 完成之后（review 已写、notice 已发、pull 已跑、冷安装提醒已排队），这里绝不
+ * await、绝不把失败抛回去；脚本失败/超时/输出洪水只进记录。`eventId` 显式给出，保证 HTTP 重试与
+ * 重复的 issue 评论按同一个 occurrence 去重。
+ */
+function fireHook(event, payload, eventId) {
+  const home = hookHome()
+  // Snapshot the environment: the core path may return and a caller may restore process.env before the
+  // async engine reads it. The snapshot keeps the hook pinned to the data root/settings of this call.
+  const env = { ...process.env }
+  try {
+    void runHooksFor(event, payload, {
+      ...(home === undefined ? {} : { home }),
+      env,
+      eventId,
+    }).catch(() => {})
+  } catch {
+    // runHooksFor 的契约是永不 reject；再兜一层，core path 绝不会因为 hook 而失败。
+  }
+}
+
+/**
  * 追加一条审查决定，返回 `{ item, task }`；`task` 恒为 `null`（保留字段以兼容旧调用方）。
  *
  * 两种决定（`kind`）：
@@ -406,8 +442,23 @@ export async function appendReview(root, { id, kind, text } = {}) {
     const review = Array.isArray(item.review) ? item.review : []
     if (approve) {
       // 评论只记录：它不会发通知。空评论与旧行为一致，仍然允许。
-      item.review = [...review, { at: new Date().toISOString(), kind: 'approve', text: comment }]
+      const at = new Date().toISOString()
+      const reviewIndex = review.length
+      item.review = [...review, { at, kind: 'approve', text: comment }]
       await writeItem(root, item)
+      fireHook(
+        'inbox.approved',
+        {
+          itemId: item.id,
+          kind: kindOf(item),
+          ...(Number.isInteger(item.pr) ? { pr: item.pr } : {}),
+          ...(typeof item.repo === 'string' ? { repo: item.repo } : {}),
+          reviewIndex,
+          comment,
+          at,
+        },
+        `inbox.approved:${item.id}:${reviewIndex}`,
+      )
       return { item, task: null }
     }
 
@@ -459,6 +510,7 @@ export async function appendReview(root, { id, kind, text } = {}) {
       await writeItem(root, item)
     }
 
+    const noticeAt = new Date().toISOString()
     try {
       await writeMessage(dirsOf(resolveRoot()), {
         id: messageId,
@@ -466,7 +518,7 @@ export async function appendReview(root, { id, kind, text } = {}) {
         thread,
         kind: 'notice',
         text: notice,
-        at: new Date().toISOString(),
+        at: noticeAt,
       })
     } catch (error) {
       const failure = new Error(
@@ -478,6 +530,23 @@ export async function appendReview(root, { id, kind, text } = {}) {
       failure.item = item
       throw failure
     }
+    fireHook(
+      'inbox.issue',
+      {
+        itemId: item.id,
+        kind: kindOf(item),
+        ...(Number.isInteger(item.pr) ? { pr: item.pr } : {}),
+        ...(typeof item.repo === 'string' ? { repo: item.repo } : {}),
+        reviewIndex,
+        comment,
+        messageId,
+        thread,
+        at: noticeAt,
+      },
+      // Namespaced by event, NOT the notice's message id: the queue reader maps that same message to
+      // ticket.attention and the cursor is global, so using it here would swallow the queue occurrence.
+      `inbox.issue:${item.id}:${reviewIndex}`,
+    )
     return { item, task: null }
   })
 }
@@ -692,9 +761,10 @@ async function handleMergedPull({ item, repo, name, localPath, existing, observe
     // the notice (the pulled sha and pullAt are reused), rather than losing the mandated cold-install note.
     return { mergeObservedAt, pullAt, pulledSha, noticeError }
   }
+  const mergeHandledAt = new Date().toISOString()
   return {
     mergeObservedAt,
-    mergeHandledAt: new Date().toISOString(),
+    mergeHandledAt,
     pullAt,
     pulledSha,
     pullError: undefined,
@@ -908,6 +978,7 @@ export async function pollOnce({ root = resolveInboxRoot(), projectsRoot = defau
           }
           const next = itemOf(repo, pull, existing)
           let handledMerge = false
+          let mergeLocalPath
           // Only a transition the watcher itself observed counts. An item that was already MERGED before
           // this feature existed is not a fresh merge: handling it would pull once per historical PR and
           // queue a notice for every one of them on the first poll after an upgrade. A transition that
@@ -928,6 +999,7 @@ export async function pollOnce({ root = resolveInboxRoot(), projectsRoot = defau
               log,
             })
             Object.assign(next, merge)
+            mergeLocalPath = localPath
             handledMerge = true
           }
           if (existing === undefined) {
@@ -936,6 +1008,25 @@ export async function pollOnce({ root = resolveInboxRoot(), projectsRoot = defau
           }
           if (handledMerge || ITEM_FIELDS.some(field => existing[field] !== next[field])) {
             await writeItem(root, next)
+            // Core path is complete: the item (including mergeHandledAt) is on disk. Only a fully
+            // handled merge (pull succeeded and, when it applies, the cold-install notice queued) fires;
+            // pullError / noticeError leave mergeHandledAt unset and are retried by the next poll.
+            if (handledMerge && next.mergeHandledAt !== undefined) {
+              fireHook(
+                'inbox.merged',
+                {
+                  itemId: next.id,
+                  pr: next.pr,
+                  repo,
+                  url: next.url,
+                  mergeCommit: next.mergeCommit,
+                  pulledSha: next.pulledSha,
+                  localPath: mergeLocalPath,
+                  at: next.mergeHandledAt,
+                },
+                `merge:${next.id}:${next.pulledSha ?? next.mergeHandledAt}`,
+              )
+            }
             return handledMerge ? 'merged' : 'updated'
           }
           return 'unchanged'
