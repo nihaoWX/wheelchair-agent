@@ -11,6 +11,8 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+import { assertNotTicketClone } from '../shared/home.js'
+
 /** 未指定时 superagent 部署的状态目录。 */
 export const DEFAULT_STATE_DIR = join(homedir(), '.dsh', 'state', 'superagent')
 
@@ -21,7 +23,11 @@ export function resolveRoot(config = {}) {
   const fromEnv = String(process.env.SPV_QUEUE_DIR ?? '').trim()
   if (fromEnv) return fromEnv
   const stateDir = String(process.env.DSH_SUPERAGENT_STATE_DIR ?? '').trim() || DEFAULT_STATE_DIR
-  return join(stateDir, 'spv')
+  // The live queue belongs to the deployment; a worker's ticket clone must not resolve it by default
+  // (the same shared check refuses the data root in src/shared/home.js). An explicit override wins.
+  const root = join(stateDir, 'spv')
+  assertNotTicketClone({ env: process.env, stateDir, what: 'the default spv queue root', target: root })
+  return root
 }
 
 /**

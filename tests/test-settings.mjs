@@ -54,6 +54,11 @@ const CLI = fileURLToPath(new URL('../bin/wheelchair-agent.mjs', import.meta.url
 const SANDBOXES = []
 const ORIGINAL_ENV = { ...process.env }
 const ISOLATED_STATE = join(tmpdir(), `wheelchair-agent-settings-interval-${process.pid}`)
+/**
+ * `defaultSettings` only needs an explicit root for its display-only file path. Pin one so this suite
+ * running from a ticket clone is not mistaken for a forgotten worker clone (src/shared/home.js).
+ */
+const DEFAULT_SETTINGS = Object.freeze({ home: join(ISOLATED_STATE, 'defaults'), env: {} })
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms))
 
@@ -414,7 +419,7 @@ async function testDefaults() {
     assert.deepEqual(template.presets, [{ name: 'default', text: template.defaultText, builtin: true }])
     assert.equal(template.limit, 20000)
   }
-  assert.deepEqual(defaultSettings().effective, EXPECTED_DEFAULTS, 'defaultSettings() is the same built-in layer')
+  assert.deepEqual(defaultSettings(DEFAULT_SETTINGS).effective, EXPECTED_DEFAULTS, 'defaultSettings() is the same built-in layer')
   assert.equal(settingsPath(box), join(box.root, SETTINGS_FILE))
 }
 
@@ -427,10 +432,10 @@ async function testDefaultTemplates() {
     { kind: 'reply', thread: 't1', text: `${'a'.repeat(11999)}😀${'b'.repeat(10)}` },
   ]
   for (const sample of samples) {
-    assert.equal(formatResult(sample, { read: '/tmp/read/x.json' }), legacyFormatResult(sample, { read: '/tmp/read/x.json' }))
+    assert.equal(formatResult(sample, { read: '/tmp/read/x.json', settings: defaultSettings(DEFAULT_SETTINGS) }), legacyFormatResult(sample, { read: '/tmp/read/x.json' }))
   }
   assert.equal(
-    formatResult({ kind: 'reply', thread: 't1', ticketId: 'tk-1', text: 'no read path' }),
+    formatResult({ kind: 'reply', thread: 't1', ticketId: 'tk-1', text: 'no read path' }, { settings: defaultSettings(DEFAULT_SETTINGS) }),
     legacyFormatResult({ kind: 'reply', thread: 't1', ticketId: 'tk-1', text: 'no read path' }),
   )
 
@@ -564,7 +569,7 @@ async function testCorruptAndHandEditedFiles() {
 
   // 坏文件不能弄死消费方：轮询间隔、注入输出、复查都照常。
   assert.equal(resolveInboxIntervalSeconds(undefined, { home: box.root, stateDir: box.state, env: {} }), 60)
-  assert.equal(formatResult({ kind: 'reply', thread: 't1', text: 'still works' }), '[spv] reply on thread "t1":\nstill works')
+  assert.equal(formatResult({ kind: 'reply', thread: 't1', text: 'still works' }, { settings: defaultSettings(DEFAULT_SETTINGS) }), '[spv] reply on thread "t1":\nstill works')
   const saved = { ...process.env }
   try {
     process.env.WHEELCHAIR_AGENT_HOME = box.root
@@ -586,7 +591,7 @@ async function testCorruptAndHandEditedFiles() {
 /** 模板校验：未知/缺失占位符、未知 id、超长都点名报错；renderTemplate 的缺值替换为空串。 */
 function testTemplateValidation() {
   for (const id of TEMPLATE_IDS) {
-    assert.equal(validateTemplate(id, defaultSettings().templates[id].text), defaultSettings().templates[id].text)
+    assert.equal(validateTemplate(id, defaultSettings(DEFAULT_SETTINGS).templates[id].text), defaultSettings(DEFAULT_SETTINGS).templates[id].text)
   }
   assert.throws(
     () => validateTemplate('prIssue', '{repo} #{pr} {commnet}'),
@@ -611,7 +616,7 @@ function testTemplateValidation() {
     '[spv] reply on "t1": x',
     'a missing value becomes the empty string',
   )
-  assert.equal(renderTemplate('injection', defaultSettings().templates.injection.text, {
+  assert.equal(renderTemplate('injection', defaultSettings(DEFAULT_SETTINGS).templates.injection.text, {
     kind: 'notice',
     thread: 'ops',
     ticket: ' (ticket tk-1)',
@@ -1273,7 +1278,7 @@ function testInjectorIntervalReread() {
     logger: { warn: (...args) => state.warnings.push(args.join(' ')) },
     settingsOf: () => ({
       effective: { 'injection.intervalMs': settingsRef.interval },
-      templates: defaultSettings().templates,
+      templates: defaultSettings(DEFAULT_SETTINGS).templates,
       warning: undefined,
     }),
     timers,
@@ -1791,7 +1796,7 @@ async function testStoredTemplatesOmitBuiltinText() {
       injection: {
         active: 'custom',
         presets: {
-          default: { text: defaultSettings().templates.injection.defaultText, builtin: true },
+          default: { text: defaultSettings(DEFAULT_SETTINGS).templates.injection.defaultText, builtin: true },
           custom: { text: '[spv] {kind} {thread}: {body}' },
         },
       },
@@ -1808,7 +1813,7 @@ async function testStoredTemplatesOmitBuiltinText() {
   await writeJson(settingsPath(box), stale)
   const after = resolveSettings({ home: box.root, stateDir: box.state, env: {} })
   assert.equal(after.warning, undefined, 'a stale stored built-in copy is ignored silently')
-  assert.equal(after.templates.injection.defaultText, defaultSettings().templates.injection.defaultText)
+  assert.equal(after.templates.injection.defaultText, defaultSettings(DEFAULT_SETTINGS).templates.injection.defaultText)
   assert.equal(after.templates.injection.text, '[spv] {kind} {thread}: {body}')
 }
 

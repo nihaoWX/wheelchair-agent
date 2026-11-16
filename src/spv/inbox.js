@@ -29,7 +29,7 @@ import { promisify } from 'node:util'
 
 import { checkThread } from './dispatch.js'
 import { resolveRoot } from './paths.js'
-import { HOME_DIR_NAME, INBOX_DIR, resolveData } from '../shared/home.js'
+import { HOME_DIR_NAME, INBOX_DIR, INBOX_ENV, resolveData } from '../shared/home.js'
 import { dirsOf, writeMessage } from '../shared/queue.js'
 import { KEY_SPECS, defaultSettings, renderTemplate, resolveSettings } from '../shared/settings.js'
 
@@ -79,8 +79,14 @@ const REVIEW_PATH = '/wheelchair-inbox/review'
  * （默认 `~/.wheelchair-agent/inbox`，`$WHEELCHAIR_AGENT_HOME` 可覆盖）。
  *
  * 旧位置 `<stateDir>/inbox` 会在这次解析时搬到新位置；搬不动就回退到旧目录继续用。
+ *
+ * An explicit `$SPV_INBOX_DIR` wins outright and never migrates, so resolving the default inbox must not
+ * drag in the rest of the data layout (a warning-free inbox-only sandbox); a write that also reads panel
+ * settings still needs the data root sandboxed, and the guard says so.
  */
 export function resolveInboxRoot({ env = process.env, home, stateDir } = {}) {
+  const override = String(env?.[INBOX_ENV] ?? '').trim()
+  if (override !== '') return override
   return resolveData({ env, home, stateDir }).inbox
 }
 

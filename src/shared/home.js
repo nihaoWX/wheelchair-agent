@@ -31,6 +31,13 @@
  * neither path. `$SPV_INBOX_DIR` and `$SPV_PREPARE_LOG` are explicit overrides; when set they win outright
  * and no migration of that artifact is attempted.
  *
+ * Ticket clones are guarded: when this file is running from a copy inside `<stateDir>/work/` (a worker's
+ * throwaway clone), resolving a default root throws instead of silently reading or writing the deployment's
+ * data. Explicit overrides (`home`/`$WHEELCHAIR_AGENT_HOME`, `$SPV_INBOX_DIR`, `$SPV_PREPARE_LOG`) are still
+ * honoured, and a sandboxed state dir makes the roots that follow it safe; the one-shot migration refuses
+ * outright, because that is the operation that moved a live inbox. `assertNotTicketClone()` is the single
+ * implementation, shared with `src/spv/{paths,inbox}.js` and `src/superagent/spv.js`.
+ *
  * Pure Node builtins, no dsh imports, no `process.exit`: `install.sh` copies this file into the preset and
  * the webui package, where it must stand alone (see `ARCHITECTURE/layout.md` rule 3).
  */
@@ -43,6 +50,7 @@ import {
   mkdirSync,
   openSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   rmdirSync,
@@ -51,7 +59,8 @@ import {
   writeSync,
 } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, isAbsolute, join, resolve } from 'node:path'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 /** Name of the root under `$HOME` when `$WHEELCHAIR_AGENT_HOME` is not set. */
 export const HOME_DIR_NAME = '.wheelchair-agent'
@@ -92,6 +101,18 @@ const LOCK_WAIT_MS = 2000
 const LOCK_RETRY_MS = 25
 const LOCK_STALE_MS = 30_000
 
+/** Error code of every ticket-clone refusal, so callers and tests can branch on it. */
+export const TICKET_CLONE_CODE = 'TICKET_CLONE'
+
+/** `realpath`, falling back to an absolute resolve for a path that does not exist (yet). */
+function realPath(path) {
+  try {
+    return realpathSync(path)
+  } catch {
+    return resolve(path)
+  }
+}
+
 /** Typed error for a relative `WHEELCHAIR_AGENT_HOME`: the user must fix the value, not the code. */
 function invalidHome(value) {
   const error = new Error(
@@ -108,7 +129,7 @@ function envValue(env, name) {
 }
 
 /** `WHEELCHAIR_AGENT_HOME` (or the explicit `home` option) as an absolute, resolved path. */
-export function resolveHome({ env = process.env, home } = {}) {
+export function resolveHome({ env = process.env, home, stateDir } = {}) {
   const explicit = String(home ?? '').trim()
   if (explicit !== '') {
     if (!isAbsolute(explicit)) throw invalidHome(explicit)
@@ -119,10 +140,18 @@ export function resolveHome({ env = process.env, home } = {}) {
     if (!isAbsolute(fromEnv)) throw invalidHome(fromEnv)
     return resolve(fromEnv)
   }
-  // Honour an injected env map (tests and callers that pass an explicit environment) as well as the
-  // process's own HOME.
+  // The defaults are the live deployment's data; a ticket clone must not resolve them (read or write).
+  // This check is deployment-scoped: overriding only the state dir does not move the default data root.
   const homeDir = envValue(env, 'HOME') || homedir()
-  return resolve(join(homeDir, HOME_DIR_NAME))
+  const root = resolve(join(homeDir, HOME_DIR_NAME))
+  assertNotTicketClone({
+    env,
+    stateDir,
+    scope: 'deployment',
+    what: 'the default data root (settings / inbox / records / logs)',
+    target: root,
+  })
+  return root
 }
 
 /**
@@ -139,6 +168,159 @@ export function resolveLegacyStateDir({ env = process.env, stateDir } = {}) {
   const homeDir = envValue(env, 'HOME') || homedir()
   const dshHome = envValue(env, 'DSH_HOME') || join(homeDir, '.dsh')
   return resolve(join(dshHome, 'state', 'superagent'))
+}
+
+/** Is `child` at or under `parent`? Both must already be absolute paths. */
+function isInside(parent, child) {
+  const rel = relative(parent, child)
+  // `relative` returns '' for the root itself and a leading '..' for a sibling; both are not inside.
+  return rel !== '..' && !rel.startsWith(`..${sep}`) && !isAbsolute(rel)
+}
+
+/** Ticket-directory name: the `<short name>-<hex>` shape `src/shared/work.js` reclaims. */
+const TICKET_DIR = /^[A-Za-z0-9][A-Za-z0-9._-]*-[0-9a-f]{8,64}$/
+
+/**
+ * The `.../work` root embedded in a module path, when the last path segment before `<ticket>` is `work`.
+ *
+ * This is the structural fallback for a deployment whose state dir was moved with `$DSH_HOME` (which the
+ * un-overridden-default candidate does not see). A normal checkout has no `work/<ticket>-<hex>/` parent.
+ */
+function structuralWorkRoot(moduleFile) {
+  const parts = moduleFile.split(sep)
+  for (let index = 1; index < parts.length - 1; index += 1) {
+    if (parts[index] === 'work' && TICKET_DIR.test(parts[index + 1])) {
+      return parts.slice(0, index + 1).join(sep) || sep
+    }
+  }
+  return undefined
+}
+
+/**
+ * Is the data root derived from this `env` still the machine's real `~/.wheelchair-agent`?
+ *
+ * The structural fallback only matters when the default data root is live; a caller that set `$HOME` to a
+ * throwaway directory has sandboxed the data root already, so an over-eager refusal there would be noise.
+ */
+function dataRootIsDeploymentDefault(env) {
+  const homeDir = envValue(env, 'HOME') || homedir()
+  return realPath(resolve(join(homeDir, HOME_DIR_NAME))) === realPath(join(homedir(), HOME_DIR_NAME))
+}
+
+/**
+ * Candidate work roots for this copy, with both the raw and the realpath'd form of each.
+ *
+ * `scope: 'effective'` follows the state dir the caller is actually using (plus `$DSH_SUPERAGENT_WORK_DIR`),
+ * so a fully sandboxed state dir is not the live deployment. `scope: 'deployment'` additionally covers the
+ * un-overridden `$HOME/.dsh` default: the default data root (`~/.wheelchair-agent`) does not follow
+ * `$DSH_SUPERAGENT_STATE_DIR` or `$DSH_HOME`, so moving those two must not turn a physical ticket clone
+ * into a normal checkout.
+ */
+function workRootCandidates({ env = process.env, stateDir, scope = 'effective' } = {}) {
+  const stateDirs = new Set([resolveLegacyStateDir({ env, stateDir })])
+  if (scope === 'deployment') {
+    const homeDir = envValue(env, 'HOME') || homedir()
+    stateDirs.add(resolve(join(homeDir, '.dsh', 'state', 'superagent')))
+  }
+  const roots = new Set()
+  for (const state of stateDirs) {
+    const work = join(state, 'work')
+    roots.add(resolve(work))
+    roots.add(realPath(work))
+  }
+  const explicitWork = envValue(env, 'DSH_SUPERAGENT_WORK_DIR')
+  if (explicitWork !== '' && isAbsolute(explicitWork)) {
+    roots.add(resolve(explicitWork))
+    roots.add(realPath(explicitWork))
+  }
+  return roots
+}
+
+/**
+ * The ticket work root this copy of the code lives under, else `undefined`.
+ *
+ * A worker's clone is by definition throwaway, while the default settings/inbox/queue/records/log roots
+ * belong to the running deployment. Module and work roots are checked both raw and realpath'd, so a
+ * symlinked module, state directory or work root cannot slip past.
+ *
+ * `moduleUrl` is a seam for the tests only; production callers use this module's own `import.meta.url`.
+ */
+export function ticketCloneRoot({
+  env = process.env,
+  stateDir,
+  moduleUrl = import.meta.url,
+  scope = 'effective',
+} = {}) {
+  const modulePath = resolve(fileURLToPath(moduleUrl))
+  const moduleFile = realPath(modulePath)
+  const roots = workRootCandidates({ env, stateDir, scope })
+  if (scope === 'deployment' && dataRootIsDeploymentDefault(env)) {
+    const structural = structuralWorkRoot(moduleFile)
+    if (structural !== undefined) roots.add(structural)
+  }
+  for (const workRoot of roots) {
+    if (isInside(workRoot, modulePath) || isInside(workRoot, moduleFile)) return workRoot
+  }
+  return undefined
+}
+
+/** The refusal for resolving a default root from a clone: say what, where, and the environment to set. */
+function cloneRefusal(what, target, moduleFile, workRoot) {
+  const attempted = target === undefined ? '' : ` at ${target}`
+  return (
+    `refusing to resolve ${what}${attempted} from a ticket clone: this copy of wheelchair-agent lives at ` +
+    `${moduleFile} inside ${workRoot}, so its default roots point at the live deployment's operator data. ` +
+    'Reads are refused too, because a throwaway clone must fail before it can touch that data.\n' +
+    'fix: point every root at a sandbox, then retry:\n' +
+    '  sandbox=$(mktemp -d)\n' +
+    '  export WHEELCHAIR_AGENT_HOME=$sandbox\n' +
+    '  export SPV_INBOX_DIR=$sandbox/inbox\n' +
+    '  export SPV_QUEUE_DIR=$sandbox/spv\n' +
+    '  export DSH_SUPERAGENT_STATE_DIR=$sandbox/state\n' +
+    "In a Node test, use mkdtemp(join(tmpdir(), 'wheelchair-agent-')) and set the same four variables " +
+    'before importing this module.'
+  )
+}
+
+/** The refusal for the one-shot migration: it is deployment-only, so a clone may never run it. */
+function migrationRefusal(target, moduleFile, workRoot) {
+  const attempted = target === undefined ? '' : ` for ${target}`
+  return (
+    `refusing to run the data-root migration${attempted} from a ticket clone: this copy of wheelchair-agent ` +
+    `lives at ${moduleFile} inside ${workRoot}, and the migration is what moved the operator's live inbox. ` +
+    'fix: run it from the installed preset or a normal checkout.'
+  )
+}
+
+/**
+ * Throw when `what` is a default root (or the migration) and this module is a ticket clone.
+ *
+ * This is the single implementation shared by `resolveHome()`, `src/spv/paths.js` (the queue root),
+ * `src/spv/inbox.js` (the inbox root) and `src/superagent/spv.js` (the Source's fallback queue), so all
+ * refuse with the same wording. Callers must skip this check when the path was explicitly overridden: an
+ * override is always honoured. `target` is the concrete path the caller was about to use, and the
+ * deployment scope is for roots whose default does not follow the state dir (the data root).
+ */
+export function assertNotTicketClone({
+  env = process.env,
+  stateDir,
+  moduleUrl = import.meta.url,
+  what = 'a default root',
+  target,
+  migration = false,
+  scope = 'effective',
+} = {}) {
+  const workRoot = ticketCloneRoot({ env, stateDir, moduleUrl, scope })
+  if (workRoot === undefined) return
+  const moduleFile = realPath(fileURLToPath(moduleUrl))
+  const error = new Error(
+    migration
+      ? migrationRefusal(target, moduleFile, workRoot)
+      : cloneRefusal(what, target, moduleFile, workRoot),
+  )
+  error.code = TICKET_CLONE_CODE
+  error.workRoot = workRoot
+  throw error
 }
 
 /**
@@ -178,7 +360,7 @@ function presentAt(artifact, path) {
  * today-before precedence, and are never migrated.
  */
 export function dataPaths({ env = process.env, home, stateDir } = {}) {
-  const root = resolveHome({ env, home })
+  const root = resolveHome({ env, home, stateDir })
   const legacyStateDir = resolveLegacyStateDir({ env, stateDir })
   const inboxOverride = envValue(env, INBOX_ENV)
   const prepareOverride = envValue(env, PREPARE_LOG_ENV)
@@ -240,6 +422,14 @@ function legacyPresent(artifact) {
  */
 export function describeData({ env = process.env, home, stateDir } = {}) {
   const paths = dataPaths({ env, home, stateDir })
+  // Describing the layout inspects the legacy state root to decide the fallback. In a clone that is the
+  // live deployment's state dir, so this read is refused as well; a full sandbox overrides that root too.
+  assertNotTicketClone({
+    env,
+    stateDir,
+    what: 'the default legacy state root (settings / inbox / records / logs)',
+    target: paths.legacyStateDir,
+  })
   const artifacts = dataArtifacts(paths)
   // Explicit overrides ($SPV_INBOX_DIR / $SPV_PREPARE_LOG) are outside the root and never migrate, so they
   // do not make the layout "new" or "both"; they are listed as paths, not as migration state.
@@ -462,7 +652,16 @@ function moveArtifact(artifact, log) {
  * pass their own, which is also how tests observe a forced failure without depending on the file.
  */
 export function migrateData({ env = process.env, home, stateDir, log } = {}) {
+  // `dataPaths` refuses the default data root first (with the sandbox instructions); this check then
+  // refuses the migration even when the caller pointed the data root somewhere explicit.
   const paths = dataPaths({ env, home, stateDir })
+  assertNotTicketClone({
+    env,
+    stateDir,
+    what: 'the data-root migration',
+    target: `${paths.root} (from ${paths.legacyStateDir})`,
+    migration: true,
+  })
   const emit = typeof log === 'function' ? log : migrationLogger(paths)
   const key = migrationKey(paths)
   let candidates
@@ -528,10 +727,21 @@ export function migrateData({ env = process.env, home, stateDir, log } = {}) {
  * `legacyStateDir`, `layout`, `migrationPending` for `wheelchair-agent where` and diagnostics.
  */
 export function resolveData({ env = process.env, home, stateDir, migrate = true, log } = {}) {
+  // Resolve (guarded) paths before any filesystem read: a forgotten clone must fail on its first line,
+  // and the migration must refuse before `describeData` stats the live legacy state directory.
+  const paths = dataPaths({ env, home, stateDir })
+  if (migrate) {
+    assertNotTicketClone({
+      env,
+      stateDir,
+      what: 'the data-root migration',
+      target: `${paths.root} (from ${paths.legacyStateDir})`,
+      migration: true,
+    })
+  }
   const before = describeData({ env, home, stateDir })
   if (migrate) migrateData({ env, home, stateDir, log })
   const described = migrate ? describeData({ env, home, stateDir }) : before
-  const paths = dataPaths({ env, home, stateDir })
   return {
     root: described.root,
     legacyStateDir: described.legacyStateDir,

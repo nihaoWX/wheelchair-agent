@@ -51,6 +51,9 @@ jobs:
       - name: Data root and one-shot migration
         run: node tests/test-home.mjs
 
+      - name: Ticket-clone data-root guard
+        run: node tests/test-clone-guard.mjs
+
       - name: Layout boundary rules
         run: bash tests/test-layout.sh
 

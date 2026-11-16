@@ -307,8 +307,10 @@ async function testOverridesWin() {
   assert.match(await readFile(explicitPrepare, 'utf8'), /installed .*AGENTS\.md/)
   assert.equal(await exists(join(box.root, 'logs', 'prepare.log')), false, 'the override suppresses the root log')
 
-  // DSH_SUPERAGENT_STATE_DIR still decides the queue and the work root (the superagent contract).
-  const stateEnv = { DSH_SUPERAGENT_STATE_DIR: box.state }
+  // DSH_SUPERAGENT_STATE_DIR still decides the queue and the work root (the superagent contract). HOME is
+  // pinned to the sandbox because the default data root would otherwise be the machine's live one, which
+  // the ticket-clone guard refuses (this suite runs from a ticket clone).
+  const stateEnv = { HOME: box.home, DSH_SUPERAGENT_STATE_DIR: box.state }
   const savedQueue = process.env.SPV_QUEUE_DIR
   const savedState = process.env.DSH_SUPERAGENT_STATE_DIR
   try {
