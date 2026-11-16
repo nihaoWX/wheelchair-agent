@@ -141,7 +141,7 @@ wheelchair-agent check          # 运行时健康：服务 / preset / 面板 pre
 wheelchair-agent work gc --dry-run   # 回收可重建的 ticket 克隆；挂载时同一实现自动跑一次
 wheelchair-agent work restored <ticket>  # 从 work-reclaimed.jsonl 打印重建命令
 wheelchair-agent restart-all --dry-run   # 重启计划：服务 pid、SPV 链、checkout、日志与每一步命令
-wheelchair-agent restart-all             # 停服务 → 停 SPV 链 → 冷安装 → 起服务 → tmux 里重开 TUI
+wheelchair-agent restart-all             # 停服务 → 停 SPV 链 → 冷安装 → 起服务 → 本终端重开 TUI
 ```
 
 `work gc` 的门禁与记录格式见 `docs/work-gc.md`。
@@ -149,12 +149,25 @@ wheelchair-agent restart-all             # 停服务 → 停 SPV 链 → 冷安�
 ### 重启整套部署
 
 `/restart-wheelchair-agent` 是这条命令的会话内入口：它只做守卫检查、arm 一个 detached orchestrator，
-然后告诉你会话即将结束、TUI 会在 tmux session `dsh-spv` 里回来。真正的重启由
-`wheelchair-agent restart-all` 完成，顺序固定为 **服务停止 → SPV 链 SIGTERM/等待/SIGKILL →
-`install.sh` 冷安装 → 服务启动 → tmux 重开 TUI**；这个顺序是 `install.sh` 的冷安装守卫唯一接受的
+然后告诉你会话即将结束。真正干活的 `wheelchair-agent spv` 终端**不会关**：它 tail
+`<root>/logs/restart-all.log`（默认 `~/.wheelchair-agent/logs/restart-all.log`）、逐行打印重启步骤（去掉时间戳；`restart-all:` 开头的内部行不进终端），完成后
+在**同一终端**重新拉起 TUI，并用 `~/.dsh-tui/resume.txt` 里的 session id（唯一来源；trim 后必须是 UUID）
+`--resume` 回到**同一个 SPV 对话**。操作者第一次启动的参数保持原样，但**重启时的重新拉起会先丢掉旧的**
+`--resume`/`-c`/`--continue`（旧 id 会进错会话，裸 `-c` 在 resume.txt 不可用时会直接退出），一律以
+resume.txt 为准。文件缺失/不可读/内容不是 id 时只打印一行说明，然后开新会话（不会卡死）；dsh-tui 拒绝
+resume 时再打印一行，去掉 `--resume` 重试一次。tmux session `dsh-spv` 只是**兜底**：那个终端已经没了
+（关掉，或 CLI 随 TUI 一起退出）时，编排器等一小段时间拿不到 claim 就退回 tmux，兜底同样带 `--resume`；
+没有 tmux 时 claim 成功照样不报错，没人 claim 才失败退出。兜底文件出现**不算成功**：只有日志里的
+`restart complete (exit 0)` 才算，tmux 没起来会按失败退出。首次升级后的第一个旧会话没有 supervising
+`wheelchair-agent spv`，只能从 tmux 回来；之后重新开一个 `wheelchair-agent spv` 才有原地返回。
+`/update`、`/restart`、`/backend` 交接会结束 supervising CLI，要再开一次 `wheelchair-agent spv`；
+不要给 `wheelchair-agent spv` 传 `--patch`，否则 CLI 自己进 kill chain，叙述者就没了。重启顺序固定为
+**服务停止 → SPV 链 SIGTERM/等待/SIGKILL →
+`install.sh` 冷安装 → 服务启动 → 本终端重开 TUI**；这个顺序是 `install.sh` 的冷安装守卫唯一接受的
 （服务或活着的 SPV 会话占用时它会拒绝，且半安装的服务比停着的服务更糟）。它只接受 `--force`：打断
-正在跑的 worker 与排队的 ticket（会先打印打断了什么）。每一步连同命令与退出码写进
-`<root>/logs/restart-all.log`（默认 `~/.wheelchair-agent`）。详见 `docs/restart.md`。
+正在跑的 worker 与排队的 ticket（会先打印打断了什么）。安装失败或服务起不来时只打印原因、日志路径和
+手工修复命令，不 relaunch。每一步连同命令与退出码写进 `<root>/logs/restart-all.log`（默认
+`~/.wheelchair-agent/logs/restart-all.log`）。详见 `docs/restart.md`。
 
 ## 标准工具从哪来
 

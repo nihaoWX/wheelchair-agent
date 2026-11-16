@@ -11,9 +11,14 @@
  * must be gone before the install starts; if the install fails, the service is deliberately left stopped.
  *
  * The command usually runs *inside* the SPV session it has to replace, so the slash command arms a detached
- * `--run` child (`armDetached`); that child survives the session's death and performs the steps. This module
- * is pure Node builtins and never calls `process.exit`, so the CLI can test it with fake `/proc` entries and
- * fake executables on PATH.
+ * `--run` child (`armDetached`); that child survives the session's death and performs the steps. The detached
+ * run writes a marker before it stops anything; the terminal that launched `wheelchair-agent spv` reads it,
+ * narrates the log and relaunches the TUI there, resumed into the same conversation from
+ * `~/.dsh-tui/resume.txt`. tmux is only the fallback for a terminal that is gone: after steps 1-4 the
+ * orchestrator waits for that terminal's claim (`restart-claimed.json`) before it launches tmux, and the
+ * fallback resumes the same conversation too.
+ * This module is pure Node builtins and never calls `process.exit`, so the CLI can test it with fake `/proc`
+ * entries and fake executables on PATH.
  */
 import { spawn, spawnSync } from 'node:child_process'
 import {
@@ -34,9 +39,21 @@ import { dirname, join, resolve } from 'node:path'
 
 import { RESTART_LOG_FILE, dataPaths, resolveData } from '../shared/home.js'
 
-/** Log file name; one `[ISO] text` line per entry. */
+import {
+  claimExists,
+  claimHeldByLiveTerminal,
+  clearRestartState,
+  markFallback,
+  readArmed,
+  resolveResume,
+  restartPaths,
+  resumeDetail,
+  writeArmed,
+} from './restart-ux.js'
+
+/** Log file name; one `[ISO] text` line per entry. This is #21's data-root name. */
 export const LOG_NAME = RESTART_LOG_FILE
-/** tmux session the detached orchestrator comes back in; the operator's console is gone by then. */
+/** tmux session the detached orchestrator falls back to; the terminal normally brings the TUI back. */
 export const TMUX_SESSION = 'dsh-spv'
 /** Default management API base URL, the same one superagent itself uses. */
 export const DEFAULT_URL = 'http://127.0.0.1:3082'
@@ -48,6 +65,8 @@ const STATE_PATH = '/orchestrator/api/state'
 const DEFAULT_TERM_MS = 10_000
 const DEFAULT_KILL_MS = 5_000
 const DEFAULT_PARENT_MS = 5_000
+/** How long step 5 waits for the narrating terminal to claim the relaunch before it takes tmux. */
+const DEFAULT_CLAIM_MS = 5_000
 const POLL_MS = 100
 const PARENT_POLL_MS = 50
 
@@ -71,6 +90,24 @@ function envMs(env, name, fallback) {
 /** A command-line argument list as one readable line for logs and plans. */
 function display(argv) {
   return argv.join(' ')
+}
+
+/**
+ * The environment for a step command: the detached child's private seams are removed.
+ *
+ * `WHEELCHAIR_RESTART_CHAIN`, `_PARENT_PID` and `_PRESET_PATCH` exist so `--run` can re-verify the armed
+ * chain. They must not leak into the service/install/tmux children, or a `restart-all` started from that
+ * tree later would trust a stale chain (a real dry run hit exactly that).
+ */
+function childEnvironment(env) {
+  const copy = { ...env }
+  delete copy.WHEELCHAIR_RESTART_CHAIN
+  delete copy.WHEELCHAIR_RESTART_PARENT_PID
+  delete copy.WHEELCHAIR_RESTART_PRESET_PATCH
+  // A supervised marker must describe the terminal tree, not a service that was started by one: the
+  // service would otherwise pass it on to an unsupervised `wheelchair-agent spv`.
+  delete copy.WHEELCHAIR_AGENT_SUPERVISED
+  return copy
 }
 
 /** Read `/proc/<pid>/cmdline` as argv; an unreadable entry reads as an empty list. */
@@ -481,11 +518,13 @@ export function planLines({
   tmuxSession = TMUX_SESSION,
   noInstall = false,
   install,
+  resume,
 } = {}) {
   const pids = chain.map(pidOf).filter(pid => Number.isInteger(pid) && pid > 0)
   const servicePids = (service.pids ?? []).map(pidOf).filter(pid => Number.isInteger(pid) && pid > 0)
   const agent = service.agent ?? ['wheelchair-agent']
   const launch = service.launch ?? [...agent, 'spv']
+  const launchArgv = resume?.ok ? [...launch, '--resume', resume.id] : launch
   const cwd = service.cwd ?? process.cwd()
   const termMs = service.termMs ?? DEFAULT_TERM_MS
   const killMs = service.killMs ?? DEFAULT_KILL_MS
@@ -507,10 +546,18 @@ export function planLines({
   )
   lines.push(`  3. ${noInstall ? 'skipped (--no-install)' : installCommand}`)
   lines.push(`  4. ${display([...agent, 'service', 'start'])}`)
-  lines.push(`  5. relaunch the TUI in tmux session ${tmuxSession} (cwd ${cwd}):`)
+  lines.push(
+    `  5. wait for the "wheelchair-agent spv" terminal to claim the relaunch; if it does not, relaunch the ` +
+      `TUI in tmux session ${tmuxSession} (cwd ${cwd}), resumed into the same SPV conversation:`,
+  )
+  lines.push(
+    resume?.ok
+      ? `       resume: --resume ${resume.id} (~/.dsh-tui/resume.txt)`
+      : `       resume: --resume unavailable (${resumeDetail(resume)}); the fallback starts a fresh session`,
+  )
   lines.push(`       tmux has-session -t =${tmuxSession}`)
-  lines.push(`       tmux new-window -t =${tmuxSession}: -n spv -c ${cwd} ${display(launch)}`)
-  lines.push(`       tmux new-session -d -s ${tmuxSession} -n spv -c ${cwd} ${display(launch)}`)
+  lines.push(`       tmux new-window -t =${tmuxSession}: -n spv -c ${cwd} ${display(launchArgv)}`)
+  lines.push(`       tmux new-session -d -s ${tmuxSession} -n spv -c ${cwd} ${display(launchArgv)}`)
   return lines
 }
 
@@ -597,7 +644,12 @@ function preflightFailure(lines, extra = {}) {
  */
 async function preflight(context, options, { detached = false } = {}) {
   const env = context.env ?? process.env
-  const presetPatch = String(env.WHEELCHAIR_RESTART_PRESET_PATCH ?? '').trim() || context.presetPatch
+  // `armDetached` hands the armed chain and patch to the `--run` child through the environment. Those
+  // overrides are meaningful only in that child: honoring them in a dry run, a foreground run or the
+  // arming preflight would let a stale leaked environment bypass the real `/proc` scan.
+  const armed = options.run === true
+  const presetPatch = (armed ? String(env.WHEELCHAIR_RESTART_PRESET_PATCH ?? '').trim() : '') ||
+    context.presetPatch
   const serviceUrl = resolveServiceUrl({ env })
   const profile = resolveProfile({ env })
   const lines = []
@@ -646,7 +698,7 @@ async function preflight(context, options, { detached = false } = {}) {
 
   const procRoot = String(env.WHEELCHAIR_PROC_ROOT ?? '').trim() || '/proc'
   const table = readProcTable({ procRoot })
-  const chainOverride = String(env.WHEELCHAIR_RESTART_CHAIN ?? '').trim()
+  const chainOverride = armed ? String(env.WHEELCHAIR_RESTART_CHAIN ?? '').trim() : ''
   const chainOverridePids = chainOverride
     ? [...new Set(chainOverride.split(/\s+/).map(Number).filter(pid => Number.isInteger(pid) && pid > 0))]
     : undefined
@@ -678,8 +730,8 @@ async function preflight(context, options, { detached = false } = {}) {
       `FAIL: cannot identify the live SPV session: no process carries --patch ${presetPatch ?? '(no preset patch)'}.`,
     )
     lines.push(
-      'fix: start the SPV session with "wheelchair-agent spv" (or pass the patch the session actually uses), ' +
-        'then rerun; nothing was stopped.',
+      'fix: start the SPV session with "wheelchair-agent spv", then rerun; nothing was stopped. Do not pass ' +
+        '--patch to that command: it would put the supervising CLI itself in the kill chain.',
     )
     return preflightFailure(lines, { serviceUrl, load, presetPatch })
   }
@@ -703,10 +755,14 @@ async function preflight(context, options, { detached = false } = {}) {
     }
   }
 
-  if (which('tmux', env) === undefined) {
-    lines.push('FAIL: tmux is not on PATH, so the SPV TUI cannot be relaunched after the restart.')
-    lines.push('fix: install tmux (apt install tmux), then rerun; nothing was stopped.')
-    return preflightFailure(lines, { serviceUrl, load, presetPatch, checkout })
+  // tmux is only the fallback: the terminal that launched `wheelchair-agent spv` needs none. A missing tmux
+  // is therefore a note, and only step 5 fails if no terminal claims and there is no way to launch the TUI.
+  const tmuxAvailable = which('tmux', env) !== undefined
+  if (!tmuxAvailable) {
+    lines.push(
+      'note: tmux is not on PATH; the terminal that launched "wheelchair-agent spv" can still bring the TUI ' +
+        'back in place, but the fallback for a closed terminal is unavailable.',
+    )
   }
 
   const ancestors = detached ? [] : ancestorPids(process.pid)
@@ -764,6 +820,7 @@ async function preflight(context, options, { detached = false } = {}) {
     cwd,
     agent,
     launch,
+    tmux: tmuxAvailable,
     termMs: envMs(env, 'WHEELCHAIR_RESTART_TERM_MS', DEFAULT_TERM_MS),
     killMs: envMs(env, 'WHEELCHAIR_RESTART_KILL_MS', DEFAULT_KILL_MS),
   }
@@ -847,8 +904,13 @@ async function orchestrate(context, options, mode) {
   const env = context.env ?? process.env
   const stateDir = context.stateDir || resolveStateDir({ env })
   const logFile = context.logFile || resolveRestartLog({ env, home: context.home, stateDir })
+  // The orchestrator's private seams must not reach the service it starts (see childEnvironment).
+  const stepEnv = childEnvironment(env)
   const pre = await preflight(context, options, { detached: false })
   if (!pre.ok) {
+    // A detached run whose re-guard refused will never narrate a completion; clear the marker so a later
+    // normal TUI exit in the still-open terminal is not mistaken for this dead run.
+    if (mode === 'detached') clearRestartState(stateDir)
     // The detached path has already promised a log to the operator, and the console may be gone by the time
     // the child's re-guard fails, so the reason must be in the log even though nothing was mutated.
     const failureLines = [
@@ -889,7 +951,7 @@ async function orchestrate(context, options, mode) {
   const total = 5
 
   // 1. Stop the service first: the guard requires it, and a stopped service cannot accept new work.
-  const stop = runArgv([...pre.agent, 'service', 'stop'], { env, cwd: pre.cwd, timeout: 330_000 })
+  const stop = runArgv([...pre.agent, 'service', 'stop'], { env: stepEnv, cwd: pre.cwd, timeout: 330_000 })
   record(`step 1/${total}: ${stop.command} -> exit ${exitText(stop)}`)
   if (exitCodeOf(stop) !== 0) {
     record('restart aborted: the superagent service did not stop; the SPV session was left alone (exit 1)')
@@ -921,7 +983,7 @@ async function orchestrate(context, options, mode) {
     record(`step 3/${total}: install.sh skipped (--no-install)`)
   } else {
     const install = runArgv(['bash', join(pre.checkout, 'install.sh')], {
-      env,
+      env: stepEnv,
       cwd: pre.checkout,
       timeout: 600_000,
     })
@@ -951,25 +1013,81 @@ async function orchestrate(context, options, mode) {
     }
   }
 
-  // 4. Start the service back. A failure here still relaunches the TUI: its launcher retries the service.
-  const start = runArgv([...pre.agent, 'service', 'start'], { env, cwd: pre.cwd, timeout: 180_000 })
+  // 4. Start the service back. A failure here ends the restart: a TUI relaunched against a dead service
+  // would only produce a backend-less session and hide the failure the operator has to fix.
+  const start = runArgv([...pre.agent, 'service', 'start'], { env: stepEnv, cwd: pre.cwd, timeout: 180_000 })
   record(`step 4/${total}: ${start.command} -> exit ${exitText(start)}`)
-  const startFailed = exitCodeOf(start) !== 0
-  if (startFailed) {
-    record('FAIL: the superagent service did not start; the TUI relaunch still runs so its launcher can retry')
+  if (exitCodeOf(start) !== 0) {
+    record(
+      'FAIL: the superagent service did not start; the TUI was not relaunched; fix the service and run ' +
+        '"wheelchair-agent spv"',
+    )
+    record('restart failed (exit 1)')
+    return 1
   }
 
-  // 5. Relaunch the TUI in tmux: the original terminal belongs to the session that was just stopped.
-  // The launch is an absolute node + CLI argv (pre.launch), so it does not depend on the tmux server's PATH.
+  // 5. The terminal that launched `wheelchair-agent spv` is normally still there: it saw the marker, narrates
+  // this log and relaunches the TUI itself. It claims that job by writing restart-claimed.json. Only when no
+  // claim arrives within the grace period is the terminal gone, and tmux becomes the fallback relaunch.
+  const claimMs = envMs(env, 'WHEELCHAIR_RESTART_CLAIM_MS', DEFAULT_CLAIM_MS)
+  const claimDeadline = Date.now() + claimMs
+  let claimed = false
+  let staleClaim = false
+  for (;;) {
+    if (claimExists(stateDir)) {
+      // A claim only counts while its narrator is alive: if the CLI wrote it and then died with the
+      // terminal, waiting would leave the operator with no TUI at all.
+      if (claimHeldByLiveTerminal(stateDir)) claimed = true
+      else staleClaim = true
+      break
+    }
+    if (Date.now() >= claimDeadline) break
+    await sleep(POLL_MS)
+  }
+  if (claimed) {
+    record(`step 5/${total}: skipped; the terminal claimed the restart and relaunches the TUI here`)
+    record('restart complete (exit 0)')
+    return 0
+  }
+  if (pre.tmux !== true) {
+    // No terminal claimed and the fallback binary is missing: there is no way to bring the TUI back.
+    record('FAIL: tmux is not on PATH; the fallback TUI was not started')
+    record('restart failed (exit 1)')
+    return 1
+  }
+  try {
+    markFallback(stateDir, { pid: process.pid, at: new Date().toISOString(), tmux: TMUX_SESSION })
+  } catch {
+    // The tmux launch is what matters; without the file a still-open narrator learns the outcome from the
+    // log line below instead.
+  }
+  record(
+    staleClaim
+      ? 'note: the terminal that claimed the restart is gone; taking the tmux fallback'
+      : `note: no terminal claim within ${claimMs}ms; taking the tmux fallback`,
+  )
+
+  // The TUI is dead by now, but `~/.dsh-tui/resume.txt` persists: the fallback also comes back into the
+  // same conversation. If the file is gone or unusable, log one note and start a fresh session.
+  const resume = resolveResume()
+  if (!resume.ok) {
+    record(
+      `note: cannot resume the previous SPV session (${resumeDetail(resume)}); the tmux fallback starts a ` +
+        'fresh SPV session',
+    )
+  }
+  const launch = resume.ok ? [...pre.launch, '--resume', resume.id] : pre.launch
+  // The fallback launch is an absolute node + CLI argv (pre.launch), so it does not depend on the tmux
+  // server's PATH.
   const hasSession = runArgv(['tmux', 'has-session', '-t', `=${TMUX_SESSION}`], {
-    env,
+    env: stepEnv,
     cwd: pre.cwd,
     timeout: 30_000,
   })
   const relaunch = hasSession.status === 0
-    ? ['tmux', 'new-window', '-t', `=${TMUX_SESSION}:`, '-n', 'spv', '-c', pre.cwd, ...pre.launch]
-    : ['tmux', 'new-session', '-d', '-s', TMUX_SESSION, '-n', 'spv', '-c', pre.cwd, ...pre.launch]
-  const tui = runArgv(relaunch, { env, cwd: pre.cwd, timeout: 30_000 })
+    ? ['tmux', 'new-window', '-t', `=${TMUX_SESSION}:`, '-n', 'spv', '-c', pre.cwd, ...launch]
+    : ['tmux', 'new-session', '-d', '-s', TMUX_SESSION, '-n', 'spv', '-c', pre.cwd, ...launch]
+  const tui = runArgv(relaunch, { env: stepEnv, cwd: pre.cwd, timeout: 30_000 })
   record(`step 5/${total}: ${tui.command} -> exit ${exitText(tui)}`)
   let tuiFailed = exitCodeOf(tui) !== 0
   if (tuiFailed) {
@@ -981,7 +1099,7 @@ async function orchestrate(context, options, mode) {
     let present = false
     while (Date.now() < deadline) {
       const check = runArgv(['tmux', 'has-session', '-t', `=${TMUX_SESSION}`], {
-        env,
+        env: stepEnv,
         cwd: pre.cwd,
         timeout: 30_000,
       })
@@ -999,7 +1117,7 @@ async function orchestrate(context, options, mode) {
     }
   }
 
-  const code = startFailed || tuiFailed ? 1 : 0
+  const code = tuiFailed ? 1 : 0
   if (code === 0) record('restart complete (exit 0)')
   else record(`restart failed (exit ${code}); the log above says which step failed`)
   return code
@@ -1021,6 +1139,8 @@ export async function runOrchestrator(context, options = {}) {
     if (!reparented) {
       const stateDir = context.stateDir || resolveStateDir({ env })
       const logFile = context.logFile || resolveRestartLog({ env, home: context.home, stateDir })
+      // Keep the marker: the still-open terminal narrates the FAIL line below and exits non-zero, which is
+      // more useful than silently returning to a shell.
       const lines = [
         `FAIL: the arming process ${parentPid} is still alive after ${timeoutMs}ms; nothing was stopped.`,
         'fix: rerun /restart-wheelchair-agent, or run "wheelchair-agent restart-all --dry-run" to inspect the plan.',
@@ -1033,6 +1153,15 @@ export async function runOrchestrator(context, options = {}) {
       process.stdout.write(`${lines.join('\n')}\n`)
       return 1
     }
+  }
+  // The marker was written before the spawn; now that this process owns the run, make its pid authoritative
+  // so the narrator's death check watches the orchestrator, not the short-lived arming process.
+  try {
+    const stateDir = context.stateDir || resolveStateDir({ env })
+    const marker = readArmed(stateDir)
+    if (marker !== undefined) writeArmed(stateDir, { ...marker, pid: process.pid })
+  } catch {
+    // Best effort: the completion line is still the primary signal.
   }
   return orchestrate(context, options, 'detached')
 }
@@ -1062,6 +1191,48 @@ export async function armDetached(context, options = {}) {
     appendLog(logFile, [...pre.lines, startLine])
   } catch (error) {
     process.stdout.write(`FAIL: cannot write the restart log ${logFile}: ${error.message}\n`)
+    process.stdout.write('fix: make the state directory writable, then rerun; nothing was stopped.\n')
+    return 1
+  }
+
+  // The arming line is written before the marker's offset is measured, so the narrator starts *after* it and
+  // the operator never sees this internal line. Reworded around the normal path, because tmux is the fallback.
+  try {
+    appendLog(logFile, [
+      'restart-all: arming a detached orchestrator; the "wheelchair-agent spv" terminal claims and narrates ' +
+        `the restart in place, tmux session ${TMUX_SESSION} is the fallback, state dir ${stateDir}`,
+    ])
+  } catch (error) {
+    process.stdout.write(`note: cannot append the arming line to ${logFile}: ${error.message}\n`)
+  }
+
+  // The marker is what turns the TUI's exit into a narrated restart: the terminal that launched
+  // `wheelchair-agent spv` reads it, tails the log from `logOffset` and relaunches there. It is written
+  // *after* preflight and the arming lines but *before* the spawn; a write failure aborts with nothing
+  // stopped, and the child re-asserts its own pid at startup.
+  const paths = restartPaths(stateDir)
+  let logOffset = 0
+  try {
+    logOffset = statSync(logFile).size
+  } catch {
+    // The append above succeeded, so a failing stat is not worth aborting for; start the tail at 0.
+  }
+  try {
+    clearRestartState(stateDir)
+    writeArmed(stateDir, {
+      pid: null,
+      armedPid: process.pid,
+      startedAt: new Date().toISOString(),
+      log: logFile,
+      logOffset,
+      checkout: pre.checkout ?? null,
+      tmux: TMUX_SESSION,
+      service: pre.serviceUrl,
+      force: Boolean(options.force),
+      noInstall: Boolean(options.noInstall),
+    })
+  } catch (error) {
+    process.stdout.write(`FAIL: cannot write the restart marker ${paths.armed}: ${error.message}\n`)
     process.stdout.write('fix: make the state directory writable, then rerun; nothing was stopped.\n')
     return 1
   }
@@ -1098,6 +1269,9 @@ export async function armDetached(context, options = {}) {
   // Let an immediate spawn failure (ENOENT, EACCES) surface before claiming the run is armed.
   await new Promise(done => setImmediate(done))
   if (spawnError !== undefined) {
+    // No child will ever complete this run; clear the marker so the still-open terminal does not narrate
+    // a restart that never started.
+    clearRestartState(stateDir)
     const failLine = `FAIL: cannot arm the detached orchestrator: ${spawnError.message}`
     try {
       appendLog(logFile, [failLine, 'restart-all: nothing was stopped'])
@@ -1108,28 +1282,49 @@ export async function armDetached(context, options = {}) {
     process.stdout.write('fix: check that node and the CLI path are usable, then rerun.\n')
     return 1
   }
+  // The marker knows the orchestrator now; `--run` re-asserts the same pid after the reparent wait.
   try {
-    appendLog(logFile, [
-      `restart-all: arming a detached orchestrator; tmux session ${TMUX_SESSION}, state dir ${stateDir}`,
-    ])
-  } catch (error) {
-    process.stdout.write(`note: cannot append the arming line to ${logFile}: ${error.message}\n`)
+    const marker = readArmed(stateDir)
+    if (marker !== undefined && child?.pid !== undefined) writeArmed(stateDir, { ...marker, pid: child.pid })
+  } catch {
+    // Best effort: the narrator then treats the run as pid-less and only the completion line ends it.
   }
-
   const installStep = options.noInstall ? 'skipped (--no-install)' : `bash ${join(pre.checkout, 'install.sh')}`
+  const resume = resolveResume()
+  // A session started before this narrator existed has no supervising `wheelchair-agent spv`: its first
+  // restart necessarily comes back in tmux. The marker is set by the launcher environment of a new CLI.
+  const supervised = String(env.WHEELCHAIR_AGENT_SUPERVISED ?? '') === '1'
+  const rollout = supervised
+    ? []
+    : [
+      'note: this SPV session has no supervising "wheelchair-agent spv" (it was started before the',
+      '      same-terminal narrator existed), so this restart comes back in tmux session "dsh-spv". After',
+      '      it finishes, run "wheelchair-agent spv" in a terminal to get the in-place return.',
+    ]
   process.stdout.write(
     [
       `${pre.lines.join('\n')}${pre.lines.length > 0 ? '\n' : ''}` +
         'restart-all: armed a detached orchestrator; it will restart the deployment after this session ends.',
-      `  tmux session: ${TMUX_SESSION}`,
+      ...rollout,
+      `  terminal:     the terminal that ran "wheelchair-agent spv" narrates the restart, brings the TUI ` +
+        'back in that same terminal and resumes the same SPV conversation',
+      `  resume:       ${
+        resume.ok
+          ? `--resume ${resume.id} (~/.dsh-tui/resume.txt)`
+          : `unavailable (${resumeDetail(resume)}); the TUI starts a fresh session`
+      }`,
+      `  fallback:     tmux session ${TMUX_SESSION} (only if that terminal is gone; attach with: ` +
+        `tmux attach -t =${TMUX_SESSION})`,
       `  log:          ${logFile}`,
       `  service:      ${pre.serviceUrl}`,
       `  spv pids:     ${pre.targets.join(' ') || '(none)'}`,
       `  checkout:     ${pre.checkout ?? '(not resolved)'}`,
       `  plan:         service stop -> SIGTERM ${pre.targets.join(' ')} -> ${installStep} -> service start -> ` +
-        `tmux ${TMUX_SESSION}`,
+        'relaunch the TUI in the same terminal',
       'note: this command has not restarted anything itself. The SPV session you are in is about to end;',
-      `      the TUI comes back in tmux session "${TMUX_SESSION}" (attach with: tmux attach -t =${TMUX_SESSION}).`,
+      '      leave the terminal that launched "wheelchair-agent spv" open: it prints every step and starts',
+      `      the TUI again there. If that terminal is gone, the TUI comes back in tmux session ` +
+        `"${TMUX_SESSION}". If neither happens, read the log: ${logFile}`,
     ].join('\n') + '\n',
   )
   return 0
@@ -1162,6 +1357,7 @@ export async function runRestart(context, options = {}) {
             }).restartLog.current,
           tmuxSession: TMUX_SESSION,
           noInstall: Boolean(options.noInstall),
+          resume: resolveResume(),
         }),
       )
     }
