@@ -36,6 +36,9 @@ jobs:
       - name: Panel settings store and backend consumers
         run: node tests/test-settings.mjs
 
+      - name: Hook engine: event table, settings, records and cursor
+        run: node tests/test-hooks.mjs
+
       - name: SPV result injector header
         run: node tests/test-injector.mjs
 

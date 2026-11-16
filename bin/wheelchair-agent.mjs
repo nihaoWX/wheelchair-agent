@@ -70,6 +70,8 @@ commands:
                                restart the superagent service, cold-install the preset and bring the SPV TUI back
   session release [--session <id>] [--dry-run]
                                release the kernel session lease held by a stuck TUI/dsh process
+  hook <events|list|add|enable|disable|rm|rename|test|log|prompt>
+                               extra scripts on the project's events (see "hook events")
   where [--json]               where this install put everything (data root, preset, wrappers, queue, logs)
   check                        runtime health: service, preset, panel prepare value, prepare dry run
   --help                       this text
@@ -1004,6 +1006,22 @@ async function commandWhere(argv) {
   process.stdout.write(`${lines.join('\n')}\n`)
 }
 
+/**
+ * `hook`：插口（hook）引擎的增删改查、试跑与提示词。
+ *
+ * 实现全在 `src/spv/hook.js`（纯函数库，返回退出码 0/1）；这里只做两件事：把 argv / 用法错误翻译成既有的
+ * `UsageError`（退出码 2），并把返回码写进 `process.exitCode`。事件表在 `src/shared/hook-events.js`。
+ */
+async function commandHook(argv) {
+  const { runHookCommand } = await load('src', 'spv', 'hook.js')
+  try {
+    process.exitCode = await runHookCommand(argv, { env: process.env, cwd: process.cwd() })
+  } catch (error) {
+    if (error?.code === 'HOOK_USAGE') throw new UsageError(error.message)
+    throw error
+  }
+}
+
 /** `check`：四项运行时健康检查，任一项失败退出 1。 */
 async function commandCheck() {
   const { runChecks } = await load('src', 'spv', 'check.js')
@@ -1073,6 +1091,9 @@ try {
       break
     case 'session':
       await commandSession(rest)
+      break
+    case 'hook':
+      await commandHook(rest)
       break
     case 'where':
       await commandWhere(rest)

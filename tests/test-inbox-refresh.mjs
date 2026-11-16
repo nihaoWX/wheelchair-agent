@@ -596,6 +596,7 @@ async function loadHostApply(box) {
     ['src/spv/dispatch.js', 'lib/core/dispatch.js'],
     ['src/spv/paths.js', 'lib/core/paths.js'],
     ['src/shared/home.js', 'lib/shared/home.js'],
+    ['src/shared/hook-events.js', 'lib/shared/hook-events.js'],
     ['src/shared/queue.js', 'lib/shared/queue.js'],
     ['src/shared/settings.js', 'lib/shared/settings.js'],
     ['webui/lib/index.js', 'lib/index.js'],

@@ -3,7 +3,7 @@
  * tests/test-settings.mjs：面板设置存储与全部后端消费方的离线可跑证据。
  *
  * 覆盖：
- *   - 默认值解析：没有文件时 revision 0、`fileState: "missing"`、八行都是内置默认；
+ *   - 默认值解析：没有文件时 revision 0、`fileState: "missing"`、八行都是内置默认、`hooks` 是内置默认；
  *   - 内置模板：`injection` / `spvObjection` 与改造前逐字节一致；`prIssue` 是新的 SPV notice 正文；
  *   - 保存：部分保存合并、revision 递增、文件只有 version/revision/values/templates、原子写不留临时文件；
  *     过期 revision 抛 SETTINGS_CONFLICT 且**磁盘一个字节都不动**；未知键/坏值整体拒绝；
@@ -13,7 +13,9 @@
  *   - 预设：创建、切换、只切 active、删除 active 回退默认、revert 保留自定义、reset 清空、内置不可改、
  *     非法名字；
  *   - 优先级：文件 > 插件 config > 环境变量 > 默认；`rows` 的 source/overridden/env 说清楚被压住的值；
- *   - HTTP 面：GET/PUT、405 Allow、415、413、400、409、404，reset 与预设 CRUD 都走同一条 PUT；
+ *   - HTTP 面：GET/PUT、405 Allow、415、413、400、409、404，reset、预设 CRUD 与 `hooks` 都走同一条 PUT；
+ *   - `hooks` 子块：默认值不落盘、部分保存、过期 revision 一个字节都不写、坏子块逐字段 warning、
+ *     旧文件仍有效、未知事件/内建行/重复 id 被拒；
  *   - 消费方：`resolveInboxIntervalSeconds()` 的优先级与非法值、`appendReview` 用自定义模板写通知、
  *     `startResultInjector` 用自定义模板与自定义截断上限、`injection.intervalMs` 改值无需重启、
  *     轮询器 0 暂停/恢复无需重启、`merge.installRepo` 文件值压过环境变量、`work gc` 用设置的 keep 默认、
@@ -240,6 +242,7 @@ async function loadHostApply(box) {
     ['src/spv/dispatch.js', 'lib/core/dispatch.js'],
     ['src/spv/paths.js', 'lib/core/paths.js'],
     ['src/shared/home.js', 'lib/shared/home.js'],
+    ['src/shared/hook-events.js', 'lib/shared/hook-events.js'],
     ['src/shared/queue.js', 'lib/shared/queue.js'],
     ['src/shared/settings.js', 'lib/shared/settings.js'],
     ['webui/lib/index.js', 'lib/index.js'],
@@ -1146,6 +1149,250 @@ async function testHostSettingsRoute() {
   }
 }
 
+/**
+ * `hooks` 子块（插口引擎的设置面）：默认值、部分保存、整体替换、revision 冲突、坏子块、旧文件、HTTP PUT。
+ *
+ * 这些都是设置存储的既有不变量在新字段上的复述：默认值不落盘、过期 revision 一个字节都不写、坏字段
+ * warning 后跳过。执行语义（脚本、记录、cursor）在 `tests/test-hooks.mjs`。
+ */
+async function testHooksBlock() {
+  const box = await sandbox()
+  const EMPTY = { enabled: true, scriptTimeoutMs: 10000, items: [], labels: {} }
+  const read = () => resolveSettings({ home: box.root, stateDir: box.state, env: {} })
+  const item = {
+    id: 'hook-ticket-delivered-abcd12',
+    event: 'ticket.delivered',
+    name: 'notify',
+    enabled: true,
+    script: 'printf "%s\\n" "$WCA_EVENT"',
+    timeoutMs: 2500,
+  }
+
+  const initial = read()
+  assert.deepEqual(initial.hooks, EMPTY, 'no file means the built-in hooks defaults')
+  assert.deepEqual(defaultSettings(DEFAULT_SETTINGS).hooks, EMPTY, 'defaultSettings() carries the same defaults')
+  assert.equal(settingsPath(box).endsWith(`${SETTINGS_FILE}`), true)
+
+  // A values-only save must not create (or disturb) a hooks block.
+  const valued = save(box, { values: { 'work.keep': 1 } })
+  assert.deepEqual(valued.hooks, EMPTY)
+  assert.equal((await readJson(settingsPath(box))).hooks, undefined, 'default hooks are not written to the file')
+
+  // Adding a row, then changing only labels: each provided field replaces itself, omitted fields stay.
+  const added = save(box, { hooks: { items: [item] } })
+  assert.deepEqual(added.hooks.items, [item])
+  assert.deepEqual(added.hooks, { ...EMPTY, items: [item] })
+  assert.deepEqual((await readJson(settingsPath(box))).hooks, { items: [item] }, 'only non-default hooks fields are stored')
+
+  const relabelled = save(box, { hooks: { labels: { 'builtin:injection': '我的注入' } } })
+  assert.equal(relabelled.hooks.labels['builtin:injection'], '我的注入')
+  assert.deepEqual(relabelled.hooks.items, [item], 'a labels-only write keeps the rows')
+  assert.equal(relabelled.hooks.enabled, true)
+  assert.equal(relabelled.hooks.scriptTimeoutMs, 10000)
+
+  // A save that only touches `values` / `templates` must preserve the hooks block.
+  const stillThere = save(box, { values: { 'work.keep': 2 } })
+  assert.deepEqual(stillThere.hooks, relabelled.hooks, 'a values-only save preserves hooks')
+  assert.deepEqual((await readJson(settingsPath(box))).hooks.items, [item])
+
+  // The master switch, a valid timeout, and a disabled row.
+  const paused = save(box, { hooks: { enabled: false, scriptTimeoutMs: 5000, items: [{ ...item, enabled: false }] } })
+  assert.equal(paused.hooks.enabled, false)
+  assert.equal(paused.hooks.scriptTimeoutMs, 5000)
+  assert.equal(paused.hooks.items[0].enabled, false)
+
+  // An empty label is how the operator resets a builtin row to its default label.
+  const resetLabel = save(box, { hooks: { labels: { 'builtin:injection': '' } } })
+  assert.deepEqual(resetLabel.hooks.labels, {})
+
+  // A stale revision is a 409 and nothing is written; the hooks block is part of that same write.
+  const before = await readFile(settingsPath(box), 'utf8')
+  await rejectsWithCode(
+    () => saveSettings({ home: box.root, stateDir: box.state, revision: resetLabel.revision - 1, hooks: { enabled: true } }),
+    'SETTINGS_CONFLICT',
+    /stale.*current revision/,
+  )
+  assert.equal(await readFile(settingsPath(box), 'utf8'), before, 'a stale hooks write changes not one byte')
+
+  // Invalid hooks payloads are refused as a whole (nothing written), and each names the problem.
+  const revision = resetLabel.revision
+  const bad = [
+    [{ items: [{ ...item, event: 'ticket.nope' }] }, /not a known event/],
+    [{ items: [{ ...item, id: 'builtin:injection' }] }, /must look like "hook-<slug>"/],
+    [{ items: [{ ...item, id: `hook-${'a'.repeat(76)}` }] }, /at most 80 characters/],
+    [{ items: [{ ...item, extra: true }] }, /unknown field "extra"/],
+    [{ items: [item, { ...item }] }, /duplicate id/],
+    [{ items: [{ ...item, timeoutMs: 0 }] }, /at least 1 millisecond/],
+    [{ items: [{ ...item, timeoutMs: 300001 }] }, /at most 300000/],
+    [{ scriptTimeoutMs: 300001 }, /at most 300000/],
+    [{ items: [{ ...item, name: 'bad\u0001name' }] }, /control character/],
+    [{ labels: { 'builtin:injection': 'x'.repeat(121) } }, /over the 120 limit/],
+    [{ items: 'nope' }, /must be an array/],
+    [{ enabled: 'yes' }, /must be true or false/],
+    [{ scriptTimeoutMs: 1.5 }, /whole number/],
+    [{ labels: { 'builtin:nope': 'x' } }, /not a builtin row/],
+    [{ labels: { 'builtin:injection': 5 } }, /must be a string/],
+    [{ nope: true }, /unknown field "nope" in hooks/],
+  ]
+  for (const [hooks, pattern] of bad) {
+    await rejectsWithCode(
+      () => saveSettings({ home: box.root, stateDir: box.state, revision, hooks }),
+      'SETTINGS_INVALID',
+      pattern,
+    )
+  }
+  assert.equal(await readFile(settingsPath(box), 'utf8'), before, 'a rejected hooks write changes not one byte')
+
+  // The HTTP face carries the block: GET returns it, PUT writes it through the same revision check.
+  const handler = createSettingsHandler({ home: box.root, stateDir: box.state, env: {} })
+  const get = await call(handler)
+  assert.equal(get.status, 200)
+  assert.deepEqual(get.body.hooks, resetLabel.hooks)
+  const put = await call(handler, { method: 'PUT', body: { revision: get.body.revision, hooks: { enabled: true } } })
+  assert.equal(put.status, 200)
+  assert.equal(put.body.hooks.enabled, true)
+  assert.deepEqual(put.body.hooks.items, resetLabel.hooks.items, 'a partial PUT keeps the untouched hooks fields')
+  const stalePut = await call(handler, { method: 'PUT', body: { revision: get.body.revision, hooks: { enabled: false } } })
+  assert.equal(stalePut.status, 409)
+  assert.equal(stalePut.body.code, 'conflict')
+  const invalidPut = await call(handler, {
+    method: 'PUT',
+    body: { revision: put.body.revision, hooks: { items: [{ ...item, event: 'nope' }] } },
+  })
+  assert.equal(invalidPut.status, 400)
+  assert.match(invalidPut.body.message, /not a known event/)
+  assert.equal(read().revision, put.body.revision, 'a rejected PUT is not a write')
+
+  // A file that predates the block is still valid, and gets the defaults.
+  await writeJson(settingsPath(box), { version: 1, revision: 9, values: {}, templates: {} })
+  const old = read()
+  assert.equal(old.fileState, 'ok')
+  assert.equal(old.revision, 9)
+  assert.deepEqual(old.hooks, EMPTY)
+
+  // A malformed sub-block is warned about field by field; the good parts still work.
+  await writeJson(settingsPath(box), {
+    version: 1,
+    revision: 10,
+    values: {},
+    hooks: {
+      enabled: false,
+      scriptTimeoutMs: 'soon',
+      items: [item, { ...item, id: 'not-a-hook-id' }],
+      labels: { 'builtin:injection': 'X', 'builtin:nope': 'Y' },
+      extra: 1,
+    },
+  })
+  const edited = read()
+  assert.equal(edited.fileState, 'ok')
+  assert.equal(edited.hooks.enabled, false)
+  assert.equal(edited.hooks.scriptTimeoutMs, 10000, 'a bad timeout falls back to the default')
+  assert.deepEqual(edited.hooks.items, [item], 'the good row survives, the bad one is skipped')
+  assert.deepEqual(edited.hooks.labels, { 'builtin:injection': 'X' }, 'an unknown builtin id is skipped')
+  assert.match(edited.warning, /hooks\.scriptTimeoutMs/)
+  assert.match(edited.warning, /"extra"/)
+  assert.match(edited.warning, /"not-a-hook-id"/)
+  assert.match(edited.warning, /unknown builtin row "builtin:nope"/)
+
+  // A non-object hooks block is warned about on read and dropped by a non-hooks save (the documented
+  // behaviour: only a well-formed JSON object is preserved verbatim).
+  await writeJson(settingsPath(box), { version: 1, revision: 12, values: {}, hooks: 'nope' })
+  const nonObject = read()
+  assert.equal(nonObject.fileState, 'ok')
+  assert.match(nonObject.warning, /ignoring "hooks"/)
+  assert.deepEqual(nonObject.hooks, EMPTY)
+  const rescued = saveSettings({ home: box.root, stateDir: box.state, revision: 12, values: { 'work.keep': 3 } })
+  assert.equal(rescued.revision, 13)
+  assert.equal(
+    (await readJson(settingsPath(box))).hooks,
+    undefined,
+    'a non-object hooks block is dropped on a values-only save',
+  )
+  assert.deepEqual(read().hooks, EMPTY)
+
+  // A corrupt file still yields the defaults; a bad hooks value does not corrupt the whole file.
+  await writeFile(settingsPath(box), '{ not json', 'utf8')
+  const corrupt = read()
+  assert.equal(corrupt.fileState, 'corrupt')
+  assert.deepEqual(corrupt.hooks, EMPTY)
+}
+
+/**
+ * 超限 timeout 的完整语义：**读**时夹到硬上限并 warning，**写**时拒绝且一个字节都不动；
+ * 一次只改 `values` / `templates` 的保存把磁盘上的 hooks 块原样放回（不夹、不丢字段）。
+ */
+async function testHookTimeoutsAndRawPreservation() {
+  const box = await sandbox()
+  const item = {
+    id: 'hook-ticket-delivered-abcd12',
+    event: 'ticket.delivered',
+    name: 'raw',
+    enabled: true,
+    script: 'true',
+    timeoutMs: 800000,
+  }
+  await writeJson(settingsPath(box), {
+    version: 1,
+    revision: 3,
+    values: {},
+    hooks: { enabled: true, scriptTimeoutMs: 900000, items: [item], labels: { 'builtin:injection': 'X' } },
+  })
+
+  const read = resolveSettings({ home: box.root, stateDir: box.state, env: {} })
+  assert.equal(read.fileState, 'ok')
+  assert.equal(read.hooks.scriptTimeoutMs, 300000, 'reading clamps hooks.scriptTimeoutMs')
+  assert.equal(read.hooks.items[0].timeoutMs, 300000, 'reading clamps items[].timeoutMs too')
+  assert.match(read.warning, /hooks\.scriptTimeoutMs is over the 300000 ms cap/)
+  assert.match(read.warning, /hooks\.items\[0\]\.timeoutMs is over the 300000 ms cap/)
+
+  // A values-only save must not rewrite the block with the clamped value.
+  const valued = saveSettings({ home: box.root, stateDir: box.state, revision: 3, values: { 'work.keep': 4 } })
+  assert.equal(valued.revision, 4)
+  let stored = await readJson(settingsPath(box))
+  assert.equal(stored.hooks.scriptTimeoutMs, 900000, 'values-only save preserves the raw over-cap value')
+  assert.equal(stored.hooks.items[0].timeoutMs, 800000, 'values-only save preserves the raw per-item value')
+  assert.deepEqual(stored.hooks.labels, { 'builtin:injection': 'X' })
+
+  // A templates-only save does the same.
+  const templated = saveSettings({
+    home: box.root,
+    stateDir: box.state,
+    revision: 4,
+    templates: { injection: { active: 'default' } },
+  })
+  assert.equal(templated.revision, 5)
+  stored = await readJson(settingsPath(box))
+  assert.equal(stored.hooks.scriptTimeoutMs, 900000, 'templates-only save preserves the raw hooks block')
+
+  // Explicit over-cap writes are refused as a whole, and nothing is written.
+  const before = await readFile(settingsPath(box), 'utf8')
+  await rejectsWithCode(
+    () => saveSettings({ home: box.root, stateDir: box.state, revision: 5, hooks: { scriptTimeoutMs: 300001 } }),
+    'SETTINGS_INVALID',
+    /at most 300000/,
+  )
+  await rejectsWithCode(
+    () => saveSettings({ home: box.root, stateDir: box.state, revision: 5, hooks: { items: [{ ...item }] } }),
+    'SETTINGS_INVALID',
+    /at most 300000/,
+  )
+  assert.equal(await readFile(settingsPath(box), 'utf8'), before, 'a rejected over-cap write changes nothing')
+
+  // A valid hooks write replaces the block, so the clamped values are gone for good.
+  const fixed = saveSettings({
+    home: box.root,
+    stateDir: box.state,
+    revision: 5,
+    hooks: { scriptTimeoutMs: 10000, items: [{ ...item, timeoutMs: 2500 }] },
+  })
+  assert.equal(fixed.hooks.scriptTimeoutMs, 10000)
+  assert.equal(fixed.hooks.items[0].timeoutMs, 2500)
+  stored = await readJson(settingsPath(box))
+  assert.equal(stored.hooks.scriptTimeoutMs, undefined, 'the built-in default is not persisted')
+  assert.equal(stored.hooks.items[0].timeoutMs, 2500)
+  assert.equal(resolveSettings({ home: box.root, stateDir: box.state, env: {} }).hooks.scriptTimeoutMs, 10000)
+}
+
 // --------------------------------------------------------------- consumers
 
 /** 自定义 prIssue / spvObjection 模板真的进了 outbox notice。 */
@@ -2011,6 +2258,8 @@ try {
   await testClientStyleAndDraftHelpers()
   await testClientTemplateStaging()
   await testHostSettingsRoute()
+  await testHooksBlock()
+  await testHookTimeoutsAndRawPreservation()
   await testAppendReviewUsesTemplates()
   await testFormatResultUsesSettings()
   await testInjectorUsesSettings()
