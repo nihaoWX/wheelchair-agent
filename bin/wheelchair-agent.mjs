@@ -68,6 +68,8 @@ commands:
   work restored <ticket>       print the commands that rebuild a reclaimed ticket clone
   restart-all [--dry-run] [--force] [--no-install] [--detach]
                                restart the superagent service, cold-install the preset and bring the SPV TUI back
+  session release [--session <id>] [--dry-run]
+                               release the kernel session lease held by a stuck TUI/dsh process
   where [--json]               where this install put everything (data root, preset, wrappers, queue, logs)
   check                        runtime health: service, preset, panel prepare value, prepare dry run
   --help                       this text
@@ -194,6 +196,37 @@ session). If that terminal is gone, the orchestrator falls back to relaunching t
 "dsh-spv", resuming the same way.
 `
 
+const SESSION_USAGE = `usage: wheelchair-agent session release [--session <id>] [--dry-run]
+
+Release the kernel write lease of one dsh session: the flock(2) on <session dir>/session.lock (together
+with the open session.v4.jsonl.zstd) that makes dsh-tui refuse a resume with "it is mounted by another TUI
+terminal". Holders are named by the kernel through /proc/<pid>/fd, never by a command-line guess, and only
+live (non-zombie) holders count.
+
+The session is the one named by --session <id>; without it, the id in ~/.dsh-tui/resume.txt (resolved across
+project directories the same way restart-all does). If resume.txt names an id whose directory cannot be
+found, the command fails instead of choosing another session. Only when resume.txt is absent, invalid or
+unreadable does it use the newest session directory of the current workspace
+(<sessions root>/<project key(cwd)>/). The root is DSH_TUI_SESSION_ROOT or DSH_HOME/sessions.
+
+The superagent service is never signalled: if any holder is a service pid, the whole release is refused
+before a signal (skipping it would leave the lease held), and --dry-run marks that holder. Stop the service
+first, or pass the TUI session id, to release the TUI's lease. --dry-run also marks this process and its
+ancestors, which are never signalled; if one of them still holds the lease after the others are gone, the
+release fails instead of claiming success.
+
+commands:
+  release [--session <id>] [--dry-run]
+                               SIGTERM the holders, wait, SIGKILL survivors, then confirm the lease is free
+
+options:
+  --session <id>    the session to release (default: resume.txt's session, else the newest of this workspace)
+  --dry-run         list the session directory and every holder as "pid <pid>  <cmdline>"; send no signal
+  --help            this text
+
+When every holder is this process or its ancestor chain, nothing is signalled and the command fails: those
+processes are the CLI itself and its terminal, and killing them would not free the lease.`
+
 /** 用法错误：退出码 2，与「命令失败」（1）分开。 */
 class UsageError extends Error {}
 
@@ -312,11 +345,22 @@ async function commandSpv(argv) {
     process.stderr.write('fix: run "bash install.sh" from the wheelchair-agent checkout\n')
     process.exit(1)
   }
-  const { runSpvSession } = await load('src', 'spv', 'restart-ux.js')
+  const { resolveResume, runSpvSession } = await load('src', 'spv', 'restart-ux.js')
+  const { resolveSession, resumeIdFromArgv } = await load('src', 'spv', 'session.js')
+  // The initial session hint (when the operator starts with --resume) is passed to the loop; it resolves
+  // each later relaunch itself from the id `restart-ux.js` appends.
+  const resume = resolveResume()
+  const resumeId = resumeIdFromArgv(argv, resume.ok ? resume.id : undefined)
+  const session = resumeId === undefined
+    ? undefined
+    : resolveSession({ env: process.env, cwd: process.cwd(), id: resumeId })
   process.exitCode = await runSpvSession({
     launcher,
     launcherArgv: argv,
     stateDir: STATE_DIR,
+    sessionDir: session?.dir,
+    presetPatch: join(PRESET_DIR, 'preset-default.patch.yml'),
+    cwd: process.cwd(),
     env: process.env,
   })
 }
@@ -698,6 +742,154 @@ async function commandRestartAll(argv) {
 }
 
 /**
+ * `session release`：按内核 fd 找出 session.lock / session.v4.jsonl.zstd 的持有者并释放。
+ *
+ * 会话目录由 `--session <id>` 指定；否则取 `~/.dsh-tui/resume.txt` 里的 id（与 restart-all 一样可跨项目目录解析），
+ * 该 id 缺失/解析不到时才退回当前 workspace 最新的会话目录。root 是
+ * `DSH_TUI_SESSION_ROOT` 或 `DSH_HOME/sessions`。`--dry-run` 只列目录与 `pid <pid>  <cmdline>`，不发信号。
+ * 全部持有者都是本进程或祖先时拒绝：杀它们等于杀 CLI 自己，且救不了锁。任何持有者是 superagent 服务时
+ * 也整体拒绝：服务不是我们该停的，跳过它又会留下锁；`--dry-run` 会标记该持有者。
+ */
+async function commandSessionRelease(argv) {
+  const parsed = { dryRun: false, session: undefined }
+  for (let index = 0; index < argv.length; index += 1) {
+    const word = argv[index]
+    if (word === '--help' || word === '-h') {
+      process.stdout.write(`${SESSION_USAGE}\n`)
+      return
+    }
+    if (word === '--dry-run') {
+      parsed.dryRun = true
+      continue
+    }
+    if (word === '--session') {
+      const value = argv[index + 1]
+      if (value === undefined || value.startsWith('--')) throw new UsageError('--session needs a value')
+      if (value.trim() === '') throw new UsageError('--session needs a non-empty session id')
+      parsed.session = value
+      index += 1
+      continue
+    }
+    throw new UsageError(`unknown option ${JSON.stringify(word)} for "session release"`)
+  }
+  const {
+    ancestorPids,
+    leaseTimeoutMs,
+    releaseSession,
+    resolveSession,
+    sessionHolders,
+    sessionsRoot,
+  } = await load('src', 'spv', 'session.js')
+  const { resolveResume } = await load('src', 'spv', 'restart-ux.js')
+  const { readProcTable, resolveProfile, servesProfile } = await load('src', 'spv', 'restart.js')
+
+  // Default resolution follows restart-all's source: the operator's SPV conversation from resume.txt,
+  // cross-project. A resume id that is present but has no directory is an error, not a reason to pick some
+  // other (possibly service/worker) session; the newest workspace session is only the fallback when
+  // resume.txt is absent/invalid/unreadable.
+  let session
+  let resume
+  if (parsed.session !== undefined) {
+    session = resolveSession({ env: process.env, cwd: process.cwd(), id: parsed.session })
+  } else {
+    resume = resolveResume()
+    if (resume.ok) {
+      session = resolveSession({ env: process.env, cwd: process.cwd(), id: resume.id })
+      if (session === undefined) {
+        process.stderr.write(
+          `FAIL: cannot find the session ${resume.id} named by ~/.dsh-tui/resume.txt under ` +
+            `${sessionsRoot({ env: process.env })}\n`,
+        )
+        process.stderr.write(
+          'fix: pass --session <id>, or check DSH_HOME / DSH_TUI_SESSION_ROOT; the newest workspace ' +
+            'session is not used while resume.txt names an id\n',
+        )
+        process.exitCode = 1
+        return
+      }
+    } else {
+      session = resolveSession({ env: process.env, cwd: process.cwd() })
+    }
+  }
+  if (session === undefined) {
+    const what = parsed.session === undefined
+      ? `the newest session of this workspace (${process.cwd()})`
+      : `the session ${JSON.stringify(parsed.session)}`
+    process.stderr.write(`FAIL: cannot find ${what} under ${sessionsRoot({ env: process.env })}\n`)
+    process.stderr.write(
+      'fix: pass --session <id>, set DSH_HOME / DSH_TUI_SESSION_ROOT to the deployment, or check ' +
+        '"wheelchair-agent where" for the data root\n',
+    )
+    process.exitCode = 1
+    return
+  }
+  const ancestors = ancestorPids(process.pid)
+  const own = new Set([process.pid, ...ancestors])
+  const holders = sessionHolders({ sessionDir: session.dir, selfPid: process.pid })
+  // The service is never ours to stop. Its pids are the same `/proc` facts the service manager and
+  // restart-all use (`--profile <profile>`, no `plugin` subcommand).
+  const profile = resolveProfile({ env: process.env })
+  const servicePids = readProcTable()
+    .filter(entry => servesProfile(entry.argv, profile))
+    .map(entry => entry.pid)
+  const service = new Set(servicePids)
+  const serviceHolders = holders.filter(holder => service.has(holder.pid))
+  if (parsed.dryRun) {
+    process.stdout.write(`session: ${session.id}\n`)
+    process.stdout.write(`dir: ${session.dir}\n`)
+    if (holders.length === 0) process.stdout.write('(no fd holder)\n')
+    for (const holder of holders) {
+      const cmdline = (holder.cmdline ?? []).join(' ') || '(no cmdline)'
+      const mark = service.has(holder.pid)
+        ? ' (superagent service; not released)'
+        : own.has(holder.pid)
+          ? ' (this process or an ancestor; not signalled)'
+          : ''
+      process.stdout.write(`pid ${holder.pid}  ${cmdline}${mark}\n`)
+    }
+    if (serviceHolders.length > 0) {
+      const pids = serviceHolders.map(holder => holder.pid).join(' ')
+      process.stdout.write(
+        `note: release would refuse: the session is held by the superagent service (pid ${pids}); ` +
+          'nothing would be signalled\n',
+      )
+    }
+    return
+  }
+  if (holders.length === 0) {
+    process.stdout.write(`no process holds the session lease of ${session.id}; nothing to release\n`)
+    return
+  }
+  const result = await releaseSession({
+    sessionDir: session.dir,
+    holders,
+    selfPid: process.pid,
+    ancestors,
+    servicePids,
+    timeoutMs: leaseTimeoutMs(process.env),
+    say: line => process.stdout.write(`${line}\n`),
+  })
+  if (result.failed) {
+    process.exitCode = 1
+    return
+  }
+  if (result.released) process.stdout.write(`released session ${session.id}\n`)
+}
+
+/** `session`：目前只有 `release`；未知子命令是用法错误。 */
+async function commandSession(argv) {
+  if (argv.length === 0 || argv[0] === '--help' || argv[0] === '-h') {
+    process.stdout.write(`${SESSION_USAGE}\n`)
+    return
+  }
+  if (argv[0] === 'release') {
+    await commandSessionRelease(argv.slice(1))
+    return
+  }
+  throw new UsageError(`unknown option ${JSON.stringify(argv[0])} for "session"`)
+}
+
+/**
  * `where`：只读地列出这次安装把东西放在哪。
  *
  * 它回答的是「这东西到底把什么写到了哪里」——此前要读三个文件再加一次 `--check`。数据根的布局
@@ -878,6 +1070,9 @@ try {
       break
     case 'restart-all':
       await commandRestartAll(rest)
+      break
+    case 'session':
+      await commandSession(rest)
       break
     case 'where':
       await commandWhere(rest)

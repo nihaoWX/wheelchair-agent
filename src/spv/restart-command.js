@@ -30,7 +30,10 @@ TUI session. This command only arms a detached orchestrator and returns; this SP
 The terminal that launched "wheelchair-agent spv" stays open across the restart: it prints every step and
 brings the TUI back in that same terminal, resumed into the same SPV conversation (the session id comes from
 ~/.dsh-tui/resume.txt; if that file is missing or does not hold a usable id, it says so and starts a fresh
-session). If that terminal is gone (closed, or the CLI died with it), the fallback is tmux session "dsh-spv"
+session). Before resuming, it waits for the old TUI's kernel session lease (the open session.lock /
+session.v4.jsonl.zstd descriptors) to be released; if that does not happen in the bounded window it starts a
+fresh session and says so instead of replaying the resume into dsh-tui's "mounted by another TUI terminal"
+error. If that terminal is gone (closed, or the CLI died with it), the fallback is tmux session "dsh-spv"
 (attach with: tmux attach -t =dsh-spv), resumed the same way. Every step is appended to
 <root>/logs/restart-all.log (default ~/.wheelchair-agent/logs/restart-all.log), which is the record
 to read if the TUI does not come back.

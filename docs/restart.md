@@ -33,12 +33,29 @@ by stopping both holders first:
    `--force` also overrides a counted refusal and prints exactly what it is interrupting (running worker
    Sessions and queued tickets) before anything is stopped.
 2. **Stop the service** (`wheelchair-agent service stop`). If this fails, abort without touching the TUI.
-3. **Stop the SPV chain.** The chain is the `/proc`-identified set of processes carrying
-   `--patch <preset>/preset-default.patch.yml` — the wrapper, `dsh-tui`, and its `dsh` child. SIGTERM
-   each, wait up to 10s, SIGKILL survivors, wait up to 5s. The kill set is the chain minus this process,
-   its ancestors and the service: those three are never signalled. If the chain cannot be identified, the
-   command aborts **before** stopping anything, because a stopped service with no way to relaunch the TUI
-   is the failure the operator would feel most.
+3. **Stop the SPV chain.** First, after the service stop and before the kill, a **stale `dsh-spv` tmux
+   session** is closed: when tmux is available and `tmux has-session -t =dsh-spv` succeeds, the orchestrator
+   runs `tmux kill-session -t =dsh-spv` and logs
+   `note: closed the stale tmux session dsh-spv before the restart`. A failure only warns
+   (`note: could not close the stale tmux session dsh-spv: …`) and never aborts. It is a `note:`, not a
+   numbered step, so the plan keeps five steps. Safety: when this CLI itself runs inside `dsh-spv` (env
+   `TMUX` and the name tmux reports), the session is not killed; the log says so instead.
+   The chain is the `/proc`-identified set of processes carrying
+   `--patch <preset>/preset-default.patch.yml` — the wrapper, `dsh-tui`, and its `dsh` child — **plus every
+   live process that holds an open descriptor on the session's kernel lease** (`<session dir>/session.lock`
+   or `<session dir>/session.v4.jsonl.zstd`, found through `/proc/<pid>/fd`). A holder named only by its
+   file descriptor does not have to carry the patch. SIGTERM each, wait up to 10s, SIGKILL survivors, wait
+   up to 5s. The kill set is that union minus this process, its ancestors and the service: those three are
+   never signalled. If the chain cannot be identified, the command aborts **before** stopping anything,
+   because a stopped service with no way to relaunch the TUI is the failure the operator would feel most.
+   After the kill the orchestrator waits up to `WHEELCHAIR_RESTART_LEASE_MS` (default 15000ms; the offline
+   tests lower it) for the descriptors to close, printing
+   `restart: waiting for pid <pid> to release the session…` for each holder. Only then may the relaunch use
+   `--resume`. A lease that cannot be freed inside the window is recorded in the marker as
+   `leaseBlockedPid`, and the relaunch starts **without** `--resume`, printing one line:
+   `restart: the previous session is still mounted by pid <pid>; starting a fresh session`. That is the fix
+   for the resumed TUI dying with "it is mounted by another TUI terminal" and dropping the operator into
+   the interactive safe-mode prompt.
 4. **Cold install** (`bash <checkout>/install.sh`). If it fails, the restart aborts and the service is left
    stopped **on purpose**: a half-installed deployment that still answers is worse than one that is
    visibly down. `--no-install` skips this step and restarts only the service and the TUI.
@@ -47,7 +64,13 @@ by stopping both holders first:
    TUI was not relaunched and names the fix (`fix the service and run "wheelchair-agent spv"`); the
    command exits 1.
 6. **Bring the TUI back.** The default is the terminal that launched `wheelchair-agent spv` (see “Same
-   terminal: the narrator”); it resumes the conversation named by `~/.dsh-tui/resume.txt`. After steps 1-4
+   terminal: the narrator”); it resumes the conversation named by `~/.dsh-tui/resume.txt`. **Every launch
+   that uses `--resume` waits for the session lease first** — the in-place relaunch does it in the CLI loop
+   before starting the launcher, and the tmux fallback's first `spv --resume <id>` launch does the same in
+   the CLI it starts. The wait is bounded by `WHEELCHAIR_RESTART_LEASE_MS` (default 15000ms), prints
+   `restart: waiting for pid <pid> to release the session…`, and on timeout drops `--resume`, prints
+   `restart: the previous session is still mounted by pid <pid>; starting a fresh session`, and starts
+   fresh. An ordinary launch without a resume id never waits. After steps 1-4
    the orchestrator waits up to `WHEELCHAIR_RESTART_CLAIM_MS` (default 5000ms) for that terminal to claim
    the restart. When the claim arrives it records
    `step 5/5: skipped; the terminal claimed the restart and relaunches the TUI here` and stops; it does
@@ -59,7 +82,10 @@ by stopping both holders first:
    its own `PATH` (it may have been started from another shell) and a checkout CLI's `spv` command would run
    the checkout's unrendered `preset/spv-launcher.sh` template instead of the installed launcher. The
    invoking CLI is only a fallback when the preset has no `cli.js`. The fallback launch carries
-   `--resume <id>` when `~/.dsh-tui/resume.txt` holds a usable id; otherwise the orchestrator logs
+   `--resume <id>` when `~/.dsh-tui/resume.txt` holds a usable id **and the lease is free**; when the
+   earlier wait failed (the marker's `leaseBlockedPid`, or a holder still present at this point) it launches
+   without `--resume` and logs `note: the tmux fallback starts without --resume`; when resume.txt itself is
+   unusable it logs
    `note: cannot resume the previous SPV session (…); the tmux fallback starts a fresh SPV session` and
    launches without it. `tmux new-session -d` exits 0 even when the command in the new pane dies
    immediately, so the orchestrator then polls `tmux has-session -t =dsh-spv` for up to two seconds; an
@@ -81,7 +107,7 @@ Three files under the state dir coordinate the two processes; there is no other 
 
 | file | writer | contents / purpose |
 | --- | --- | --- |
-| `restart-armed.json` | `restart-all --detach`, before the spawn | `{pid, armedPid, startedAt, log, logOffset, checkout, tmux, service, force, noInstall}`; `pid` is the detached orchestrator, `logOffset` the log size after the arming lines |
+| `restart-armed.json` | `restart-all --detach`, before the spawn | `{pid, armedPid, startedAt, log, logOffset, checkout, tmux, service, sessionId, sessionDir, leaseBlockedPid, force, noInstall}`; `pid` is the detached orchestrator, `logOffset` the log size after the arming lines, `sessionId`/`sessionDir` the session whose lease the relaunch must take, and `leaseBlockedPid` the holder a failed lease wait could not release (`null` until then). The CLI honours `leaseBlockedPid` only when `sessionId` matches the id it is about to resume and that pid is still a live fd holder, so a stale marker cannot force a fresh session |
 | `restart-claimed.json` | the narrating CLI, as soon as it sees the marker | `{pid, at}`; tells the orchestrator a terminal owns the relaunch. It counts only while `pid` is alive: if the terminal dies after claiming, the orchestrator logs `note: the terminal that claimed the restart is gone; taking the tmux fallback` and takes tmux (a claim without a pid is accepted for compatibility) |
 | `restart-fallback.json` | the orchestrator, immediately before tmux | `{pid, at, tmux}`; marks that tmux owns the relaunch. The narrator keeps tailing and reports the fallback only after a completion, or the failure that follows it |
 
@@ -102,6 +128,20 @@ When `~/.dsh-tui/resume.txt` is missing or unusable, one extra line appears befo
 
 ```
 restart: cannot resume the previous SPV session (no ~/.dsh-tui/resume.txt); starting a fresh one.
+```
+
+When the old session's descriptor outlives the process for a moment, the lease wait appears before the
+completion and the relaunch still resumes it:
+
+```
+restart: waiting for pid 2315989 to release the session…
+```
+
+When the descriptor never closes inside the window, the relaunch starts fresh and says why — no `--resume`
+is passed, so dsh-tui cannot reject the launch into the safe-mode prompt:
+
+```
+restart: the previous session is still mounted by pid 2315989; starting a fresh session
 ```
 
 The narrator:
@@ -160,11 +200,71 @@ or invents an id.
   retried.
 
 A normal TUI exit (no marker) still ends `wheelchair-agent spv` with the child's status. The loop only
-continues after a completed marked restart. `WHEELCHAIR_RESTART_CLAIM_MS` (orchestrator grace) and
-`WHEELCHAIR_RESTART_NARRATE_MS` (narrator timeout) are the two test seams; `WHEELCHAIR_AGENT_LAUNCHER`
+continues after a completed marked restart. `WHEELCHAIR_RESTART_CLAIM_MS` (orchestrator grace),
+`WHEELCHAIR_RESTART_NARRATE_MS` (narrator timeout) and `WHEELCHAIR_RESTART_LEASE_MS` (the bounded wait for
+the session lease, default 15000ms) are the test seams; `WHEELCHAIR_AGENT_LAUNCHER`
 lets the offline tests point `spv` at a fake launcher. The launcher/TUI environment is scrubbed of the
 armed-chain seams and of that launcher override; it carries `WHEELCHAIR_AGENT_SUPERVISED=1` so the slash
 command can tell whether the terminal is watched.
+
+## Releasing a stuck session
+
+The lease is a kernel fact, not a command line: a process holds it while it has an open descriptor on
+`<session dir>/session.lock` or `<session dir>/session.v4.jsonl.zstd`. `restart-all` names those holders by
+scanning `/proc/<pid>/fd` (exact paths, live processes only) and waits for them; the same scan is available
+by hand when a terminal is gone but its session still says "mounted by another TUI terminal":
+
+```bash
+wheelchair-agent session release --dry-run                  # resume.txt's session, else newest workspace session
+wheelchair-agent session release --session <id> --dry-run
+wheelchair-agent session release --session <id>
+```
+
+`--dry-run` prints the session directory and every holder as `pid <pid>  <cmdline>`, and sends no signal. A
+holder that is the superagent service is marked `(superagent service; not released)` and the dry run says
+the release would refuse; this process and its ancestors are marked `(this process or an ancestor; not
+signalled)`. Without `--dry-run` the command skips this process and its ancestors with one note (they are the
+CLI and its terminal), SIGTERMs the rest, prints `sent SIGTERM to pid <pid>`, waits, prints
+`sent SIGKILL to pid <pid>` for survivors, and finally `released session <id>`. These cases refuse rather
+than signalling or claiming success:
+
+- **The service holds the session.** The superagent service is never ours to stop, and skipping it would
+  leave the lease held, so the whole release is refused before any signal:
+
+  ```
+  FAIL: the session is held by the superagent service (pid <pid>); refusing to release it
+  fix: stop the superagent service first (wheelchair-agent service stop), or pass --session <the TUI session id>
+  ```
+
+- **A skipped self/ancestor holder still holds it after the others are gone.** The lease was not freed, so
+  the command fails instead of printing `released session`:
+
+  ```
+  FAIL: pid <pid> still holds the session and was not signalled
+  ```
+
+- **Every holder is this process or an ancestor.** Killing them would kill the CLI itself and would not free
+  the lease:
+
+  ```
+  FAIL: the only holder(s) are this process or its ancestor chain; refusing to kill them
+  ```
+
+A holder that survives SIGKILL is a `FAIL` and exit 1. The wait is bounded by
+`WHEELCHAIR_RESTART_LEASE_MS` (default 15000ms) with **one shared deadline** across the TERM and KILL
+phases. Because the operator specified the kill set as `session.lock` **or** `session.v4.jsonl.zstd`, a
+process holding only the log (a read-only `zstdcat`/export) remains in the kill set; the lease wait and
+`session release`'s success condition only require `session.lock`, so such a reader cannot block a relaunch.
+If an export must not be interrupted, copy/read the log from a stopped session. The session is the one
+named by `--session`; without it,
+the id in `~/.dsh-tui/resume.txt` is resolved exactly as `restart-all` does (this workspace first, then any
+project directory), because that is the operator's SPV conversation. If resume.txt names an id whose
+directory cannot be found, the command fails rather than targeting another session; only when resume.txt is
+absent, invalid or unreadable does it fall back to the newest session directory of the current workspace. The
+root is `DSH_TUI_SESSION_ROOT` or `DSH_HOME/sessions`, and the project directory is dsh's own `projectKey(cwd)`
+(for example `/home/nihao/bioagentforge` -> `--home-nihao-bioagentforge--`). If dsh-tui still refuses, a
+resume is not possible without terminating that pid; use `--session <id>` from the error message and read the
+dry run before sending the signal.
 
 ## Upgrading, and dsh-tui's own handoffs
 
@@ -199,10 +299,12 @@ narrate. Passing `--patch` to `wheelchair-agent spv` breaks that: the CLI carrie
 the chain, and is signalled with it — the in-place narrator is then lost.
 
 `WHEELCHAIR_RESTART_CHAIN` and `WHEELCHAIR_RESTART_PRESET_PATCH` are private to that armed child: only
-`--run` reads them, and only to re-verify the armed chain against `/proc`. A dry run, a foreground run and
+`--run` reads them, and only to re-verify the armed chain against `/proc`. The chain variable carries the
+patch-carrying pids **only**; an fd holder seen at arm time is not put there (it may exit before `--run`),
+and `--run` rescans the current holders itself. A dry run, a foreground run and
 the arming preflight always use the CLI's preset patch and scan `/proc` themselves, so a stale value leaked
-into a shell cannot displace the real chain. The orchestrator also strips those three variables from every
-service/install/tmux child it starts.
+into a shell cannot displace the real chain. The orchestrator also strips those private variables (chain,
+parent pid, preset patch and session dir) from every service/install/tmux child it starts.
 
 ## The log
 
@@ -215,6 +317,7 @@ moved there once, and the old path stays readable if that move fails:
 [2026-11-15T12:00:00.000Z] restart-all: pid 1492000, mode detached, force=no, install=yes, chain 1492054 1492075 1492089, service 1491900
 [2026-11-15T12:00:00.400Z] step 1/5: wheelchair-agent service stop -> exit 0
 [2026-11-15T12:00:00.600Z] step 2/5: SIGTERM 1492054 1492075 1492089 -> sent 3, survivors 0
+[2026-11-15T12:00:00.700Z] restart: waiting for pid 1492089 to release the session…
 [2026-11-15T12:00:01.100Z] step 3/5: bash /home/me/bioagentforge/tools/wheelchair-agent/install.sh -> exit 0
 [2026-11-15T12:00:02.000Z] step 4/5: wheelchair-agent service start -> exit 0
 [2026-11-15T12:00:02.100Z] step 5/5: skipped; the terminal claimed the restart and relaunches the TUI here
@@ -228,15 +331,21 @@ preflight passes, and never on a guard refusal.
 
 ## Safety rules
 
-- The kill set is exactly the `/proc` chain identified by `--patch <preset>/preset-default.patch.yml`;
-  never the orchestrator's own pid, its ancestors, or the service.
+- The kill set is the `/proc` chain identified by `--patch <preset>/preset-default.patch.yml` plus every
+  live `/proc/<pid>/fd` holder of the session's `session.lock` / `session.v4.jsonl.zstd`; never the
+  orchestrator's own pid, its ancestors, or the service.
 - In the detached child the armed chain is re-verified against `/proc` right before mutation: every pid must
-  still carry the same `--patch`, or the command fails with "the armed SPV chain is stale or changed" and
-  stops nothing. This guards against pid reuse and a stale environment.
+  still carry the same `--patch` **or** be a current fd holder of the marker's session dir, or the command
+  fails with "the armed SPV chain is stale or changed" and stops nothing. This guards against pid reuse and
+  a stale environment.
 - Nothing is signalled when the guard refused, when the chain is empty, when the checkout or `tmux` is
   missing, or when the orchestrator is still a descendant of the session.
-- The install gate is never bypassed: `install.sh` runs only after both holders are gone, and its exit code
-  decides whether the service is started again.
+- The install gate is never bypassed: `install.sh` runs only after both holders are gone, the chain is
+  dead, and the session lease wait has ended, and its exit code decides whether the service is started
+  again.
+- A relaunch that uses `--resume` first waits for the lease and drops the flag when it cannot be freed; the
+  safe-mode prompt is never reached by our launch. The `session release` command refuses to signal when
+  every holder is the caller or its ancestor chain.
 - A failed install or a service that does not start leaves the service stopped and **relaunches nothing**;
   the narrator reports the failure and exits 1.
 - The marker/claim/fallback handshake prevents a double TUI: the orchestrator skips tmux when the terminal
@@ -249,10 +358,12 @@ preflight passes, and never on a guard refusal.
 ## Inspect, force, recover
 
 ```bash
-wheelchair-agent restart-all --dry-run         # plan: service pid, SPV pids, checkout, log, every command
+wheelchair-agent restart-all --dry-run         # plan: service pid, SPV pids, session lease holders, every command
 wheelchair-agent restart-all --dry-run --force # same plan while workers are running
 wheelchair-agent restart-all                   # do it in the foreground (not from inside the SPV session)
 wheelchair-agent restart-all --detach          # what the slash command uses
+wheelchair-agent session release --dry-run     # resume.txt's session, else newest workspace: list the lease holders
+wheelchair-agent session release --session <id> # terminate the holders and wait for the lease to be free
 ```
 
 Run from inside the SPV session, the foreground form refuses: "the orchestrator is still a descendant of

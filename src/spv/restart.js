@@ -3,8 +3,8 @@
  *
  * The order is not a preference, it is what the cold-install guard accepts (install.sh, PR #14):
  *
- *   guard -> service stop -> stop the SPV chain (SIGTERM, wait, SIGKILL) -> install.sh
- *         -> service start -> relaunch the TUI in tmux
+ *   guard -> service stop -> close a stale tmux dsh-spv -> stop the SPV chain (SIGTERM, wait, SIGKILL)
+ *         -> wait for the session lease -> install.sh -> service start -> relaunch the TUI in tmux
  *
  * install.sh refuses with exit 3 while the service or a live SPV session holds the install targets, and a
  * half-installed deployment that still answers is worse than a stopped one. So the service and the session
@@ -50,6 +50,13 @@ import {
   resumeDetail,
   writeArmed,
 } from './restart-ux.js'
+import {
+  DEFAULT_LEASE_MS,
+  resolveSession,
+  sessionHolders,
+  sessionsRoot,
+  waitForLeaseFree,
+} from './session.js'
 
 /** Log file name; one `[ISO] text` line per entry. This is #21's data-root name. */
 export const LOG_NAME = RESTART_LOG_FILE
@@ -95,15 +102,17 @@ function display(argv) {
 /**
  * The environment for a step command: the detached child's private seams are removed.
  *
- * `WHEELCHAIR_RESTART_CHAIN`, `_PARENT_PID` and `_PRESET_PATCH` exist so `--run` can re-verify the armed
- * chain. They must not leak into the service/install/tmux children, or a `restart-all` started from that
- * tree later would trust a stale chain (a real dry run hit exactly that).
+ * `WHEELCHAIR_RESTART_CHAIN`, `_PARENT_PID`, `_PRESET_PATCH` and `_SESSION_DIR` exist so `--run` can
+ * re-verify the armed chain and wait for the session lease. They must not leak into the service/install/tmux
+ * children, or a `restart-all` started from that tree later would trust a stale chain (a real dry run hit
+ * exactly that).
  */
 function childEnvironment(env) {
   const copy = { ...env }
   delete copy.WHEELCHAIR_RESTART_CHAIN
   delete copy.WHEELCHAIR_RESTART_PARENT_PID
   delete copy.WHEELCHAIR_RESTART_PRESET_PATCH
+  delete copy.WHEELCHAIR_RESTART_SESSION_DIR
   // A supervised marker must describe the terminal tree, not a service that was started by one: the
   // service would otherwise pass it on to an unsupervised `wheelchair-agent spv`.
   delete copy.WHEELCHAIR_AGENT_SUPERVISED
@@ -299,12 +308,13 @@ export function ancestorPids(pid, { procRoot = '/proc' } = {}) {
 }
 
 /**
- * The pids the orchestrator may signal: the chain minus itself, its ancestors and the service.
+ * The pids the orchestrator may signal: the chain plus the session's fd holders, minus itself, its
+ * ancestors and the service.
  *
- * Safety is a set subtraction, not a filter on process names: the only evidence that a pid belongs to the
- * live SPV session is the `--patch` match that produced `chain`, and the service is never ours to stop.
+ * Safety is a set subtraction, not a filter on process names: the chain is what carries the `--patch`, the
+ * holders are what the kernel names through `/proc/<pid>/fd`, and the service is never ours to stop.
  */
-export function killTargets({ chain = [], selfPid, ancestors = [], servicePids = [] } = {}) {
+export function killTargets({ chain = [], holders = [], selfPid, ancestors = [], servicePids = [] } = {}) {
   const excluded = new Set([
     Number(selfPid),
     ...ancestors.map(Number),
@@ -312,7 +322,7 @@ export function killTargets({ chain = [], selfPid, ancestors = [], servicePids =
   ])
   const seen = new Set()
   const targets = []
-  for (const value of chain) {
+  for (const value of [...chain, ...holders]) {
     const pid = Number(value)
     if (!Number.isInteger(pid) || pid <= 0 || excluded.has(pid) || seen.has(pid)) continue
     seen.add(pid)
@@ -519,8 +529,13 @@ export function planLines({
   noInstall = false,
   install,
   resume,
+  sessionId,
+  sessionDir,
+  holders = [],
+  leaseMs = DEFAULT_LEASE_MS,
 } = {}) {
   const pids = chain.map(pidOf).filter(pid => Number.isInteger(pid) && pid > 0)
+  const holderPids = holders.map(pidOf).filter(pid => Number.isInteger(pid) && pid > 0)
   const servicePids = (service.pids ?? []).map(pidOf).filter(pid => Number.isInteger(pid) && pid > 0)
   const agent = service.agent ?? ['wheelchair-agent']
   const launch = service.launch ?? [...agent, 'spv']
@@ -534,6 +549,21 @@ export function planLines({
   const slots = service.maxWorkers === undefined ? '' : `, ${service.maxWorkers} slots`
   lines.push(`  load:      ${service.running ?? 0} running, ${service.queued ?? 0} queued${slots}${service.reachable === false ? ' (service unreachable)' : service.readable === false ? ' (load unreadable; the amount of work is unknown)' : ''}`)
   lines.push(`  spv pids:  ${pids.length > 0 ? pids.join(' ') : '(none identified)'}`)
+  lines.push(
+    `  session:   ${
+      sessionId !== undefined && sessionId !== null
+        ? `${sessionId} (${sessionDir ?? '(dir not found)'})`
+        : sessionDir !== undefined
+          ? `(id not resolved) ${sessionDir}`
+          : resume?.ok
+            ? `(directory not found for ${resume.id})`
+            : '(not resolved; no usable ~/.dsh-tui/resume.txt)'
+    }`,
+  )
+  lines.push(
+    `  holders:   ${holderPids.length > 0 ? holderPids.join(' ') : '(none)'}` +
+      (holderPids.length > 0 ? ' (fd holders of session.lock / session.v4.jsonl.zstd)' : ''),
+  )
   lines.push(`  checkout:  ${checkout ?? '(not resolved)'}`)
   lines.push(`  state dir: ${stateDir ?? resolveStateDir()}`)
   lines.push(`  log:       ${logFile ?? dataPaths({ stateDir }).restartLog.current}`)
@@ -541,8 +571,9 @@ export function planLines({
   lines.push('steps:')
   lines.push(`  1. ${display([...agent, 'service', 'stop'])}`)
   lines.push(
-    `  2. SIGTERM ${pids.length > 0 ? pids.join(' ') : '(none)'}; wait up to ${termMs}ms for them to exit; ` +
-      `SIGKILL survivors; wait up to ${killMs}ms`,
+    `  2. close a stale tmux session ${tmuxSession} when present; SIGTERM ` +
+      `${pids.length > 0 ? pids.join(' ') : '(none)'}; wait up to ${termMs}ms for them to exit; ` +
+      `SIGKILL survivors; wait up to ${killMs}ms; then wait up to ${leaseMs}ms for the session lease`,
   )
   lines.push(`  3. ${noInstall ? 'skipped (--no-install)' : installCommand}`)
   lines.push(`  4. ${display([...agent, 'service', 'start'])}`)
@@ -555,6 +586,12 @@ export function planLines({
       ? `       resume: --resume ${resume.id} (~/.dsh-tui/resume.txt)`
       : `       resume: --resume unavailable (${resumeDetail(resume)}); the fallback starts a fresh session`,
   )
+  if (resume?.ok) {
+    lines.push(
+      '       lease:  if the old session is still mounted when the wait ends, the launch starts without ' +
+        '--resume (fresh session) and says so',
+    )
+  }
   lines.push(`       tmux has-session -t =${tmuxSession}`)
   lines.push(`       tmux new-window -t =${tmuxSession}: -n spv -c ${cwd} ${display(launchArgv)}`)
   lines.push(`       tmux new-session -d -s ${tmuxSession} -n spv -c ${cwd} ${display(launchArgv)}`)
@@ -702,12 +739,27 @@ async function preflight(context, options, { detached = false } = {}) {
   const chainOverridePids = chainOverride
     ? [...new Set(chainOverride.split(/\s+/).map(Number).filter(pid => Number.isInteger(pid) && pid > 0))]
     : undefined
+  // The armed child accepts a non-patch pid as a holder only for the session its *marker* names. The
+  // environment is a transport detail an outer shell can forge or leak; if it is present it must agree with
+  // the marker, otherwise holder acceptance is disabled and only the `--patch` check can vouch for a pid.
+  const envSessionDir = armed ? String(env.WHEELCHAIR_RESTART_SESSION_DIR ?? '').trim() : ''
+  let armedSessionDir = ''
+  if (armed) {
+    const marker = readArmed(context.stateDir || resolveStateDir({ env }))
+    const markerSessionDir = typeof marker?.sessionDir === 'string' ? marker.sessionDir.trim() : ''
+    if (markerSessionDir !== '' && (envSessionDir === '' || envSessionDir === markerSessionDir)) {
+      armedSessionDir = markerSessionDir
+    }
+  }
   if (chainOverridePids !== undefined) {
     // Pid reuse or a stale environment must not turn into signalling an unrelated process: the armed chain
-    // is only trustworthy if every pid still carries the same `--patch` right now.
+    // is only trustworthy if every pid still carries the same `--patch` right now, or is a current fd
+    // holder of the session the marker armed for (a holder need not carry the patch).
     for (const pid of chainOverridePids) {
       const argv = cmdlineOf(procRoot, pid)
-      if (!presetPatchUsed(argv, presetPatch)) {
+      const holdsSession = armedSessionDir !== '' &&
+        sessionHolders({ sessionDir: armedSessionDir, procRoot }).some(holder => holder.pid === pid)
+      if (!presetPatchUsed(argv, presetPatch) && !holdsSession) {
         lines.push(
           `FAIL: the armed SPV chain is stale or changed (pid ${pid} no longer carries ` +
             `--patch ${presetPatch ?? '(no preset patch)'}); nothing was stopped`,
@@ -724,6 +776,29 @@ async function preflight(context, options, { detached = false } = {}) {
     table.filter(entry => presetPatchUsed(entry.argv, presetPatch)).map(entry => entry.pid)
   chain.sort((left, right) => left - right)
   const servicePids = table.filter(entry => servesProfile(entry.argv, profile)).map(entry => entry.pid)
+
+  // The session whose lease the relaunch needs: the id is the one source, `~/.dsh-tui/resume.txt`; the
+  // directory is that id in this workspace, or the same id under another project directory.
+  const resume = resolveResume()
+  const session = resume.ok
+    ? resolveSession({ env, cwd: context.cwd ?? process.cwd(), id: resume.id })
+    : undefined
+  if (resume.ok && session === undefined) {
+    lines.push(
+      `note: the session ${resume.id} named by ~/.dsh-tui/resume.txt has no directory under ` +
+        `${sessionsRoot({ env })}; its lease holders cannot be identified before the relaunch.`,
+    )
+  }
+  const holders = session === undefined
+    ? []
+    : sessionHolders({ sessionDir: session.dir, procRoot })
+  if (holders.length > 0) {
+    lines.push(
+      `note: pid ${holders.map(holder => holder.pid).join(' ')} ` +
+        `${holders.length === 1 ? 'holds' : 'hold'} the session ${session.id} lease; ` +
+        `${holders.length === 1 ? 'it is' : 'they are'} added to the kill set`,
+    )
+  }
 
   if (chain.length === 0) {
     lines.push(
@@ -775,7 +850,13 @@ async function preflight(context, options, { detached = false } = {}) {
     return preflightFailure(lines, { serviceUrl, load, presetPatch, checkout, chain, servicePids })
   }
 
-  const targets = killTargets({ chain, selfPid: process.pid, ancestors, servicePids })
+  const targets = killTargets({
+    chain,
+    holders: holders.map(holder => holder.pid),
+    selfPid: process.pid,
+    ancestors,
+    servicePids,
+  })
   if (targets.length === 0) {
     lines.push(
       'FAIL: cannot identify an SPV process to stop (the matching pids are this process, its ancestors or ' +
@@ -815,6 +896,13 @@ async function preflight(context, options, { detached = false } = {}) {
     servicePids,
     chain,
     targets,
+    holders,
+    session,
+    sessionId: session?.id,
+    sessionDir: session?.dir,
+    leaseMs: envMs(env, 'WHEELCHAIR_RESTART_LEASE_MS', DEFAULT_LEASE_MS),
+    procRoot,
+    resume,
     load,
     checkout,
     cwd,
@@ -841,6 +929,10 @@ function planService(pre) {
     launch: pre.launch,
     termMs: pre.termMs,
     killMs: pre.killMs,
+    sessionId: pre.sessionId,
+    sessionDir: pre.sessionDir,
+    holders: pre.holders,
+    leaseMs: pre.leaseMs,
   }
 }
 
@@ -891,6 +983,58 @@ async function waitForReparent(parentPid, timeoutMs) {
     if (Date.now() >= deadline) return false
     await sleep(PARENT_POLL_MS)
   }
+}
+
+/**
+ * Close a stale `dsh-spv` tmux session between the service stop and the chain kill.
+ *
+ * A previous fallback can leave that session behind with a TUI that is still holding the session lease; the
+ * relaunch then has to wait for a process nothing else is going to stop. This is a `note:`, not a numbered
+ * step, and every failure is a warning: the restart must not abort because tmux is unhappy.
+ *
+ * The safety rule is the operator's own terminal: when this CLI runs inside `dsh-spv` (env `TMUX` and the
+ * name tmux reports), killing it would kill the process narrating the restart, so it only warns.
+ */
+function closeStaleTmux({ pre, env, stepEnv, record }) {
+  if (pre.tmux !== true) return
+  if (typeof env.TMUX === 'string' && env.TMUX !== '') {
+    const current = runArgv(['tmux', 'display-message', '-p', '#S'], {
+      env: stepEnv,
+      cwd: pre.cwd,
+      timeout: 10_000,
+    })
+    if (exitCodeOf(current) !== 0) {
+      record(`note: could not determine the current tmux session; not closing ${TMUX_SESSION} before the restart`)
+      return
+    }
+    if (current.stdout.trim() === TMUX_SESSION) {
+      record(`warning: this CLI is inside tmux session ${TMUX_SESSION}; not closing it before the restart`)
+      return
+    }
+  }
+  const hasSession = runArgv(['tmux', 'has-session', '-t', `=${TMUX_SESSION}`], {
+    env: stepEnv,
+    cwd: pre.cwd,
+    timeout: 10_000,
+  })
+  if (exitCodeOf(hasSession) !== 0) return
+  const killed = runArgv(['tmux', 'kill-session', '-t', `=${TMUX_SESSION}`], {
+    env: stepEnv,
+    cwd: pre.cwd,
+    timeout: 10_000,
+  })
+  if (exitCodeOf(killed) === 0) {
+    record(`note: closed the stale tmux session ${TMUX_SESSION} before the restart`)
+    return
+  }
+  const detail = `${killed.stdout ?? ''}${killed.stderr ?? ''}`.trim() || `exit ${exitText(killed)}`
+  record(`note: could not close the stale tmux session ${TMUX_SESSION}: ${detail.split('\n')[0]}`)
+}
+
+/** The pid of the holder that blocks the lease (ignoring the orchestrator itself), or undefined. */
+function leaseBlockedBy(holders, selfPid) {
+  const blocking = holders.filter(holder => holder.pid !== Number(selfPid))
+  return blocking.length === 0 ? undefined : blocking[0].pid
 }
 
 /**
@@ -958,6 +1102,10 @@ async function orchestrate(context, options, mode) {
     return 1
   }
 
+  // A stale fallback session is closed here, after the service and before the kill: a TUI nobody narrates
+  // would otherwise keep the session lease open across the install.
+  closeStaleTmux({ pre, env, stepEnv, record })
+
   // 2. Stop the exact `/proc`-identified SPV chain. The kill set excludes self, ancestors and the service.
   const targets = pre.targets
   const term = signalPids(targets, 'SIGTERM')
@@ -976,6 +1124,34 @@ async function orchestrate(context, options, mode) {
         'The superagent service is left stopped (exit 1)',
     )
     return 1
+  }
+
+  // The kill set is gone, but the kernel lease is what dsh-tui checks: a process that held session.lock
+  // while not carrying the patch was only found by its descriptor. Wait (bounded) for the descriptors to
+  // close before anything resumes the session; if they do not, the relaunch must start fresh.
+  let leaseBlockedPid
+  if (pre.sessionDir !== undefined) {
+    const lease = await waitForLeaseFree({
+      sessionDir: pre.sessionDir,
+      procRoot: pre.procRoot,
+      timeoutMs: pre.leaseMs,
+      selfPid: process.pid,
+      say: line => record(line),
+    })
+    if (!lease.ok) {
+      leaseBlockedPid = lease.holder?.pid
+      if (leaseBlockedPid !== undefined) {
+        record(
+          `restart: the previous session is still mounted by pid ${leaseBlockedPid}; starting a fresh session`,
+        )
+        try {
+          const marker = readArmed(stateDir)
+          if (marker !== undefined) writeArmed(stateDir, { ...marker, leaseBlockedPid })
+        } catch {
+          // The launch below already drops --resume; the marker is only the other process's hint.
+        }
+      }
+    }
   }
 
   // 3. Cold install. Abort the whole restart if it fails: do NOT start a half-installed deployment.
@@ -1068,7 +1244,9 @@ async function orchestrate(context, options, mode) {
   )
 
   // The TUI is dead by now, but `~/.dsh-tui/resume.txt` persists: the fallback also comes back into the
-  // same conversation. If the file is gone or unusable, log one note and start a fresh session.
+  // same conversation. If the file is gone or unusable, log one note and start a fresh session. When the
+  // lease is still held (or the marker says the wait already failed), a resume would race the old holder and
+  // land in the safe-mode prompt, so the fallback starts fresh and says so instead.
   const resume = resolveResume()
   if (!resume.ok) {
     record(
@@ -1076,7 +1254,20 @@ async function orchestrate(context, options, mode) {
         'fresh SPV session',
     )
   }
-  const launch = resume.ok ? [...pre.launch, '--resume', resume.id] : pre.launch
+  let blockedPid = leaseBlockedPid
+  if (blockedPid === undefined && pre.sessionDir !== undefined) {
+    blockedPid = leaseBlockedBy(
+      sessionHolders({ sessionDir: pre.sessionDir, procRoot: pre.procRoot }),
+      process.pid,
+    )
+    if (blockedPid !== undefined) {
+      record(`restart: the previous session is still mounted by pid ${blockedPid}; starting a fresh session`)
+    }
+  }
+  const launch = resume.ok && blockedPid === undefined ? [...pre.launch, '--resume', resume.id] : pre.launch
+  if (resume.ok && blockedPid !== undefined) {
+    record('note: the tmux fallback starts without --resume')
+  }
   // The fallback launch is an absolute node + CLI argv (pre.launch), so it does not depend on the tmux
   // server's PATH.
   const hasSession = runArgv(['tmux', 'has-session', '-t', `=${TMUX_SESSION}`], {
@@ -1228,6 +1419,9 @@ export async function armDetached(context, options = {}) {
       checkout: pre.checkout ?? null,
       tmux: TMUX_SESSION,
       service: pre.serviceUrl,
+      sessionId: pre.sessionId ?? null,
+      sessionDir: pre.sessionDir ?? null,
+      leaseBlockedPid: null,
       force: Boolean(options.force),
       noInstall: Boolean(options.noInstall),
     })
@@ -1252,9 +1446,13 @@ export async function armDetached(context, options = {}) {
       cwd: context.cwd ?? process.cwd(),
       env: {
         ...env,
-        WHEELCHAIR_RESTART_CHAIN: pre.targets.join(' '),
+        // Chain only: the patch-carrying pids are the stable re-verification facts. An fd holder seen at
+        // arm time may exit before `--run` (exactly the straggler this restart is for), and `--run` rescans
+        // the current holders itself; putting them here would only make the re-guard report a stale chain.
+        WHEELCHAIR_RESTART_CHAIN: pre.chain.join(' '),
         WHEELCHAIR_RESTART_PARENT_PID: String(process.pid),
         WHEELCHAIR_RESTART_PRESET_PATCH: pre.presetPatch,
+        WHEELCHAIR_RESTART_SESSION_DIR: pre.sessionDir ?? '',
       },
     })
   } catch (error) {
@@ -1313,13 +1511,21 @@ export async function armDetached(context, options = {}) {
           ? `--resume ${resume.id} (~/.dsh-tui/resume.txt)`
           : `unavailable (${resumeDetail(resume)}); the TUI starts a fresh session`
       }`,
+      `  session:      ${
+        pre.sessionDir === undefined
+          ? 'no session directory resolved, so no lease holders were added to the kill set'
+          : `${pre.sessionDir} (fd holders: ${pre.holders.map(holder => holder.pid).join(' ') || 'none'})`
+      }`,
+      `  lease:        waits up to ${pre.leaseMs}ms for the old session to be released; if it is not, the ` +
+        'relaunch starts without --resume and says so',
       `  fallback:     tmux session ${TMUX_SESSION} (only if that terminal is gone; attach with: ` +
         `tmux attach -t =${TMUX_SESSION})`,
       `  log:          ${logFile}`,
       `  service:      ${pre.serviceUrl}`,
       `  spv pids:     ${pre.targets.join(' ') || '(none)'}`,
       `  checkout:     ${pre.checkout ?? '(not resolved)'}`,
-      `  plan:         service stop -> SIGTERM ${pre.targets.join(' ')} -> ${installStep} -> service start -> ` +
+      `  plan:         service stop -> close a stale tmux session ${TMUX_SESSION} -> SIGTERM ` +
+        `${pre.targets.join(' ')} -> wait for the session lease -> ${installStep} -> service start -> ` +
         'relaunch the TUI in the same terminal',
       'note: this command has not restarted anything itself. The SPV session you are in is about to end;',
       '      leave the terminal that launched "wheelchair-agent spv" open: it prints every step and starts',
@@ -1358,6 +1564,10 @@ export async function runRestart(context, options = {}) {
           tmuxSession: TMUX_SESSION,
           noInstall: Boolean(options.noInstall),
           resume: resolveResume(),
+          sessionId: pre.sessionId,
+          sessionDir: pre.sessionDir,
+          holders: pre.holders,
+          leaseMs: pre.leaseMs,
         }),
       )
     }
