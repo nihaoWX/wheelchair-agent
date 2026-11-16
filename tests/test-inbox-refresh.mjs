@@ -105,11 +105,12 @@ async function sandbox() {
     inbox: join(base, 'inbox'),
     queue: join(base, 'queue'),
     state: join(base, 'state'),
+    root: join(base, 'data'),
     ghJson: join(base, 'gh.json'),
     ghLog: join(base, 'gh-calls.log'),
     gitLog: join(base, 'git-calls.log'),
   }
-  for (const dir of [box.bin, box.tools, join(base, 'projects', 'research'), box.remotes, box.state]) {
+  for (const dir of [box.bin, box.tools, join(base, 'projects', 'research'), box.remotes, box.state, box.root]) {
     await mkdir(dir, { recursive: true })
   }
   await writeFile(box.ghLog, '', 'utf8')
@@ -127,6 +128,8 @@ async function sandbox() {
   // The panel settings store also lives under the deployment state dir: keep it inside the sandbox, so a
   // real `~/.dsh/state/superagent/panel-settings.json` can never change what these cases assert.
   process.env.DSH_SUPERAGENT_STATE_DIR = join(base, 'state')
+  // Our own data root (settings live there now): keep it in the sandbox as well.
+  process.env.WHEELCHAIR_AGENT_HOME = join(base, 'data')
   delete process.env.SPV_INSTALL_REPO
   delete process.env.FAKE_GH_FAIL_REPO
   // The settings file now beats this variable; an operator shell that sets it must not change these cases.
@@ -578,6 +581,7 @@ async function loadHostApply(box) {
     ['src/spv/inbox.js', 'lib/core/inbox.js'],
     ['src/spv/dispatch.js', 'lib/core/dispatch.js'],
     ['src/spv/paths.js', 'lib/core/paths.js'],
+    ['src/shared/home.js', 'lib/shared/home.js'],
     ['src/shared/queue.js', 'lib/shared/queue.js'],
     ['src/shared/settings.js', 'lib/shared/settings.js'],
     ['webui/lib/index.js', 'lib/index.js'],
@@ -654,7 +658,7 @@ async function testHostStartsPoller() {
     const pausedCalls = await ghCallCount(box)
     await sleep(350)
     assert.equal(await ghCallCount(box), pausedCalls, 'a paused poller runs no gh call')
-    await writeJson(join(box.state, 'panel-settings.json'), {
+    await writeJson(join(box.root, 'settings.json'), {
       version: 1,
       revision: 0,
       values: { 'inbox.intervalSeconds': 1 },
@@ -679,7 +683,7 @@ async function testHostStartsPoller() {
 
   // With no settings-file value, the old loud fallback still applies: an invalid config logs once and
   // the poller still registers at 60s.
-  await rm(join(box.state, 'panel-settings.json'))
+  await rm(join(box.root, 'settings.json'))
   const invalid = hostContextWithFence()
   apply(invalid.ctx, { intervalSeconds: 'soon' })
   assert.ok(invalid.lines.some(line => line.includes('using 60s')), 'an invalid interval falls back to 60s')
@@ -713,14 +717,14 @@ async function testHostSettingsRouteAndFence() {
   assert.equal(stale.status, 409)
   assert.equal(stale.body.code, 'conflict')
   assert.equal(stale.body.revision, 0)
-  assert.equal(await readFile(join(box.state, 'panel-settings.json'), 'utf8').catch(() => undefined), undefined, 'a stale PUT writes nothing')
+  assert.equal(await readFile(join(box.root, 'settings.json'), 'utf8').catch(() => undefined), undefined, 'a stale PUT writes nothing')
 
   // The connection fence answers first: a rejected PUT never reaches the settings handler, so it has no
   // side effect. This is the same `guarded` wrapper as the two inbox routes.
   const forbidden = await routeCall(route, { method: 'PUT', forbidden: true, body: { revision: 0, values: { 'work.keep': 9 } } })
   assert.equal(forbidden.status, 403, 'the connection fence rejects before the handler')
   assert.equal(forbidden.text, '', 'a rejected request gets no handler body')
-  assert.equal(await readFile(join(box.state, 'panel-settings.json'), 'utf8').catch(() => undefined), undefined, 'a rejected PUT has no side effect')
+  assert.equal(await readFile(join(box.root, 'settings.json'), 'utf8').catch(() => undefined), undefined, 'a rejected PUT has no side effect')
   assert.equal(host.rejected.at(-1)?.forbidden, true, 'the settings route asks the connection fence before the handler')
 
   const saved = await routeCall(route, { method: 'PUT', body: { revision: 0, values: { 'work.keep': 3 } } })
@@ -771,10 +775,12 @@ function hostContextWithFence({ rejection } = {}) {
 function testIntervalConfig() {
   const saved = process.env.SPV_INBOX_INTERVAL_SECONDS
   const savedStateDir = process.env.DSH_SUPERAGENT_STATE_DIR
+  const savedHome = process.env.WHEELCHAIR_AGENT_HOME
   delete process.env.SPV_INBOX_INTERVAL_SECONDS
   // A sandbox state dir proves the assertion holds when no panel settings file exists (and keeps a real
   // one on the operator's machine out of the test).
   process.env.DSH_SUPERAGENT_STATE_DIR = join(tmpdir(), `wheelchair-agent-inbox-interval-${process.pid}`)
+  process.env.WHEELCHAIR_AGENT_HOME = join(tmpdir(), `wheelchair-agent-inbox-interval-home-${process.pid}`)
   try {
     assert.equal(INBOX_INTERVAL_DEFAULT, 60)
     assert.equal(resolveInboxIntervalSeconds(), 60)
@@ -789,6 +795,8 @@ function testIntervalConfig() {
     else process.env.SPV_INBOX_INTERVAL_SECONDS = saved
     if (savedStateDir === undefined) delete process.env.DSH_SUPERAGENT_STATE_DIR
     else process.env.DSH_SUPERAGENT_STATE_DIR = savedStateDir
+    if (savedHome === undefined) delete process.env.WHEELCHAIR_AGENT_HOME
+    else process.env.WHEELCHAIR_AGENT_HOME = savedHome
   }
 }
 

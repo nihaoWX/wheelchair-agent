@@ -91,7 +91,7 @@ async function waitForWorkspaceRegistry(ctx, timeout = 5000) {
  * from the orchestrator service is used instead, still under the same gate. A live worker is kept by the shared
  * open-ticket map, not by the cwd scan alone: between tool calls its process cwd is not inside the clone.
  */
-export async function reclaimAtMount(ctx, { openTickets, workspaceRegistry } = {}) {
+export async function reclaimAtMount(ctx, { openTickets, workspaceRegistry, home } = {}) {
   let stateDir = ''
   let directory = ''
   let early = false
@@ -120,10 +120,10 @@ export async function reclaimAtMount(ctx, { openTickets, workspaceRegistry } = {
   // `work.keepDays` 就是 `work gc` 的默认保留策略。文件坏了由 resolveSettings 退回默认，这里再兜一层。
   let settings
   try {
-    settings = resolveSettings({ stateDir })
+    settings = resolveSettings({ home, stateDir })
   } catch (error) {
     ctx.logger?.warn?.(`wheelchair-agent work gc: panel settings unavailable (${error?.message ?? error}); using defaults`)
-    settings = defaultSettings()
+    settings = defaultSettings({ home, stateDir })
   }
   if (settings.warning !== undefined) {
     ctx.logger?.warn?.(`wheelchair-agent work gc: panel settings ignored: ${settings.warning}`)
@@ -149,6 +149,7 @@ export async function reclaimAtMount(ctx, { openTickets, workspaceRegistry } = {
   const root = resolveWorkRoot({ stateDir, directory })
   const result = await reclaimWork({
     root,
+    home,
     stateDir,
     keep: settings.effective['work.keep'],
     keepDays: settings.effective['work.keepDays'],

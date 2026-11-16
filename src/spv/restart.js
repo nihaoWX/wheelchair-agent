@@ -32,8 +32,10 @@ import { request } from 'node:http'
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
-/** Log file written under the deployment state dir; one `[ISO] text` line per entry. */
-export const LOG_NAME = 'restart-all.log'
+import { RESTART_LOG_FILE, dataPaths, resolveData } from '../shared/home.js'
+
+/** Log file name; one `[ISO] text` line per entry. */
+export const LOG_NAME = RESTART_LOG_FILE
 /** tmux session the detached orchestrator comes back in; the operator's console is gone by then. */
 export const TMUX_SESSION = 'dsh-spv'
 /** Default management API base URL, the same one superagent itself uses. */
@@ -136,6 +138,16 @@ function which(name, env = process.env) {
     if (isExecutable(candidate)) return candidate
   }
   return undefined
+}
+
+/**
+ * The restart log: `<root>/logs/restart-all.log` by default (`$WHEELCHAIR_AGENT_HOME` moves the root), or
+ * the old `<stateDir>/restart-all.log` when the first-run move could not happen yet.
+ *
+ * The superagent state directory is only the migration source; the log is ours.
+ */
+export function resolveRestartLog({ env = process.env, home, stateDir } = {}) {
+  return resolveData({ env, home, stateDir }).restartLog
 }
 
 /**
@@ -465,6 +477,7 @@ export function planLines({
   chain = [],
   checkout,
   stateDir,
+  logFile,
   tmuxSession = TMUX_SESSION,
   noInstall = false,
   install,
@@ -484,7 +497,7 @@ export function planLines({
   lines.push(`  spv pids:  ${pids.length > 0 ? pids.join(' ') : '(none identified)'}`)
   lines.push(`  checkout:  ${checkout ?? '(not resolved)'}`)
   lines.push(`  state dir: ${stateDir ?? resolveStateDir()}`)
-  lines.push(`  log:       ${join(stateDir ?? resolveStateDir(), LOG_NAME)}`)
+  lines.push(`  log:       ${logFile ?? dataPaths({ stateDir }).restartLog.current}`)
   lines.push(`  tmux:      ${tmuxSession}`)
   lines.push('steps:')
   lines.push(`  1. ${display([...agent, 'service', 'stop'])}`)
@@ -833,7 +846,7 @@ async function waitForReparent(parentPid, timeoutMs) {
 async function orchestrate(context, options, mode) {
   const env = context.env ?? process.env
   const stateDir = context.stateDir || resolveStateDir({ env })
-  const logFile = join(stateDir, LOG_NAME)
+  const logFile = context.logFile || resolveRestartLog({ env, home: context.home, stateDir })
   const pre = await preflight(context, options, { detached: false })
   if (!pre.ok) {
     // The detached path has already promised a log to the operator, and the console may be gone by the time
@@ -1007,12 +1020,13 @@ export async function runOrchestrator(context, options = {}) {
     const reparented = await waitForReparent(parentPid, timeoutMs)
     if (!reparented) {
       const stateDir = context.stateDir || resolveStateDir({ env })
+      const logFile = context.logFile || resolveRestartLog({ env, home: context.home, stateDir })
       const lines = [
         `FAIL: the arming process ${parentPid} is still alive after ${timeoutMs}ms; nothing was stopped.`,
         'fix: rerun /restart-wheelchair-agent, or run "wheelchair-agent restart-all --dry-run" to inspect the plan.',
       ]
       try {
-        appendLog(join(stateDir, LOG_NAME), lines)
+        appendLog(logFile, lines)
       } catch {
         // The operator will see the printed line even if the log cannot be written.
       }
@@ -1039,7 +1053,7 @@ export async function armDetached(context, options = {}) {
   }
 
   const stateDir = context.stateDir || resolveStateDir({ env })
-  const logFile = join(stateDir, LOG_NAME)
+  const logFile = context.logFile || resolveRestartLog({ env, home: context.home, stateDir })
   const startLine =
     `restart-all: pid ${process.pid}, mode detach, force=${options.force ? 'yes' : 'no'}, ` +
     `install=${options.noInstall ? 'skipped (--no-install)' : 'yes'}, ` +
@@ -1138,6 +1152,14 @@ export async function runRestart(context, options = {}) {
           chain: pre.targets,
           checkout: pre.checkout,
           stateDir: context.stateDir || resolveStateDir({ env: context.env ?? process.env }),
+          // A dry run promises to change nothing, so it displays the configured log path without
+          // triggering the one-shot migration that resolving the log normally performs.
+          logFile: context.logFile ||
+            dataPaths({
+              env: context.env ?? process.env,
+              home: context.home,
+              stateDir: context.stateDir || resolveStateDir({ env: context.env ?? process.env }),
+            }).restartLog.current,
           tmuxSession: TMUX_SESSION,
           noInstall: Boolean(options.noInstall),
         }),

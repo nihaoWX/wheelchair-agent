@@ -81,6 +81,7 @@ async function sandbox() {
   const box = {
     base,
     home: join(base, 'home'),
+    root: join(base, 'home', '.wheelchair-agent'),
     state: join(base, 'state'),
     queue: join(base, 'queue'),
     inbox: join(base, 'inbox'),
@@ -93,7 +94,7 @@ async function sandbox() {
   box.tools = join(box.projects, 'tools')
   box.work = join(box.state, 'work')
   box.gitConfig = join(base, 'gitconfig')
-  for (const dir of [box.home, box.state, box.inbox, box.tools, box.remotes, box.bin, box.work]) {
+  for (const dir of [box.home, box.root, box.state, box.inbox, box.tools, box.remotes, box.bin, box.work]) {
     await mkdir(dir, { recursive: true })
   }
   await writeFile(
@@ -103,6 +104,11 @@ async function sandbox() {
   )
   await writeFile(box.ghLog, '', 'utf8')
   return box
+}
+
+/** 沙箱里的设置文件路径（新数据根；`state` 只作为旧文件的迁移来源）。 */
+function settingsPath(box) {
+  return settingsFile({ home: box.root, stateDir: box.state, env: {} })
 }
 
 /** 沙箱内的 git 环境：不读操作者的全局配置，也不访问网络。 */
@@ -204,6 +210,7 @@ function cli(box, args, options = {}) {
     encoding: 'utf8',
     env: {
       ...gitEnv(box),
+      WHEELCHAIR_AGENT_HOME: box.root,
       DSH_SUPERAGENT_STATE_DIR: box.state,
       SPV_SUPERAGENT_URL: 'http://127.0.0.1:1',
       ...(options.env ?? {}),
@@ -212,9 +219,9 @@ function cli(box, args, options = {}) {
 }
 
 /** 当前 revision，然后按它保存（测试里最常用的两步）。 */
-function save(stateDir, patch = {}) {
-  const revision = resolveSettings({ stateDir, env: {} }).revision
-  return saveSettings({ stateDir, revision, ...patch })
+function save(box, patch = {}) {
+  const revision = resolveSettings({ home: box.root, stateDir: box.state, env: {} }).revision
+  return saveSettings({ home: box.root, stateDir: box.state, revision, ...patch })
 }
 
 /** 把 host 半身和它的 core/shared 副本装进一个临时包，再 import —— 与 install.sh 的布局一致。 */
@@ -227,6 +234,7 @@ async function loadHostApply(box) {
     ['src/spv/inbox.js', 'lib/core/inbox.js'],
     ['src/spv/dispatch.js', 'lib/core/dispatch.js'],
     ['src/spv/paths.js', 'lib/core/paths.js'],
+    ['src/shared/home.js', 'lib/shared/home.js'],
     ['src/shared/queue.js', 'lib/shared/queue.js'],
     ['src/shared/settings.js', 'lib/shared/settings.js'],
     ['webui/lib/index.js', 'lib/index.js'],
@@ -385,10 +393,10 @@ async function outboxMessages(box) {
 /** 没有文件时的默认快照：七行、来源 default、模板 active=default。 */
 async function testDefaults() {
   const box = await sandbox()
-  const snapshot = resolveSettings({ stateDir: box.state, env: {} })
+  const snapshot = resolveSettings({ home: box.root, stateDir: box.state, env: {} })
   assert.equal(snapshot.version, SETTINGS_VERSION)
   assert.equal(snapshot.revision, 0)
-  assert.equal(snapshot.file, settingsFile(box.state))
+  assert.equal(snapshot.file, settingsPath(box))
   assert.equal(snapshot.fileState, 'missing')
   assert.equal(snapshot.warning, undefined)
   assert.deepEqual(snapshot.values, {})
@@ -413,7 +421,7 @@ async function testDefaults() {
     assert.equal(template.limit, 20000)
   }
   assert.deepEqual(defaultSettings().effective, EXPECTED_DEFAULTS, 'defaultSettings() is the same built-in layer')
-  assert.equal(settingsFile(box.state), join(box.state, SETTINGS_FILE))
+  assert.equal(settingsPath(box), join(box.root, SETTINGS_FILE))
 }
 
 /** 内置模板必须复刻改造前的输出：formatResult / taskText / noticeText 逐字节比较。 */
@@ -436,6 +444,7 @@ async function testDefaultTemplatesAreByteIdentical() {
   const box = await sandbox()
   const saved = { ...process.env }
   try {
+    process.env.WHEELCHAIR_AGENT_HOME = box.root
     process.env.DSH_SUPERAGENT_STATE_DIR = box.state
     process.env.SPV_QUEUE_DIR = box.queue
     delete process.env.SPV_INBOX_REPO
@@ -459,75 +468,75 @@ async function testDefaultTemplatesAreByteIdentical() {
 /** 部分保存合并、revision 递增、原子写、过期 revision 不落盘、未知键/坏值拒绝。 */
 async function testSaveMergeAndStaleRevision() {
   const box = await sandbox()
-  const first = save(box.state, { values: { 'inbox.intervalSeconds': 30 } })
+  const first = save(box, { values: { 'inbox.intervalSeconds': 30 } })
   assert.equal(first.revision, 1)
   assert.deepEqual(first.values, { 'inbox.intervalSeconds': 30 })
   assert.equal(first.effective['inbox.intervalSeconds'], 30)
 
-  const stored = await readJson(settingsFile(box.state))
+  const stored = await readJson(settingsPath(box))
   assert.equal(stored.version, SETTINGS_VERSION)
   assert.equal(stored.revision, 1)
   assert.deepEqual(stored.values, { 'inbox.intervalSeconds': 30 })
   assert.deepEqual(stored.templates, {}, 'default templates are not written to the file')
-  const names = await readdir(box.state)
+  const names = await readdir(box.root)
   assert.ok(!names.some(name => name.startsWith(`${SETTINGS_FILE}.tmp-`)), 'the atomic write leaves no temporary file')
 
-  const second = save(box.state, { values: { 'work.keep': 5 } })
+  const second = save(box, { values: { 'work.keep': 5 } })
   assert.equal(second.revision, 2)
   assert.deepEqual(second.values, { 'inbox.intervalSeconds': 30, 'work.keep': 5 }, 'a partial save merges')
 
-  const before = await readFile(settingsFile(box.state), 'utf8')
+  const before = await readFile(settingsPath(box), 'utf8')
   await rejectsWithCode(
-    () => saveSettings({ stateDir: box.state, revision: 1, values: { 'inbox.intervalSeconds': 1 } }),
+    () => saveSettings({ home: box.root, stateDir: box.state, revision: 1, values: { 'inbox.intervalSeconds': 1 } }),
     'SETTINGS_CONFLICT',
     /stale.*current revision is 2/,
   )
-  assert.equal(await readFile(settingsFile(box.state), 'utf8'), before, 'a stale revision writes nothing')
-  await rejectsWithCode(() => saveSettings({ stateDir: box.state, values: { 'work.keep': 1 } }), 'SETTINGS_CONFLICT')
-  assert.equal(resolveSettings({ stateDir: box.state, env: {} }).revision, 2)
+  assert.equal(await readFile(settingsPath(box), 'utf8'), before, 'a stale revision writes nothing')
+  await rejectsWithCode(() => saveSettings({ home: box.root, stateDir: box.state, values: { 'work.keep': 1 } }), 'SETTINGS_CONFLICT')
+  assert.equal(resolveSettings({ home: box.root, stateDir: box.state, env: {} }).revision, 2)
 
   await rejectsWithCode(
-    () => saveSettings({ stateDir: box.state, revision: 2, values: { 'inbox.intervlSeconds': 10 } }),
+    () => saveSettings({ home: box.root, stateDir: box.state, revision: 2, values: { 'inbox.intervlSeconds': 10 } }),
     'SETTINGS_INVALID',
     /unknown settings key/,
   )
   await rejectsWithCode(
-    () => saveSettings({ stateDir: box.state, revision: 2, values: { 'inbox.intervalSeconds': -1 } }),
+    () => saveSettings({ home: box.root, stateDir: box.state, revision: 2, values: { 'inbox.intervalSeconds': -1 } }),
     'SETTINGS_INVALID',
     /at least 0/,
   )
   await rejectsWithCode(
-    () => saveSettings({ stateDir: box.state, revision: 2, values: { 'work.sweepOnMount': 'true' } }),
+    () => saveSettings({ home: box.root, stateDir: box.state, revision: 2, values: { 'work.sweepOnMount': 'true' } }),
     'SETTINGS_INVALID',
     /true or false/,
   )
   await rejectsWithCode(
-    () => saveSettings({ stateDir: box.state, revision: 2, values: { 'inbox.intervalSeconds': 10.5 } }),
+    () => saveSettings({ home: box.root, stateDir: box.state, revision: 2, values: { 'inbox.intervalSeconds': 10.5 } }),
     'SETTINGS_INVALID',
     /whole number/,
   )
-  assert.equal(await readFile(settingsFile(box.state), 'utf8'), before, 'a rejected save writes nothing')
+  assert.equal(await readFile(settingsPath(box), 'utf8'), before, 'a rejected save writes nothing')
 }
 
 /** 坏文件：语法错、版本不认、手改出非法值；resolve 不抛，合法字段仍生效，坏字段被 warning 点名。 */
 async function testCorruptAndHandEditedFiles() {
   const box = await sandbox()
-  const file = settingsFile(box.state)
+  const file = settingsPath(box)
 
   await writeFile(file, '{ not json', 'utf8')
-  const broken = resolveSettings({ stateDir: box.state, env: {} })
+  const broken = resolveSettings({ home: box.root, stateDir: box.state, env: {} })
   assert.equal(broken.fileState, 'corrupt')
   assert.equal(broken.revision, 0)
   assert.deepEqual(broken.effective, EXPECTED_DEFAULTS)
   assert.match(broken.warning, /not valid JSON/)
 
   await writeJson(file, { version: 99, revision: 4, values: {} })
-  const versioned = resolveSettings({ stateDir: box.state, env: {} })
+  const versioned = resolveSettings({ home: box.root, stateDir: box.state, env: {} })
   assert.equal(versioned.fileState, 'corrupt')
   assert.match(versioned.warning, /version 99/)
 
   await writeJson(file, { version: 1, revision: 'three', values: {} })
-  assert.equal(resolveSettings({ stateDir: box.state, env: {} }).fileState, 'corrupt')
+  assert.equal(resolveSettings({ home: box.root, stateDir: box.state, env: {} }).fileState, 'corrupt')
 
   // 手改文件：一个合法值、一个非法值、一个未知键、一个坏模板、一个未知顶层字段。
   await writeJson(file, {
@@ -546,7 +555,7 @@ async function testCorruptAndHandEditedFiles() {
     },
     extra: true,
   })
-  const edited = resolveSettings({ stateDir: box.state, env: {} })
+  const edited = resolveSettings({ home: box.root, stateDir: box.state, env: {} })
   assert.equal(edited.fileState, 'ok')
   assert.equal(edited.revision, 3)
   assert.equal(edited.effective['work.keep'], 7, 'the valid hand-edited value still applies')
@@ -558,10 +567,11 @@ async function testCorruptAndHandEditedFiles() {
   assert.deepEqual(edited.templates.injection.presets.map(preset => preset.name), ['default', 'good preset'])
 
   // 坏文件不能弄死消费方：轮询间隔、注入输出、复查都照常。
-  assert.equal(resolveInboxIntervalSeconds(undefined, { stateDir: box.state, env: {} }), 60)
+  assert.equal(resolveInboxIntervalSeconds(undefined, { home: box.root, stateDir: box.state, env: {} }), 60)
   assert.equal(formatResult({ kind: 'reply', thread: 't1', text: 'still works' }), '[spv] reply on thread "t1":\nstill works')
   const saved = { ...process.env }
   try {
+    process.env.WHEELCHAIR_AGENT_HOME = box.root
     process.env.DSH_SUPERAGENT_STATE_DIR = box.state
     process.env.SPV_QUEUE_DIR = box.queue
     const item = prItem({ id: 'acme-alpha-9', pr: 9 })
@@ -623,73 +633,73 @@ async function testPresetCrudAndReset() {
       },
     },
   }
-  const created = save(box.state, { templates: custom })
+  const created = save(box, { templates: custom })
   assert.equal(created.revision, 1)
   assert.equal(created.templates.injection.active, 'terse')
   assert.equal(created.templates.injection.text, '[spv] {kind} {thread}: {body}')
   assert.deepEqual(created.templates.injection.presets.map(preset => preset.name), ['default', 'terse', 'verbose'])
   assert.deepEqual(created.templates.injection.presets.map(preset => preset.builtin), [true, false, false])
-  const stored = await readJson(settingsFile(box.state))
+  const stored = await readJson(settingsPath(box))
   assert.equal(stored.templates.injection.active, 'terse')
   assert.deepEqual(Object.keys(stored.templates.injection.presets).sort(), ['terse', 'verbose'], 'only custom presets are persisted')
   assert.equal(stored.templates.injection.presets.default, undefined, 'the built-in text is not copied into the file')
   assert.equal(stored.templates.injection.presets.terse.text, '[spv] {kind} {thread}: {body}')
 
   // 只切 active：presets 省略时自定义预设保留。
-  const switched = save(box.state, { templates: { injection: { active: 'verbose' } } })
+  const switched = save(box, { templates: { injection: { active: 'verbose' } } })
   assert.equal(switched.templates.injection.active, 'verbose')
   assert.equal(switched.templates.injection.presets.length, 3)
 
   // 删除 active（新预设全集里没有 verbose）：回退到内置 default，且剩下的自定义预设仍然保存。
-  const deleted = save(box.state, { templates: { injection: { presets: { terse: custom.injection.presets.terse } } } })
+  const deleted = save(box, { templates: { injection: { presets: { terse: custom.injection.presets.terse } } } })
   assert.equal(deleted.templates.injection.active, 'default')
   assert.equal(deleted.templates.injection.text, deleted.templates.injection.defaultText)
   assert.deepEqual(deleted.templates.injection.presets.map(preset => preset.name), ['default', 'terse'])
 
   // revert to default：保留自定义预设。
-  const reverted = save(box.state, { templates: { injection: { active: 'default' } } })
+  const reverted = save(box, { templates: { injection: { active: 'default' } } })
   assert.equal(reverted.templates.injection.active, 'default')
   assert.deepEqual(reverted.templates.injection.presets.map(preset => preset.name), ['default', 'terse'])
 
   // reset templates：删掉全部自定义预设并回默认。
-  const resetOne = save(box.state, { reset: { templates: ['injection'] } })
+  const resetOne = save(box, { reset: { templates: ['injection'] } })
   assert.deepEqual(resetOne.templates.injection.presets.map(preset => preset.name), ['default'])
   assert.equal(resetOne.templates.injection.active, 'default')
 
   // 内置预设不可改；未知 id、非法名字、未知字段都拒绝。
   await rejectsWithCode(
-    () => saveSettings({ stateDir: box.state, revision: resetOne.revision, templates: { injection: { presets: { default: { text: '{body}' } } } } }),
+    () => saveSettings({ home: box.root, stateDir: box.state, revision: resetOne.revision, templates: { injection: { presets: { default: { text: '{body}' } } } } }),
     'SETTINGS_INVALID',
     /built-in preset/,
   )
   await rejectsWithCode(
-    () => saveSettings({ stateDir: box.state, revision: resetOne.revision, templates: { nope: { active: 'default' } } }),
+    () => saveSettings({ home: box.root, stateDir: box.state, revision: resetOne.revision, templates: { nope: { active: 'default' } } }),
     'SETTINGS_INVALID',
     /unknown template id/,
   )
   for (const name of ['', '   ', 'a'.repeat(65), 'bad\u0007name']) {
     await rejectsWithCode(
-      () => saveSettings({ stateDir: box.state, revision: resetOne.revision, templates: { injection: { presets: { [name]: { text: '[spv] {kind} {thread} {body}' } } } } }),
+      () => saveSettings({ home: box.root, stateDir: box.state, revision: resetOne.revision, templates: { injection: { presets: { [name]: { text: '[spv] {kind} {thread} {body}' } } } } }),
       'SETTINGS_INVALID',
     )
   }
   await rejectsWithCode(
-    () => saveSettings({ stateDir: box.state, revision: resetOne.revision, templates: { injection: { active: 'nope' } } }),
+    () => saveSettings({ home: box.root, stateDir: box.state, revision: resetOne.revision, templates: { injection: { active: 'nope' } } }),
     'SETTINGS_INVALID',
     /not a preset/,
   )
   await rejectsWithCode(
-    () => saveSettings({ stateDir: box.state, revision: resetOne.revision, templates: { injection: { text: 'x' } } }),
+    () => saveSettings({ home: box.root, stateDir: box.state, revision: resetOne.revision, templates: { injection: { text: 'x' } } }),
     'SETTINGS_INVALID',
     /unknown field "text"/,
   )
   // 同一请求里 reset 先执行，随后显式值生效。
-  const combined = save(box.state, {
+  const combined = save(box, {
     values: { 'inbox.intervalSeconds': 5 },
     reset: { values: true },
   })
   assert.deepEqual(combined.values, { 'inbox.intervalSeconds': 5 })
-  const cleared = save(box.state, { reset: { values: true } })
+  const cleared = save(box, { reset: { values: true } })
   assert.deepEqual(cleared.values, {})
   assert.equal(cleared.effective['inbox.intervalSeconds'], 60)
 }
@@ -699,10 +709,10 @@ async function testPrecedence() {
   const box = await sandbox()
   const env = { SPV_INBOX_INTERVAL_SECONDS: '20', SPV_INSTALL_REPO: 'env/repo' }
   const config = { 'inbox.intervalSeconds': 10, 'merge.installRepo': 'config/repo' }
-  save(box.state, {
+  save(box, {
     values: { 'inbox.intervalSeconds': 30, 'merge.installRepo': 'file/repo' },
   })
-  const withFile = resolveSettings({ stateDir: box.state, env, config })
+  const withFile = resolveSettings({ home: box.root, stateDir: box.state, env, config })
   assert.equal(withFile.effective['inbox.intervalSeconds'], 30)
   assert.equal(withFile.effective['merge.installRepo'], 'file/repo')
   const intervalRow = withFile.rows.find(row => row.key === 'inbox.intervalSeconds')
@@ -714,32 +724,32 @@ async function testPrecedence() {
   assert.deepEqual(intervalRow.env, { name: 'SPV_INBOX_INTERVAL_SECONDS', present: true, value: '20' })
 
   const clear = await sandbox()
-  const configOnly = resolveSettings({ stateDir: clear.state, env, config })
+  const configOnly = resolveSettings({ home: clear.root, stateDir: clear.state, env, config })
   assert.equal(configOnly.effective['inbox.intervalSeconds'], 10)
   assert.equal(configOnly.rows.find(row => row.key === 'inbox.intervalSeconds').source, 'config')
   assert.deepEqual(configOnly.rows.find(row => row.key === 'inbox.intervalSeconds').overridden, [{ source: 'env', value: 20 }])
 
-  const envOnly = resolveSettings({ stateDir: clear.state, env })
+  const envOnly = resolveSettings({ home: clear.root, stateDir: clear.state, env })
   assert.equal(envOnly.effective['inbox.intervalSeconds'], 20)
   assert.equal(envOnly.rows.find(row => row.key === 'inbox.intervalSeconds').source, 'env')
   assert.equal(envOnly.rows.find(row => row.key === 'inbox.intervalSeconds').overridden.length, 0)
 
-  const none = resolveSettings({ stateDir: clear.state, env: {} })
+  const none = resolveSettings({ home: clear.root, stateDir: clear.state, env: {} })
   assert.equal(none.effective['inbox.intervalSeconds'], 60)
 
   // 旧 host 半身的 config 别名 `intervalSeconds`，以及 0.02 这种分数（老 config 就写过）。
-  const legacyConfig = resolveSettings({ stateDir: clear.state, env: {}, config: { intervalSeconds: 0.02 } })
+  const legacyConfig = resolveSettings({ home: clear.root, stateDir: clear.state, env: {}, config: { intervalSeconds: 0.02 } })
   assert.equal(legacyConfig.effective['inbox.intervalSeconds'], 0.02)
   assert.equal(legacyConfig.rows.find(row => row.key === 'inbox.intervalSeconds').source, 'config')
 
   // 坏 env 被忽略并落到下一层，而不是抛错。
-  const badEnv = resolveSettings({ stateDir: clear.state, env: { SPV_INBOX_INTERVAL_SECONDS: 'soon' } })
+  const badEnv = resolveSettings({ home: clear.root, stateDir: clear.state, env: { SPV_INBOX_INTERVAL_SECONDS: 'soon' } })
   assert.equal(badEnv.effective['inbox.intervalSeconds'], 60)
   assert.match(badEnv.warning, /SPV_INBOX_INTERVAL_SECONDS/)
 
   // 文件里的坏值落到 env。
-  await writeJson(settingsFile(clear.state), { version: 1, revision: 2, values: { 'inbox.intervalSeconds': 'soon' } })
-  const fallThrough = resolveSettings({ stateDir: clear.state, env })
+  await writeJson(settingsPath(clear), { version: 1, revision: 2, values: { 'inbox.intervalSeconds': 'soon' } })
+  const fallThrough = resolveSettings({ home: clear.root, stateDir: clear.state, env })
   assert.equal(fallThrough.effective['inbox.intervalSeconds'], 20)
   assert.equal(fallThrough.rows.find(row => row.key === 'inbox.intervalSeconds').source, 'env')
 }
@@ -775,7 +785,7 @@ async function call(handler, { method = 'GET', url = SETTINGS_PATH, contentType 
 /** GET/PUT、405/415/413/400/409/404，reset 与预设 CRUD 都走同一条 PUT。 */
 async function testHttpHandler() {
   const box = await sandbox()
-  const handler = createSettingsHandler({ stateDir: box.state, env: {} })
+  const handler = createSettingsHandler({ home: box.root, stateDir: box.state, env: {} })
 
   const get = await call(handler)
   assert.equal(get.status, 200)
@@ -814,18 +824,18 @@ async function testHttpHandler() {
   assert.equal(saved.status, 200)
   assert.equal(saved.body.revision, 1)
   assert.equal(saved.body.effective['inbox.intervalSeconds'], 30)
-  const onDisk = await readFile(settingsFile(box.state), 'utf8')
+  const onDisk = await readFile(settingsPath(box), 'utf8')
 
   const stale = await call(handler, { method: 'PUT', body: { revision: 0, values: { 'work.keep': 9 } } })
   assert.equal(stale.status, 409)
   assert.equal(stale.body.code, 'conflict')
   assert.equal(stale.body.revision, 1)
-  assert.equal(await readFile(settingsFile(box.state), 'utf8'), onDisk, 'a stale PUT writes nothing')
+  assert.equal(await readFile(settingsPath(box), 'utf8'), onDisk, 'a stale PUT writes nothing')
 
   const badValue = await call(handler, { method: 'PUT', body: { revision: 1, values: { 'work.keep': -2 } } })
   assert.equal(badValue.status, 400)
   assert.equal(badValue.body.code, 'SETTINGS_INVALID')
-  assert.equal(await readFile(settingsFile(box.state), 'utf8'), onDisk)
+  assert.equal(await readFile(settingsPath(box), 'utf8'), onDisk)
 
   const reset = await call(handler, { method: 'PUT', body: { revision: 1, reset: { values: ['inbox.intervalSeconds'] } } })
   assert.equal(reset.status, 200)
@@ -849,7 +859,7 @@ async function testHttpHandler() {
   })
   assert.equal(invalidTemplate.status, 400)
   assert.match(invalidTemplate.body.message, /unknown placeholder/)
-  assert.equal(resolveSettings({ stateDir: box.state, env: {} }).revision, 3)
+  assert.equal(resolveSettings({ home: box.root, stateDir: box.state, env: {} }).revision, 3)
 
   const resetTemplates = await call(handler, { method: 'PUT', body: { revision: 3, reset: { templates: true } } })
   assert.equal(resetTemplates.status, 200)
@@ -922,16 +932,16 @@ async function testClientTemplateStaging() {
   assert.equal(typeof templateDraftsOf, 'function', 'the client bundle exposes templateDraftsOf')
   assert.equal(typeof valueDraftsOf, 'function', 'the client bundle exposes valueDraftsOf')
   const t = key => key
-  const handler = createSettingsHandler({ stateDir: box.state, env: {} })
+  const handler = createSettingsHandler({ home: box.root, stateDir: box.state, env: {} })
 
   const mine = 'MINE {repo} {pr} {comment}'
   const extra = 'EXTRA {repo} {pr}\n{comment}'
   saveSettings({
-    stateDir: box.state,
+    home: box.root, stateDir: box.state,
     revision: 0,
     templates: { prIssue: { active: 'default', presets: { mine: { text: mine } } } },
   })
-  let snapshot = resolveSettings({ stateDir: box.state, env: {} })
+  let snapshot = resolveSettings({ home: box.root, stateDir: box.state, env: {} })
   let drafts = valueDraftsOf(snapshot)
   let templateDrafts = templateDraftsOf(snapshot)
   const defaultText = snapshot.templates.prIssue.defaultText
@@ -1019,8 +1029,8 @@ async function testClientTemplateStaging() {
   )
 
   // (d) revert to default: activate-only again, and the custom presets stay stored.
-  saveSettings({ stateDir: box.state, revision: deletedPut.body.revision, templates: { prIssue: { active: 'mine2' } } })
-  snapshot = resolveSettings({ stateDir: box.state, env: {} })
+  saveSettings({ home: box.root, stateDir: box.state, revision: deletedPut.body.revision, templates: { prIssue: { active: 'mine2' } } })
+  snapshot = resolveSettings({ home: box.root, stateDir: box.state, env: {} })
   drafts = valueDraftsOf(snapshot)
   templateDrafts = templateDraftsOf(snapshot)
   assert.equal(snapshot.templates.prIssue.active, 'mine2')
@@ -1050,6 +1060,7 @@ async function testHostSettingsRoute() {
   const apply = await loadHostApply(box)
   const saved = { ...process.env }
   try {
+    process.env.WHEELCHAIR_AGENT_HOME = box.root
     process.env.DSH_SUPERAGENT_STATE_DIR = box.state
     process.env.SPV_INBOX_DIR = box.inbox
     process.env.SPV_PROJECTS_ROOT = box.projects
@@ -1095,7 +1106,7 @@ async function testHostSettingsRoute() {
     assert.equal(stale.status, 409)
     assert.equal(stale.body.code, 'conflict')
     assert.equal(stale.body.revision, 0)
-    assert.equal(await readFile(settingsFile(box.state), 'utf8').catch(() => undefined), undefined, 'a stale PUT writes nothing')
+    assert.equal(await readFile(settingsPath(box), 'utf8').catch(() => undefined), undefined, 'a stale PUT writes nothing')
 
     const denied = await call(route.handler, {
       method: 'PUT',
@@ -1105,7 +1116,7 @@ async function testHostSettingsRoute() {
     assert.equal(denied.status, 403, 'the connection fence answers before the settings handler')
     assert.equal(denied.text, '', 'a rejected request gets no handler body')
     assert.equal(
-      await readFile(settingsFile(box.state), 'utf8').catch(() => undefined),
+      await readFile(settingsPath(box), 'utf8').catch(() => undefined),
       undefined,
       'a rejected PUT has no side effect',
     )
@@ -1132,7 +1143,7 @@ async function testHostSettingsRoute() {
 /** 自定义 prIssue / spvObjection 模板真的进了派单与 outbox。 */
 async function testAppendReviewUsesTemplates() {
   const box = await sandbox()
-  save(box.state, {
+  save(box, {
     templates: {
       prIssue: {
         active: 'custom',
@@ -1150,6 +1161,7 @@ async function testAppendReviewUsesTemplates() {
   })
   const saved = { ...process.env }
   try {
+    process.env.WHEELCHAIR_AGENT_HOME = box.root
     process.env.DSH_SUPERAGENT_STATE_DIR = box.state
     process.env.SPV_QUEUE_DIR = box.queue
     const pr = prItem({ id: 'acme-alpha-2', pr: 2, title: 'Fix the thing' })
@@ -1176,11 +1188,11 @@ async function testAppendReviewUsesTemplates() {
 /** formatResult 用 active 模板与自定义正文上限；坏设置不抛。 */
 async function testFormatResultUsesSettings() {
   const box = await sandbox()
-  save(box.state, {
+  save(box, {
     values: { 'injection.maxBodyChars': 100 },
     templates: { injection: { active: 'custom', presets: { custom: { text: 'CUSTOM {kind}|{thread}|{ticket}|{body}' } } } },
   })
-  const settings = resolveSettings({ stateDir: box.state, env: {} })
+  const settings = resolveSettings({ home: box.root, stateDir: box.state, env: {} })
   const long = 'x'.repeat(150)
   const rendered = formatResult({ kind: 'reply', thread: 't1', ticketId: 'tk-9', text: long }, { settings })
   assert.ok(rendered.startsWith('CUSTOM reply|t1| (ticket tk-9)|'), 'the active injection template is used')
@@ -1194,7 +1206,7 @@ async function testFormatResultUsesSettings() {
 /** startResultInjector 用设置里的模板/截断上限，并且改设置不需要重启。 */
 async function testInjectorUsesSettings() {
   const box = await sandbox()
-  save(box.state, {
+  save(box, {
     values: { 'injection.maxBodyChars': 100 },
     templates: { injection: { active: 'custom', presets: { custom: { text: 'TICK {kind}/{thread}: {body}' } } } },
   })
@@ -1219,7 +1231,7 @@ async function testInjectorUsesSettings() {
       inject,
       logger: { warn: (...args) => state.warnings.push(args.join(' ')) },
       intervalMs: 20,
-      stateDir: box.state,
+      home: box.root, stateDir: box.state,
       unread,
       consume,
     })
@@ -1230,7 +1242,7 @@ async function testInjectorUsesSettings() {
     assert.ok(state.injected[0].text.includes('[truncated after 100 characters'))
 
     // 改文件（不重启）：下一条消息必须用新模板。
-    save(box.state, {
+    save(box, {
       templates: { injection: { active: 'custom', presets: { custom: { text: 'NEW {kind}/{thread}: {body}' } } } },
     })
     state.messages = [{ id: 'r2', file: join(dirs.outbox, 'r2.json'), kind: 'notice', thread: 't2', text: 'second' }]
@@ -1288,7 +1300,7 @@ function testInjectorIntervalReread() {
 /** 注入器遇到坏设置文件：默认模板 + 一条 warning，不抛、不停。 */
 async function testInjectorSurvivesCorruptSettings() {
   const box = await sandbox()
-  await writeFile(settingsFile(box.state), '{ broken', 'utf8')
+  await writeFile(settingsPath(box), '{ broken', 'utf8')
   const state = { messages: [], injected: [], warnings: [], reads: 0 }
   const dirs = { root: '/fake', pending: '/fake/pending', done: '/fake/done', outbox: '/fake/outbox', read: '/fake/outbox/read' }
   const unread = async () => {
@@ -1309,7 +1321,7 @@ async function testInjectorSurvivesCorruptSettings() {
       inject: (_agent, text) => state.injected.push(text),
       logger: { warn: (...args) => state.warnings.push(args.join(' ')) },
       intervalMs: 20,
-      stateDir: box.state,
+      home: box.root, stateDir: box.state,
       unread,
       consume,
     })
@@ -1326,78 +1338,78 @@ async function testInjectorSurvivesCorruptSettings() {
 /** resolveInboxIntervalSeconds：文件 > configured > env > 60；非法 configured/env 仍然抛错。 */
 async function testIntervalPrecedence() {
   const box = await sandbox()
-  save(box.state, { values: { 'inbox.intervalSeconds': 30 } })
-  assert.equal(resolveInboxIntervalSeconds(undefined, { stateDir: box.state, env: {} }), 30)
-  assert.equal(resolveInboxIntervalSeconds(10, { stateDir: box.state, env: {} }), 30, 'the file wins over configured')
+  save(box, { values: { 'inbox.intervalSeconds': 30 } })
+  assert.equal(resolveInboxIntervalSeconds(undefined, { home: box.root, stateDir: box.state, env: {} }), 30)
+  assert.equal(resolveInboxIntervalSeconds(10, { home: box.root, stateDir: box.state, env: {} }), 30, 'the file wins over configured')
   assert.equal(
-    resolveInboxIntervalSeconds(10, { stateDir: box.state, env: { SPV_INBOX_INTERVAL_SECONDS: '20' } }),
+    resolveInboxIntervalSeconds(10, { home: box.root, stateDir: box.state, env: { SPV_INBOX_INTERVAL_SECONDS: '20' } }),
     30,
     'the file wins over the environment too',
   )
   // A valid saved value must never be broken by a typo in a lower layer: that is the
   // "looks applied but is not" failure mode this function has to avoid.
   assert.equal(
-    resolveInboxIntervalSeconds(undefined, { stateDir: box.state, env: { SPV_INBOX_INTERVAL_SECONDS: 'soon' } }),
+    resolveInboxIntervalSeconds(undefined, { home: box.root, stateDir: box.state, env: { SPV_INBOX_INTERVAL_SECONDS: 'soon' } }),
     30,
     'a valid file value wins without validating a broken environment variable',
   )
   assert.equal(
-    resolveInboxIntervalSeconds('soon', { stateDir: box.state, env: {} }),
+    resolveInboxIntervalSeconds('soon', { home: box.root, stateDir: box.state, env: {} }),
     30,
     'a valid file value wins without validating a broken plugin config',
   )
   assert.equal(
-    resolveInboxIntervalSeconds('soon', { stateDir: box.state, env: { SPV_INBOX_INTERVAL_SECONDS: 'soon' } }),
+    resolveInboxIntervalSeconds('soon', { home: box.root, stateDir: box.state, env: { SPV_INBOX_INTERVAL_SECONDS: 'soon' } }),
     30,
     'a valid file value wins even when both lower layers are broken',
   )
 
   const empty = await sandbox()
-  assert.equal(resolveInboxIntervalSeconds(undefined, { stateDir: empty.state, env: {} }), 60)
-  assert.equal(resolveInboxIntervalSeconds(undefined, { stateDir: empty.state, env: { SPV_INBOX_INTERVAL_SECONDS: '20' } }), 20)
+  assert.equal(resolveInboxIntervalSeconds(undefined, { home: empty.root, stateDir: empty.state, env: {} }), 60)
+  assert.equal(resolveInboxIntervalSeconds(undefined, { home: empty.root, stateDir: empty.state, env: { SPV_INBOX_INTERVAL_SECONDS: '20' } }), 20)
   assert.equal(
-    resolveInboxIntervalSeconds(10, { stateDir: empty.state, env: { SPV_INBOX_INTERVAL_SECONDS: '20' } }),
+    resolveInboxIntervalSeconds(10, { home: empty.root, stateDir: empty.state, env: { SPV_INBOX_INTERVAL_SECONDS: '20' } }),
     10,
     'configured wins over the environment',
   )
-  assert.equal(resolveInboxIntervalSeconds(0, { stateDir: empty.state, env: {} }), 0, '0 still disables')
-  assert.equal(resolveInboxIntervalSeconds(0.02, { stateDir: empty.state, env: {} }), 0.02, 'a fractional configured value is kept')
-  assert.throws(() => resolveInboxIntervalSeconds(-1, { stateDir: empty.state, env: {} }), /non-negative/)
+  assert.equal(resolveInboxIntervalSeconds(0, { home: empty.root, stateDir: empty.state, env: {} }), 0, '0 still disables')
+  assert.equal(resolveInboxIntervalSeconds(0.02, { home: empty.root, stateDir: empty.state, env: {} }), 0.02, 'a fractional configured value is kept')
+  assert.throws(() => resolveInboxIntervalSeconds(-1, { home: empty.root, stateDir: empty.state, env: {} }), /non-negative/)
   assert.throws(
-    () => resolveInboxIntervalSeconds('soon', { stateDir: empty.state, env: {} }),
+    () => resolveInboxIntervalSeconds('soon', { home: empty.root, stateDir: empty.state, env: {} }),
     /non-negative/,
     'an invalid configured value still throws when there is no file value',
   )
   assert.throws(
-    () => resolveInboxIntervalSeconds(undefined, { stateDir: empty.state, env: { SPV_INBOX_INTERVAL_SECONDS: 'soon' } }),
+    () => resolveInboxIntervalSeconds(undefined, { home: empty.root, stateDir: empty.state, env: { SPV_INBOX_INTERVAL_SECONDS: 'soon' } }),
     /non-negative/,
     'an invalid environment variable still throws when there is no file value',
   )
 
   // A corrupt file has no usable override, so the old loud behaviour is preserved.
-  await writeFile(settingsFile(empty.state), 'not json', 'utf8')
-  assert.equal(resolveInboxIntervalSeconds(undefined, { stateDir: empty.state, env: {} }), 60, 'a corrupt file falls back to 60')
+  await writeFile(settingsPath(empty), 'not json', 'utf8')
+  assert.equal(resolveInboxIntervalSeconds(undefined, { home: empty.root, stateDir: empty.state, env: {} }), 60, 'a corrupt file falls back to 60')
   assert.throws(
-    () => resolveInboxIntervalSeconds(undefined, { stateDir: empty.state, env: { SPV_INBOX_INTERVAL_SECONDS: 'soon' } }),
+    () => resolveInboxIntervalSeconds(undefined, { home: empty.root, stateDir: empty.state, env: { SPV_INBOX_INTERVAL_SECONDS: 'soon' } }),
     /non-negative/,
     'a corrupt file does not swallow an invalid environment variable',
   )
   assert.throws(
-    () => resolveInboxIntervalSeconds('soon', { stateDir: empty.state, env: {} }),
+    () => resolveInboxIntervalSeconds('soon', { home: empty.root, stateDir: empty.state, env: {} }),
     /non-negative/,
     'a corrupt file does not swallow an invalid configured value',
   )
 
   // An invalid *file* value is ignored like a missing one: it falls through to configured / env / default.
-  await writeJson(settingsFile(empty.state), { version: 1, revision: 1, values: { 'inbox.intervalSeconds': 'soon' } })
-  assert.equal(resolveInboxIntervalSeconds(undefined, { stateDir: empty.state, env: { SPV_INBOX_INTERVAL_SECONDS: '20' } }), 20)
+  await writeJson(settingsPath(empty), { version: 1, revision: 1, values: { 'inbox.intervalSeconds': 'soon' } })
+  assert.equal(resolveInboxIntervalSeconds(undefined, { home: empty.root, stateDir: empty.state, env: { SPV_INBOX_INTERVAL_SECONDS: '20' } }), 20)
   assert.throws(
-    () => resolveInboxIntervalSeconds(undefined, { stateDir: empty.state, env: { SPV_INBOX_INTERVAL_SECONDS: 'soon' } }),
+    () => resolveInboxIntervalSeconds(undefined, { home: empty.root, stateDir: empty.state, env: { SPV_INBOX_INTERVAL_SECONDS: 'soon' } }),
     /non-negative/,
     'an invalid file value still falls through to the existing env validation',
   )
   assert.throws(
-    () => resolveInboxIntervalSeconds('soon', { stateDir: empty.state, env: {} }),
+    () => resolveInboxIntervalSeconds('soon', { home: empty.root, stateDir: empty.state, env: {} }),
     /non-negative/,
     'an invalid file value still falls through to the existing configured validation',
   )
@@ -1436,6 +1448,7 @@ async function testPollerDynamicInterval() {
     process.env.FAKE_GH_LOG = box.ghLog
     delete process.env.SPV_INBOX_INTERVAL_SECONDS
     // pollOnce() reads the settings for merge.installRepo; keep that read out of the operator's state dir.
+    process.env.WHEELCHAIR_AGENT_HOME = join(ISOLATED_STATE, 'data')
     process.env.DSH_SUPERAGENT_STATE_DIR = ISOLATED_STATE
     const watcher = startInboxWatcher({
       root: box.inbox,
@@ -1504,13 +1517,14 @@ async function testMergeRepoFromSettings() {
     mergedAt: '',
     mergeCommit: null,
   }])
-  save(box.state, { values: { 'merge.installRepo': 'acme/demo' } })
+  save(box, { values: { 'merge.installRepo': 'acme/demo' } })
   const saved = { ...process.env }
   const restoreGit = installGitEnv(box)
   try {
     process.env.PATH = `${box.bin}:${process.env.PATH}`
     process.env.FAKE_GH_JSON = box.ghJson
     process.env.FAKE_GH_LOG = box.ghLog
+    process.env.WHEELCHAIR_AGENT_HOME = box.root
     process.env.DSH_SUPERAGENT_STATE_DIR = box.state
     process.env.SPV_QUEUE_DIR = box.queue
     process.env.SPV_INSTALL_REPO = 'someone/else'
@@ -1558,7 +1572,7 @@ async function testWorkGcDefaults() {
   const box = await sandbox()
   await cloneTicket(box, 'alpha')
   await cloneTicket(box, 'beta')
-  save(box.state, { values: { 'work.keep': 1 } })
+  save(box, { values: { 'work.keep': 1 } })
 
   const defaulted = cli(box, ['work', 'gc', '--dry-run'])
   assert.equal(defaulted.status, 0, defaulted.stderr || defaulted.stdout)
@@ -1573,7 +1587,7 @@ async function testWorkGcDefaults() {
   assert.equal(explicitDays.status, 0)
   assert.match(explicitDays.stdout, /would reclaim 1, kept 1/, 'an explicit --keep-days keeps the settings work.keep default')
 
-  await writeFile(settingsFile(box.state), '{ broken', 'utf8')
+  await writeFile(settingsPath(box), '{ broken', 'utf8')
   const corrupt = cli(box, ['work', 'gc', '--dry-run'])
   assert.equal(corrupt.status, 0, 'a corrupt settings file never fails work gc')
   assert.match(corrupt.stdout, /would reclaim 2, kept 0/, 'a corrupt file falls back to the built-in defaults')
@@ -1583,7 +1597,7 @@ async function testWorkGcDefaults() {
 async function testMountSweepSetting() {
   const box = await sandbox()
   const keep = await cloneTicket(box, 'alpha')
-  save(box.state, { values: { 'work.sweepOnMount': false } })
+  save(box, { values: { 'work.sweepOnMount': false } })
   const lines = []
   const ctx = {
     orchestrator: {
@@ -1593,6 +1607,7 @@ async function testMountSweepSetting() {
     logger: { info: line => lines.push(String(line)), warn: line => lines.push(String(line)) },
   }
   await reclaimAtMount(ctx, {
+    home: box.root,
     openTickets: async () => ({ tickets: [] }),
     workspaceRegistry: { list: () => [], delete: async () => true },
   })
@@ -1601,7 +1616,7 @@ async function testMountSweepSetting() {
 
   // Turn it back on with a keep floor: the two clones are both protected by work.keep=2.
   const second = await cloneTicket(box, 'beta')
-  save(box.state, { values: { 'work.sweepOnMount': true, 'work.keep': 2 } })
+  save(box, { values: { 'work.sweepOnMount': true, 'work.keep': 2 } })
   const lines2 = []
   const ctx2 = {
     orchestrator: {
@@ -1611,6 +1626,7 @@ async function testMountSweepSetting() {
     logger: { info: line => lines2.push(String(line)), warn: line => lines2.push(String(line)) },
   }
   await reclaimAtMount(ctx2, {
+    home: box.root,
     openTickets: async () => ({ tickets: [] }),
     workspaceRegistry: { list: () => [], delete: async () => true },
   })
@@ -1619,7 +1635,7 @@ async function testMountSweepSetting() {
   assert.ok((await readFile(join(second, '.git', 'HEAD'), 'utf8')).length > 0)
 
   // A direct reclaim with the same keep floor agrees (the mount pass passes it through, not a hard-coded 0).
-  const summary = await reclaimWork({ root: box.work, stateDir: box.state, keep: 2, keepDays: 0 })
+  const summary = await reclaimWork({ root: box.work, home: box.root, stateDir: box.state, keep: 2, keepDays: 0 })
   assert.equal(summary.reclaimed, 0)
 }
 
@@ -1629,7 +1645,7 @@ async function testPutSnapshotKeepsPrecedence() {
   const box = await sandbox()
   const rowOf = snapshot => snapshot.rows.find(row => row.key === 'inbox.intervalSeconds')
   const handler = createSettingsHandler({
-    stateDir: box.state,
+    home: box.root, stateDir: box.state,
     env: { SPV_INBOX_INTERVAL_SECONDS: '20' },
     config: { 'inbox.intervalSeconds': 0.02 },
   })
@@ -1646,7 +1662,7 @@ async function testPutSnapshotKeepsPrecedence() {
 
   // An env-sourced untouched row survives too.
   const envBox = await sandbox()
-  const envHandler = createSettingsHandler({ stateDir: envBox.state, env: { SPV_INBOX_INTERVAL_SECONDS: '33' } })
+  const envHandler = createSettingsHandler({ home: envBox.root, stateDir: envBox.state, env: { SPV_INBOX_INTERVAL_SECONDS: '33' } })
   const envGet = await call(envHandler)
   assert.equal(rowOf(envGet.body).source, 'env')
   assert.equal(rowOf(envGet.body).value, 33)
@@ -1662,7 +1678,7 @@ async function testPutSnapshotKeepsPrecedence() {
   process.env.SPV_INBOX_INTERVAL_SECONDS = '99'
   try {
     const isolatedBox = await sandbox()
-    const isolated = createSettingsHandler({ stateDir: isolatedBox.state, env: {} })
+    const isolated = createSettingsHandler({ home: isolatedBox.root, stateDir: isolatedBox.state, env: {} })
     const isolatedGet = await call(isolated)
     const isolatedPut = await call(isolated, {
       method: 'PUT',
@@ -1679,7 +1695,7 @@ async function testPutSnapshotKeepsPrecedence() {
   // The library call forwards them too (the handler is not the only caller).
   const directBox = await sandbox()
   const direct = saveSettings({
-    stateDir: directBox.state,
+    home: directBox.root, stateDir: directBox.state,
     revision: 0,
     values: { 'work.keep': 1 },
     config: { 'inbox.intervalSeconds': 0.02 },
@@ -1691,8 +1707,8 @@ async function testPutSnapshotKeepsPrecedence() {
 /** Prototype-named settings keys / template ids / presets are refused loudly, never silently accepted. */
 async function testPrototypeNamesAndIds() {
   const box = await sandbox()
-  const handler = createSettingsHandler({ stateDir: box.state, env: {} })
-  const snapshot = () => resolveSettings({ stateDir: box.state, env: {} })
+  const handler = createSettingsHandler({ home: box.root, stateDir: box.state, env: {} })
+  const snapshot = () => resolveSettings({ home: box.root, stateDir: box.state, env: {} })
   const revision = snapshot().revision
 
   for (const key of ['__proto__', 'constructor', 'prototype', 'toString', 'hasOwnProperty']) {
@@ -1738,17 +1754,17 @@ async function testPrototypeNamesAndIds() {
   assert.ok(answer.body.templates.prIssue.presets.some(preset => preset.name === 'toString'))
   const roundTrip = snapshot()
   assert.ok(roundTrip.templates.prIssue.presets.some(preset => preset.name === 'toString'), 'a toString preset persists and resolves')
-  const stored = await readJson(settingsFile(box.state))
+  const stored = await readJson(settingsPath(box))
   assert.ok(Object.hasOwn(stored.templates.prIssue.presets, 'toString'))
 
   // A hand-edited file with prototype-named ids/keys is ignored with a warning, never thrown.
-  await writeJson(settingsFile(box.state), {
+  await writeJson(settingsPath(box), {
     version: 1,
     revision: 4,
     values: { constructor: 5 },
     templates: { constructor: { active: 'default' } },
   })
-  const edited = resolveSettings({ stateDir: box.state, env: {} })
+  const edited = resolveSettings({ home: box.root, stateDir: box.state, env: {} })
   assert.equal(edited.fileState, 'ok')
   assert.equal(edited.revision, 4)
   assert.deepEqual(edited.values, {})
@@ -1760,15 +1776,15 @@ async function testPrototypeNamesAndIds() {
 /** N6: the stored file carries only custom presets; a stored built-in copy is advisory and never warns. */
 async function testStoredTemplatesOmitBuiltinText() {
   const box = await sandbox()
-  save(box.state, {
+  save(box, {
     templates: { injection: { active: 'custom', presets: { custom: { text: '[spv] {kind} {thread}: {body}' } } } },
   })
-  const stored = await readJson(settingsFile(box.state))
+  const stored = await readJson(settingsPath(box))
   assert.deepEqual(Object.keys(stored.templates.injection.presets), ['custom'], 'only custom presets are written')
   assert.equal(stored.templates.injection.presets.default, undefined, 'the built-in text is not copied into the file')
 
   // An old file with a stored default equal to the current builtin stays warning-free.
-  await writeJson(settingsFile(box.state), {
+  await writeJson(settingsPath(box), {
     version: 1,
     revision: 5,
     values: {},
@@ -1782,16 +1798,16 @@ async function testStoredTemplatesOmitBuiltinText() {
       },
     },
   })
-  const old = resolveSettings({ stateDir: box.state, env: {} })
+  const old = resolveSettings({ home: box.root, stateDir: box.state, env: {} })
   assert.equal(old.warning, undefined, 'a stored built-in copy is advisory and does not warn')
   assert.equal(old.templates.injection.active, 'custom')
   assert.equal(old.templates.injection.text, '[spv] {kind} {thread}: {body}')
 
   // A stale stored default (an older builtin text) is ignored silently as well.
-  const stale = await readJson(settingsFile(box.state))
+  const stale = await readJson(settingsPath(box))
   stale.templates.injection.presets.default.text = 'STALE BUILTIN {kind} {thread} {body}'
-  await writeJson(settingsFile(box.state), stale)
-  const after = resolveSettings({ stateDir: box.state, env: {} })
+  await writeJson(settingsPath(box), stale)
+  const after = resolveSettings({ home: box.root, stateDir: box.state, env: {} })
   assert.equal(after.warning, undefined, 'a stale stored built-in copy is ignored silently')
   assert.equal(after.templates.injection.defaultText, defaultSettings().templates.injection.defaultText)
   assert.equal(after.templates.injection.text, '[spv] {kind} {thread}: {body}')

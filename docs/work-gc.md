@@ -40,7 +40,8 @@ optional guards, not the safety mechanism, and neither can make an unsafe direct
 
 ## Record and `work restored`
 
-Before a delete, one JSON object is appended to `<stateDir>/work-reclaimed.jsonl`: directory name and absolute path,
+Before a delete, one JSON object is appended to `<root>/records/work-reclaimed.jsonl` (default
+`~/.wheelchair-agent/records/work-reclaimed.jsonl`; `$WHEELCHAIR_AGENT_HOME` moves the root): directory name and absolute path,
 size in bytes, UTC time, `git rev-parse HEAD`, `git rev-parse origin/main` (or `null`), the branch, the upstream, and
 the tracked remote's name and URL. The values are captured from the clone before any removal; the line is written
 before the delete, so a failed write keeps the directory. If the delete itself then fails, a retraction line cancels

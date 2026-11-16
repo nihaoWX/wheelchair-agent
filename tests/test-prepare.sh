@@ -363,5 +363,29 @@ run tools/with-remote k SPV_PREPARE_TEMPLATES=/nonexistent
 check '(k) exit status' "$?" 1
 check '(k) the failure names the step' "$(grep -c 'FAILED at agentsmd' "$SB/stderr")" 1
 
+# (t) the default log is under the data root; the old log is moved there once and stays readable on failure.
+mkdir -p "$SB/state"
+printf 'legacy prepare line\n' > "$SB/state/prepare.log"
+run research/a-task t SPV_PREPARE_LOG= WHEELCHAIR_AGENT_HOME="$SB/data" DSH_SUPERAGENT_STATE_DIR="$SB/state"
+check '(t) exit status' "$?" 0
+check '(t) the legacy log was moved' "$([ -e "$SB/state/prepare.log" ] && echo present || echo absent)" absent
+check '(t) the new log exists' "$([ -f "$SB/data/logs/prepare.log" ] && echo present || echo absent)" present
+check '(t) the migration is logged' "$(grep -c "moved $SB/state/prepare.log -> $SB/data/logs/prepare.log" "$SB/data/logs/migration.log")" 1
+check '(t) the prepare line is logged in the new place' "$(grep -c 'legacy prepare line' "$SB/data/logs/prepare.log")" 1
+run research/a-task t SPV_PREPARE_LOG= WHEELCHAIR_AGENT_HOME="$SB/data" DSH_SUPERAGENT_STATE_DIR="$SB/state"
+check '(t) a second run exits 0' "$?" 0
+check '(t) the migration is idempotent' "$(grep -c 'moved ' "$SB/data/logs/migration.log")" 1
+
+# (u) a relative data root fails loudly before touching a project, even with an explicit log override.
+run research/a-task u SPV_PREPARE_LOG= WHEELCHAIR_AGENT_HOME=relative/root
+check '(u) exit status' "$?" 1
+check '(u) the failure names the absolute-path rule' \
+  "$(grep -c 'WHEELCHAIR_AGENT_HOME must be an absolute path' "$SB/stderr")" 1
+run research/a-task u2 WHEELCHAIR_AGENT_HOME=relative/root
+check '(u2) an explicit log does not hide the invalid root' "$?" 1
+check '(u2) the failure names the absolute-path rule' \
+  "$(grep -c 'WHEELCHAIR_AGENT_HOME must be an absolute path' "$SB/stderr")" 1
+
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

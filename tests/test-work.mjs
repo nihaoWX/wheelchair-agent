@@ -82,6 +82,7 @@ async function sandbox() {
     home: join(base, 'home'),
     remotes: join(base, 'remotes'),
     state: join(base, 'state'),
+    root: join(base, 'data'),
     work: join(base, 'state', 'work'),
     config: join(base, 'gitconfig'),
   }
@@ -105,6 +106,7 @@ async function sandbox() {
   box.env = {
     ...process.env,
     HOME: box.home,
+    WHEELCHAIR_AGENT_HOME: box.root,
     GIT_CONFIG_GLOBAL: box.config,
     GIT_CONFIG_NOSYSTEM: '1',
     GIT_TERMINAL_PROMPT: '0',
@@ -207,7 +209,7 @@ async function setAge(dir, days) {
 /** Parse the record file into objects; a missing file reads as empty. */
 async function records(box) {
   try {
-    const text = await readFile(join(box.state, RECLAIMED_FILE), 'utf8')
+    const text = await readFile(join(box.root, 'records', RECLAIMED_FILE), 'utf8')
     return text.split('\n').filter(Boolean).map(line => JSON.parse(line))
   } catch (error) {
     if (error.code === 'ENOENT') return []
@@ -233,7 +235,7 @@ async function serveTickets({ body, status = 200, onRequest } = {}) {
 
 /** Plan/delete through the library entry point, with the retention cushions disabled for the case under test. */
 function reclaim(box, overrides = {}) {
-  return reclaimWork({ root: box.work, stateDir: box.state, keep: 0, keepDays: 0, ...overrides })
+  return reclaimWork({ root: box.work, home: box.root, stateDir: box.state, keep: 0, keepDays: 0, ...overrides })
 }
 
 /** The plan entry for one directory, by name. */
@@ -647,7 +649,7 @@ async function testRestored() {
   })
   assert.equal(output.trim(), '', 'the rebuild commands are quiet')
   assert.equal(gitIn(box, dir, 'rev-parse', 'HEAD').trim(), head, 'the rebuilt clone is at the recorded commit')
-  const restored = await readReclaimed({ stateDir: box.state, ticket: 'eta-0123456789ab' })
+  const restored = await readReclaimed({ home: box.root, stateDir: box.state, ticket: 'eta-0123456789ab' })
   assert.equal(restored.record.head, head)
   assert.equal(restoreCommands(restored.record, { root: box.work }).includes(head), true)
 }
@@ -663,7 +665,7 @@ async function testKeepFloor() {
   }
   const dry = cli(box, ['work', 'gc', '--dry-run', '--keep', '2'])
   assert.match(dry.stdout, /would reclaim 1, kept 2/, '--keep 2 still protects the newest two when asked')
-  const summary = await reclaimWork({ root: box.work, stateDir: box.state, keep: 2 })
+  const summary = await reclaimWork({ root: box.work, home: box.root, stateDir: box.state, keep: 2 })
   assert.equal(summary.reclaimed, 1, 'only the clone below the floor is reclaimed')
   assert.equal(summary.kept, 2)
   assert.deepEqual(
@@ -682,7 +684,7 @@ async function testAgeRetention() {
   const fresh = await cloneTicket(box, 'iota')
   const old = await cloneTicket(box, 'kappa')
   await setAge(old, 30)
-  const summary = await reclaimWork({ root: box.work, stateDir: box.state, keep: 0, keepDays: 7 })
+  const summary = await reclaimWork({ root: box.work, home: box.root, stateDir: box.state, keep: 0, keepDays: 7 })
   assert.equal(summary.reclaimed, 1, 'the old clone is reclaimed')
   const kept = entryOf(summary, 'iota-0123456789ab')
   assert.equal(kept.action, 'keep')
@@ -708,7 +710,7 @@ async function testDeleteFailureRetracts() {
   assert.equal(lines.length, 2, 'the record and its retraction are both append-only')
   assert.equal(lines[1].retracted, true)
   await assert.rejects(
-    readReclaimed({ stateDir: box.state, ticket: 'xi-0123456789ab' }),
+    readReclaimed({ home: box.root, stateDir: box.state, ticket: 'xi-0123456789ab' }),
     /no reclaim record/,
   )
 }
@@ -716,50 +718,68 @@ async function testDeleteFailureRetracts() {
 /** `apply()` sweeps before setup, uses the CLI defaults, logs once, and only once per process. */
 async function testMountApply() {
   const box = await sandbox()
-  await makeRemote(box, 'theta')
-  const dirs = []
-  for (let index = 1; index <= 11; index += 1) {
-    const dir = join(box.work, `theta-${String(index).padStart(12, '0')}`)
-    git(box, ['clone', '-q', '--branch', 'agent/theta', 'https://github.com/testowner/theta.git', dir])
-    await setAge(dir, 40 - index)
-    dirs.push(dir)
-  }
-  const lines = []
-  const effects = []
-  const openTicket = { id: 'ticket-open-1', title: 'active', execution: { directory: dirs[10] } }
-  const registryCalls = []
-  const ctx = {
-    effect: (fn, label) => effects.push({ fn, label }),
-    workspaceRegistry: {
-      list: () => [{ id: 'w-apply', path: dirs[0] }],
-      delete: async id => { registryCalls.push(id); return true },
-    },
-    // No `ready`, `configured()` or `deployment` on the plugin context: the early path must be used.
-    orchestrator: {
-      sources: { register: () => {} },
-      context: () => ({ tickets: { open: () => [openTicket] } }),
-      machine: { stateDir: box.state },
-      settings: { current: () => ({ executor: { directory: box.work } }) },
-    },
-    logger: { info: line => lines.push(String(line)), warn: line => lines.push(String(line)) },
-  }
-  apply(ctx)
-  await waitFor(() => lines.some(line => line.includes('reclaimed')), 'the mount summary line')
-  const summaryLine = lines.find(line => line.includes('reclaimed'))
-  assert.match(summaryLine, /wheelchair-agent work gc: reclaimed 10 clones, pruned 1 workspaces, freed [\d.]+ MB/)
-  assert.deepEqual(registryCalls, ['w-apply'], 'apply() reads ctx.workspaceRegistry and prunes the reclaimed row')
-  assert.ok(lines.some(line => line.includes(`pruned workspace ${dirs[0]}`)))
-  for (const dir of dirs.slice(0, 10)) {
-    await assert.rejects(readFile(join(dir, '.git', 'HEAD')), { code: 'ENOENT' }, `${dir} is reclaimed`)
-  }
-  assert.ok((await readFile(join(dirs[10], '.git', 'HEAD'), 'utf8')).length > 0, 'the open ticket clone is kept')
+  // `apply()` is the real plugin entry and resolves the data root from the environment; pin it to the
+  // sandbox so this in-process sweep cannot write into the operator's ~/.wheelchair-agent.
+  const savedHome = process.env.HOME
+  const savedDataHome = process.env.WHEELCHAIR_AGENT_HOME
+  const savedStateDir = process.env.DSH_SUPERAGENT_STATE_DIR
+  process.env.HOME = box.home
+  process.env.WHEELCHAIR_AGENT_HOME = box.root
+  process.env.DSH_SUPERAGENT_STATE_DIR = box.state
+  try {
+    await makeRemote(box, 'theta')
+    const dirs = []
+    for (let index = 1; index <= 11; index += 1) {
+      const dir = join(box.work, `theta-${String(index).padStart(12, '0')}`)
+      git(box, ['clone', '-q', '--branch', 'agent/theta', 'https://github.com/testowner/theta.git', dir])
+      await setAge(dir, 40 - index)
+      dirs.push(dir)
+    }
+    const lines = []
+    const effects = []
+    const openTicket = { id: 'ticket-open-1', title: 'active', execution: { directory: dirs[10] } }
+    const registryCalls = []
+    const ctx = {
+      effect: (fn, label) => effects.push({ fn, label }),
+      workspaceRegistry: {
+        list: () => [{ id: 'w-apply', path: dirs[0] }],
+        delete: async id => { registryCalls.push(id); return true },
+      },
+      // No `ready`, `configured()` or `deployment` on the plugin context: the early path must be used.
+      orchestrator: {
+        sources: { register: () => {} },
+        context: () => ({ tickets: { open: () => [openTicket] } }),
+        machine: { stateDir: box.state },
+        settings: { current: () => ({ executor: { directory: box.work } }) },
+      },
+      logger: { info: line => lines.push(String(line)), warn: line => lines.push(String(line)) },
+    }
+    apply(ctx)
+    await waitFor(() => lines.some(line => line.includes('reclaimed')), 'the mount summary line')
+    const summaryLine = lines.find(line => line.includes('reclaimed'))
+    assert.match(summaryLine, /wheelchair-agent work gc: reclaimed 10 clones, pruned 1 workspaces, freed [\d.]+ MB/)
+    assert.deepEqual(registryCalls, ['w-apply'], 'apply() reads ctx.workspaceRegistry and prunes the reclaimed row')
+    assert.ok(lines.some(line => line.includes(`pruned workspace ${dirs[0]}`)))
+    for (const dir of dirs.slice(0, 10)) {
+      await assert.rejects(readFile(join(dir, '.git', 'HEAD')), { code: 'ENOENT' }, `${dir} is reclaimed`)
+    }
+    assert.ok((await readFile(join(dirs[10], '.git', 'HEAD'), 'utf8')).length > 0, 'the open ticket clone is kept')
 
-  const firstCount = lines.length
-  apply(ctx)
-  await sleep(150)
-  assert.equal(lines.length, firstCount, 'a hot remount does not sweep again')
-  assert.ok(effects.length >= 2, 'the Source still registers its effects')
+    const firstCount = lines.length
+    apply(ctx)
+    await sleep(150)
+    assert.equal(lines.length, firstCount, 'a hot remount does not sweep again')
+    assert.ok(effects.length >= 2, 'the Source still registers its effects')
+  } finally {
+    if (savedHome === undefined) delete process.env.HOME
+    else process.env.HOME = savedHome
+    if (savedDataHome === undefined) delete process.env.WHEELCHAIR_AGENT_HOME
+    else process.env.WHEELCHAIR_AGENT_HOME = savedDataHome
+    if (savedStateDir === undefined) delete process.env.DSH_SUPERAGENT_STATE_DIR
+    else process.env.DSH_SUPERAGENT_STATE_DIR = savedStateDir
+  }
 }
+
 
 /** The fallback path waits on the orchestrator service, not on plugin-context members. */
 async function testMountFallback() {
@@ -776,7 +796,7 @@ async function testMountFallback() {
     },
     logger: { info: line => lines.push(String(line)), warn: line => lines.push(String(line)) },
   }
-  await reclaimAtMount(ctx, {
+  await reclaimAtMount(ctx, { home: box.root,
     openTickets: async () => ({ tickets: [] }),
     workspaceRegistry: registryOf([]).registry,
   })
@@ -922,7 +942,7 @@ async function testPruneRegistryAcquiredLate() {
     },
     logger: { info: line => lines.push(String(line)), warn: line => lines.push(String(line)) },
   }
-  await reclaimAtMount(ctx, { openTickets: async () => ({ tickets: [] }) })
+  await reclaimAtMount(ctx, { home: box.root, openTickets: async () => ({ tickets: [] }) })
   assert.ok(looks >= 3, 'the pass retried the lazy lookup instead of taking the first undefined')
   assert.deepEqual(calls, ['w-late'])
   assert.ok(lines.some(line => line.includes(`pruned workspace ${dir}`)))
@@ -942,7 +962,7 @@ async function testPruneAfterReclaim() {
     },
     logger: { info: line => lines.push(String(line)), warn: line => lines.push(String(line)) },
   }
-  await reclaimAtMount(ctx, { openTickets: async () => ({ tickets: [] }), workspaceRegistry: registry })
+  await reclaimAtMount(ctx, { home: box.root, openTickets: async () => ({ tickets: [] }), workspaceRegistry: registry })
   await assert.rejects(readFile(join(dir, '.git', 'HEAD')), { code: 'ENOENT' }, 'the clone is reclaimed')
   assert.deepEqual(calls, ['w-prune'], 'the row of the clone reclaimed in this pass is pruned')
   assert.ok(lines.some(line => line.includes(`pruned workspace ${dir}`)), 'one line per pruned path')
@@ -968,7 +988,7 @@ async function testPruneDoesNotBreakMount() {
       },
       logger: { info: line => lines.push(String(line)), warn: line => lines.push(String(line)) },
     }
-    await reclaimAtMount(ctx, { openTickets: async () => ({ tickets: [] }), workspaceRegistry: registry })
+    await reclaimAtMount(ctx, { home: box.root, openTickets: async () => ({ tickets: [] }), workspaceRegistry: registry })
     await assert.rejects(readFile(join(dir, '.git', 'HEAD')), { code: 'ENOENT' }, `${label}: the clone pass completes`)
     assert.ok(
       lines.some(line => /reclaimed 1 clones, pruned 0 workspaces/.test(line)),
@@ -990,7 +1010,7 @@ async function testMountProviderThrows() {
     },
     logger: { info: line => lines.push(String(line)), warn: line => lines.push(String(line)) },
   }
-  await reclaimAtMount(ctx, {
+  await reclaimAtMount(ctx, { home: box.root,
     openTickets: async () => { throw new Error('boom') },
     workspaceRegistry: registryOf([]).registry,
   })

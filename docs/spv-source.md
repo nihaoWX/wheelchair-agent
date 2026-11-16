@@ -88,6 +88,27 @@ worker preset）。`triggerOf()` 把除 `text` / `thread` / `actor` 之外的字
 消费，并作为一条新的 user 消息推进对话。所以 CLI 只有 `dispatch` / `status`（外加 `check`），没有、也不需要
 `result` 子命令。
 
+### 5.0 数据根与 superagent state 的边界
+
+**队列是契约，其余是我们的。** `spv/` 文件队列（以及 superagent 的 `work/`、`orchestrator.sqlite*`、
+`worker-bin/`、`worker-gitconfig`）由 superagent 管理，位置仍由 `$DSH_SUPERAGENT_STATE_DIR`
+（缺省 `~/.dsh/state/superagent`）决定；两侧必须指向同一个队列，所以这个位置**不搬**。
+
+我们自己的数据在另一个根 `<root>`（缺省 `~/.wheelchair-agent`，`$WHEELCHAIR_AGENT_HOME` 覆盖）：
+
+```
+<root>/settings.json                面板设置（旧位置 <stateDir>/panel-settings.json）
+<root>/inbox/                       审查收件箱
+<root>/records/work-reclaimed.jsonl 工单克隆重建记录
+<root>/logs/restart-all.log         重启审计日志
+<root>/logs/prepare.log             prepare 追溯日志
+```
+
+这样 `rm -rf ~/.dsh/state/superagent`（一次「重置 superagent」）不会带走操作者的审查历史、设置与
+重建记录。旧文件由 `src/shared/home.js` 在第一次读取时一次性搬到新位置：新路径不存在且旧路径存在时
+才搬，带跨进程锁、幂等、写 `<root>/logs/migration.log`；搬不动就继续读写旧路径。
+`$SPV_INBOX_DIR`、`$SPV_PREPARE_LOG` 仍是显式覆盖，优先于 `<root>`。
+
 `SPV_QUEUE_DIR` 覆盖队列根（与插件自身的 `queueDir` 设置同一优先级规则）。队列目录不存在时 `status` 不报错：
 `unreadMessages` / `pendingTasks` 把 ENOENT 当成空队列，CLI 打印空列表。`dispatch` 只在 superagent 服务未运行
 时失败（健康探针），队列目录本身不是它的前提——`submitTask` 会自己建 `pending/`。
@@ -95,7 +116,8 @@ worker preset）。`triggerOf()` 把除 `text` / `thread` / `actor` 之外的字
 ### 5.1 回收工单克隆
 
 `wheelchair-agent work gc` 删除"未使用、干净、提交全已发布"的 ticket 克隆，并把重建所需字段写进
-`<stateDir>/work-reclaimed.jsonl`；`work restored <ticket>` 从这份记录打印可粘贴的重建命令。CLI 与挂载时
+`<root>/records/work-reclaimed.jsonl`（默认 `~/.wheelchair-agent`，`$WHEELCHAIR_AGENT_HOME` 可覆盖）；
+`work restored <ticket>` 从这份记录打印可粘贴的重建命令。CLI 与挂载时
 `src/superagent/watch.js` 都通过 `src/shared/work.js` 的同一个 `openTicketDirectories()` 保留 open ticket 的
 目录（CLI 从服务的 `/orchestrator/api/tickets?state=open` 读取；服务没跑时跳过检查，其它失败则整次保留）。
 挂载时还会删除 work root 内目录已消失的 dsh workspace 记录（只删注册行，会话与日志保留）。完整说明见

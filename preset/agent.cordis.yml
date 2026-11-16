@@ -130,7 +130,7 @@
 #
 # 命令本身只 arm 一个 detached orchestrator：它跑在即将被替换的会话里，不能杀掉自己。真正的步骤在
 # `wheelchair-agent restart-all` 里（服务停止 → SPV 链 TERM/KILL → install.sh → 服务启动 → tmux 重开 TUI），
-# 每一步都写进 `<stateDir>/restart-all.log`。只接受 `--force`：打断正在跑的 worker / 排队 ticket。
+# 每一步都写进 `<root>/logs/restart-all.log`（默认 `~/.wheelchair-agent`）。只接受 `--force`：打断正在跑的 worker / 排队 ticket。
 #
 # 独立插件行，与 spv-cron 一样不放进 compaction group。
 - id: restart-command

@@ -1,5 +1,5 @@
 /**
- * 面板设置：`<stateDir>/panel-settings.json` 的唯一实现（schema、校验、解析、保存、HTTP 面）。
+ * 面板设置：`<root>/settings.json` 的唯一实现（schema、校验、解析、保存、HTTP 面）。
  *
  * 为什么需要它：面板上的旋钮原先散落在环境变量、CLI 参数和源码常量里，改一个值要重启服务或会话。这里把
  * 它们收成**一个有版本号的文件**，服务（webui 的 host 半身）和 SPV 会话（注入器、`work gc`）都读同一份，
@@ -19,20 +19,23 @@
  *   - 磁盘上的文件坏了/手改错了 → 绝不从 `resolveSettings` 抛：忽略坏字段、退回默认，`fileState` 与
  *     `warning` 说明原因。注入器、轮询器、CLI 因此都不会被一个坏文件拖死。
  *
- * 纯 Node builtins，不 import 本仓库其它模块：`install.sh` 会把这个文件复制进 webui 包的
- * `lib/shared/settings.js`，它必须能单独存在。stateDir 的默认值与 `src/spv/paths.js` 同一条规则
- * （`$DSH_SUPERAGENT_STATE_DIR`，否则 `~/.dsh/state/superagent`），在这里重算一遍而不是 import 它。
+ * 文件位置由 `src/shared/home.js` 决定：`<root>/settings.json`，默认 `~/.wheelchair-agent`，可用
+ * `$WHEELCHAIR_AGENT_HOME` 覆盖。旧位置 `<stateDir>/panel-settings.json` 仍会被读取一次并搬到新位置
+ * （见那个模块的迁移说明）；文件内容、schema 与键名**不变**。
+ *
+ * 纯 Node builtins；`install.sh` 会把这个文件与 `home.js` 一起复制进 webui 包的 `lib/shared/`，它必须能
+ * 单独存在。`stateDir` 参数仍可用，但只表示**旧的** state 目录（迁移与回退的来源）。
  */
 import { randomUUID } from 'node:crypto'
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname } from 'node:path'
+
+import { SETTINGS_FILE, dataPaths, resolveData } from './home.js'
+
+export { SETTINGS_FILE } from './home.js'
 
 /** 文件格式版本；不认识的版本按 corrupt 处理，退回默认（未来升级时这里才能加迁移）。 */
 export const SETTINGS_VERSION = 1
-
-/** 设置文件名。 */
-export const SETTINGS_FILE = 'panel-settings.json'
 
 /** 面板的 settings 路由；与 `/wheelchair-inbox/*` 同一套 connection fence。 */
 export const SETTINGS_PATH = '/wheelchair-settings'
@@ -178,17 +181,14 @@ export const TEMPLATE_SPECS = {
 /** 模板文本里任何 `{...}` 都算占位符；未知的一律拒绝，不静默留下一个坏消息。 */
 const PLACEHOLDER = /\{([^{}]*)\}/g
 
-/** 默认 stateDir：与 `src/spv/paths.js` 同一条规则（这里重算，不 import，见文件头）。 */
-function defaultStateDir(env = process.env) {
-  const fromEnv = String(env?.DSH_SUPERAGENT_STATE_DIR ?? '').trim()
-  if (fromEnv !== '') return fromEnv
-  return join(homedir(), '.dsh', 'state', 'superagent')
-}
-
-/** 设置文件的绝对路径；`stateDir` 省略时用默认 stateDir。 */
-export function settingsFile(stateDir) {
-  const dir = String(stateDir ?? '').trim()
-  return resolve(join(dir === '' ? defaultStateDir() : dir, SETTINGS_FILE))
+/**
+ * 设置文件的绝对路径，迁移之后**实际要读写**的那一条。
+ *
+ * `home` 是显式的数据根（测试与 `--root` 类调用），`stateDir` 只是旧 superagent state 目录：旧文件还在
+ * 那里时，这次调用会先尝试把它搬到新位置；搬不动就继续用旧路径（见 `src/shared/home.js`）。
+ */
+export function settingsFile({ env = process.env, home, stateDir, migrate = true } = {}) {
+  return resolveData({ env, home, stateDir, migrate }).settings
 }
 
 // ------------------------------------------------------------------ helpers
@@ -401,8 +401,8 @@ function corrupt(file, warning) {
 }
 
 /** 读磁盘；任何坏文件都变成一个 `fileState`/`warning`，绝不抛给调用方。 */
-function readStored(stateDir) {
-  const file = settingsFile(stateDir)
+function readStored({ env, home, stateDir, migrate = true } = {}) {
+  const file = settingsFile({ env, home, stateDir, migrate })
   let text
   try {
     text = readFileSync(file, 'utf8')
@@ -535,8 +535,8 @@ function readStoredTemplates(raw, warnings) {
 }
 
 /** 原子写：同目录临时文件 + rename；目标目录不存在时先建出来。 */
-function writeStored(stateDir, payload) {
-  const file = settingsFile(stateDir)
+function writeStored({ env, home, stateDir } = {}, payload) {
+  const file = settingsFile({ env, home, stateDir })
   mkdirSync(dirname(file), { recursive: true })
   const temporary = `${file}.tmp-${randomUUID()}`
   writeFileSync(temporary, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o644 })
@@ -656,19 +656,20 @@ function compose({ stored, env, config }) {
  *
  * 不会因为坏文件抛错；只有「配置层本身写错」会被记进 `warning` 并跳过。
  */
-export function resolveSettings({ stateDir, env = process.env, config = {} } = {}) {
-  return compose({ stored: readStored(stateDir), env, config })
+export function resolveSettings({ home, stateDir, env = process.env, config = {}, migrate = true } = {}) {
+  return compose({ stored: readStored({ home, stateDir, env, migrate }), env, config })
 }
 
 /**
  * 内置默认的完整快照：不读盘、不读 env。
  *
  * 注入器在没拿到 settings（老测试、或 settings 层自己失败）时用它，输出才与今天逐字节一致。
+ * `file` 只是展示用的配置路径；这里刻意不触发迁移（`defaultSettings` 的契约是不碰磁盘）。
  */
-export function defaultSettings() {
+export function defaultSettings({ home, stateDir, env = process.env } = {}) {
   return compose({
     stored: {
-      file: settingsFile(),
+      file: dataPaths({ home, stateDir, env }).settings.current,
       fileState: 'missing',
       revision: 0,
       values: {},
@@ -830,8 +831,8 @@ function serializeTemplates(templates) {
  * `values` 是 dotted key -> 值（合并进已有显式覆盖）；`templates` 按模板 id 完整替换自定义预设；
  * `reset` 先执行（删覆盖 / 清空预设并回默认）。
  */
-export function saveSettings({ stateDir, revision, values, templates, reset, env = process.env, config = {} } = {}) {
-  const stored = readStored(stateDir)
+export function saveSettings({ home, stateDir, revision, values, templates, reset, env = process.env, config = {} } = {}) {
+  const stored = readStored({ home, stateDir, env })
   if (!Number.isInteger(revision) || revision < 0) {
     throw conflict(stored.revision, revision)
   }
@@ -847,7 +848,7 @@ export function saveSettings({ stateDir, revision, values, templates, reset, env
   if (values !== undefined) applyValues(values, nextValues)
   if (templates !== undefined) applyTemplates(templates, nextTemplates)
 
-  writeStored(stateDir, {
+  writeStored({ home, stateDir, env }, {
     version: SETTINGS_VERSION,
     revision: revision + 1,
     values: nextValues,
@@ -855,7 +856,7 @@ export function saveSettings({ stateDir, revision, values, templates, reset, env
   })
   // 必须带上调用方的 env/config：否则 PUT 响应会丢掉 precedence 层，页面会把一个未被改动的行
   // 误报成 default/内置值（GET 与 PUT 于是给出两个不同的 effective/source）。
-  return resolveSettings({ stateDir, env, config })
+  return resolveSettings({ home, stateDir, env, config })
 }
 
 // ---------------------------------------------------------------------- HTTP
@@ -906,7 +907,7 @@ const PUT_FIELDS = ['revision', 'values', 'templates', 'reset']
  *
  * Host 半身把它包在既有的 `ctx.connection.requestRejection` fence 后面注册，与 `/wheelchair-inbox/*` 一致。
  */
-export function createSettingsHandler({ stateDir, config, env = process.env } = {}) {
+export function createSettingsHandler({ home, stateDir, config, env = process.env } = {}) {
   return async function handle(req, res) {
     const pathname = pathOf(req)
     if (pathname !== SETTINGS_PATH) {
@@ -922,7 +923,7 @@ export function createSettingsHandler({ stateDir, config, env = process.env } = 
     }
     if (method === 'GET') {
       try {
-        sendJson(res, 200, resolveSettings({ stateDir, env, config }))
+        sendJson(res, 200, resolveSettings({ home, stateDir, env, config }))
       } catch (error) {
         sendJson(res, 500, { code: 'internal-error', message: messageOf(error) })
       }
@@ -966,6 +967,7 @@ export function createSettingsHandler({ stateDir, config, env = process.env } = 
     }
     try {
       const snapshot = saveSettings({
+        home,
         stateDir,
         revision: body.revision,
         values: body.values,
