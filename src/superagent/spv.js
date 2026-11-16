@@ -14,6 +14,7 @@
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { assertNotTicketClone } from '../shared/home.js'
 import { integer, object, records, text } from '../shared/schema.js'
 import { dirsOf, writeMessage } from '../shared/queue.js'
 
@@ -57,7 +58,11 @@ export function threadOf(value) {
 /** Queue root used before the deployment is resolved: `<stateDir>/spv`. */
 export function fallbackRoot() {
   const stateDir = process.env.DSH_SUPERAGENT_STATE_DIR || join(homedir(), '.dsh', 'state', 'superagent')
-  return join(stateDir, 'spv')
+  const root = join(stateDir, 'spv')
+  // The live Source runs from the installed preset (not a clone); a copy inside a ticket work root must
+  // not create or read the deployment's queue by default.
+  assertNotTicketClone({ env: process.env, stateDir, what: 'the default spv queue root', target: root })
+  return root
 }
 
 /** The queue root the plugin reads and writes; it follows the saved configuration without a restart. */
@@ -75,7 +80,13 @@ export class Queue {
   /** Root for `configured`: the configured directory, else `stateDir/spv`. */
   resolve(configured, stateDir) {
     const next = String(configured ?? '').trim()
-    this.#root = next || join(stateDir, 'spv')
+    if (next) {
+      this.#root = next
+      return this.#root
+    }
+    const fallback = join(stateDir, 'spv')
+    assertNotTicketClone({ env: process.env, stateDir, what: 'the default spv queue root', target: fallback })
+    this.#root = fallback
     return this.#root
   }
 

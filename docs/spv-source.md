@@ -109,6 +109,12 @@ worker preset）。`triggerOf()` 把除 `text` / `thread` / `actor` 之外的字
 才搬，带跨进程锁、幂等、写 `<root>/logs/migration.log`；搬不动就继续读写旧路径。
 `$SPV_INBOX_DIR`、`$SPV_PREPARE_LOG` 仍是显式覆盖，优先于 `<root>`。
 
+**工单克隆不允许用默认根。** `src/shared/home.js` 用自身 `import.meta.url`（realpath 后）判断这份代码
+是否位于 `<stateDir>/work/` 下：若是，解析任何默认根（设置 / 收件箱 / 队列 / 重建记录 / 日志）直接抛错，
+并列出沙箱变量；数据根迁移直接拒绝（它就是搬走线上 inbox 的操作）。显式覆盖仍有效：
+`$WHEELCHAIR_AGENT_HOME`、`$SPV_INBOX_DIR`、`$SPV_QUEUE_DIR`、`$DSH_SUPERAGENT_STATE_DIR` 指向
+`mkdtemp` 沙箱即可，安装的 preset 与普通 checkout 不受影响。
+
 `SPV_QUEUE_DIR` 覆盖队列根（与插件自身的 `queueDir` 设置同一优先级规则）。队列目录不存在时 `status` 不报错：
 `unreadMessages` / `pendingTasks` 把 ENOENT 当成空队列，CLI 打印空列表。`dispatch` 只在 superagent 服务未运行
 时失败（健康探针），队列目录本身不是它的前提——`submitTask` 会自己建 `pending/`。

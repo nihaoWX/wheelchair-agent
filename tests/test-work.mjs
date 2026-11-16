@@ -495,6 +495,7 @@ async function testOpenTicketSkipped() {
   assert.equal(entry.reason, 'open ticket ticket-open-1 is using this directory')
   const summary = await reclaimWork({
     root: box.work,
+    home: box.root,
     stateDir: box.state,
     keep: 0,
     keepDays: 0,
@@ -590,6 +591,7 @@ async function testCliMalformedTickets() {
   // A direct blocked run is the same guard without the CLI.
   const blocked = await reclaimWork({
     root: box.work,
+    home: box.root,
     stateDir: box.state,
     keep: 0,
     keepDays: 0,
