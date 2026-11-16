@@ -39,6 +39,7 @@ import {
   TEMPLATE_IDS,
   createSettingsHandler,
   defaultSettings,
+  ensureSettingsFile,
   renderTemplate,
   resolveSettings,
   saveSettings,
@@ -338,6 +339,7 @@ function defaultPrIssueNotice(item, comment) {
 // ------------------------------------------------------------------- fixtures
 
 const EXPECTED_DEFAULTS = {
+  'webui.style': 'fluid',
   'inbox.intervalSeconds': 60,
   'merge.installRepo': 'wheelchair-agent',
   'injection.intervalMs': 1000,
@@ -389,7 +391,7 @@ async function outboxMessages(box) {
 
 // ------------------------------------------------------------------- scenarios
 
-/** 没有文件时的默认快照：七行、来源 default、模板 active=default。 */
+/** 没有文件时的默认快照：八行、来源 default、模板 active=default。 */
 async function testDefaults() {
   const box = await sandbox()
   const snapshot = resolveSettings({ home: box.root, stateDir: box.state, env: {} })
@@ -407,6 +409,10 @@ async function testDefaults() {
     assert.equal(row.source, 'default')
     assert.deepEqual(row.overridden, [])
   }
+  const styleRow = snapshot.rows.find(row => row.key === 'webui.style')
+  assert.equal(styleRow.value, 'fluid')
+  assert.equal(styleRow.default, 'fluid')
+  assert.deepEqual(styleRow.options, ['minimal', 'fluid'], 'an enum key exposes its options to the page')
   const intervalRow = snapshot.rows.find(row => row.key === 'inbox.intervalSeconds')
   assert.deepEqual(intervalRow.env, { name: 'SPV_INBOX_INTERVAL_SECONDS', present: false, value: null })
   assert.equal(snapshot.rows.find(row => row.key === 'injection.intervalMs').env, null, 'a key without an env var says null')
@@ -1097,6 +1103,9 @@ async function testHostSettingsRoute() {
     assert.ok(routes.some(item => item.path === '/wheelchair-inbox/items'), 'the inbox routes stay registered')
     assert.ok(effects.some(item => item.label.includes('inbox poller')), 'the host still registers the inbox poller')
 
+    // The host mount ships the empty-but-valid settings file; a stale/rejected PUT must not touch it.
+    const mounted = await readFile(settingsPath(box), 'utf8')
+    assert.deepEqual(JSON.parse(mounted), { version: SETTINGS_VERSION, revision: 0, values: {}, templates: {} })
     const get = await call(route.handler)
     assert.equal(get.status, 200)
     assert.equal(get.headers['cache-control'], 'no-store')
@@ -1109,7 +1118,7 @@ async function testHostSettingsRoute() {
     assert.equal(stale.status, 409)
     assert.equal(stale.body.code, 'conflict')
     assert.equal(stale.body.revision, 0)
-    assert.equal(await readFile(settingsPath(box), 'utf8').catch(() => undefined), undefined, 'a stale PUT writes nothing')
+    assert.equal(await readFile(settingsPath(box), 'utf8'), mounted, 'a stale PUT writes nothing')
 
     const denied = await call(route.handler, {
       method: 'PUT',
@@ -1118,11 +1127,7 @@ async function testHostSettingsRoute() {
     })
     assert.equal(denied.status, 403, 'the connection fence answers before the settings handler')
     assert.equal(denied.text, '', 'a rejected request gets no handler body')
-    assert.equal(
-      await readFile(settingsPath(box), 'utf8').catch(() => undefined),
-      undefined,
-      'a rejected PUT has no side effect',
-    )
+    assert.equal(await readFile(settingsPath(box), 'utf8'), mounted, 'a rejected PUT has no side effect')
     assert.equal(rejected.at(-1)?.forbidden, true, 'the settings route asks the connection fence before the handler')
 
     for (const candidate of routes.filter(item => item.path.startsWith('/wheelchair-inbox/'))) {
@@ -1817,11 +1822,131 @@ async function testStoredTemplatesOmitBuiltinText() {
   assert.equal(after.templates.injection.text, '[spv] {kind} {thread}: {body}')
 }
 
+/** The style setting is a normal enum key: validates, round-trips, refuses an unknown value. */
+async function testStyleSetting() {
+  const box = await sandbox()
+  const snapshot = resolveSettings({ home: box.root, stateDir: box.state, env: {} })
+  assert.equal(snapshot.effective['webui.style'], 'fluid', 'fluid is the shipped default')
+  assert.deepEqual(
+    saveSettings({ home: box.root, stateDir: box.state, env: {}, revision: 0, values: { 'webui.style': 'minimal' } })
+      .effective['webui.style'],
+    'minimal',
+    'minimal survives a save',
+  )
+  assert.throws(
+    () => saveSettings({ home: box.root, stateDir: box.state, env: {}, revision: 1, values: { 'webui.style': 'arcade' } }),
+    /webui\.style must be one of "minimal", "fluid"/,
+  )
+  assert.equal(resolveSettings({ home: box.root, stateDir: box.state, env: {} }).revision, 1, 'a refused value writes nothing')
+
+  const handler = createSettingsHandler({ home: box.root, stateDir: box.state, env: {} })
+  const put = await call(handler, { method: 'PUT', body: { revision: 1, values: { 'webui.style': 'fluid' } } })
+  assert.equal(put.status, 200)
+  assert.equal(put.body.effective['webui.style'], 'fluid')
+  assert.deepEqual(put.body.values, { 'webui.style': 'fluid' })
+  assert.equal(put.body.rows.find(row => row.key === 'webui.style').source, 'file')
+}
+
+/** Install/first run ships the empty-but-valid settings file; it never overwrites or pins defaults. */
+async function testEnsureSettingsFile() {
+  const box = await sandbox()
+  const first = ensureSettingsFile({ home: box.root, stateDir: box.state, env: {} })
+  assert.equal(first.created, true, 'a missing file is created')
+  assert.deepEqual(
+    JSON.parse(await readFile(first.file, 'utf8')),
+    { version: SETTINGS_VERSION, revision: 0, values: {}, templates: {} },
+    'the file is empty-but-valid, with no resolved defaults written into it',
+  )
+  const snapshot = resolveSettings({ home: box.root, stateDir: box.state, env: {} })
+  assert.equal(snapshot.fileState, 'ok')
+  assert.equal(snapshot.revision, 0)
+  assert.deepEqual(snapshot.effective, EXPECTED_DEFAULTS, 'empty values still yield the built-in defaults')
+
+  await writeJson(settingsPath(box), { version: 1, revision: 7, values: { 'webui.style': 'minimal' }, templates: {} })
+  const before = await readFile(settingsPath(box), 'utf8')
+  const second = ensureSettingsFile({ home: box.root, stateDir: box.state, env: {} })
+  assert.equal(second.created, false, 'an existing file is not replaced')
+  assert.equal(await readFile(settingsPath(box), 'utf8'), before)
+  assert.equal(resolveSettings({ home: box.root, stateDir: box.state, env: {} }).effective['webui.style'], 'minimal')
+
+  // A legacy file is migrated first; the shipped empty file cannot shadow real old values.
+  const legacyBox = await sandbox()
+  await writeJson(join(legacyBox.state, 'panel-settings.json'), { version: 1, revision: 3, values: { 'webui.style': 'minimal' } })
+  const migrated = ensureSettingsFile({ home: legacyBox.root, stateDir: legacyBox.state, env: {} })
+  assert.equal(migrated.created, false)
+  assert.equal(resolveSettings({ home: legacyBox.root, stateDir: legacyBox.state, env: {} }).effective['webui.style'], 'minimal')
+}
+
+/** CSS gates: token-only colour, reduced-motion guards, no linear easing, one root style attribute. */
+async function testClientStyleAndDraftHelpers() {
+  const client = await loadClient()
+  const { STYLES, styleOf, itemDraftKey, createDraftStore, restoreSettingsDrafts, sourceSummary } = client.__test
+  assert.equal(typeof STYLES, 'string', 'the client exposes its stylesheet for the offline CSS checks')
+  assert.doesNotMatch(STYLES, /#[0-9a-f]{3,8}/i, 'no hardcoded hex anywhere in the bundle')
+  assert.match(STYLES, /@media \(prefers-reduced-motion: reduce\)/, 'reduced motion has a guard')
+  assert.match(STYLES, /animation: none !important/)
+  assert.match(STYLES, /transition: none !important/)
+  assert.equal((STYLES.match(/@keyframes/g) ?? []).length, 3, 'the fluid style introduces exactly three keyframes')
+  assert.doesNotMatch(STYLES, /(?:transition|animation):[^;]*\blinear\b/, 'linear easing is banned')
+  assert.match(STYLES, /\[data-wca-style="fluid"\]/, 'a variant is scoped by one root attribute')
+  assert.match(STYLES, /backdrop-filter: blur\(12px\)/, 'the fluid material uses the specified blur')
+  assert.match(STYLES, /@supports not \(\(backdrop-filter/, 'a no-backdrop-filter fallback ships')
+
+  assert.equal(styleOf({ effective: { 'webui.style': 'minimal' } }), 'minimal')
+  assert.equal(styleOf({ values: { 'webui.style': 'fluid' } }), 'fluid')
+  assert.equal(styleOf({}), 'fluid', 'the default is fluid')
+  assert.equal(styleOf({ effective: { 'webui.style': 'future' } }), 'future', 'a third style needs only its CSS block')
+
+  const data = new Map()
+  const storage = {
+    getItem: key => (data.has(key) ? data.get(key) : null),
+    setItem: (key, value) => data.set(key, value),
+    removeItem: key => data.delete(key),
+  }
+  assert.equal(itemDraftKey({ id: 'spv-thread-1' }), 'spv-thread-1')
+  const first = createDraftStore(storage, 'inbox')
+  first.set('spv-thread-1', { mode: 'issue', text: 'needs a second look' })
+  // A new store instance stands in for a re-render / a remount after switching sections.
+  const second = createDraftStore(storage, 'inbox')
+  assert.deepEqual(second.get('spv-thread-1'), { mode: 'issue', text: 'needs a second look' })
+  second.clear('spv-thread-1')
+  assert.equal(createDraftStore(storage, 'inbox').get('spv-thread-1'), undefined, 'submit clears the draft')
+
+  const settingsSnapshot = {
+    revision: 2,
+    rows: [{ key: 'webui.style' }],
+    templates: { injection: { active: 'default' } },
+  }
+  const restored = restoreSettingsDrafts(settingsSnapshot, {
+    revision: 2,
+    valueDrafts: { 'webui.style': 'minimal', gone: 'x' },
+    templateDrafts: { injection: { active: 'mine', presets: { mine: 'TEXT' } }, gone: { active: 'default', presets: {} } },
+    resets: ['webui.style', 'gone'],
+  })
+  assert.deepEqual(restored.valueDrafts, { 'webui.style': 'minimal' })
+  assert.deepEqual(restored.templateDrafts, { injection: { active: 'mine', presets: { mine: 'TEXT' } } })
+  assert.deepEqual([...restored.resets], ['webui.style'])
+  const stale = restoreSettingsDrafts(settingsSnapshot, {
+    revision: 1,
+    valueDrafts: { 'webui.style': 'minimal' },
+    templateDrafts: {},
+    resets: [],
+  })
+  assert.deepEqual(stale, { valueDrafts: {}, templateDrafts: {}, resets: new Set() }, 'a stale revision drops its draft')
+
+  assert.deepEqual(
+    sourceSummary({ rows: [{ source: 'file' }, { source: 'file' }, { source: 'env' }, { source: 'default' }] }),
+    { file: 2, config: 0, env: 1, default: 1 },
+  )
+}
+
 // --------------------------------------------------------------------- main
 
 try {
   await testDefaults()
   await testDefaultTemplates()
+  await testStyleSetting()
+  await testEnsureSettingsFile()
   await testSaveMergeAndStaleRevision()
   await testCorruptAndHandEditedFiles()
   testTemplateValidation()
@@ -1832,6 +1957,7 @@ try {
   await testPrototypeNamesAndIds()
   await testStoredTemplatesOmitBuiltinText()
   await testClientSettingsHelpers()
+  await testClientStyleAndDraftHelpers()
   await testClientTemplateStaging()
   await testHostSettingsRoute()
   await testAppendReviewUsesTemplates()

@@ -33,7 +33,7 @@ window.__ModuleLoader__.load({
 			"feature.inbox.description": "复查 GitHub PR 与 SPV 的自主决策。SPV 在无人看管时自己做的决定会写成一封信，记录决定了什么、为什么；你之后通过或质疑。",
 			"section.settings": "设置",
 			"feature.settings.title": "设置",
-			"feature.settings.description": "编辑只因为 wheelchair-agent 存在而存在的旋钮：收件箱刷新、合并处理、消息注入、派单模板与工作回收。保存后立即生效，不需要重启服务或 SPV 会话。",
+			"feature.settings.description": "调整面板的外观，以及只因为 wheelchair-agent 存在而存在的旋钮：收件箱刷新、合并处理、消息注入、派单模板与工作回收。保存后立即生效，不需要重启服务或 SPV 会话。",
 			"settings.loading": "正在加载设置…",
 			"settings.loadFailed": "加载设置失败：{message}",
 			"settings.reload": "重新加载",
@@ -46,7 +46,6 @@ window.__ModuleLoader__.load({
 			"settings.conflict": "设置在别处已被改动（当前 revision {revision}）。草稿还在；重新加载后再保存，避免覆盖别人的改动。",
 			"settings.saveFailed": "保存失败：{message}",
 			"settings.fileWarning": "设置警告：{warning} 下面显示的是回退后的值；保存只写入改动的字段，不会整体重写设置文件。",
-			"settings.fileMissing": "还没有设置文件（{file}）：每行的当前值来自它标注的来源（可能是插件 config、环境变量或内置默认），保存一次就会创建它。",
 			"settings.effective": "当前生效：{value}",
 			"settings.defaultValue": "默认：{value}",
 			"settings.reset": "恢复默认",
@@ -62,12 +61,23 @@ window.__ModuleLoader__.load({
 			"settings.error.number": "必须是整数。",
 			"settings.error.range": "必须是 {min}–{max} 之间的整数。",
 			"settings.error.repo": "填 owner/name 或 name，只能使用字母、数字、点、横线和下划线。",
+			"settings.group.style": "外观",
 			"settings.group.inbox": "收件箱刷新",
 			"settings.group.merge": "合并处理",
 			"settings.group.injection": "消息注入",
 			"settings.group.templates": "派单文本",
 			"settings.group.work": "工作回收",
 			"settings.group.other": "其他设置",
+			"settings.sources.allDefault": "所有设置都使用内置默认值。",
+			"settings.sources.file": "{count} 项来自设置文件",
+			"settings.sources.env": "{count} 项来自环境变量",
+			"settings.sources.config": "{count} 项来自插件 config",
+			"settings.sources.none": "没有可显示的设置。",
+			"settings.draftTag": "草稿",
+			"settings.draftHint": "这项有未保存的草稿",
+			"settings.tech": "技术细节",
+			"settings.style.minimal": "简洁",
+			"settings.style.fluid": "流体",
 			"settings.template.preset": "预设",
 			"settings.template.builtinSuffix": "（内置）",
 			"settings.template.placeholders": "可用占位符",
@@ -93,20 +103,46 @@ window.__ModuleLoader__.load({
 			"settings.notes.recovery": "恢复命令文本不参与模板化：冷安装合并通知、install.sh 的拒绝文本、restart-all 的计划文本都保持精确原文。",
 			"settings.notes.scope": "superagent 的面板负责 executor、eval、policy、source:github、source:spv；本页只改因为 wheelchair-agent 存在而存在的旋钮，不镜像、不链接它们。",
 			"settings.notes.live": "设置文件由服务和 SPV 会话在使用时重读，所以保存后立即生效；只有 host 半身的代码改动（lib/index.js 与复制进包的 core 文件）才需要等下一次正常的服务重启，浏览器 bundle 会热重载。",
+			"setting.webui.style.label": "面板样式",
+			"setting.webui.style.desc": "决定面板看起来和动起来的样子。",
+			"setting.webui.style.changes": "「流体」用模糊、层次阴影和轻微回弹；「简洁」关掉这些，只留平面卡片。切换只改变材质与动效，版面结构不变。",
+			"setting.webui.style.recommended": "推荐先用「流体」；如果觉得晃眼或卡顿，切回「简洁」。",
+			"setting.webui.style.tech": "键 webui.style，取值 minimal | fluid；面板加载时读取，保存后即时生效，不需要重启。",
 			"setting.inbox.intervalSeconds.label": "收件箱刷新间隔（秒）",
-			"setting.inbox.intervalSeconds.desc": "每多少秒检查一次各仓库的 PR；每个仓库每轮跑一次 gh pr list。0 暂停自动刷新，改回正数不需要重启。",
+			"setting.inbox.intervalSeconds.desc": "多久检查一次各个仓库有没有新信件。",
+			"setting.inbox.intervalSeconds.changes": "调小能更早看到新 PR，但每个仓库每轮都会调用一次 gh；调到 0 就不再自动检查，手动刷新仍然可用。",
+			"setting.inbox.intervalSeconds.recommended": "推荐 60 秒。",
+			"setting.inbox.intervalSeconds.tech": "键 inbox.intervalSeconds；环境变量 SPV_INBOX_INTERVAL_SECONDS；插件 config intervalSeconds，文件值优先。",
 			"setting.merge.installRepo.label": "合并即冷安装的仓库",
-			"setting.merge.installRepo.desc": "这个仓库的 PR 合并后排队一条冷安装通知，而不是普通 pull；填 owner/name 或 name。",
+			"setting.merge.installRepo.desc": "哪个仓库的 PR 合并后需要做一次冷安装。",
+			"setting.merge.installRepo.changes": "这个仓库合并后会排队一条冷安装提醒，而不是普通 pull；填错会导致合并后没有提醒。",
+			"setting.merge.installRepo.recommended": "推荐保留 wheelchair-agent。",
+			"setting.merge.installRepo.tech": "键 merge.installRepo；填 owner/name 或 name；环境变量 SPV_INSTALL_REPO。",
 			"setting.injection.intervalMs.label": "结果注入间隔（毫秒）",
-			"setting.injection.intervalMs.desc": "SPV 会话里的结果注入器多久检查一次 outbox。",
+			"setting.injection.intervalMs.desc": "结果注入器多久查看一次待发送的消息。",
+			"setting.injection.intervalMs.changes": "调小更及时，但会更频繁地读文件；调大更省资源，但结果会晚一点到。",
+			"setting.injection.intervalMs.recommended": "推荐 1000 毫秒。",
+			"setting.injection.intervalMs.tech": "键 injection.intervalMs；范围 50–3600000 毫秒。",
 			"setting.injection.maxBodyChars.label": "注入正文上限（字符）",
-			"setting.injection.maxBodyChars.desc": "注入到 SPV 会话的消息正文最多多少字符，超出部分截断。",
+			"setting.injection.maxBodyChars.desc": "注入到 SPV 会话的消息正文最多保留多少字符。",
+			"setting.injection.maxBodyChars.changes": "超出部分会被截断；调小可能丢掉关键信息，调大可能让会话变长。",
+			"setting.injection.maxBodyChars.recommended": "推荐 12000 字符。",
+			"setting.injection.maxBodyChars.tech": "键 injection.maxBodyChars；范围 100–200000 字符。",
 			"setting.work.keep.label": "work gc 保留的最新目录数",
-			"setting.work.keep.desc": "work gc 默认保留最新的多少个 ticket 克隆目录。",
+			"setting.work.keep.desc": "自动清理时，按数量至少保留多少个最近的 ticket 目录。",
+			"setting.work.keep.changes": "调大占用更多磁盘；0 表示不按数量保留，只按天数和可重建性判断。",
+			"setting.work.keep.recommended": "推荐 0。",
+			"setting.work.keep.tech": "键 work.keep；命令行的 --keep 仍然优先。",
 			"setting.work.keepDays.label": "work gc 保留最近天数",
-			"setting.work.keepDays.desc": "work gc 默认保留最近多少天的目录；0 表示不按天数保留。",
+			"setting.work.keepDays.desc": "自动清理时，保留最近多少天的 ticket 目录。",
+			"setting.work.keepDays.changes": "调大保留更久；0 表示不按天数保留。",
+			"setting.work.keepDays.recommended": "推荐 0。",
+			"setting.work.keepDays.tech": "键 work.keepDays；命令行的 --keep-days 仍然优先。",
 			"setting.work.sweepOnMount.label": "服务启动时自动回收",
-			"setting.work.sweepOnMount.desc": "服务挂载时是否自动回收可重建的 ticket 克隆；关掉后只能手动跑 work gc。",
+			"setting.work.sweepOnMount.desc": "服务启动时是否自动清理可重建的 ticket 目录。",
+			"setting.work.sweepOnMount.changes": "关掉后只能手动运行 wheelchair-agent work gc。",
+			"setting.work.sweepOnMount.recommended": "推荐开启。",
+			"setting.work.sweepOnMount.tech": "键 work.sweepOnMount；只影响挂载时的回收。",
 			"template.injection.title": "结果注入模板",
 			"template.injection.desc": "注入到 SPV 会话的消息头与正文；内置默认与改造前的输出逐字节一致。",
 			"template.prIssue.title": "PR「有问题」通知正文",
@@ -148,6 +184,9 @@ window.__ModuleLoader__.load({
 			"card.thread": "线程：{thread}",
 			"card.open": "打开 PR",
 			"card.reviews": "审查记录（{count}）",
+			"day.unknown": "日期未知",
+			"inbox.draftTag": "草稿",
+			"inbox.draftHint": "这封信有未保存的审查草稿",
 			"status.pending": "待审查",
 			"status.approved": "已通过",
 			"status.issue": "有问题",
@@ -179,7 +218,7 @@ window.__ModuleLoader__.load({
 			"feature.inbox.description": "Review GitHub pull requests and SPV decisions. When SPV runs unattended, each call it makes on your behalf becomes a letter recording what it decided and why; you later accept it or object.",
 			"section.settings": "Settings",
 			"feature.settings.title": "Settings",
-			"feature.settings.description": "Edit the knobs that exist because wheelchair-agent exists: inbox refresh, merge handling, message injection, dispatch text and work reclaim. Changes apply immediately; no service or SPV-session restart is needed.",
+			"feature.settings.description": "Adjust how the panel looks, plus the knobs that exist because wheelchair-agent exists: inbox refresh, merge handling, message injection, dispatch text and work reclaim. Changes apply immediately; no service or SPV-session restart is needed.",
 			"settings.loading": "Loading settings…",
 			"settings.loadFailed": "Could not load settings: {message}",
 			"settings.reload": "Reload",
@@ -192,7 +231,6 @@ window.__ModuleLoader__.load({
 			"settings.conflict": "Settings changed elsewhere (current revision {revision}). Your drafts are kept; reload before saving so you do not overwrite the other change.",
 			"settings.saveFailed": "Could not save: {message}",
 			"settings.fileWarning": "Settings warnings: {warning} The values below are the fallbacks; saving writes only the changed fields, not the whole file.",
-			"settings.fileMissing": "No settings file yet ({file}): each row's current value comes from the source it names (plugin config, environment or the built-in default); saving once creates it.",
 			"settings.effective": "Effective: {value}",
 			"settings.defaultValue": "Default: {value}",
 			"settings.reset": "Reset",
@@ -208,12 +246,23 @@ window.__ModuleLoader__.load({
 			"settings.error.number": "Enter a whole number.",
 			"settings.error.range": "Enter a whole number from {min} to {max}.",
 			"settings.error.repo": "Use owner/name or name, with letters, digits, dot, dash and underscore only.",
+			"settings.group.style": "Appearance",
 			"settings.group.inbox": "Inbox refresh",
 			"settings.group.merge": "Merge handling",
 			"settings.group.injection": "Message injection",
 			"settings.group.templates": "Dispatch text",
 			"settings.group.work": "Work reclaim",
 			"settings.group.other": "Other settings",
+			"settings.sources.allDefault": "All settings are at their built-in defaults.",
+			"settings.sources.file": "{count} from the settings file",
+			"settings.sources.env": "{count} from the environment",
+			"settings.sources.config": "{count} from the plugin config",
+			"settings.sources.none": "There are no settings to show.",
+			"settings.draftTag": "Draft",
+			"settings.draftHint": "This row has an unsaved draft",
+			"settings.tech": "Technical details",
+			"settings.style.minimal": "Minimal",
+			"settings.style.fluid": "Fluid",
 			"settings.template.preset": "Preset",
 			"settings.template.builtinSuffix": " (built-in)",
 			"settings.template.placeholders": "Placeholders",
@@ -239,20 +288,46 @@ window.__ModuleLoader__.load({
 			"settings.notes.recovery": "Recovery-command text is not templated: the cold-install merge notice, the install.sh refusal text and the restart-all plan text stay exact strings.",
 			"settings.notes.scope": "superagent's panel owns executor, eval, policy, source:github and source:spv; this page only edits knobs that exist because wheelchair-agent exists, and does not mirror or link them.",
 			"settings.notes.live": "The settings file is re-read by the service and the SPV session on use, so a save applies live; only a host-half code change (lib/index.js and the copied core files) needs the next normal service restart, while the browser bundle hot-reloads.",
+			"setting.webui.style.label": "Panel style",
+			"setting.webui.style.desc": "Decides how the panel looks and moves.",
+			"setting.webui.style.changes": "Fluid adds blur, layered shadows and a little spring; Minimal turns those off and keeps flat cards. Switching changes material and motion, never the layout.",
+			"setting.webui.style.recommended": "Start with Fluid; switch to Minimal if it feels busy or slow.",
+			"setting.webui.style.tech": "Key webui.style, values minimal | fluid; read when the panel loads and applied live after a save, with no restart.",
 			"setting.inbox.intervalSeconds.label": "Inbox refresh interval (seconds)",
-			"setting.inbox.intervalSeconds.desc": "How often each repository is checked for pull requests; every tick costs one gh pr list per repository. 0 pauses automatic refresh; a positive value applies without a restart.",
+			"setting.inbox.intervalSeconds.desc": "How often each repository is checked for new letters.",
+			"setting.inbox.intervalSeconds.changes": "Smaller finds new PRs sooner, but costs one gh call per repository per round; 0 stops automatic checks while manual Refresh still works.",
+			"setting.inbox.intervalSeconds.recommended": "60 seconds is recommended.",
+			"setting.inbox.intervalSeconds.tech": "Key inbox.intervalSeconds; env SPV_INBOX_INTERVAL_SECONDS; plugin config intervalSeconds; the file wins.",
 			"setting.merge.installRepo.label": "Install-target repository",
-			"setting.merge.installRepo.desc": "Merges of this repository queue the cold-install notice instead of a plain pull. Use owner/name or name.",
+			"setting.merge.installRepo.desc": "Which repository needs a cold install after its PRs merge.",
+			"setting.merge.installRepo.changes": "Merges of this repository queue a cold-install notice instead of a plain pull; a wrong value means no notice.",
+			"setting.merge.installRepo.recommended": "Keep wheelchair-agent.",
+			"setting.merge.installRepo.tech": "Key merge.installRepo; owner/name or name; env SPV_INSTALL_REPO.",
 			"setting.injection.intervalMs.label": "Result injection interval (ms)",
-			"setting.injection.intervalMs.desc": "How often the SPV-session result injector checks the outbox.",
+			"setting.injection.intervalMs.desc": "How often the result injector checks for messages to send.",
+			"setting.injection.intervalMs.changes": "Smaller is more immediate but reads files more often; larger is cheaper but results arrive later.",
+			"setting.injection.intervalMs.recommended": "1000 ms is recommended.",
+			"setting.injection.intervalMs.tech": "Key injection.intervalMs; range 50–3600000 ms.",
 			"setting.injection.maxBodyChars.label": "Injected body limit (characters)",
-			"setting.injection.maxBodyChars.desc": "Maximum characters of a message body injected into the SPV session; longer bodies are truncated.",
+			"setting.injection.maxBodyChars.desc": "How many characters of a message body reach the SPV session.",
+			"setting.injection.maxBodyChars.changes": "Longer bodies are truncated; smaller can drop key facts, larger can make the session longer.",
+			"setting.injection.maxBodyChars.recommended": "12000 characters is recommended.",
+			"setting.injection.maxBodyChars.tech": "Key injection.maxBodyChars; range 100–200000 characters.",
 			"setting.work.keep.label": "work gc newest directories to keep",
-			"setting.work.keep.desc": "How many of the newest ticket clone directories work gc keeps by default.",
+			"setting.work.keep.desc": "How many recent ticket directories automatic cleanup keeps by count.",
+			"setting.work.keep.changes": "Larger uses more disk; 0 means no count-based keep, so age and rebuildability decide.",
+			"setting.work.keep.recommended": "0 is recommended.",
+			"setting.work.keep.tech": "Key work.keep; the --keep CLI flag still wins.",
 			"setting.work.keepDays.label": "work gc retention days",
-			"setting.work.keepDays.desc": "How many days work gc keeps directories for by default; 0 keeps none by age.",
+			"setting.work.keepDays.desc": "How many days of ticket directories automatic cleanup keeps.",
+			"setting.work.keepDays.changes": "Larger keeps longer; 0 means no age-based retention.",
+			"setting.work.keepDays.recommended": "0 is recommended.",
+			"setting.work.keepDays.tech": "Key work.keepDays; the --keep-days CLI flag still wins.",
 			"setting.work.sweepOnMount.label": "Reclaim at mount",
-			"setting.work.sweepOnMount.desc": "Whether the service reclaims reproducible ticket clones when it mounts; when off, only a manual work gc reclaims.",
+			"setting.work.sweepOnMount.desc": "Whether the service cleans up rebuildable ticket directories when it starts.",
+			"setting.work.sweepOnMount.changes": "When off, only a manual wheelchair-agent work gc reclaims.",
+			"setting.work.sweepOnMount.recommended": "On is recommended.",
+			"setting.work.sweepOnMount.tech": "Key work.sweepOnMount; only the mount-time sweep is affected.",
 			"template.injection.title": "Result injection template",
 			"template.injection.desc": "The header and body injected into the SPV session; the built-in default reproduces the previous output byte-for-byte.",
 			"template.prIssue.title": "PR issue notice text",
@@ -294,6 +369,9 @@ window.__ModuleLoader__.load({
 			"card.thread": "Thread: {thread}",
 			"card.open": "Open PR",
 			"card.reviews": "Review history ({count})",
+			"day.unknown": "Unknown date",
+			"inbox.draftTag": "Draft",
+			"inbox.draftHint": "This letter has an unsaved review draft",
 			"status.pending": "Pending review",
 			"status.approved": "Approved",
 			"status.issue": "Issue",
@@ -980,6 +1058,8 @@ window.__ModuleLoader__.load({
 		// reused. Every color comes from a `--dsw-alias-*` token; no literal color is
 		// hardcoded, so light and dark themes are both the host's call.
 		const STYLES = `
+			/* Layout is the same in every style. A variant block may change material, radius and motion,
+			   never the structure; adding a third style is one more [data-wca-style] block. */
 			.wca-page {
 				box-sizing: border-box;
 				height: 100%;
@@ -987,8 +1067,8 @@ window.__ModuleLoader__.load({
 				display: flex;
 				flex-direction: column;
 				align-items: center;
-				gap: 24px;
-				padding: 0 clamp(24px, 4vw, 48px) 48px;
+				gap: 22px;
+				padding: 0 clamp(20px, 3.2vw, 40px) 48px;
 				overflow: auto;
 				color: var(--dsw-alias-label-primary);
 			}
@@ -1001,25 +1081,14 @@ window.__ModuleLoader__.load({
 				gap: 16px;
 				padding-top: calc(28px + var(--dsh-frame-top-clearance, 0px));
 			}
-			.wca-title {
-				margin: 0;
-				font-size: 20px;
-				font-weight: 500;
-				line-height: 28px;
-			}
+			.wca-title { margin: 0; font-size: 20px; font-weight: 500; line-height: 28px; }
 			.wca-subtitle {
 				margin: 4px 0 0;
 				color: var(--dsw-alias-label-secondary);
 				font-size: 13px;
 				line-height: 20px;
 			}
-			.wca-nav {
-				display: flex;
-				align-items: center;
-				gap: 12px;
-				width: 100%;
-				min-width: 0;
-			}
+			.wca-nav { display: flex; align-items: center; gap: 12px; width: 100%; min-width: 0; }
 			.wca-nav-label {
 				flex: none;
 				color: var(--dsw-alias-label-tertiary);
@@ -1065,17 +1134,17 @@ window.__ModuleLoader__.load({
 			.wca-btn:focus-visible,
 			.wca-disclosure-toggle:focus-visible,
 			.wca-comment:focus-visible,
-			.wca-open:focus-visible {
+			.wca-open:focus-visible,
+			.wca-switch input:focus-visible,
+			.wca-tech summary:focus-visible {
 				outline: var(--dsw-focus-ring-width) solid var(--dsw-focus-ring-color, var(--dsw-alias-state-business-primary));
 				outline-offset: 2px;
 			}
 			.wca-feature {
 				box-sizing: border-box;
 				min-width: 0;
-				overflow: hidden;
-				border: .5px solid var(--dsw-alias-border-l2);
-				border-radius: var(--dsw-radius-xl);
-				background: var(--dsw-alias-bg-layer-1);
+				border: 0;
+				background: transparent;
 			}
 			.wca-feature-head {
 				box-sizing: border-box;
@@ -1083,22 +1152,11 @@ window.__ModuleLoader__.load({
 				align-items: flex-start;
 				justify-content: space-between;
 				gap: 16px;
-				padding: 16px;
-				border-bottom: .5px solid var(--dsw-alias-border-l2);
+				padding: 0 2px 6px;
 				flex-wrap: wrap;
 			}
-			.wca-feature-heading {
-				display: flex;
-				flex-direction: column;
-				gap: 2px;
-				min-width: 0;
-			}
-			.wca-feature-title {
-				margin: 0;
-				font-size: 16px;
-				font-weight: 500;
-				line-height: 24px;
-			}
+			.wca-feature-heading { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+			.wca-feature-title { margin: 0; font-size: 16px; font-weight: 500; line-height: 24px; }
 			.wca-feature-desc {
 				margin: 0;
 				color: var(--dsw-alias-label-tertiary);
@@ -1109,7 +1167,7 @@ window.__ModuleLoader__.load({
 				display: flex;
 				align-items: center;
 				justify-content: flex-end;
-				gap: 12px;
+				gap: 10px;
 				flex-wrap: wrap;
 			}
 			.wca-segmented {
@@ -1144,18 +1202,16 @@ window.__ModuleLoader__.load({
 				color: var(--dsw-alias-label-primary);
 				font-weight: 500;
 			}
-			.wca-segment-count {
-				color: var(--dsw-alias-label-tertiary);
-				font-size: 11px;
-				line-height: 16px;
-				font-variant-numeric: tabular-nums;
-			}
+			.wca-segment-count,
+			.wca-template-count,
+			.wca-diff { font-variant-numeric: tabular-nums; }
+			.wca-segment-count { color: var(--dsw-alias-label-tertiary); font-size: 11px; line-height: 16px; }
 			.wca-filterbar {
 				display: flex;
 				align-items: flex-end;
 				gap: 10px 16px;
 				flex-wrap: wrap;
-				padding: 12px 0 0;
+				padding: 4px 2px 2px;
 			}
 			.wca-field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 			.wca-field-label { color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
@@ -1180,48 +1236,139 @@ window.__ModuleLoader__.load({
 				font-size: 12px;
 				line-height: 18px;
 			}
-			.wca-feature-body {
-				display: flex;
-				flex-direction: column;
-				min-width: 0;
-				padding: 4px 16px 8px;
-			}
+			.wca-feature-body { display: flex; flex-direction: column; min-width: 0; }
 			.wca-status {
-				margin: 12px 0 0;
+				margin: 12px 2px 0;
 				min-height: 20px;
 				color: var(--dsw-alias-label-tertiary);
 				font-size: 13px;
 				line-height: 20px;
 			}
 			.wca-status[data-tone="error"] { color: var(--dsw-alias-state-error-primary); }
-			.wca-items { display: flex; flex-direction: column; min-width: 0; }
-			.wca-item {
+
+			/* Inbox: one card per letter, days separated by a vertical rail, never by rules. */
+			.wca-days { display: flex; flex-direction: column; gap: 16px; padding-top: 10px; }
+			.wca-day { position: relative; display: grid; grid-template-columns: 104px minmax(0, 1fr); gap: 18px; }
+			.wca-day::before {
+				content: "";
+				position: absolute;
+				left: 49px;
+				top: 30px;
+				bottom: -16px;
+				width: 1px;
+				background: color-mix(in oklab, var(--dsw-alias-border-l2) 80%, transparent);
+			}
+			.wca-day:last-child::before { bottom: 8px; }
+			.wca-day-rail { position: relative; min-width: 0; }
+			.wca-day-sentinel { display: block; height: 1px; }
+			.wca-day-label {
+				position: sticky;
+				top: 0;
+				z-index: 3;
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				width: 100%;
+				padding: 4px 8px;
+				border-radius: 999px;
+				color: var(--dsw-alias-label-tertiary);
+				font-size: 11px;
+				line-height: 16px;
+				font-weight: 600;
+				letter-spacing: .06em;
+				text-transform: uppercase;
+				font-variant-numeric: tabular-nums;
+			}
+			.wca-day-label::after {
+				content: "";
+				position: absolute;
+				inset: 0;
+				z-index: -1;
+				border-radius: inherit;
+				background: color-mix(in oklab, var(--dsw-alias-bg-base) 82%, transparent);
+				opacity: 0;
+			}
+			.wca-day-label[data-stuck="true"]::after { opacity: 1; }
+			.wca-cards { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+
+			.wca-letter {
+				position: relative;
+				box-sizing: border-box;
 				display: flex;
 				flex-direction: column;
 				gap: 10px;
 				min-width: 0;
-				padding: 16px 0;
-				border-top: .5px solid var(--dsw-alias-border-l2);
+				padding: 14px 16px 14px 18px;
+				border: 1px solid var(--dsw-alias-border-l2);
+				border-radius: 8px;
+				background: var(--dsw-alias-bg-layer-1);
+				overflow: hidden;
 			}
-			.wca-item:first-child { border-top: 0; }
-			.wca-item-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-			.wca-item-origin { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
-			.wca-state-tag { font-weight: 400; }
-			.wca-repo { color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; }
-			.wca-repo strong { color: var(--dsw-alias-label-primary); font-weight: 500; }
-			.wca-item-title { margin: 0; font-size: 15px; font-weight: 600; line-height: 22px; }
-			.wca-meta { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 20px; }
-			.wca-diff {
-				font: var(--dsw-font-markdown-code-block-small);
-				font-variant-numeric: tabular-nums;
+			.wca-letter::before {
+				content: "";
+				position: absolute;
+				inset-block: 0;
+				inset-inline-start: 0;
+				width: 4px;
+				background: var(--wca-spine, var(--dsw-alias-label-tertiary));
 			}
-			.wca-added { color: var(--dsw-alias-state-success-primary); }
-			.wca-removed { color: var(--dsw-alias-state-error-primary); }
-			.wca-item[data-status="approved"] .wca-item-title {
+			.wca-letter[data-kind="pr"] { --wca-tint: var(--dsw-alias-button-primary-fill); }
+			.wca-letter[data-kind="spv_message"] {
+				--wca-tint: var(--dsw-alias-state-business-primary);
+				border-radius: 14px;
+				padding-inline: 22px 20px;
+			}
+			.wca-letter[data-kind="spv_message"]::before { width: 5px; }
+			.wca-letter[data-status="pending"] { --wca-spine: color-mix(in oklab, var(--dsw-alias-label-tertiary) 72%, transparent); }
+			.wca-letter[data-status="approved"] { --wca-spine: var(--dsw-alias-state-success-primary); }
+			.wca-letter[data-status="issue"] { --wca-spine: var(--dsw-alias-state-error-primary); }
+			.wca-letter[data-status="approved"] .wca-letter-title {
 				color: var(--dsw-alias-label-secondary);
 				font-weight: 500;
 			}
-			.wca-item[data-status="approved"] .wca-repo strong { color: var(--dsw-alias-label-secondary); }
+			.wca-letter[data-draft="true"] { border-color: color-mix(in oklab, var(--dsw-alias-state-warn-primary) 45%, var(--dsw-alias-border-l2)); }
+			.wca-letter-head {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: 10px;
+			}
+			.wca-letter-origin { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+			.wca-letter-glyph { display: inline-flex; flex: none; color: var(--dsw-alias-label-tertiary); }
+			.wca-kind {
+				color: var(--dsw-alias-label-tertiary);
+				font-size: 11px;
+				line-height: 16px;
+				font-weight: 600;
+				letter-spacing: .04em;
+				text-transform: uppercase;
+			}
+			.wca-state-tag { font-weight: 400; }
+			.wca-repo { color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; }
+			.wca-repo strong { color: var(--dsw-alias-label-primary); font-weight: 500; }
+			.wca-letter-title { margin: 0; font-size: 15px; font-weight: 600; line-height: 22px; }
+			.wca-meta { margin: 0; color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 20px; }
+			.wca-diff { font: var(--dsw-font-markdown-code-block-small); }
+			.wca-added { color: var(--dsw-alias-state-success-primary); }
+			.wca-removed { color: var(--dsw-alias-state-error-primary); }
+			.wca-letter-body {
+				display: flex;
+				flex-direction: column;
+				gap: 8px;
+				min-width: 0;
+				padding-top: 10px;
+				box-shadow: inset 0 1px 0 color-mix(in oklab, var(--dsw-alias-border-l2) 78%, transparent);
+			}
+			.wca-letter-foot .wca-form { flex: 1 1 260px; }
+			.wca-letter-foot {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: 10px;
+				flex-wrap: wrap;
+				margin-top: auto;
+				padding-top: 2px;
+			}
 			.wca-tag {
 				display: inline-flex;
 				align-items: center;
@@ -1252,10 +1399,40 @@ window.__ModuleLoader__.load({
 				background: var(--dsw-alias-bg-module-platform);
 				color: var(--dsw-alias-label-secondary);
 			}
-			.wca-tag[data-tone="pending"] {
-				background: var(--dsw-alias-bg-module-platform);
-				color: var(--dsw-alias-label-tertiary);
+			.wca-status-pill {
+				position: relative;
+				isolation: isolate;
+				display: inline-flex;
+				align-items: center;
+				flex: none;
+				padding: 1px 8px;
+				border-radius: 999px;
+				font-size: 11px;
+				line-height: 17px;
+				font-weight: 500;
+				white-space: nowrap;
 			}
+			.wca-status-pill::before {
+				content: "";
+				position: absolute;
+				inset: 0;
+				z-index: -1;
+				border-radius: inherit;
+				background: var(--wca-pill, var(--dsw-alias-bg-module-platform));
+			}
+			.wca-status-pill[data-tone="pending"] {
+				color: var(--dsw-alias-label-tertiary);
+				--wca-pill: var(--dsw-alias-bg-module-platform);
+			}
+			.wca-status-pill[data-tone="success"] {
+				color: var(--dsw-alias-state-success-primary);
+				--wca-pill: color-mix(in srgb, var(--dsw-alias-state-success-primary) 10%, transparent);
+			}
+			.wca-status-pill[data-tone="danger"] {
+				color: var(--dsw-alias-state-error-primary);
+				--wca-pill: color-mix(in srgb, var(--dsw-alias-state-error-primary) 10%, transparent);
+			}
+			.wca-status-pill[data-wipe="true"]::before { animation: wca-wipe 200ms var(--wca-ease-enter); }
 			.wca-btn {
 				box-sizing: border-box;
 				display: inline-flex;
@@ -1283,13 +1460,7 @@ window.__ModuleLoader__.load({
 				background: var(--dsw-alias-button-primary-hover);
 			}
 			.wca-btn[data-variant="outline"] { border: .5px solid var(--dsw-alias-border-l3); }
-			.wca-disclosure {
-				display: flex;
-				flex-direction: column;
-				gap: 8px;
-				padding-top: 10px;
-				border-top: .5px solid var(--dsw-alias-border-l2);
-			}
+			.wca-disclosure { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 			.wca-disclosure-toggle {
 				display: inline-flex;
 				align-items: center;
@@ -1305,16 +1476,19 @@ window.__ModuleLoader__.load({
 				cursor: pointer;
 			}
 			.wca-disclosure-toggle:hover { color: var(--dsw-alias-label-primary); }
-			.wca-chevron { flex: none; transition: transform .12s ease; }
+			.wca-chevron { flex: none; }
 			.wca-chevron[data-open="true"] { transform: rotate(90deg); }
-			@media (prefers-reduced-motion: reduce) { .wca-chevron { transition: none; } }
-			.wca-reviews {
-				display: flex;
-				flex-direction: column;
-				gap: 8px;
-				padding-top: 10px;
-				border-top: .5px solid var(--dsw-alias-border-l2);
+			.wca-disclosure-body {
+				display: grid;
+				grid-template-rows: 0fr;
+				opacity: 0;
+				visibility: hidden;
+				min-width: 0;
 			}
+			.wca-disclosure-body[data-open="true"] { grid-template-rows: 1fr; opacity: 1; visibility: visible; }
+			.wca-disclosure-inner { min-height: 0; overflow: hidden; min-width: 0; opacity: 0; }
+			.wca-disclosure-body[data-open="true"] .wca-disclosure-inner { opacity: 1; }
+			.wca-reviews { display: flex; flex-direction: column; gap: 8px; }
 			.wca-reviews-title { color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
 			.wca-review {
 				padding: 8px 10px;
@@ -1331,13 +1505,7 @@ window.__ModuleLoader__.load({
 				font-size: var(--dsh-content-font-size-secondary, 13px);
 				line-height: calc(20px + var(--dsh-content-font-delta-secondary, 0px));
 			}
-			.wca-form {
-				display: flex;
-				flex-direction: column;
-				gap: 8px;
-				padding-top: 10px;
-				border-top: .5px solid var(--dsw-alias-border-l2);
-			}
+			.wca-form { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
 			.wca-issue-box {
 				display: flex;
 				flex-direction: column;
@@ -1362,7 +1530,7 @@ window.__ModuleLoader__.load({
 				line-height: 20px;
 			}
 			.wca-comment::placeholder { color: var(--dsw-alias-label-dimmed); }
-			.wca-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+			.wca-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 			.wca-form-error {
 				margin: 0;
 				min-height: 18px;
@@ -1378,7 +1546,7 @@ window.__ModuleLoader__.load({
 				text-decoration: none;
 			}
 			.wca-open:hover { text-decoration: underline; }
-			.wca-empty { margin: 16px 0 8px; color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 20px; }
+			.wca-empty { margin: 16px 2px 8px; color: var(--dsw-alias-label-tertiary); font-size: 13px; line-height: 20px; }
 
 			/* Markdown body: type, spacing and code surfaces follow the host Markdown. */
 			.wca-md {
@@ -1439,26 +1607,12 @@ window.__ModuleLoader__.load({
 				vertical-align: top;
 				overflow-wrap: anywhere;
 			}
-			.wca-md th {
-				background: var(--dsw-alias-bg-module-platform);
-				font: var(--dsw-font-markdown-table-head);
-			}
+			.wca-md th { background: var(--dsw-alias-bg-module-platform); font: var(--dsw-font-markdown-table-head); }
 			.wca-md td { font: var(--dsw-font-markdown-table); }
 
-			/* Settings: one block per knob, one editor per template. Rows wrap at narrow widths and
-			   textareas only resize vertically, so the page stays usable beside a split editor. */
-			.wca-settings {
-				display: flex;
-				flex-direction: column;
-				gap: 18px;
-				padding: 12px 16px 16px;
-			}
-			.wca-settings-toolbar {
-				display: flex;
-				align-items: center;
-				gap: 10px;
-				flex-wrap: wrap;
-			}
+			/* Settings: one card per group, two-column rows. No rule between groups or rows. */
+			.wca-settings { display: flex; flex-direction: column; gap: 12px; padding: 6px 0 16px; }
+			.wca-settings-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 			.wca-settings-status {
 				margin: 0;
 				min-height: 20px;
@@ -1468,6 +1622,12 @@ window.__ModuleLoader__.load({
 			}
 			.wca-settings-status[data-tone="error"] { color: var(--dsw-alias-state-error-primary); }
 			.wca-settings-status[data-tone="success"] { color: var(--dsw-alias-state-success-primary); }
+			.wca-settings-summary {
+				margin: 0;
+				color: var(--dsw-alias-label-tertiary);
+				font-size: 12px;
+				line-height: 18px;
+			}
 			.wca-settings-banner {
 				box-sizing: border-box;
 				display: flex;
@@ -1490,14 +1650,15 @@ window.__ModuleLoader__.load({
 			.wca-settings-group {
 				display: flex;
 				flex-direction: column;
-				gap: 12px;
+				gap: 4px;
 				min-width: 0;
-				padding-top: 12px;
-				border-top: .5px solid var(--dsw-alias-border-l2);
+				padding: 14px 16px;
+				border: 1px solid var(--dsw-alias-border-l2);
+				border-radius: 16px;
+				background: var(--dsw-alias-bg-layer-1);
 			}
-			.wca-settings-group:first-of-type { padding-top: 0; border-top: 0; }
 			.wca-settings-group-title {
-				margin: 0;
+				margin: 0 0 2px;
 				color: var(--dsw-alias-label-secondary);
 				font-size: 12px;
 				line-height: 18px;
@@ -1505,18 +1666,21 @@ window.__ModuleLoader__.load({
 				letter-spacing: .02em;
 			}
 			.wca-setting {
+				display: grid;
+				grid-template-columns: minmax(0, 1.45fr) minmax(240px, 1fr);
+				gap: 8px 28px;
+				align-items: start;
+				min-width: 0;
+				padding: 12px 0;
+			}
+			.wca-setting[data-draft="true"] .wca-setting-label { color: var(--dsw-alias-label-primary); }
+			.wca-setting-main { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+			.wca-setting-side {
 				display: flex;
 				flex-direction: column;
+				align-items: flex-start;
 				gap: 6px;
 				min-width: 0;
-				padding: 10px 0 0;
-			}
-			.wca-setting-head {
-				display: flex;
-				align-items: center;
-				justify-content: space-between;
-				gap: 10px;
-				flex-wrap: wrap;
 			}
 			.wca-setting-title { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
 			.wca-setting-label { font-size: 14px; line-height: 20px; font-weight: 500; }
@@ -1526,6 +1690,41 @@ window.__ModuleLoader__.load({
 				font-size: 13px;
 				line-height: 20px;
 			}
+			.wca-setting-effect,
+			.wca-setting-recommended {
+				margin: 0;
+				color: var(--dsw-alias-label-tertiary);
+				font-size: 12px;
+				line-height: 18px;
+			}
+			.wca-setting-recommended { color: var(--dsw-alias-label-secondary); }
+			.wca-tech { display: block; }
+			.wca-tech summary {
+				display: inline-flex;
+				align-items: center;
+				justify-content: center;
+				width: 18px;
+				height: 18px;
+				border: .5px solid var(--dsw-alias-border-l4);
+				border-radius: 999px;
+				background: var(--dsw-alias-bg-module-platform);
+				color: var(--dsw-alias-label-secondary);
+				font-size: 11px;
+				font-weight: 600;
+				line-height: 16px;
+				cursor: pointer;
+				list-style: none;
+			}
+			.wca-tech summary::-webkit-details-marker { display: none; }
+			.wca-tech[open] summary { color: var(--dsw-alias-label-primary); border-color: var(--dsw-alias-border-l4); }
+			.wca-tech-text {
+				display: block;
+				margin: 4px 0 0;
+				color: var(--dsw-alias-label-tertiary);
+				font-size: 12px;
+				line-height: 18px;
+				overflow-wrap: anywhere;
+			}
 			.wca-setting-meta {
 				margin: 0;
 				color: var(--dsw-alias-label-tertiary);
@@ -1533,12 +1732,7 @@ window.__ModuleLoader__.load({
 				line-height: 18px;
 				font-variant-numeric: tabular-nums;
 			}
-			.wca-setting-values {
-				display: flex;
-				align-items: flex-end;
-				gap: 10px 16px;
-				flex-wrap: wrap;
-			}
+			.wca-setting-values { display: flex; align-items: flex-end; gap: 10px 16px; flex-wrap: wrap; width: 100%; }
 			.wca-input {
 				box-sizing: border-box;
 				height: 30px;
@@ -1554,14 +1748,36 @@ window.__ModuleLoader__.load({
 				line-height: 20px;
 			}
 			.wca-input:disabled { opacity: .5; cursor: not-allowed; }
-			.wca-settings-check {
+			.wca-switch {
 				display: inline-flex;
 				align-items: center;
 				gap: 8px;
 				font-size: 13px;
 				line-height: 20px;
+				cursor: pointer;
 			}
-			.wca-settings-check input { accent-color: var(--dsw-alias-state-business-primary); }
+			.wca-switch input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+			.wca-switch-track {
+				position: relative;
+				display: inline-block;
+				width: 34px;
+				height: 20px;
+				border-radius: 999px;
+				background: var(--dsw-alias-border-l3);
+			}
+			.wca-switch-track::after {
+				content: "";
+				position: absolute;
+				top: 2px;
+				left: 2px;
+				width: 16px;
+				height: 16px;
+				border-radius: 50%;
+				background: var(--dsw-alias-bg-layer-1);
+				box-shadow: 0 1px 2px color-mix(in oklab, var(--dsw-alias-label-primary) 18%, transparent);
+			}
+			.wca-switch input:checked + .wca-switch-track { background: var(--dsw-alias-state-business-primary); }
+			.wca-switch input:checked + .wca-switch-track::after { transform: translateX(14px); }
 			.wca-setting-note {
 				margin: 0;
 				color: var(--dsw-alias-label-tertiary);
@@ -1591,12 +1807,7 @@ window.__ModuleLoader__.load({
 			.wca-template-head { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
 			.wca-template-title { margin: 0; font-size: 14px; line-height: 20px; font-weight: 600; }
 			.wca-template-desc { margin: 0; color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; }
-			.wca-template-controls {
-				display: flex;
-				align-items: flex-end;
-				gap: 8px;
-				flex-wrap: wrap;
-			}
+			.wca-template-controls { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
 			.wca-template-controls .wca-field { flex-direction: row; align-items: center; gap: 6px; }
 			.wca-textarea {
 				box-sizing: border-box;
@@ -1623,7 +1834,6 @@ window.__ModuleLoader__.load({
 				color: var(--dsw-alias-label-tertiary);
 				font-size: 12px;
 				line-height: 18px;
-				font-variant-numeric: tabular-nums;
 			}
 			.wca-template-meta[data-over="true"] .wca-template-count { color: var(--dsw-alias-state-error-primary); }
 			.wca-template-placeholders { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; }
@@ -1638,25 +1848,285 @@ window.__ModuleLoader__.load({
 				font-size: 11px;
 				line-height: 17px;
 			}
-			.wca-placeholder[data-required="true"] {
-				border-color: var(--dsw-alias-border-l4);
-				color: var(--dsw-alias-label-primary);
+			.wca-placeholder[data-required="true"] { border-color: var(--dsw-alias-border-l4); color: var(--dsw-alias-label-primary); }
+			.wca-template-new { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
+			.wca-settings-notes { display: flex; flex-direction: column; gap: 6px; padding: 4px 2px 0; }
+
+			/* Fluid: token-only material and physical motion. This is the only block allowed to animate. */
+			.wca-page[data-wca-style="fluid"] {
+				--wca-ease-enter: cubic-bezier(.22, 1, .36, 1);
+				background-image: radial-gradient(
+					color-mix(in oklab, var(--dsw-alias-label-primary) 2%, transparent) 1px,
+					transparent 1px
+				);
+				background-size: 3px 3px;
+				--wca-ease-exit: cubic-bezier(.4, 0, .2, 1);
+				--wca-shadow-contact: 0 1px 2px color-mix(in oklab, var(--dsw-alias-label-primary) 6%, transparent);
+				--wca-shadow-ambient: 0 10px 30px -18px color-mix(in oklab, var(--dsw-alias-label-primary) 24%, transparent);
 			}
-			.wca-template-new {
-				display: flex;
-				align-items: flex-end;
-				gap: 8px;
-				flex-wrap: wrap;
+			.wca-page[data-wca-style="fluid"] .wca-letter,
+			.wca-page[data-wca-style="fluid"] .wca-settings-group {
+				border-color: color-mix(in oklab, var(--dsw-alias-border-l2) 65%, transparent);
+				background:
+					linear-gradient(
+						180deg,
+						color-mix(in oklab, var(--wca-tint, var(--dsw-alias-bg-layer-1)) 7%, transparent),
+						transparent 44%
+					),
+					color-mix(in oklab, var(--dsw-alias-bg-layer-1) 88%, transparent);
+				-webkit-backdrop-filter: blur(12px) saturate(1.1);
+				backdrop-filter: blur(12px) saturate(1.1);
+				box-shadow: var(--wca-shadow-contact), var(--wca-shadow-ambient);
+				transition:
+					box-shadow 220ms var(--wca-ease-enter),
+					transform 220ms var(--wca-ease-enter),
+					border-color 220ms var(--wca-ease-exit);
 			}
-			.wca-settings-notes {
-				display: flex;
-				flex-direction: column;
-				gap: 6px;
-				padding-top: 12px;
-				border-top: .5px solid var(--dsw-alias-border-l2);
+			.wca-page[data-wca-style="fluid"] .wca-letter:hover,
+			.wca-page[data-wca-style="fluid"] .wca-settings-group:hover {
+				--wca-shadow-ambient: 0 11px 30px -18px color-mix(in oklab, var(--dsw-alias-label-primary) 26%, transparent);
+				transform: translateY(-1px);
+			}
+			.wca-page[data-wca-style="fluid"] .wca-letter::before {
+				transition: background-color 220ms var(--wca-ease-exit);
+			}
+			.wca-page[data-wca-style="fluid"] .wca-letter[data-status="approved"] { transform: translateY(1px); }
+			.wca-page[data-wca-style="fluid"] .wca-day-label {
+				-webkit-backdrop-filter: blur(12px) saturate(1.1);
+				backdrop-filter: blur(12px) saturate(1.1);
+				transition: opacity 200ms var(--wca-ease-exit);
+			}
+			.wca-page[data-wca-style="fluid"] .wca-chevron,
+			.wca-page[data-wca-style="fluid"] .wca-switch-track,
+			.wca-page[data-wca-style="fluid"] .wca-switch-track::after {
+				transition:
+					transform 180ms var(--wca-ease-enter),
+					background-color 180ms var(--wca-ease-exit);
+			}
+			.wca-page[data-wca-style="fluid"] .wca-btn,
+			.wca-page[data-wca-style="fluid"] .wca-segment,
+			.wca-page[data-wca-style="fluid"] .wca-tab,
+			.wca-page[data-wca-style="fluid"] .wca-disclosure-toggle {
+				transition:
+					transform 120ms var(--wca-ease-enter),
+					background-color 160ms var(--wca-ease-exit),
+					color 160ms var(--wca-ease-exit),
+					box-shadow 120ms var(--wca-ease-enter);
+			}
+			.wca-page[data-wca-style="fluid"] .wca-btn:active:not(:disabled),
+			.wca-page[data-wca-style="fluid"] .wca-segment:active,
+			.wca-page[data-wca-style="fluid"] .wca-tab:active {
+				transform: scale(.985);
+				box-shadow: none;
+			}
+			.wca-page[data-wca-style="fluid"] .wca-disclosure-body {
+				transition:
+					grid-template-rows 240ms var(--wca-ease-enter),
+					opacity 240ms var(--wca-ease-exit),
+					visibility 0s 240ms;
+			}
+			.wca-page[data-wca-style="fluid"] .wca-disclosure-body[data-open="true"] {
+				transition:
+					grid-template-rows 240ms var(--wca-ease-enter),
+					opacity 240ms var(--wca-ease-exit),
+					visibility 0s 0s;
+			}
+			.wca-page[data-wca-style="fluid"] .wca-disclosure-inner {
+				transition: opacity 160ms var(--wca-ease-enter) 40ms;
+			}
+			.wca-page[data-wca-style="fluid"] .wca-letter[data-new="true"] {
+				animation: wca-arrive 280ms var(--wca-ease-enter) both;
+				animation-delay: calc(var(--wca-new-index, 0) * 30ms);
+			}
+			.wca-page[data-wca-style="fluid"] .wca-letter[data-settling="true"] { animation: wca-settle 220ms var(--wca-ease-enter); }
+			@keyframes wca-arrive {
+				from { opacity: 0; transform: translateY(8px); }
+				to { opacity: 1; transform: translateY(0); }
+			}
+			@keyframes wca-wipe {
+				from { clip-path: inset(0 0 0 100%); }
+				to { clip-path: inset(0 0 0 0); }
+			}
+			@keyframes wca-settle {
+				0% { transform: translateY(0); }
+				100% { transform: translateY(1px); }
+			}
+			/* The fallback for a browser/webview without backdrop-filter: opaque token background and the
+			   same two shadow layers, so the material never silently turns into a flat rectangle. */
+			@supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
+				.wca-page[data-wca-style="fluid"] .wca-letter,
+				.wca-page[data-wca-style="fluid"] .wca-settings-group,
+				.wca-page[data-wca-style="fluid"] .wca-day-label {
+					-webkit-backdrop-filter: none;
+					backdrop-filter: none;
+					background: var(--dsw-alias-bg-layer-1);
+				}
+			}
+			.wca-page[data-wca-style="minimal"] .wca-letter,
+			.wca-page[data-wca-style="minimal"] .wca-settings-group {
+				background: var(--dsw-alias-bg-layer-1);
+				box-shadow: none;
+			}
+			@media (max-width: 1100px) {
+				.wca-setting { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+				.wca-setting-side { width: 100%; }
+			}
+			@media (max-width: 920px) {
+				.wca-day { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+				.wca-day::before { display: none; }
+				.wca-day-label { width: fit-content; position: static; padding-left: 0; }
+				.wca-day-label::after { display: none; }
+			}
+			@media (prefers-reduced-motion: reduce) {
+				.wca-page,
+				.wca-page *,
+				.wca-page *::before,
+				.wca-page *::after {
+					animation: none !important;
+					transition: none !important;
+					scroll-behavior: auto !important;
+				}
+				.wca-page[data-wca-style="fluid"] .wca-letter:hover,
+				.wca-page[data-wca-style="fluid"] .wca-settings-group:hover { transform: none; }
 			}
 		`;
 		//#endregion
+
+		//#region style + draft helpers
+
+		/** localStorage keys: one map keyed by item id, one envelope for the settings form. */
+		const INBOX_DRAFT_KEY = "wheelchair-agent:inbox-drafts:v1";
+		const SETTINGS_DRAFT_KEY = "wheelchair-agent:settings-drafts:v1";
+		const DRAFT_MODES = new Set(["approve", "issue"]);
+
+		/**
+		* The stored style with a safe default. Unknown values are passed through so a third style added
+		* later only needs its own [data-wca-style] CSS block; the base layout is the fallback.
+		*/
+		function styleOf(snapshot) {
+			const raw = snapshot?.effective?.["webui.style"] ?? snapshot?.values?.["webui.style"];
+			const value = String(raw ?? "").trim();
+			return value === "" ? "fluid" : value;
+		}
+
+		/** A stable draft key: the item id, exactly as the inbox list keys its rows. */
+		function itemDraftKey(item) {
+			return String(item?.id ?? item?.pr ?? "");
+		}
+
+		/** One review draft in the only shape the form understands; anything else is discarded. */
+		function sanitizeInboxDraft(draft) {
+			if (draft === null || typeof draft !== "object" || Array.isArray(draft)) return undefined;
+			const mode = String(draft.mode ?? "");
+			if (!DRAFT_MODES.has(mode)) return undefined;
+			return { mode, text: typeof draft.text === "string" ? draft.text : "" };
+		}
+
+		/**
+		* A tiny JSON map over localStorage, keyed by item id, with an in-memory fallback when storage is
+		* unavailable (privacy mode, a sandboxed frame). Dependency-injected storage keeps it testable.
+		*/
+		function createDraftStore(storage, key) {
+			let memory = null;
+			const readAll = () => {
+				let raw;
+				try {
+					raw = storage === null || storage === undefined ? memory : storage.getItem(key);
+				} catch {
+					raw = null;
+				}
+				if (typeof raw !== "string" || raw === "") return {};
+				try {
+					const parsed = JSON.parse(raw);
+					return parsed !== null && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+				} catch {
+					return {};
+				}
+			};
+			const writeAll = (all) => {
+				const text = JSON.stringify(all);
+				try {
+					if (storage === null || storage === undefined) memory = text;
+					else storage.setItem(key, text);
+				} catch {
+					memory = text;
+				}
+			};
+			const store = {
+				all() {
+					return readAll();
+				},
+				get(id) {
+					return sanitizeInboxDraft(readAll()[itemDraftKey({ id })]);
+				},
+				set(id, draft) {
+					const clean = sanitizeInboxDraft(draft);
+					const all = readAll();
+					if (clean === undefined) delete all[itemDraftKey({ id })];
+					else all[itemDraftKey({ id })] = clean;
+					writeAll(all);
+					return clean;
+				},
+				clear(id) {
+					const all = readAll();
+					delete all[itemDraftKey({ id })];
+					writeAll(all);
+				},
+			};
+			return store;
+		}
+
+		/** The browser's localStorage, or null when the frame denies it. */
+		function browserStorage() {
+			try {
+				return typeof window !== "undefined" && window.localStorage ? window.localStorage : null;
+			} catch {
+				return null;
+			}
+		}
+
+		/**
+		* Restore the settings form after leaving the section. A stored envelope belongs to the revision it
+		* was drafted against: when the server moved on, the stale draft is dropped instead of being replayed.
+		* Only keys/templates that still exist survive.
+		*/
+		function restoreSettingsDrafts(snapshot, stored) {
+			const empty = { valueDrafts: {}, templateDrafts: {}, resets: new Set() };
+			if (snapshot === null || typeof snapshot !== "object") return empty;
+			if (stored === null || typeof stored !== "object") return empty;
+			if (Number(stored.revision) !== Number(snapshot.revision)) return empty;
+			const rows = new Set((Array.isArray(snapshot.rows) ? snapshot.rows : []).map((row) => String(row.key)));
+			const templates = new Set(Object.keys(snapshot.templates ?? {}));
+			const valueDrafts = {};
+			for (const [key, value] of Object.entries(stored.valueDrafts ?? {})) {
+				if (rows.has(key) && typeof value === "string") valueDrafts[key] = value;
+			}
+			const templateDrafts = {};
+			for (const [id, draft] of Object.entries(stored.templateDrafts ?? {})) {
+				if (!templates.has(id) || draft === null || typeof draft !== "object") continue;
+				const active = typeof draft.active === "string" ? draft.active : "default";
+				const presets = {};
+				for (const [name, text] of Object.entries(draft.presets ?? {})) {
+					if (typeof text === "string" && name !== "default" && name !== "") presets[name] = text;
+				}
+				templateDrafts[id] = { active, presets };
+			}
+			const resets = new Set();
+			for (const key of Array.isArray(stored.resets) ? stored.resets : []) {
+				if (rows.has(String(key))) resets.add(String(key));
+			}
+			return { valueDrafts, templateDrafts, resets };
+		}
+
+		/** Count the layers actually in effect, for the one quiet line above the groups. */
+		function sourceSummary(snapshot) {
+			const counts = { file: 0, config: 0, env: 0, default: 0 };
+			for (const row of Array.isArray(snapshot?.rows) ? snapshot.rows : []) {
+				const source = String(row.source ?? "default");
+				if (Object.hasOwn(counts, source)) counts[source] += 1;
+			}
+			return counts;
+		}
 
 		//#region data + components
 
@@ -1712,14 +2182,15 @@ window.__ModuleLoader__.load({
 			}
 		}
 
-		/** The derived status badge shown at the top of every item. */
+		/** The derived status pill. The status change wipes its fill in; the label never moves. */
 		function StatusBadge(props) {
 			return jsx(
 				"span",
 				{
-					className: "wca-tag",
+					className: "wca-status-pill",
 					"data-tone": statusTone(props.status),
-					children: props.t(`status.${props.status}`)
+					"data-wipe": props.wipe === true ? "true" : "false",
+					children: jsx("span", { children: props.t(`status.${props.status}`) }, "label")
 				},
 				"status"
 			);
@@ -1789,15 +2260,58 @@ window.__ModuleLoader__.load({
 		}
 
 		/**
-		* The two review actions. "Approve" opens an optional comment box; its text is recorded
-		* only and never notifies the agent. "Flag issue" opens a required comment box whose hint
-		* says what submitting will do for this letter type.
+		* The elemental letter glyph: a branch for a PR, a quoted dot for an SPV decision. Inline SVG and
+		* currentColor only, so it inherits the token colour in both themes.
+		*/
+		function KindGlyph(props) {
+			const pr = props.kind !== "spv_message";
+			return jsx(
+				"span",
+				{
+					className: "wca-letter-glyph",
+					"aria-hidden": "true",
+					children: jsx(
+						"svg",
+						{
+							width: 12,
+							height: 12,
+							viewBox: "0 0 12 12",
+							fill: "none",
+							stroke: "currentColor",
+							strokeWidth: 1.4,
+							strokeLinecap: "round",
+							strokeLinejoin: "round",
+							children: pr
+								? [
+									jsx("circle", { cx: 3, cy: 3, r: 1.4 }, "a"),
+									jsx("circle", { cx: 3, cy: 9, r: 1.4 }, "b"),
+									jsx("circle", { cx: 9, cy: 3, r: 1.4 }, "c"),
+									jsx("path", { d: "M3 4.4v4.2M9 4.4v1.2c0 1.4-1.2 2.4-2.6 2.4H4.4" }, "path")
+								]
+								: [
+									jsx("path", { d: "M2.5 3.2h7v5.2H6.2L4 10.2v-1.8H2.5z" }, "bubble"),
+									jsx("circle", { cx: 4.6, cy: 5.8, r: .6, fill: "currentColor", stroke: "none" }, "dot-a"),
+									jsx("circle", { cx: 7.4, cy: 5.8, r: .6, fill: "currentColor", stroke: "none" }, "dot-b")
+								]
+						},
+						"glyph"
+					)
+				},
+				"glyph"
+			);
+		}
+
+		/**
+		* The two review actions. The half-written comment lives in the inbox's draft map (keyed by item
+		* id), not in this component, so switching a filter or another section cannot discard it. "Approve"
+		* opens an optional comment box recorded only; "Flag issue" requires a comment.
 		*/
 		function ReviewForm(props) {
 			const t = props.t;
 			const kind = props.kind;
-			const [mode, setMode] = react.useState(null);
-			const [text, setText] = react.useState("");
+			const draft = props.draft;
+			const mode = draft === undefined ? null : draft.mode;
+			const text = draft === undefined ? "" : draft.text;
 			const [busy, setBusy] = react.useState(false);
 			const [error, setError] = react.useState("");
 			const mounted = react.useRef(true);
@@ -1813,8 +2327,7 @@ window.__ModuleLoader__.load({
 			}, [mode]);
 			const openMode = (next) => {
 				setError("");
-				setText("");
-				setMode(next);
+				props.onDraft(next, "");
 			};
 			const submit = async (reviewKind) => {
 				const value = text.trim();
@@ -1836,9 +2349,7 @@ window.__ModuleLoader__.load({
 						throw new Error(payload?.message ?? `HTTP ${response.status}`);
 					}
 					if (!mounted.current) return;
-					setText("");
-					setMode(null);
-					props.onSubmitted();
+					props.onSubmitted(reviewKind);
 				} catch (failure) {
 					if (!mounted.current) return;
 					setError(t("form.failed", { message: failure instanceof Error ? failure.message : String(failure) }));
@@ -1915,7 +2426,7 @@ window.__ModuleLoader__.load({
 												value: text,
 												disabled: busy,
 												onChange: (event) => {
-													setText(event.target.value);
+													props.onDraft(mode, event.target.value);
 													if (error !== "") setError("");
 												}
 											}),
@@ -1948,8 +2459,7 @@ window.__ModuleLoader__.load({
 																"data-variant": "outline",
 																disabled: busy,
 																onClick: () => {
-																	setMode(null);
-																	setText("");
+																	props.onDraft(null, "");
 																	setError("");
 																},
 																children: t("form.cancel")
@@ -1971,7 +2481,10 @@ window.__ModuleLoader__.load({
 			);
 		}
 
-		/** The collapsed-by-default body disclosure with the rendered Markdown body. */
+		/**
+		* The collapsed-by-default body disclosure. The body stays mounted so the height and opacity can be
+		* transitioned in 240ms (the content fades in 40ms behind the container) instead of snapping open.
+		*/
 		function BodyDisclosure(props) {
 			const t = props.t;
 			const [open, setOpen] = react.useState(false);
@@ -1994,14 +2507,34 @@ window.__ModuleLoader__.load({
 							},
 							"toggle"
 						),
-						open ? jsx(Markdown, { text: hasBody ? props.text : t(emptyKey) }, "body") : null
+						jsx(
+							"div",
+							{
+								className: "wca-disclosure-body",
+								"data-open": open ? "true" : "false",
+								"aria-hidden": open ? "false" : "true",
+								children: jsx(
+									"div",
+									{
+										className: "wca-disclosure-inner",
+										children: jsx(Markdown, { text: hasBody ? props.text : t(emptyKey) })
+									},
+									"inner"
+								)
+							},
+							"body"
+						)
 					]
 				},
 				"disclosure"
 			);
 		}
 
-		/** One letter row inside the inbox feature panel: a PR or an SPV decision note. */
+		/**
+		* One letter card: the elemental letter (status spine, one inset seam), a two-column-ish header,
+		* the body disclosures, and the review actions pinned to the card's bottom edge. PRs and
+		* `spv_message` differ only by radius, inset, spine width, glyph and tint family.
+		*/
 		function InboxItem(props) {
 			const item = props.item;
 			const t = props.t;
@@ -2014,6 +2547,21 @@ window.__ModuleLoader__.load({
 			const additions = Number.isFinite(Number(item.additions)) ? Number(item.additions) : 0;
 			const deletions = Number.isFinite(Number(item.deletions)) ? Number(item.deletions) : 0;
 			const files = Number.isFinite(Number(item.changedFiles)) ? Number(item.changedFiles) : 0;
+			const draft = props.draft;
+			const [wipe, setWipe] = react.useState(false);
+			const [settling, setSettling] = react.useState(false);
+			const lastStatus = react.useRef(status);
+			react.useEffect(() => {
+				if (lastStatus.current === status) return;
+				lastStatus.current = status;
+				setWipe(true);
+				setSettling(status === "approved");
+				const timer = setTimeout(() => {
+					setWipe(false);
+					setSettling(false);
+				}, 280);
+				return () => clearTimeout(timer);
+			}, [status]);
 			const origin = isMessage
 				? jsx(
 						"span",
@@ -2031,27 +2579,28 @@ window.__ModuleLoader__.load({
 			return jsxs(
 				"article",
 				{
-					className: "wca-item",
+					className: "wca-letter",
 					"data-kind": kind,
 					"data-status": status,
+					"data-draft": draft === undefined ? "false" : "true",
+					"data-new": props.newIndex === undefined ? undefined : "true",
+					"data-settling": settling ? "true" : undefined,
+					style: props.newIndex === undefined ? undefined : { "--wca-new-index": String(props.newIndex) },
 					children: [
 						jsxs(
 							"div",
 							{
-								className: "wca-item-head",
+								className: "wca-letter-head",
 								children: [
 									jsxs(
 										"div",
 										{
-											className: "wca-item-origin",
+											className: "wca-letter-origin",
 											children: [
+												jsx(KindGlyph, { kind }, "glyph"),
 												jsx(
 													"span",
-													{
-														className: "wca-tag",
-														"data-tone": isMessage ? "info" : "neutral",
-														children: t(isMessage ? "kind.spv_message" : "kind.pr")
-													},
+													{ className: "wca-kind", children: t(isMessage ? "kind.spv_message" : "kind.pr") },
 													"kind"
 												),
 												origin,
@@ -2065,17 +2614,29 @@ window.__ModuleLoader__.load({
 																children: stateLabel(t, prState)
 															},
 															"pr-state"
+														  ),
+												draft === undefined
+													? null
+													: jsx(
+															"span",
+															{
+																className: "wca-tag",
+																"data-tone": "warning",
+																title: t("inbox.draftHint"),
+																children: t("inbox.draftTag")
+															},
+															"draft"
 													  )
 											]
 										},
 										"origin"
 									),
-									jsx(StatusBadge, { status, t }, "status")
+									jsx(StatusBadge, { status, wipe, t }, "status")
 								]
 							},
 							"head"
 						),
-						jsx("h3", { className: "wca-item-title", children: String(item.title ?? "") || t("card.untitled") }, "title"),
+						jsx("h3", { className: "wca-letter-title", children: String(item.title ?? "") || t("card.untitled") }, "title"),
 						isMessage
 							? null
 							: jsxs(
@@ -2092,43 +2653,77 @@ window.__ModuleLoader__.load({
 									},
 									"meta"
 							  ),
-						jsx(
-							BodyDisclosure,
+						jsxs(
+							"div",
 							{
-								text: item.body,
-								t,
-								labelKey: isMessage ? "card.letter" : "card.body",
-								emptyKey: isMessage ? "card.letterEmpty" : "card.bodyEmpty"
+								className: "wca-letter-body",
+								children: [
+									jsx(
+										BodyDisclosure,
+										{
+											text: item.body,
+											t,
+											labelKey: isMessage ? "card.letter" : "card.body",
+											emptyKey: isMessage ? "card.letterEmpty" : "card.bodyEmpty"
+										},
+										"body"
+									),
+									reviews.length === 0
+										? null
+										: jsxs(
+												"div",
+												{
+													className: "wca-reviews",
+													children: [
+														jsx(
+															"div",
+															{ className: "wca-reviews-title", children: t("card.reviews", { count: reviews.length }) },
+															"title"
+														),
+														reviews.map((review, index) => jsx(ReviewRow, { review, t }, `review-${index}`))
+													]
+												},
+												"reviews"
+											  )
+								]
 							},
-							"body"
+							"body-wrap"
 						),
-						reviews.length === 0
-							? null
-							: jsxs(
-									"div",
-									{
-										className: "wca-reviews",
-										children: [
-											jsx("div", { className: "wca-reviews-title", children: t("card.reviews", { count: reviews.length }) }, "title"),
-											reviews.map((review, index) => jsx(ReviewRow, { review, t }, `review-${index}`))
-										]
-									},
-									"reviews"
-							  ),
-						jsx(ReviewForm, { item, t, kind, status, onSubmitted: props.onSubmitted }, "form"),
-						href === undefined
-							? null
-							: jsx(
-									"a",
-									{
-										className: "wca-open",
-										href,
-										target: "_blank",
-										rel: "noopener noreferrer",
-										children: t("card.open")
-									},
-									"open"
-							  )
+						jsxs(
+							"div",
+							{
+								className: "wca-letter-foot",
+								children: [
+									jsx(
+										ReviewForm,
+										{
+											item,
+											t,
+											kind,
+											status,
+											draft,
+											onDraft: props.onDraft,
+											onSubmitted: props.onSubmitted
+										},
+										"form"
+									),
+									href === undefined
+										? null
+										: jsx(
+												"a",
+												{
+													className: "wca-open",
+													href,
+													target: "_blank",
+													rel: "noopener noreferrer",
+													children: t("card.open")
+												},
+												"open"
+											  )
+								]
+							},
+							"foot"
+						)
 					]
 				},
 				String(item.id ?? item.pr ?? "")
@@ -2175,10 +2770,115 @@ window.__ModuleLoader__.load({
 			return encoded === "" ? "" : `?${encoded}`;
 		}
 
+		/** Local calendar day of an item, stable across a timezone change during the session. */
+		function dayKeyOf(item) {
+			const value = item?.at ?? item?.createdAt ?? item?.updatedAt;
+			const date = new Date(String(value ?? ""));
+			if (Number.isNaN(date.getTime())) return "unknown";
+			const pad = (number) => String(number).padStart(2, "0");
+			return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+		}
+
+		/** The uppercase date label of one day group; the CSS uppercases it. */
+		function dayLabelOf(key, t) {
+			if (key === "unknown") return t("day.unknown");
+			const date = new Date(`${key}T00:00:00`);
+			if (Number.isNaN(date.getTime())) return key;
+			return date.toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
+		}
+
+		/** Group the visible letters by local day, keeping the server's newest-first order. */
+		function groupByDay(items) {
+			const groups = [];
+			const index = new Map();
+			for (const item of items) {
+				const key = dayKeyOf(item);
+				let group = index.get(key);
+				if (group === undefined) {
+					group = { key, items: [] };
+					index.set(key, group);
+					groups.push(group);
+				}
+				group.items.push(item);
+			}
+			return groups;
+		}
+
 		/**
-		* The inbox feature panel: feature header and toolbar, the three server-side filters
-		* (letter type, repository, time), the derived-status filter, and the letter rows. It
-		* owns its own controls so a future feature does not inherit them.
+		* One day group: a vertical rail with a sticky date label, and the letter cards. The label's blur
+		* backdrop fades in only once content has scrolled beneath it.
+		*/
+		function DayGroup(props) {
+			const [stuck, setStuck] = react.useState(false);
+			const sentinel = react.useRef(null);
+			react.useEffect(() => {
+				const element = sentinel.current;
+				if (element === null || typeof IntersectionObserver === "undefined") return undefined;
+				const root = element.closest(".wca-page");
+				const observer = new IntersectionObserver(
+					(entries) => setStuck(!entries[0].isIntersecting),
+					{ root, rootMargin: "0px 0px -1px 0px", threshold: 0 }
+				);
+				observer.observe(element);
+				return () => observer.disconnect();
+			}, []);
+			return jsxs(
+				"section",
+				{
+					className: "wca-day",
+					"data-day": props.day,
+					children: [
+						jsxs(
+							"div",
+							{
+								className: "wca-day-rail",
+								children: [
+									jsx("span", { ref: sentinel, className: "wca-day-sentinel", "aria-hidden": "true" }, "sentinel"),
+									jsx(
+										"span",
+										{
+											className: "wca-day-label",
+											"data-stuck": stuck ? "true" : "false",
+											children: props.label
+										},
+										"label"
+									)
+								]
+							},
+							"rail"
+						),
+						jsx(
+							"div",
+							{
+								className: "wca-cards",
+								children: props.items.map((item, index) =>
+									jsx(
+										InboxItem,
+										{
+											item,
+											t: props.t,
+											draft: props.drafts[itemDraftKey(item)],
+											newIndex: props.newIds.get(itemDraftKey(item)),
+											onDraft: (mode, text) => props.onDraft(item, mode, text),
+											onSubmitted: () => props.onSubmitted(item)
+										},
+										String(item.id ?? index)
+									)
+								)
+							},
+							"cards"
+						)
+					]
+				},
+				props.day
+			);
+		}
+
+		/**
+		* The inbox feature panel: feature header and toolbar, the three server-side filters (letter type,
+		* repository, time), the derived-status filter, day groups and the letter cards. Review drafts are
+		* keyed by item id, persisted to localStorage, restored after switching sections, and cleared only
+		* by a successful submit.
 		*/
 		function InboxSection(props) {
 			const t = props.t;
@@ -2194,8 +2894,21 @@ window.__ModuleLoader__.load({
 			const [since, setSince] = react.useState("");
 			const [until, setUntil] = react.useState("");
 			const [repos, setRepos] = react.useState([]);
+			const [newIds, setNewIds] = react.useState(() => new Map());
+			const store = react.useRef(null);
+			if (store.current === null) store.current = createDraftStore(browserStorage(), INBOX_DRAFT_KEY);
+			const [drafts, setDrafts] = react.useState(() => {
+				const clean = {};
+				for (const [id, draft] of Object.entries(store.current.all())) {
+					const value = sanitizeInboxDraft(draft);
+					if (value !== undefined) clean[id] = value;
+				}
+				return clean;
+			});
 			const alive = react.useRef(true);
 			const requestId = react.useRef(0);
+			const lastIds = react.useRef(null);
+			const lastQuery = react.useRef(null);
 			const load = react.useCallback(() => {
 				const current = ++requestId.current;
 				const query = itemsQuery({ kind, repo, time, since, until });
@@ -2210,6 +2923,18 @@ window.__ModuleLoader__.load({
 						const payload = await response.json();
 						if (!alive.current || current !== requestId.current) return;
 						const list = Array.isArray(payload.items) ? payload.items : [];
+						const keys = new Set(list.map((item) => itemDraftKey(item)));
+						if (lastQuery.current === query && lastIds.current !== null) {
+							// Animate only ids this refresh added, never the whole list on a 60-second poll.
+							const fresh = list.filter((item) => !lastIds.current.has(itemDraftKey(item)));
+							const next = new Map();
+							fresh.forEach((item, index) => next.set(itemDraftKey(item), index));
+							setNewIds(next);
+						} else {
+							setNewIds(new Map());
+						}
+						lastQuery.current = query;
+						lastIds.current = keys;
 						setItems(list);
 						setRepos((previous) => {
 							const next = new Set(previous);
@@ -2247,6 +2972,27 @@ window.__ModuleLoader__.load({
 				const list = items ?? [];
 				return statusFilter === "all" ? list : list.filter((item) => statusOf(item) === statusFilter);
 			}, [items, statusFilter]);
+			const days = react.useMemo(() => groupByDay(visible), [visible]);
+			const setDraft = (item, mode, text) => {
+				const id = itemDraftKey(item);
+				const next = { ...drafts };
+				if (mode === null) {
+					delete next[id];
+					store.current.clear(id);
+				} else {
+					next[id] = { mode, text: String(text ?? "") };
+					store.current.set(id, next[id]);
+				}
+				setDrafts(next);
+			};
+			const submitted = (item) => {
+				const id = itemDraftKey(item);
+				const next = { ...drafts };
+				delete next[id];
+				store.current.clear(id);
+				setDrafts(next);
+				load();
+			};
 			const status =
 				error !== ""
 					? error
@@ -2368,8 +3114,8 @@ window.__ModuleLoader__.load({
 																	]
 																},
 																"kind"
-															)
-														]
+																)
+															]
 													},
 													"kind-field"
 												),
@@ -2394,8 +3140,8 @@ window.__ModuleLoader__.load({
 																	]
 																},
 																"repo"
-															)
-														]
+																)
+															]
 													},
 													"repo-field"
 												),
@@ -2419,8 +3165,8 @@ window.__ModuleLoader__.load({
 																	]
 																},
 																"time"
-															)
-														]
+																)
+															]
 													},
 													"time-field"
 												),
@@ -2461,7 +3207,7 @@ window.__ModuleLoader__.load({
 																		},
 																		"until"
 																	)
-																]
+																	]
 																},
 																"custom"
 															  )
@@ -2490,13 +3236,26 @@ window.__ModuleLoader__.load({
 										? jsx(
 												"div",
 												{
-													className: "wca-items",
-													children: visible.map((item, index) =>
-														jsx(InboxItem, { item, t, onSubmitted: () => load() }, String(item.id ?? index))
-													)
+													className: "wca-days",
+													children: days.map((day) =>
+														jsx(
+															DayGroup,
+															{
+																day: day.key,
+																label: dayLabelOf(day.key, t),
+																items: day.items,
+																t,
+																drafts,
+																newIds,
+																onDraft: setDraft,
+																onSubmitted: submitted
+															},
+															day.key
+														)
+												)
 												},
 												"items"
-										  )
+											  )
 										: null
 								]
 							},
@@ -2530,6 +3289,7 @@ window.__ModuleLoader__.load({
 
 		/** Display order; the template editors form their own group between injection and work. */
 		const SETTINGS_GROUPS = [
+			{ id: "style", titleKey: "settings.group.style", keys: ["webui.style"] },
 			{ id: "inbox", titleKey: "settings.group.inbox", keys: ["inbox.intervalSeconds"] },
 			{ id: "merge", titleKey: "settings.group.merge", keys: ["merge.installRepo"] },
 			{ id: "injection", titleKey: "settings.group.injection", keys: ["injection.intervalMs", "injection.maxBodyChars"] },
@@ -2778,7 +3538,18 @@ window.__ModuleLoader__.load({
 			return "";
 		}
 
-		/** One value row: label, description, effective/default, source, input, reset and inline error. */
+		/** The localized label of an enum value, falling back to the raw value. */
+		function enumLabel(t, value) {
+			const key = `settings.style.${value}`;
+			const label = t(key);
+			return label === key ? value : label;
+		}
+
+		/**
+		* One two-column setting row: what it is, what changes if you touch it and the recommended value on
+		* the left, the control plus effective/default and Reset on the right. The technical detail stays
+		* behind a `?` so the row reads in plain language first.
+		*/
 		function SettingRow(props) {
 			const t = props.t;
 			const row = props.row;
@@ -2800,15 +3571,35 @@ window.__ModuleLoader__.load({
 					: "";
 			const label = t(`setting.${row.key}.label`);
 			const description = t(`setting.${row.key}.desc`);
+			const changes = t(`setting.${row.key}.changes`);
+			const recommended = t(`setting.${row.key}.recommended`);
+			const technical = t(`setting.${row.key}.tech`);
+			const options = Array.isArray(row.options) ? row.options : undefined;
 			const boolean = typeof row.value === "boolean";
 			const numeric = typeof row.value === "number";
 			const inputId = `wca-setting-${row.key}`;
 			let control;
-			if (boolean) {
+			if (options !== undefined) {
+				control = jsx(
+					"select",
+					{
+						id: inputId,
+						className: "wca-select",
+						value: props.draft,
+						disabled: props.saving,
+						"aria-label": label,
+						onChange: (event) => props.onChange(event.target.value),
+						children: options.map((value) =>
+							jsx("option", { value, children: enumLabel(t, value) }, value)
+						)
+					},
+					"control"
+				);
+			} else if (boolean) {
 				control = jsxs(
 					"label",
 					{
-						className: "wca-settings-check",
+						className: "wca-switch",
 						htmlFor: inputId,
 						children: [
 							jsx(
@@ -2822,6 +3613,7 @@ window.__ModuleLoader__.load({
 								},
 								"check"
 							),
+							jsx("span", { className: "wca-switch-track", "aria-hidden": "true" }, "track"),
 							jsx("span", { children: props.draft === "true" ? t("settings.on") : t("settings.off") }, "text")
 						]
 					},
@@ -2854,11 +3646,12 @@ window.__ModuleLoader__.load({
 				{
 					className: "wca-setting",
 					"data-setting": row.key,
+					"data-draft": props.draftChanged ? "true" : "false",
 					children: [
 						jsxs(
 							"div",
 							{
-								className: "wca-setting-head",
+								className: "wca-setting-main",
 								children: [
 									jsxs(
 										"div",
@@ -2866,10 +3659,56 @@ window.__ModuleLoader__.load({
 											className: "wca-setting-title",
 											children: [
 												jsx("span", { className: "wca-setting-label", children: label }, "label"),
-												jsx("span", { className: "wca-tag", "data-tone": "neutral", children: t(sourceKey) }, "source")
+												jsx("span", { className: "wca-tag", "data-tone": "neutral", children: t(sourceKey) }, "source"),
+												props.draftChanged
+													? jsx(
+															"span",
+															{
+																className: "wca-tag",
+																"data-tone": "warning",
+																title: t("settings.draftHint"),
+																children: t("settings.draftTag")
+															},
+															"draft"
+													  )
+													: null
 											]
 										},
 										"title"
+									),
+									jsx("p", { className: "wca-setting-desc", children: description }, "desc"),
+									jsx("p", { className: "wca-setting-effect", children: changes }, "changes"),
+									jsx("p", { className: "wca-setting-recommended", children: recommended }, "recommended"),
+									jsxs(
+										"details",
+										{
+											className: "wca-tech",
+											children: [
+												jsx("summary", { "aria-label": t("settings.tech"), children: "?" }, "summary"),
+												jsx("span", { className: "wca-tech-text", children: technical }, "text")
+											]
+										},
+										"tech"
+									)
+								]
+							},
+							"main"
+						),
+						jsxs(
+							"div",
+							{
+								className: "wca-setting-side",
+								children: [
+									jsx("div", { className: "wca-setting-values", children: control }, "values"),
+									jsx(
+										"p",
+										{
+											className: "wca-setting-meta",
+											children: `${t("settings.effective", { value: settingText(t, row.value) })} · ${t("settings.defaultValue", {
+												value: settingText(t, row.default)
+											})}`
+										},
+										"meta"
 									),
 									jsx(
 										"button",
@@ -2882,38 +3721,28 @@ window.__ModuleLoader__.load({
 											children: t("settings.reset")
 										},
 										"reset"
-									)
+									),
+									props.pendingReset
+										? jsx("p", { className: "wca-setting-note", children: t("settings.resetStaged") }, "staged")
+										: null,
+									overridden.length === 0
+										? null
+										: jsx(
+												"p",
+												{
+													className: "wca-setting-note",
+													children: t("settings.overridden", { source: t(sourceKey), layers })
+												},
+												"overridden"
+										  ),
+									envNote === "" ? null : jsx("p", { className: "wca-setting-note", children: envNote }, "env"),
+									props.error === ""
+										? null
+										: jsx("p", { className: "wca-setting-error", role: "alert", children: props.error }, "error")
 								]
 							},
-							"head"
-						),
-						jsx("p", { className: "wca-setting-desc", children: description }, "desc"),
-						jsx(
-							"p",
-							{
-								className: "wca-setting-meta",
-								children: `${t("settings.effective", { value: settingText(t, row.value) })} · ${t("settings.defaultValue", {
-									value: settingText(t, row.default)
-								})}`
-							},
-							"meta"
-						),
-						jsx("div", { className: "wca-setting-values", children: control }, "values"),
-						props.pendingReset
-							? jsx("p", { className: "wca-setting-note", children: t("settings.resetStaged") }, "staged")
-							: null,
-						overridden.length === 0
-							? null
-							: jsx(
-									"p",
-									{
-										className: "wca-setting-note",
-										children: t("settings.overridden", { source: t(sourceKey), layers })
-									},
-									"overridden"
-								),
-						envNote === "" ? null : jsx("p", { className: "wca-setting-note", children: envNote }, "env"),
-						props.error === "" ? null : jsx("p", { className: "wca-setting-error", role: "alert", children: props.error }, "error")
+							"side"
+						)
 					]
 				},
 				row.key
@@ -2960,7 +3789,28 @@ window.__ModuleLoader__.load({
 							{
 								className: "wca-template-head",
 								children: [
-									jsx("h3", { className: "wca-template-title", children: t(`template.${props.id}.title`) }, "title"),
+									jsxs(
+										"div",
+										{
+											className: "wca-setting-title",
+											children: [
+												jsx("h3", { className: "wca-template-title", children: t(`template.${props.id}.title`) }, "title"),
+												props.draftChanged
+													? jsx(
+															"span",
+															{
+																className: "wca-tag",
+																"data-tone": "warning",
+																title: t("settings.draftHint"),
+																children: t("settings.draftTag")
+															},
+															"draft"
+													  )
+													: null
+											]
+										},
+										"title-row"
+									),
 									jsx("p", { className: "wca-template-desc", children: t(`template.${props.id}.desc`) }, "desc")
 								]
 							},
@@ -3206,51 +4056,101 @@ window.__ModuleLoader__.load({
 			const [savedRevision, setSavedRevision] = react.useState(null);
 			const alive = react.useRef(true);
 			const requestId = react.useRef(0);
+			const storage = react.useRef(null);
+			if (storage.current === null) storage.current = browserStorage();
 
-			const adopt = react.useCallback((payload) => {
-				setSnapshot(payload);
-				setDrafts(valueDraftsOf(payload));
-				setTemplateDrafts(templateDraftsOf(payload));
-				setResets(new Set());
-				setFieldErrors({});
-				setPageError("");
-				setConflict(null);
-			}, []);
+			/** The settings form survives a section switch in localStorage, scoped to its revision. */
+			const readEnvelope = () => {
+				try {
+					const raw = storage.current === null ? null : storage.current.getItem(SETTINGS_DRAFT_KEY);
+					return typeof raw === "string" && raw !== "" ? JSON.parse(raw) : null;
+				} catch {
+					return null;
+				}
+			};
+			const writeEnvelope = (envelope) => {
+				try {
+					if (storage.current !== null) storage.current.setItem(SETTINGS_DRAFT_KEY, JSON.stringify(envelope));
+				} catch {
+					/* storage unavailable: drafts survive this mount only */
+				}
+			};
 
-			const load = react.useCallback(() => {
-				const current = ++requestId.current;
-				setLoading(true);
-				return (async () => {
-					try {
-						const response = await fetch(SETTINGS_URL, {
-							headers: { accept: "application/json" },
-							cache: "no-store"
-						});
-						const payload = await response.json().catch(() => ({}));
-						if (!alive.current || current !== requestId.current) return;
-						if (!response.ok) throw new Error(payload?.message ?? `HTTP ${response.status}`);
-						adopt(payload);
-						setSavedRevision(null);
-					} catch (failure) {
-						if (!alive.current || current !== requestId.current) return;
-						setPageError(
-							t("settings.loadFailed", {
-								message: failure instanceof Error ? failure.message : String(failure)
-							})
-						);
-					} finally {
-						if (alive.current && current === requestId.current) setLoading(false);
+			const adopt = react.useCallback(
+				(payload, restore) => {
+					setSnapshot(payload);
+					if (restore === true) {
+						const stored = readEnvelope();
+						const restored = restoreSettingsDrafts(payload, stored);
+						setDrafts({ ...valueDraftsOf(payload), ...restored.valueDrafts });
+						setTemplateDrafts({ ...templateDraftsOf(payload), ...restored.templateDrafts });
+						setResets(restored.resets);
+					} else {
+						setDrafts(valueDraftsOf(payload));
+						setTemplateDrafts(templateDraftsOf(payload));
+						setResets(new Set());
+						try {
+							if (storage.current !== null) storage.current.removeItem(SETTINGS_DRAFT_KEY);
+						} catch {
+							/* nothing to clear */
+						}
 					}
-				})();
-			}, [adopt, t]);
+					setFieldErrors({});
+					setPageError("");
+					setConflict(null);
+					setSavedRevision(null);
+					if (typeof props.onStyleChange === "function") props.onStyleChange(styleOf(payload));
+				},
+				[props.onStyleChange]
+			);
+
+			const load = react.useCallback(
+				(restore = false) => {
+					const current = ++requestId.current;
+					setLoading(true);
+					return (async () => {
+						try {
+							const response = await fetch(SETTINGS_URL, {
+								headers: { accept: "application/json" },
+								cache: "no-store"
+							});
+							const payload = await response.json().catch(() => ({}));
+							if (!alive.current || current !== requestId.current) return;
+							if (!response.ok) throw new Error(payload?.message ?? `HTTP ${response.status}`);
+							adopt(payload, restore);
+						} catch (failure) {
+							if (!alive.current || current !== requestId.current) return;
+							setPageError(
+								t("settings.loadFailed", {
+									message: failure instanceof Error ? failure.message : String(failure)
+								})
+							);
+						} finally {
+							if (alive.current && current === requestId.current) setLoading(false);
+						}
+					})();
+				},
+				[adopt, t]
+			);
 
 			react.useEffect(() => {
 				alive.current = true;
-				load();
+				load(true);
 				return () => {
 					alive.current = false;
 				};
 			}, [load]);
+
+			// Persist after every edit; a successful save or an explicit Reload clears it in adopt().
+			react.useEffect(() => {
+				if (snapshot === null) return;
+				writeEnvelope({
+					revision: snapshot.revision,
+					valueDrafts: drafts,
+					templateDrafts,
+					resets: [...resets]
+				});
+			}, [snapshot, drafts, templateDrafts, resets]);
 
 			const staged = react.useMemo(
 				() => stagedChanges(snapshot, drafts, templateDrafts, resets, t),
@@ -3276,11 +4176,16 @@ window.__ModuleLoader__.load({
 					next.delete(key);
 					return next;
 				});
+				// The style is a preview: the panel changes immediately, and Save makes it stick.
+				if (key === "webui.style" && typeof props.onStyleChange === "function") props.onStyleChange(value);
 				clearError(key);
 			};
 			const stageReset = (row) => {
 				setResets((previous) => new Set(previous).add(String(row.key)));
 				setDrafts((previous) => ({ ...previous, [String(row.key)]: settingDraft(row.default) }));
+				if (row.key === "webui.style" && typeof props.onStyleChange === "function") {
+					props.onStyleChange(settingDraft(row.default));
+				}
 				clearError(String(row.key));
 			};
 			const setActive = (id, active) => {
@@ -3360,7 +4265,7 @@ window.__ModuleLoader__.load({
 						setPageError(t("settings.saveFailed", { message }));
 						return;
 					}
-					adopt(payload);
+					adopt(payload, false);
 					const revision = Number(payload?.revision);
 					setSavedRevision(Number.isFinite(revision) ? revision : null);
 				} catch (failure) {
@@ -3399,6 +4304,9 @@ window.__ModuleLoader__.load({
 						row,
 						t,
 						draft: drafts[key] ?? settingDraft(row.value),
+						draftChanged:
+							resets.has(key) ||
+							(drafts[key] !== undefined && settingDraftChanged(row, drafts[key])),
 						pendingReset: resets.has(key),
 						error: String(fieldErrors[key] ?? staged.valueErrors[key] ?? ""),
 						saving,
@@ -3414,20 +4322,16 @@ window.__ModuleLoader__.load({
 				snapshot === null || snapshot.warning === undefined || snapshot.warning === null
 					? ""
 					: String(snapshot.warning);
-			if (snapshot !== null && (fileWarning !== "" || snapshot.fileState !== "ok")) {
-				const missing = snapshot.fileState === "missing" && fileWarning === "";
-				const message = missing
-					? t("settings.fileMissing", { file: String(snapshot.file ?? "") })
-					: t("settings.fileWarning", {
-							warning: fileWarning !== "" ? fileWarning : String(snapshot.fileState ?? "")
-						});
+			// A missing file is no longer a banner: install/first run ships one. A corrupt or manually
+			// edited file still raises its warning, because the values below are fallbacks, not saved ones.
+			if (snapshot !== null && fileWarning !== "") {
 				banners.push(
 					jsx(
 						"p",
 						{
 							className: "wca-settings-banner",
-							"data-tone": missing ? "info" : "warning",
-							children: jsx("span", { className: "wca-settings-banner-text", children: message }, "text")
+							"data-tone": "warning",
+							children: jsx("span", { className: "wca-settings-banner-text", children: t("settings.fileWarning", { warning: fileWarning }) }, "text")
 						},
 						"file"
 					)
@@ -3452,7 +4356,7 @@ window.__ModuleLoader__.load({
 												className: "wca-btn",
 												"data-variant": "outline",
 												disabled: saving,
-												onClick: () => load(),
+												onClick: () => load(false),
 												children: t("settings.reload")
 											},
 											"reload"
@@ -3464,6 +4368,17 @@ window.__ModuleLoader__.load({
 				);
 			}
 
+			const counts = sourceSummary(snapshot);
+			const summaryParts = [];
+			if (counts.file > 0) summaryParts.push(t("settings.sources.file", { count: counts.file }));
+			if (counts.config > 0) summaryParts.push(t("settings.sources.config", { count: counts.config }));
+			if (counts.env > 0) summaryParts.push(t("settings.sources.env", { count: counts.env }));
+			const summary =
+				snapshot === null
+					? ""
+					: summaryParts.length === 0
+						? t("settings.sources.allDefault")
+						: summaryParts.join(" · ");
 			const status =
 				snapshot === null
 					? loading
@@ -3511,7 +4426,7 @@ window.__ModuleLoader__.load({
 														className: "wca-btn",
 														"data-variant": "outline",
 														disabled: saving,
-														onClick: () => load(),
+														onClick: () => load(false),
 														children: t("settings.reload")
 													},
 													"reload"
@@ -3561,6 +4476,9 @@ window.__ModuleLoader__.load({
 									),
 									snapshot === null
 										? null
+										: jsx("p", { className: "wca-settings-summary", children: summary }, "summary"),
+									snapshot === null
+										? null
 										: jsx(
 												react.Fragment,
 												{
@@ -3580,6 +4498,7 @@ window.__ModuleLoader__.load({
 																				t,
 																				template: snapshot.templates[id],
 																				draft: templateDrafts[id] ?? { active: "default", presets: {} },
+																		draftChanged: templateDraftChanged(snapshot.templates[id], templateDrafts[id] ?? { active: "default", presets: {} }),
 																				saving,
 																				error: String(fieldErrors[id] ?? staged.templateErrors[id] ?? ""),
 																				onActive: (active) => setActive(id, active),
@@ -3655,12 +4574,36 @@ window.__ModuleLoader__.load({
 		function PanelPage(props) {
 			const t = props.t;
 			const [active, setActive] = react.useState(SECTIONS[0].id);
+			const [style, setStyle] = react.useState("fluid");
 			const section = SECTIONS.find((candidate) => candidate.id === active) ?? SECTIONS[0];
 			const Component = section.Component;
+			// Apply the saved style at load. The Settings section calls setStyle after a save and while the
+			// operator previews the select, so switching never reloads the page. A failed read keeps the
+			// default (fluid) rather than blocking the panel.
+			react.useEffect(() => {
+				let alive = true;
+				(async () => {
+					try {
+						const response = await fetch(SETTINGS_URL, {
+							headers: { accept: "application/json" },
+							cache: "no-store"
+						});
+						if (!response.ok) return;
+						const payload = await response.json().catch(() => ({}));
+						if (alive) setStyle(styleOf(payload));
+					} catch {
+						/* old host or offline: keep the browser-side default */
+					}
+				})();
+				return () => {
+					alive = false;
+				};
+			}, []);
 			return jsxs(
 				"div",
 				{
 					className: "wca-page",
+					"data-wca-style": style,
 					children: [
 						jsx("style", { children: STYLES }, "style"),
 						jsxs(
@@ -3723,7 +4666,7 @@ window.__ModuleLoader__.load({
 								id: `wca-panel-${section.id}`,
 								role: "tabpanel",
 								"aria-labelledby": `wca-tab-${section.id}`,
-								children: jsx(Component, { t, feature: section })
+								children: jsx(Component, { t, feature: section, onStyleChange: setStyle })
 							},
 							"section"
 						)
@@ -3773,7 +4716,16 @@ window.__ModuleLoader__.load({
 			stagedChanges,
 			valueDraftsOf,
 			templateDraftsOf,
-			presetNameError
+			presetNameError,
+			STYLES,
+			styleOf,
+			itemDraftKey,
+			sanitizeInboxDraft,
+			createDraftStore,
+			restoreSettingsDrafts,
+			sourceSummary,
+			groupByDay,
+			dayKeyOf
 		};
 		return module.exports;
 	}

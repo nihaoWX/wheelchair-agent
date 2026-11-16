@@ -68,6 +68,12 @@ const RESERVED_PRESET_NAMES = new Set(['__proto__', 'prototype', 'constructor'])
  * `label` 是双语行名（面板仍可自行本地化，这里给默认值）。
  */
 export const KEY_SPECS = {
+  'webui.style': {
+    type: 'string',
+    default: 'fluid',
+    options: ['minimal', 'fluid'],
+    label: { zh: '面板样式', en: 'Panel style' },
+  },
   'inbox.intervalSeconds': {
     type: 'integer',
     default: 60,
@@ -261,6 +267,12 @@ function normalizeValue(key, raw, { strict = true } = {}) {
       throw invalid(`${key} must be a string, got ${describeValue(raw)}.`)
     }
     const value = raw.trim()
+    if (spec.options !== undefined && !spec.options.includes(value)) {
+      throw invalid(
+        `${key} must be one of ${spec.options.map(option => JSON.stringify(option)).join(', ')}, ` +
+          `got ${JSON.stringify(raw)}.`,
+      )
+    }
     if (key === 'merge.installRepo' && !INSTALL_REPO_PATTERN.test(value)) {
       throw invalid(
         `${key} must be "name" or "owner/name" using letters, digits, dot, dash and underscore, ` +
@@ -545,6 +557,38 @@ function writeStored({ env, home, stateDir } = {}, payload) {
   renameSync(temporary, file)
 }
 
+/**
+ * Make sure the settings file exists, with the empty-but-valid shape a fresh machine should have:
+ * `{version, revision: 0, values: {}, templates: {}}`.
+ *
+ * Empty `values` deliberately means "every key uses its built-in default"; resolved values must never be
+ * written here, otherwise a later default change could not reach this machine. `install.sh` calls this
+ * after creating the data root, and the webui host half calls it at mount so an upgraded machine that
+ * skipped the installer also gets a file. Existing files are never touched (`wx`), and a legacy
+ * `panel-settings.json` is migrated by `settingsFile()` before that test, so the empty file cannot shadow
+ * real old values.
+ */
+export function ensureSettingsFile({ env = process.env, home, stateDir } = {}) {
+  const file = settingsFile({ env, home, stateDir })
+  try {
+    readFileSync(file)
+    return { file, created: false }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') throw error
+  }
+  mkdirSync(dirname(file), { recursive: true })
+  const payload = { version: SETTINGS_VERSION, revision: 0, values: {}, templates: {} }
+  try {
+    writeFileSync(file, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o644, flag: 'wx' })
+    chmodSync(file, 0o644)
+    return { file, created: true }
+  } catch (error) {
+    // Another writer won the race: its file is valid, so this is a success rather than an error.
+    if (error?.code === 'EEXIST') return { file, created: false }
+    throw error
+  }
+}
+
 // ------------------------------------------------------------------- resolve
 
 /** 把某个模板的内部状态变成 `resolveSettings().templates[id]` 的形状。 */
@@ -631,6 +675,7 @@ function compose({ stored, env, config }) {
       source,
       overridden: candidates.slice(1).map(([layer, lower]) => ({ source: layer, value: lower })),
       env: envInfo[key],
+      ...(spec.options === undefined ? {} : { options: [...spec.options] }),
     })
   }
 

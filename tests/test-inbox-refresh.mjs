@@ -713,6 +713,9 @@ async function testHostSettingsRouteAndFence() {
   // The web host runs each non-poller effect on mount; that is what registers the routes.
   for (const effect of host.effects.filter(item => !item.label.includes('poller'))) effect.fn()
 
+  // The mount ships the empty-but-valid settings file; stale/rejected writes must leave it untouched.
+  const mounted = await readFile(join(box.root, 'settings.json'), 'utf8')
+  assert.deepEqual(JSON.parse(mounted), { version: 1, revision: 0, values: {}, templates: {} })
   const route = host.routes.find(candidate => candidate.path === '/wheelchair-settings')
   assert.ok(route, 'the host registers the /wheelchair-settings route')
   assert.equal(route.kind, 'exact', 'the settings route is an exact route')
@@ -731,14 +734,14 @@ async function testHostSettingsRouteAndFence() {
   assert.equal(stale.status, 409)
   assert.equal(stale.body.code, 'conflict')
   assert.equal(stale.body.revision, 0)
-  assert.equal(await readFile(join(box.root, 'settings.json'), 'utf8').catch(() => undefined), undefined, 'a stale PUT writes nothing')
+  assert.equal(await readFile(join(box.root, 'settings.json'), 'utf8'), mounted, 'a stale PUT writes nothing')
 
   // The connection fence answers first: a rejected PUT never reaches the settings handler, so it has no
   // side effect. This is the same `guarded` wrapper as the two inbox routes.
   const forbidden = await routeCall(route, { method: 'PUT', forbidden: true, body: { revision: 0, values: { 'work.keep': 9 } } })
   assert.equal(forbidden.status, 403, 'the connection fence rejects before the handler')
   assert.equal(forbidden.text, '', 'a rejected request gets no handler body')
-  assert.equal(await readFile(join(box.root, 'settings.json'), 'utf8').catch(() => undefined), undefined, 'a rejected PUT has no side effect')
+  assert.equal(await readFile(join(box.root, 'settings.json'), 'utf8'), mounted, 'a rejected PUT has no side effect')
   assert.equal(host.rejected.at(-1)?.forbidden, true, 'the settings route asks the connection fence before the handler')
 
   const saved = await routeCall(route, { method: 'PUT', body: { revision: 0, values: { 'work.keep': 3 } } })

@@ -32,7 +32,7 @@ import {
   resolveInboxRoot,
   startInboxWatcher,
 } from './core/inbox.js'
-import { SETTINGS_PATH, createSettingsHandler } from './shared/settings.js'
+import { SETTINGS_PATH, createSettingsHandler, ensureSettingsFile } from './shared/settings.js'
 
 export const name = 'wheelchair-agent-webui'
 export const inject = ['webServer', 'connection']
@@ -72,6 +72,14 @@ export function apply(ctx, config = {}) {
   // Resolve once at mount so the first run performs the one-shot migration; the handler and the poller
   // then re-resolve per request/tick, so a mount that had to fall back picks up a later migration.
   resolveInboxRoot()
+  // First run on an upgraded machine: ship the empty-but-valid settings file so the panel never has to
+  // explain a missing file. A failure is a warning, not a mount failure; the Settings page still works
+  // with fallback values and reports the write problem on save.
+  try {
+    ensureSettingsFile()
+  } catch (error) {
+    ctx.logger?.warn?.(`wheelchair-agent-webui: cannot create the settings file (${error?.message ?? error})`)
+  }
   const rootOf = () => resolveInboxRoot()
   const handler = createInboxHandler({ rootOf })
   const settingsHandler = createSettingsHandler({ config: settingsConfig(config) })
