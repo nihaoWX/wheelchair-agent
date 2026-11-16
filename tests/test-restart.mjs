@@ -17,10 +17,25 @@
  *     rather than the invoking checkout CLI (whose `spv` command uses the unrendered launcher template);
  *   - a failing install aborts before starting the service again (including the exit-3 refusal and the
  *     by-hand recovery command);
- *   - `--no-install` skips install.sh, and a service-start failure still relaunches the TUI and exits 1;
+ *   - `--no-install` skips install.sh, and a service-start failure exits 1 **without** relaunching a TUI
+ *     into a broken deployment;
+ *   - the `spv` loop runs the launcher as a child, narrates a marked restart from the log (timestamps
+ *     stripped, in order), skips internal `restart-all:` lines and relaunches in the same terminal; a failed
+ *     install, a dead orchestrator, a pid-less marker and the narrator timeout exit non-zero without
+ *     relaunching; a marker older than its launch (or two restarts in one loop) is handled per launch;
+ *     the tmux fallback runs only when no terminal claims, and a fallback that later fails exits 1;
+ *   - the relaunch and the tmux fallback resume the same SPV conversation from `~/.dsh-tui/resume.txt`
+ *     (UUID-validated; the relaunch strips stale operator `--resume`/`-c`/`--continue` and uses the file); a
+ *     missing/invalid file prints one note and starts fresh, and a resume dsh-tui rejects is retried once
+ *     without the flag;
+ *   - the launcher environment never sees the CLI's armed-chain seams, and tmux is only a fallback: a
+ *     claimed run succeeds without tmux, an unclaimed run without tmux fails with a logged reason;
  *   - the kill set excludes the orchestrator's own pid, its ancestors and the service; an ancestor in the
  *     fake chain aborts before any command; an armed chain whose pid no longer carries the patch is refused
- *     before mutation; a zombie pid is treated as gone;
+ *     before mutation in `--run`; the armed chain/patch env overrides are ignored outside `--run`, so a
+ *     leaked stale pair cannot displace the real `/proc` scan; a zombie pid is treated as gone;
+ *   - a restart claim counts only while its narrator pid is alive: a dead claim logs one note and takes the
+ *     tmux fallback instead of waiting for a relaunch that will never happen;
  *   - the command module registers exactly one `/restart-wheelchair-agent` command without a dsh import, and
  *     its handler passes `restart-all --detach [--force]` to the executable;
  *   - the detached path arms a child that logs its success, and also logs a re-guard refusal; the parent
@@ -214,6 +229,7 @@ async function makeSandbox() {
     join(box.bin, 'wheelchair-agent'),
     '#!/bin/sh\n' +
       'printf \'wheelchair-agent %s\\n\' "$*" >> "$FAKE_CALLS"\n' +
+      'if [ -n "${WHEELCHAIR_RESTART_CHAIN:-}" ]; then printf \'leaked\\n\' >> "$FAKE_LEAK"; fi\n' +
       'case "$1 $2" in\n' +
       '  "service stop") exit "${FAKE_SERVICE_STOP_STATUS:-0}" ;;\n' +
       '  "service start") exit "${FAKE_SERVICE_START_STATUS:-0}" ;;\n' +
@@ -286,7 +302,16 @@ function cliEnv(box, overrides = {}) {
     WHEELCHAIR_PROC_ROOT: box.proc,
     WHEELCHAIR_AGENT_CHECKOUT: box.checkout,
     FAKE_CALLS: box.calls,
+    FAKE_LEAK: join(box.base, 'leaked-seams'),
     FAKE_TMUX_MARKER: join(box.base, 'tmux-session'),
+    // Every orchestrator run must decide "no claim" quickly; the fallback tests measure this window.
+    WHEELCHAIR_RESTART_CLAIM_MS: '100',
+    // The service that runs this suite may itself have been started by a restart, so its environment can
+    // carry the detached orchestrator's seams. A test must never inherit a chain/preset from the live
+    // deployment; every seam starts empty here and the explicit overrides below set what a case needs.
+    WHEELCHAIR_RESTART_CHAIN: '',
+    WHEELCHAIR_RESTART_PARENT_PID: '',
+    WHEELCHAIR_RESTART_PRESET_PATCH: '',
     PATH: `${box.bin}:${process.env.PATH}`,
     ...overrides,
   }
@@ -336,6 +361,31 @@ async function logLines(box) {
     throw error
   })
   return text.split('\n').filter(Boolean)
+}
+
+/** Write the fake SPV launcher the CLI runs through `WHEELCHAIR_AGENT_LAUNCHER`; it runs under `sh`. */
+async function writeLauncher(box, body) {
+  const file = join(box.base, 'fake-launcher.sh')
+  await writeFile(file, `#!/bin/sh\nset -u\n${body}`, 'utf8')
+  await chmod(file, 0o755)
+  return file
+}
+
+/** Write the sandbox `~/.dsh-tui/resume.txt`, the one source of the session id a relaunch resumes. */
+async function writeResume(box, text) {
+  await mkdir(join(box.home, '.dsh-tui'), { recursive: true })
+  await writeFile(join(box.home, '.dsh-tui', 'resume.txt'), text, 'utf8')
+}
+
+/** A shell `cat >` marker write shared by the narrator fixtures; `extra` is a JSON fragment without braces. */
+function markerJson({ checkout = '"$FAKE_CHECKOUT"', noInstall = 'false', pid = '$FAKE_MARKER_PID' } = {}) {
+  return [
+    'cat > "$DSH_SUPERAGENT_STATE_DIR/restart-armed.json" <<JSON',
+    `{"pid": ${pid}, "armedPid": $$, "startedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)", "log": "$log", ` +
+      `"logOffset": $offset, "checkout": ${checkout}, "tmux": "dsh-spv", ` +
+      `"service": "http://127.0.0.1:3082", "force": false, "noInstall": ${noInstall}}`,
+    'JSON',
+  ].join('\n')
 }
 
 const output = result => `${result.stdout}${result.stderr}`
@@ -493,6 +543,11 @@ async function testDryRunPlan() {
     for (const pid of box.chainPids) assert.ok(text.includes(String(pid)), `the plan names SPV pid ${pid}`)
     assert.ok(text.includes(TMUX_SESSION), 'the plan names the tmux session')
     assert.ok(text.includes(join(box.root, 'logs', LOG_NAME)), 'the plan names the log path')
+    assert.match(
+      text,
+      /resume: --resume unavailable \(no ~\/\.dsh-tui\/resume\.txt\); the fallback starts a fresh session/,
+      'the plan says when it cannot resume',
+    )
     assert.ok(text.includes(box.checkout), 'the plan names the checkout')
     assert.ok(text.includes('wheelchair-agent service stop'), 'the plan shows service stop')
     assert.ok(text.includes(`bash ${join(box.checkout, 'install.sh')}`), 'the plan shows install.sh')
@@ -615,7 +670,7 @@ async function testNoInstall() {
   })
 }
 
-/** A service-start failure still relaunches the TUI (the launcher retries) and exits 1. */
+/** A service-start failure exits 1 and relaunches nothing: no TUI into a broken deployment. */
 async function testServiceStartFailure() {
   await withServer({ running: 0, queued: 0 }, async ({ url }) => {
     const box = await makeBox()
@@ -624,10 +679,13 @@ async function testServiceStartFailure() {
     assert.equal(result.status, 1)
     const lines = await calls(box)
     assert.ok(lines.includes('wheelchair-agent service start'))
-    assert.ok(lines.some(line => line.startsWith('tmux new-session')), 'the TUI is relaunched anyway')
+    assert.ok(!lines.some(line => line.startsWith('tmux')), 'the TUI must not be relaunched')
     const joined = (await logLines(box)).join('\n')
     assert.match(joined, /the superagent service did not start/)
-    assert.match(joined, /note: tmux session dsh-spv is present after the relaunch/)
+    assert.match(joined, /the TUI was not relaunched/)
+    assert.match(joined, /fix the service and run "wheelchair-agent spv"/)
+    assert.match(joined, /restart failed \(exit 1\)/)
+    assert.doesNotMatch(joined, /step 5\/5/)
   })
 }
 
@@ -830,6 +888,9 @@ async function testDetach() {
     assert.ok(text.includes(join(box.root, 'logs', LOG_NAME)), 'the command names the log path')
     assert.match(text, /has not restarted anything itself/)
     assert.match(text, /about to end/)
+    // This detached CLI was not started by a supervising `spv` loop, so the one-time rollout note applies.
+    assert.match(text, /no supervising "wheelchair-agent spv"/)
+    assert.match(text, /comes back in tmux session "dsh-spv"/)
 
     await waitFor(
       async () => (await exists(join(box.root, 'logs', LOG_NAME))) && (await readFile(join(box.root, 'logs', LOG_NAME), 'utf8')).includes('restart complete'),
@@ -845,6 +906,857 @@ async function testDetach() {
     const lines = await calls(box)
     assert.ok(lines.indexOf('wheelchair-agent service start') > lines.indexOf('install'))
     assert.ok(lines.some(line => line.startsWith('tmux new-session')))
+
+    // The marker is the handshake with the still-open terminal: it must name the log, the tail offset and
+    // the fallback session, and the detached child re-asserts its own pid.
+    const marker = JSON.parse(await readFile(join(box.state, 'restart-armed.json'), 'utf8'))
+    assert.equal(marker.log, join(box.root, 'logs', LOG_NAME))
+    assert.equal(typeof marker.logOffset, 'number')
+    assert.equal(marker.tmux, TMUX_SESSION)
+    assert.ok(Number.isInteger(marker.pid) && marker.pid > 0, `marker pid is the orchestrator, got ${marker.pid}`)
+    assert.ok(Number.isInteger(marker.armedPid) && marker.armedPid > 0, 'the marker names the arming process')
+    assert.equal(typeof marker.startedAt, 'string')
+    assert.ok(Number.isFinite(Date.parse(marker.startedAt)), `startedAt is an ISO timestamp, got ${marker.startedAt}`)
+    assert.ok(marker.logOffset > 0, 'the narrator starts after the arming lines, not at the beginning')
+  })
+}
+
+/** The `spv` loop: narrated steps in order, timestamps stripped, relaunch in the same terminal. */
+async function testSpvLoopNarratesAndRelaunches() {
+  const box = await makeSandbox()
+  const relaunched = join(box.base, 'relaunched')
+  const launcher = await writeLauncher(
+    box,
+    `
+if [ -f "$FAKE_RELAUNCHED" ]; then
+  printf 'FAKE RELAUNCH\\n'
+  printf 'launcher-relaunch\\n' >> "$FAKE_CALLS"
+  exit 0
+fi
+printf 'launcher-first\\n' >> "$FAKE_CALLS"
+log="$WHEELCHAIR_AGENT_HOME/logs/restart-all.log"
+mkdir -p "$WHEELCHAIR_AGENT_HOME/logs"
+printf '[2026-11-15T00:00:00.000Z] old line before the marker\\n' >> "$log"
+offset=$(wc -c < "$log")
+${markerJson()}
+{
+  printf '[2026-11-15T00:00:00.100Z] restart-all: pid 111, mode detached, force=no, install=yes, chain 1 2\\n'
+  printf '[2026-11-15T00:00:00.200Z] restart-all: arming a detached orchestrator; internal line\\n'
+  printf '[2026-11-15T00:00:01.000Z] step 1/5: wheelchair-agent service stop -> exit 0\\n'
+  printf '[2026-11-15T00:00:01.100Z] step 2/5: SIGTERM 111 222 -> sent 2, survivors 0\\n'
+  printf '[2026-11-15T00:00:01.200Z] step 3/5: bash $FAKE_CHECKOUT/install.sh -> exit 0\\n'
+  printf '[2026-11-15T00:00:01.300Z] step 4/5: wheelchair-agent service start -> exit 0\\n'
+  printf '[2026-11-15T00:00:01.400Z] step 5/5: skipped; the terminal claimed the restart and relaunches the TUI here\\n'
+  printf '[2026-11-15T00:00:01.500Z] restart complete (exit 0)\\n'
+} >> "$log"
+: > "$FAKE_RELAUNCHED"
+exit 0
+`,
+  )
+  const result = await cli(box, ['spv'], {
+    env: {
+      WHEELCHAIR_AGENT_LAUNCHER: launcher,
+      FAKE_MARKER_PID: String(process.pid),
+      FAKE_RELAUNCHED: relaunched,
+      FAKE_CHECKOUT: box.checkout,
+      WHEELCHAIR_RESTART_NARRATE_MS: '3000',
+    },
+  })
+  assert.equal(result.status, 0, output(result))
+  const text = output(result)
+  assert.match(text, /^restart: stopping the service…$/m, 'the first line appears before any step')
+  const order = [
+    'step 1/5: wheelchair-agent service stop -> exit 0',
+    'step 2/5: SIGTERM 111 222 -> sent 2, survivors 0',
+    'step 3/5: bash ',
+    'step 4/5: wheelchair-agent service start -> exit 0',
+    'step 5/5: skipped; the terminal claimed the restart and relaunches the TUI here',
+    'restart complete (exit 0)',
+    'restart: done; starting the SPV session again…',
+    'FAKE RELAUNCH',
+  ]
+  const positions = order.map(piece => {
+    const index = text.indexOf(piece)
+    assert.ok(index >= 0, `stdout contains ${JSON.stringify(piece)}:\n${text}`)
+    return index
+  })
+  assert.deepEqual([...positions].sort((left, right) => left - right), positions, 'the steps are in log order')
+  assert.ok(
+    text.indexOf('restart: stopping the service…') < text.indexOf('step 1/5'),
+    'the first line is printed before the first replayed step',
+  )
+  assert.doesNotMatch(text, /\[2026-/, 'the ISO timestamp prefix is stripped')
+  assert.doesNotMatch(text, /restart-all:/, 'internal orchestrator lines stay in the log, not on the terminal')
+  assert.doesNotMatch(text, /old line before the marker/, 'the narrator starts at the marker offset')
+  assert.equal(await exists(join(box.state, 'restart-armed.json')), false, 'the marker is cleared after done')
+  assert.equal(await exists(join(box.state, 'restart-claimed.json')), false, 'the claim is cleared after done')
+  assert.deepEqual(await calls(box), ['launcher-first', 'launcher-relaunch'], 'the launcher ran twice')
+}
+
+/** Two completed marked restarts in one loop must relaunch twice (per-launch state, not a one-shot). */
+async function testSpvTwoRestartsInOneLoop() {
+  const box = await makeSandbox()
+  const count = join(box.base, 'launch-count')
+  const launcher = await writeLauncher(
+    box,
+    `
+n=$(cat "$FAKE_COUNT" 2>/dev/null || echo 0)
+n=$((n+1))
+printf '%s\\n' "$n" > "$FAKE_COUNT"
+printf 'call:%s:%s\\n' "$n" "$*" >> "$FAKE_CALLS"
+if [ "$n" -gt 2 ]; then exit 0; fi
+log="$WHEELCHAIR_AGENT_HOME/logs/restart-all.log"
+mkdir -p "$WHEELCHAIR_AGENT_HOME/logs"
+: > "$log"
+offset=$(wc -c < "$log")
+${markerJson()}
+printf '[2026-11-15T00:00:01.000Z] restart complete (exit 0)\\n' >> "$log"
+exit 0
+`,
+  )
+  const result = await cli(box, ['spv'], {
+    env: {
+      WHEELCHAIR_AGENT_LAUNCHER: launcher,
+      FAKE_MARKER_PID: String(process.pid),
+      FAKE_CHECKOUT: box.checkout,
+      FAKE_COUNT: count,
+      WHEELCHAIR_RESTART_NARRATE_MS: '3000',
+    },
+  })
+  assert.equal(result.status, 0, output(result))
+  assert.deepEqual(await calls(box), ['call:1:', 'call:2:', 'call:3:'], 'the launcher ran three times')
+  assert.equal(
+    output(result).split('restart: done; starting the SPV session again…').length - 1,
+    2,
+    'both marked restarts relaunched',
+  )
+}
+
+/** The launcher/TUI must not inherit the armed-chain seams or the launcher test override. */
+async function testSpvLauncherEnvIsClean() {
+  const box = await makeSandbox()
+  const launcher = await writeLauncher(
+    box,
+    `
+for name in WHEELCHAIR_RESTART_CHAIN WHEELCHAIR_RESTART_PARENT_PID WHEELCHAIR_RESTART_PRESET_PATCH WHEELCHAIR_AGENT_LAUNCHER; do
+  if [ -n "$(printenv "$name" 2>/dev/null || true)" ]; then printf 'leaked:%s\\n' "$name" >> "$FAKE_LEAK"; fi
+done
+printf 'supervised:%s\\n' "\${WHEELCHAIR_AGENT_SUPERVISED:-unset}" >> "$FAKE_CALLS"
+exit 0
+`,
+  )
+  const result = await cli(box, ['spv'], {
+    env: {
+      WHEELCHAIR_AGENT_LAUNCHER: launcher,
+      WHEELCHAIR_RESTART_CHAIN: '111 222',
+      WHEELCHAIR_RESTART_PARENT_PID: '1',
+      WHEELCHAIR_RESTART_PRESET_PATCH: '/wrong/patch.yml',
+      WHEELCHAIR_RESTART_NARRATE_MS: '3000',
+    },
+  })
+  assert.equal(result.status, 0, output(result))
+  assert.equal(
+    await exists(join(box.base, 'leaked-seams')),
+    false,
+    'the launcher must not see the CLI-private environment',
+  )
+  assert.deepEqual(await calls(box), ['supervised:1'], 'the supervised marker tells the slash command it is watched')
+}
+
+/** A marker without a pid cannot complete; fail after the short startup grace, not the full timeout. */
+async function testSpvNarratorNoPidGrace() {
+  const box = await makeSandbox()
+  const launcher = await writeLauncher(
+    box,
+    `
+printf 'launcher-first\\n' >> "$FAKE_CALLS"
+log="$WHEELCHAIR_AGENT_HOME/logs/restart-all.log"
+mkdir -p "$WHEELCHAIR_AGENT_HOME/logs"
+: > "$log"
+offset=$(wc -c < "$log")
+${markerJson({ pid: 'null', checkout: 'null', noInstall: 'true' })}
+printf '[2026-11-15T00:00:01.000Z] step 1/5: wheelchair-agent service stop -> exit 0\\n' >> "$log"
+exit 0
+`,
+  )
+  const started = Date.now()
+  const result = await cli(box, ['spv'], {
+    env: {
+      WHEELCHAIR_AGENT_LAUNCHER: launcher,
+      FAKE_CHECKOUT: box.checkout,
+      WHEELCHAIR_RESTART_NARRATE_MS: '10000',
+    },
+  })
+  assert.equal(result.status, 1)
+  assert.ok(Date.now() - started < 5000, 'the startup grace is short, not the full narrator timeout')
+  const text = output(result)
+  assert.match(text, /restart: failed — the orchestrator did not start \(the restart marker has no pid\)/)
+  assert.ok(text.includes(`log: ${join(box.root, 'logs', LOG_NAME)}`), `the failure names the log:\n${text}`)
+  assert.deepEqual(await calls(box), ['launcher-first'], 'no relaunch')
+}
+
+/** A failed install names the failure, the log and the by-hand fix, and never relaunches. */
+async function testSpvNarratorFailureNoRelaunch() {
+  const box = await makeSandbox()
+  const launcher = await writeLauncher(
+    box,
+    `
+printf 'launcher-first\\n' >> "$FAKE_CALLS"
+log="$WHEELCHAIR_AGENT_HOME/logs/restart-all.log"
+mkdir -p "$WHEELCHAIR_AGENT_HOME/logs"
+: > "$log"
+offset=$(wc -c < "$log")
+${markerJson()}
+{
+  printf '[2026-11-15T00:00:01.000Z] step 1/5: wheelchair-agent service stop -> exit 0\\n'
+  printf '[2026-11-15T00:00:02.000Z] step 3/5: bash $FAKE_CHECKOUT/install.sh -> exit 1\\n'
+  printf '[2026-11-15T00:00:02.100Z] install failed; the superagent service is left stopped; not starting it back (exit 1)\\n'
+} >> "$log"
+exit 0
+`,
+  )
+  const result = await cli(box, ['spv'], {
+    env: {
+      WHEELCHAIR_AGENT_LAUNCHER: launcher,
+      FAKE_MARKER_PID: String(process.pid),
+      FAKE_CHECKOUT: box.checkout,
+      WHEELCHAIR_RESTART_NARRATE_MS: '3000',
+    },
+  })
+  assert.equal(result.status, 1)
+  const text = output(result)
+  assert.match(text, /restart: failed — install failed; the superagent service is left stopped/)
+  assert.ok(text.includes(`log: ${join(box.root, 'logs', LOG_NAME)}`), `the failure names the log:\n${text}`)
+  assert.ok(
+    text.includes(
+      `fix: bash ${box.checkout}/install.sh && wheelchair-agent service start && wheelchair-agent spv`,
+    ),
+    `the failure names the by-hand recovery:\n${text}`,
+  )
+  assert.doesNotMatch(text, /restart: done/, 'a failure does not claim success')
+  assert.deepEqual(await calls(box), ['launcher-first'], 'the launcher was not started again')
+  assert.equal(await exists(join(box.state, 'restart-armed.json')), false, 'the marker is cleared')
+}
+
+/** The narrator must not wait forever: the timeout path prints the log and the recovery commands. */
+async function testSpvNarratorTimeout() {
+  const box = await makeSandbox()
+  const launcher = await writeLauncher(
+    box,
+    `
+printf 'launcher-first\\n' >> "$FAKE_CALLS"
+log="$WHEELCHAIR_AGENT_HOME/logs/restart-all.log"
+mkdir -p "$WHEELCHAIR_AGENT_HOME/logs"
+: > "$log"
+offset=$(wc -c < "$log")
+${markerJson({ checkout: 'null', noInstall: 'true' })}
+printf '[2026-11-15T00:00:01.000Z] step 1/5: wheelchair-agent service stop -> exit 0\\n' >> "$log"
+exit 0
+`,
+  )
+  const result = await cli(box, ['spv'], {
+    env: {
+      WHEELCHAIR_AGENT_LAUNCHER: launcher,
+      FAKE_MARKER_PID: String(process.pid),
+      FAKE_CHECKOUT: box.checkout,
+      WHEELCHAIR_RESTART_NARRATE_MS: '200',
+    },
+  })
+  assert.equal(result.status, 1)
+  const text = output(result)
+  assert.match(text, /restart: timed out after 200ms waiting for the orchestrator to finish/)
+  assert.ok(text.includes(`log: ${join(box.root, 'logs', LOG_NAME)}`), `the timeout names the log:\n${text}`)
+  assert.match(text, /fix: wheelchair-agent service start && wheelchair-agent spv/)
+  assert.doesNotMatch(text, /install\.sh &&/, '--no-install omits the install step from the recovery')
+  assert.deepEqual(await calls(box), ['launcher-first'], 'no relaunch after a timeout')
+  assert.equal(await exists(join(box.state, 'restart-armed.json')), false, 'the marker is cleared')
+}
+
+/** A marker from an older run (older `startedAt`) is ignored, so a normal exit stays normal. */
+async function testSpvStaleMarkerIgnored() {
+  const box = await makeSandbox()
+  await writeFile(
+    join(box.state, 'restart-armed.json'),
+    JSON.stringify({
+      pid: process.pid,
+      startedAt: '2020-01-01T00:00:00.000Z',
+      log: join(box.root, 'logs', LOG_NAME),
+      logOffset: 0,
+    }),
+    'utf8',
+  )
+  await writeFile(join(box.state, 'restart-claimed.json'), '{"pid":1}', 'utf8')
+  const launcher = await writeLauncher(
+    box,
+    `
+[ -f "$DSH_SUPERAGENT_STATE_DIR/restart-armed.json" ] && printf 'marker-present\\n' >> "$FAKE_CALLS"
+printf 'launcher-first\\n' >> "$FAKE_CALLS"
+exit 0
+`,
+  )
+  const result = await cli(box, ['spv'], {
+    env: { WHEELCHAIR_AGENT_LAUNCHER: launcher, WHEELCHAIR_RESTART_NARRATE_MS: '3000' },
+  })
+  assert.equal(result.status, 0)
+  assert.equal(output(result), '', 'a normal exit produces no narrator output')
+  assert.deepEqual(
+    await calls(box),
+    ['marker-present', 'launcher-first'],
+    'the launcher ran once; the stale marker was still there during the launch',
+  )
+  assert.equal(await exists(join(box.state, 'restart-armed.json')), false, 'the stale marker is cleared')
+  assert.equal(await exists(join(box.state, 'restart-claimed.json')), false)
+}
+
+/** A normal TUI exit still ends the CLI with the child's status (with a stale marker cleared first). */
+async function testSpvNormalExitKeepsStatus() {
+  const box = await makeSandbox()
+  await writeFile(
+    join(box.state, 'restart-armed.json'),
+    JSON.stringify({ pid: 1, startedAt: '2020-01-01T00:00:00.000Z' }),
+    'utf8',
+  )
+  const launcher = await writeLauncher(
+    box,
+    `
+printf 'launcher-first\\n' >> "$FAKE_CALLS"
+exit 7
+`,
+  )
+  const result = await cli(box, ['spv'], {
+    env: { WHEELCHAIR_AGENT_LAUNCHER: launcher, WHEELCHAIR_RESTART_NARRATE_MS: '3000' },
+  })
+  assert.equal(result.status, 7, 'the child status becomes the CLI status')
+  assert.equal(output(result), '')
+  assert.deepEqual(await calls(box), ['launcher-first'])
+}
+
+/** The orchestrator already took tmux: the CLI prints the session and must not start a second TUI. */
+async function testSpvFallbackAlreadyLaunched() {
+  const box = await makeSandbox()
+  const launcher = await writeLauncher(
+    box,
+    `
+printf 'launcher-first\\n' >> "$FAKE_CALLS"
+log="$WHEELCHAIR_AGENT_HOME/logs/restart-all.log"
+mkdir -p "$WHEELCHAIR_AGENT_HOME/logs"
+: > "$log"
+offset=$(wc -c < "$log")
+${markerJson()}
+printf '[2026-11-15T00:00:01.000Z] restart complete (exit 0)\\n' >> "$log"
+printf '{"pid":1,"at":"2026-11-15T00:00:00.000Z","tmux":"dsh-spv"}\\n' > "$DSH_SUPERAGENT_STATE_DIR/restart-fallback.json"
+exit 0
+`,
+  )
+  const result = await cli(box, ['spv'], {
+    env: {
+      WHEELCHAIR_AGENT_LAUNCHER: launcher,
+      FAKE_MARKER_PID: String(process.pid),
+      FAKE_CHECKOUT: box.checkout,
+      WHEELCHAIR_RESTART_NARRATE_MS: '3000',
+    },
+  })
+  assert.equal(result.status, 0)
+  const text = output(result)
+  assert.match(text, /restart: the terminal did not claim the restart; the TUI is in tmux session dsh-spv/)
+  assert.match(text, /restart: attach with: tmux attach -t =dsh-spv/)
+  assert.ok(text.includes(`log: ${join(box.root, 'logs', LOG_NAME)}`), `the fallback names the log:\n${text}`)
+  assert.ok(!text.includes('restart: done'), 'the fallback path does not relaunch')
+  assert.deepEqual(await calls(box), ['launcher-first'])
+  assert.equal(await exists(join(box.state, 'restart-fallback.json')), true, 'the fallback record stays')
+}
+
+/** A tmux launch that reported success and then failed is a failure, not a success message. */
+async function testSpvFallbackFailureIsNotSuccess() {
+  const box = await makeSandbox()
+  const launcher = await writeLauncher(
+    box,
+    `
+printf 'launcher-first\\n' >> "$FAKE_CALLS"
+log="$WHEELCHAIR_AGENT_HOME/logs/restart-all.log"
+mkdir -p "$WHEELCHAIR_AGENT_HOME/logs"
+: > "$log"
+offset=$(wc -c < "$log")
+${markerJson()}
+{
+  printf '[2026-11-15T00:00:01.000Z] note: no terminal claim within 100ms; taking the tmux fallback\\n'
+  printf '[2026-11-15T00:00:01.100Z] FAIL: tmux session dsh-spv is not present 2s after the relaunch; the TUI did not come back\\n'
+  printf '[2026-11-15T00:00:01.200Z] restart failed (exit 1); the log above says which step failed\\n'
+} >> "$log"
+printf '{"pid":1,"at":"2026-11-15T00:00:00.000Z","tmux":"dsh-spv"}\\n' > "$DSH_SUPERAGENT_STATE_DIR/restart-fallback.json"
+exit 0
+`,
+  )
+  const result = await cli(box, ['spv'], {
+    env: {
+      WHEELCHAIR_AGENT_LAUNCHER: launcher,
+      FAKE_MARKER_PID: String(process.pid),
+      FAKE_CHECKOUT: box.checkout,
+      WHEELCHAIR_RESTART_NARRATE_MS: '3000',
+    },
+  })
+  assert.equal(result.status, 1)
+  const text = output(result)
+  assert.match(text, /restart: failed — FAIL: tmux session dsh-spv is not present/)
+  assert.doesNotMatch(text, /restart: attach with/, 'a failed tmux fallback is not reported as a live session')
+  assert.doesNotMatch(text, /restart: done/, 'no relaunch line on failure')
+  assert.ok(text.includes(`log: ${join(box.root, 'logs', LOG_NAME)}`), `the failure names the log:\n${text}`)
+  assert.deepEqual(await calls(box), ['launcher-first'], 'no relaunch')
+}
+
+/** A dead orchestrator pid with no completion line fails with the log path, instead of hanging. */
+async function testSpvNarratorDeathPath() {
+  const box = await makeSandbox()
+  const deadPid = freePids(1, 950_000)[0]
+  const launcher = await writeLauncher(
+    box,
+    `
+printf 'launcher-first\\n' >> "$FAKE_CALLS"
+log="$WHEELCHAIR_AGENT_HOME/logs/restart-all.log"
+mkdir -p "$WHEELCHAIR_AGENT_HOME/logs"
+: > "$log"
+offset=$(wc -c < "$log")
+${markerJson()}
+printf '[2026-11-15T00:00:01.000Z] step 1/5: wheelchair-agent service stop -> exit 0\\n' >> "$log"
+exit 0
+`,
+  )
+  const result = await cli(box, ['spv'], {
+    env: {
+      WHEELCHAIR_AGENT_LAUNCHER: launcher,
+      FAKE_MARKER_PID: String(deadPid),
+      FAKE_CHECKOUT: box.checkout,
+      WHEELCHAIR_RESTART_NARRATE_MS: '3000',
+    },
+  })
+  assert.equal(result.status, 1)
+  const text = output(result)
+  assert.match(text, /restart: failed — the orchestrator exited without completing/)
+  assert.ok(text.includes(`log: ${join(box.root, 'logs', LOG_NAME)}`), `the death path names the log:\n${text}`)
+  assert.match(text, /fix: bash .*install\.sh && wheelchair-agent service start && wheelchair-agent spv/)
+  assert.deepEqual(await calls(box), ['launcher-first'], 'no relaunch after a dead orchestrator')
+}
+
+/** Step 5: tmux is the fallback only when no terminal claims; a claim skips it entirely. */
+async function testOrchestratorClaimVsFallback() {
+  await withServer({ running: 0, queued: 0 }, async ({ url }) => {
+    const box = await makeBox()
+    box.url = url
+    const fallbackRun = await cli(box, ['restart-all', '--run'], {
+      env: { WHEELCHAIR_RESTART_CLAIM_MS: '100' },
+    })
+    assert.equal(fallbackRun.status, 0, output(fallbackRun))
+    const fallbackCalls = await calls(box)
+    assert.ok(fallbackCalls.some(line => line.startsWith('tmux new-session')), 'tmux is launched')
+    const fallbackLog = (await logLines(box)).join('\n')
+    assert.match(fallbackLog, /note: no terminal claim within 100ms; taking the tmux fallback/)
+    assert.match(fallbackLog, /step 5\/5: tmux .* -> exit 0/)
+    assert.match(fallbackLog, /restart complete \(exit 0\)/)
+    const record = JSON.parse(await readFile(join(box.state, 'restart-fallback.json'), 'utf8'))
+    assert.equal(record.tmux, TMUX_SESSION)
+
+    const claimed = await makeBox()
+    claimed.url = url
+    await writeFile(
+      join(claimed.state, 'restart-claimed.json'),
+      JSON.stringify({ pid: process.pid, at: new Date().toISOString() }),
+      'utf8',
+    )
+    const claimedRun = await cli(claimed, ['restart-all', '--run'], {
+      env: { WHEELCHAIR_RESTART_CLAIM_MS: '100' },
+    })
+    assert.equal(claimedRun.status, 0, output(claimedRun))
+    const claimedCalls = await calls(claimed)
+    assert.ok(claimedCalls.includes('wheelchair-agent service stop'), 'the run still happens')
+    assert.ok(!claimedCalls.some(line => line.startsWith('tmux')), 'a claimed restart runs no tmux command')
+    const claimedLog = (await logLines(claimed)).join('\n')
+    assert.match(
+      claimedLog,
+      /step 5\/5: skipped; the terminal claimed the restart and relaunches the TUI here/,
+    )
+    assert.match(claimedLog, /restart complete \(exit 0\)/)
+    assert.equal(claimedLog.split('\n').filter(line => /\] step \d\/5:/.test(line)).length, 5)
+    assert.equal(await exists(join(claimed.state, 'restart-fallback.json')), false, 'no fallback record')
+  })
+}
+
+/**
+ * A claim whose narrator is dead must not suppress tmux: that would leave the operator with no TUI at all.
+ * The claim is only written by the CLI before the relaunch, so a dead pid means the terminal died with it.
+ */
+async function testDeadClaimTakesFallback() {
+  await withServer({ running: 0, queued: 0 }, async ({ url }) => {
+    const box = await makeBox()
+    box.url = url
+    const deadPid = freePids(1, 970_000)[0]
+    await writeFile(
+      join(box.state, 'restart-claimed.json'),
+      JSON.stringify({ pid: deadPid, at: new Date().toISOString() }),
+      'utf8',
+    )
+    const result = await cli(box, ['restart-all', '--run'], {
+      env: { WHEELCHAIR_RESTART_CLAIM_MS: '1000' },
+    })
+    assert.equal(result.status, 0, output(result))
+    const lines = await calls(box)
+    assert.ok(lines.some(line => line.startsWith('tmux new-session')), 'the tmux fallback runs')
+    const log = (await logLines(box)).join('\n')
+    assert.match(log, /note: the terminal that claimed the restart is gone; taking the tmux fallback/)
+    assert.doesNotMatch(log, /step 5\/5: skipped/, 'a dead claim is not treated as a live relaunch')
+    assert.match(log, /step 5\/5: tmux .* -> exit 0/)
+    assert.match(log, /restart complete \(exit 0\)/)
+  })
+}
+
+/** Remove the sandbox tmux fake and add the shells the steps need, for the "no tmux" cases. */
+async function removeTmux(box) {
+  await rm(join(box.bin, 'tmux'), { force: true })
+  await symlink('/bin/sh', join(box.bin, 'sh'))
+  await symlink('/bin/bash', join(box.bin, 'bash'))
+  return { PATH: box.bin }
+}
+
+/** tmux is only the fallback: a terminal that claimed the restart succeeds with no tmux at all. */
+async function testClaimedRunWithoutTmux() {
+  await withServer({ running: 0, queued: 0 }, async ({ url }) => {
+    const box = await makeBox()
+    box.url = url
+    const env = await removeTmux(box)
+    await writeFile(
+      join(box.state, 'restart-claimed.json'),
+      JSON.stringify({ pid: process.pid, at: new Date().toISOString() }),
+      'utf8',
+    )
+    const result = await cli(box, ['restart-all', '--run'], {
+      env: { ...env, WHEELCHAIR_RESTART_CLAIM_MS: '1000' },
+    })
+    assert.equal(result.status, 0, output(result))
+    assert.ok(!(await calls(box)).some(line => line.startsWith('tmux')), 'no tmux command is run')
+    const log = (await logLines(box)).join('\n')
+    assert.match(log, /step 5\/5: skipped; the terminal claimed the restart and relaunches the TUI here/)
+    assert.match(log, /note: tmux is not on PATH/)
+    assert.match(log, /restart complete \(exit 0\)/)
+  })
+}
+
+/** Without a claim and without tmux there is no way back: exit 1 with a logged failure. */
+async function testUnclaimedRunWithoutTmuxFails() {
+  await withServer({ running: 0, queued: 0 }, async ({ url }) => {
+    const box = await makeBox()
+    box.url = url
+    const env = await removeTmux(box)
+    const result = await cli(box, ['restart-all', '--run'], {
+      env: { ...env, WHEELCHAIR_RESTART_CLAIM_MS: '100' },
+    })
+    assert.equal(result.status, 1)
+    assert.match(output(result), /FAIL: tmux is not on PATH; the fallback TUI was not started/)
+    assert.ok(!(await calls(box)).some(line => line.startsWith('tmux')), 'no tmux command is run')
+    const log = (await logLines(box)).join('\n')
+    assert.match(log, /FAIL: tmux is not on PATH; the fallback TUI was not started/)
+    assert.match(log, /restart failed \(exit 1\)/)
+    assert.doesNotMatch(log, /restart complete/)
+  })
+}
+
+/**
+ * The armed chain/patch env overrides exist only for the detached `--run` child. A dry run carrying a stale
+ * leaked pair must still scan `/proc` instead of trusting (and refusing) the stale chain.
+ */
+async function testDryRunIgnoresArmedOverrides() {
+  await withServer({ running: 0, queued: 0 }, async ({ url }) => {
+    const box = await makeBox({ chainCount: 2 })
+    box.url = url
+    const stale = freePids(2, 960_000)
+    const result = await cli(box, ['restart-all', '--dry-run', '--force'], {
+      env: {
+        WHEELCHAIR_RESTART_CHAIN: stale.join(' '),
+        WHEELCHAIR_RESTART_PRESET_PATCH: '/wrong/preset-default.patch.yml',
+      },
+    })
+    assert.equal(result.status, 0, output(result))
+    const text = output(result)
+    assert.match(text, /restart-all plan \(dry run; nothing is changed\)/)
+    for (const pid of box.chainPids) {
+      assert.ok(text.includes(String(pid)), `the plan names the real /proc chain pid ${pid}:\n${text}`)
+    }
+    for (const pid of stale) {
+      assert.ok(!text.includes(String(pid)), `the stale armed pid ${pid} is not treated as a target:\n${text}`)
+    }
+    assert.doesNotMatch(text, /armed SPV chain is stale/)
+    assert.doesNotMatch(text, /\/wrong\/preset-default\.patch\.yml/)
+  })
+}
+
+/** The same-terminal relaunch resumes the conversation named by ~/.dsh-tui/resume.txt. */
+async function testSpvRelaunchResumesSession() {
+  const box = await makeSandbox()
+  const uuid = '10b21e9f-7e77-40f3-9d1e-d2ee931f6ff6'
+  await writeResume(box, `${uuid}\n`)
+  const launcher = await writeLauncher(
+    box,
+    `
+printf 'call:%s\\n' "$*" >> "$FAKE_CALLS"
+if [ -f "$FAKE_RELAUNCHED" ]; then exit 0; fi
+log="$WHEELCHAIR_AGENT_HOME/logs/restart-all.log"
+mkdir -p "$WHEELCHAIR_AGENT_HOME/logs"
+: > "$log"
+offset=$(wc -c < "$log")
+${markerJson()}
+printf '[2026-11-15T00:00:01.000Z] restart complete (exit 0)\\n' >> "$log"
+: > "$FAKE_RELAUNCHED"
+exit 0
+`,
+  )
+  const result = await cli(box, ['spv'], {
+    env: {
+      WHEELCHAIR_AGENT_LAUNCHER: launcher,
+      FAKE_MARKER_PID: String(process.pid),
+      FAKE_CHECKOUT: box.checkout,
+      FAKE_RELAUNCHED: join(box.base, 'relaunched'),
+      WHEELCHAIR_RESTART_NARRATE_MS: '3000',
+    },
+  })
+  assert.equal(result.status, 0, output(result))
+  assert.deepEqual(
+    await calls(box),
+    ['call:', `call:--resume ${uuid}`],
+    'the operator start has no flag; the relaunch resumes the recorded session',
+  )
+  assert.doesNotMatch(output(result), /cannot resume/, 'a usable resume file prints no note')
+
+  // The first launch keeps the operator's argv, but the relaunch must not repeat their old id: it takes
+  // resume.txt instead, because an old id can reopen the wrong conversation.
+  const chosen = await makeSandbox()
+  await writeResume(chosen, `${uuid}\n`)
+  const other = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+  const chosenLauncher = await writeLauncher(
+    chosen,
+    `
+printf 'call:%s\\n' "$*" >> "$FAKE_CALLS"
+if [ -f "$FAKE_RELAUNCHED" ]; then exit 0; fi
+log="$WHEELCHAIR_AGENT_HOME/logs/restart-all.log"
+mkdir -p "$WHEELCHAIR_AGENT_HOME/logs"
+: > "$log"
+offset=$(wc -c < "$log")
+${markerJson()}
+printf '[2026-11-15T00:00:01.000Z] restart complete (exit 0)\\n' >> "$log"
+: > "$FAKE_RELAUNCHED"
+exit 0
+`,
+  )
+  const chosenResult = await cli(chosen, ['spv', '--resume', other], {
+    env: {
+      WHEELCHAIR_AGENT_LAUNCHER: chosenLauncher,
+      FAKE_MARKER_PID: String(process.pid),
+      FAKE_CHECKOUT: chosen.checkout,
+      FAKE_RELAUNCHED: join(chosen.base, 'relaunched'),
+      WHEELCHAIR_RESTART_NARRATE_MS: '3000',
+    },
+  })
+  assert.equal(chosenResult.status, 0, output(chosenResult))
+  assert.deepEqual(
+    await calls(chosen),
+    [`call:--resume ${other}`, `call:--resume ${uuid}`],
+    'the first launch keeps the operator argv; the relaunch uses resume.txt, not the stale id',
+  )
+}
+
+/** With no resume.txt the relaunch still happens, but it prints one note and starts a fresh session. */
+async function testSpvCannotResumeStartsFresh() {
+  const box = await makeSandbox()
+  const launcher = await writeLauncher(
+    box,
+    `
+printf 'call:%s\\n' "$*" >> "$FAKE_CALLS"
+if [ -f "$FAKE_RELAUNCHED" ]; then printf 'fresh-started\\n'; exit 0; fi
+log="$WHEELCHAIR_AGENT_HOME/logs/restart-all.log"
+mkdir -p "$WHEELCHAIR_AGENT_HOME/logs"
+: > "$log"
+offset=$(wc -c < "$log")
+${markerJson()}
+printf '[2026-11-15T00:00:01.000Z] restart complete (exit 0)\\n' >> "$log"
+: > "$FAKE_RELAUNCHED"
+exit 0
+`,
+  )
+  const result = await cli(box, ['spv'], {
+    env: {
+      WHEELCHAIR_AGENT_LAUNCHER: launcher,
+      FAKE_MARKER_PID: String(process.pid),
+      FAKE_CHECKOUT: box.checkout,
+      FAKE_RELAUNCHED: join(box.base, 'relaunched'),
+      WHEELCHAIR_RESTART_NARRATE_MS: '3000',
+    },
+  })
+  assert.equal(result.status, 0, output(result))
+  const text = output(result)
+  const note = 'restart: cannot resume the previous SPV session (no ~/.dsh-tui/resume.txt); starting a fresh one.'
+  const noteIndex = text.indexOf(note)
+  assert.ok(noteIndex >= 0, `the missing-resume note is printed:\n${text}`)
+  assert.ok(noteIndex < text.indexOf('fresh-started'), 'the note comes before the fresh session starts')
+  assert.deepEqual(await calls(box), ['call:', 'call:'], 'the relaunch runs without a resume flag')
+}
+
+/**
+ * A stale operator flag must not be repeated on the relaunch: a bare `-c` with an empty resume.txt makes
+ * dsh-tui exit 1, and an old explicit id can reopen the wrong conversation.
+ */
+async function testSpvRelaunchDropsStaleOperatorFlags() {
+  const box = await makeSandbox()
+  await writeResume(box, '')
+  const launcher = await writeLauncher(
+    box,
+    `
+printf 'call:%s\\n' "$*" >> "$FAKE_CALLS"
+if [ -f "$FAKE_RELAUNCHED" ]; then printf 'fresh-started\\n'; exit 0; fi
+log="$WHEELCHAIR_AGENT_HOME/logs/restart-all.log"
+mkdir -p "$WHEELCHAIR_AGENT_HOME/logs"
+: > "$log"
+offset=$(wc -c < "$log")
+${markerJson()}
+printf '[2026-11-15T00:00:01.000Z] restart complete (exit 0)\\n' >> "$log"
+: > "$FAKE_RELAUNCHED"
+exit 0
+`,
+  )
+  const result = await cli(box, ['spv', '-c'], {
+    env: {
+      WHEELCHAIR_AGENT_LAUNCHER: launcher,
+      FAKE_MARKER_PID: String(process.pid),
+      FAKE_CHECKOUT: box.checkout,
+      FAKE_RELAUNCHED: join(box.base, 'relaunched'),
+      WHEELCHAIR_RESTART_NARRATE_MS: '3000',
+    },
+  })
+  assert.equal(result.status, 0, output(result))
+  const text = output(result)
+  assert.match(
+    text,
+    /restart: cannot resume the previous SPV session \(~\/\.dsh-tui\/resume\.txt does not contain a session id\); starting a fresh one\./,
+  )
+  assert.deepEqual(await calls(box), ['call:-c', 'call:'], 'the relaunch drops the stale -c flag')
+  assert.match(text, /fresh-started/, 'the fresh session still starts')
+}
+
+/** dsh-tui rejecting the resume is not fatal: one note, then one retry without the flag. */
+async function testSpvResumeRefusedRetriesFresh() {
+  const box = await makeSandbox()
+  const uuid = '10b21e9f-7e77-40f3-9d1e-d2ee931f6ff6'
+  await writeResume(box, uuid)
+  const launcher = await writeLauncher(
+    box,
+    `
+printf 'call:%s\\n' "$*" >> "$FAKE_CALLS"
+case "$*" in
+  *--resume*) exit 3 ;;
+esac
+if [ -f "$FAKE_RELAUNCHED" ]; then printf 'fresh-started\\n'; exit 0; fi
+log="$WHEELCHAIR_AGENT_HOME/logs/restart-all.log"
+mkdir -p "$WHEELCHAIR_AGENT_HOME/logs"
+: > "$log"
+offset=$(wc -c < "$log")
+${markerJson()}
+printf '[2026-11-15T00:00:01.000Z] restart complete (exit 0)\\n' >> "$log"
+: > "$FAKE_RELAUNCHED"
+exit 0
+`,
+  )
+  const result = await cli(box, ['spv'], {
+    env: {
+      WHEELCHAIR_AGENT_LAUNCHER: launcher,
+      FAKE_MARKER_PID: String(process.pid),
+      FAKE_CHECKOUT: box.checkout,
+      FAKE_RELAUNCHED: join(box.base, 'relaunched'),
+      WHEELCHAIR_RESTART_NARRATE_MS: '3000',
+    },
+  })
+  assert.equal(result.status, 0, output(result))
+  const text = output(result)
+  assert.match(
+    text,
+    /restart: the resumed SPV session did not start \(dsh-tui exited 3\); starting a fresh one\./,
+  )
+  assert.match(text, /fresh-started/)
+  assert.deepEqual(
+    await calls(box),
+    ['call:', `call:--resume ${uuid}`, 'call:'],
+    'the rejected resume is retried exactly once without the flag',
+  )
+}
+
+/** The tmux fallback resumes the same conversation, and logs one note when it cannot. */
+async function testTmuxFallbackResumes() {
+  await withServer({ running: 0, queued: 0 }, async ({ url }) => {
+    const uuid = '10b21e9f-7e77-40f3-9d1e-d2ee931f6ff6'
+    const withResume = await makeBox()
+    withResume.url = url
+    await writeResume(withResume, `${uuid}\n`)
+    const resumed = await cli(withResume, ['restart-all', '--run'], {
+      env: { WHEELCHAIR_RESTART_CLAIM_MS: '100' },
+    })
+    assert.equal(resumed.status, 0, output(resumed))
+    const resumedLaunch = (await calls(withResume)).find(line => line.startsWith('tmux new-session'))
+    assert.ok(resumedLaunch !== undefined, 'the fallback launched tmux')
+    assert.ok(
+      resumedLaunch.includes(`spv --resume ${uuid}`),
+      `the tmux fallback resumes the session:\n${resumedLaunch}`,
+    )
+
+    const fresh = await makeBox()
+    fresh.url = url
+    const freshRun = await cli(fresh, ['restart-all', '--run'], {
+      env: { WHEELCHAIR_RESTART_CLAIM_MS: '100' },
+    })
+    assert.equal(freshRun.status, 0, output(freshRun))
+    const freshLaunch = (await calls(fresh)).find(line => line.startsWith('tmux new-session'))
+    assert.ok(freshLaunch !== undefined, 'the fallback launched tmux')
+    assert.ok(!freshLaunch.includes('--resume'), 'no resume flag when the file is missing')
+    const freshLog = (await logLines(fresh)).join('\n')
+    assert.match(
+      freshLog,
+      /note: cannot resume the previous SPV session \(no ~\/\.dsh-tui\/resume\.txt\); the tmux fallback starts a fresh SPV session/,
+    )
+  })
+}
+
+/** The detached child's private seams must not reach the service it starts. */
+async function testOrchestratorDoesNotLeakSeams() {
+  await withServer({ running: 0, queued: 0 }, async ({ url }) => {
+    const box = await makeBox()
+    box.url = url
+    const result = await cli(box, ['restart-all', '--run'], {
+      env: {
+        WHEELCHAIR_RESTART_CHAIN: box.chainPids.join(' '),
+        WHEELCHAIR_RESTART_CLAIM_MS: '100',
+      },
+    })
+    assert.equal(result.status, 0, output(result))
+    assert.ok((await calls(box)).includes('wheelchair-agent service start'), 'the service was started')
+    assert.equal(
+      await exists(join(box.base, 'leaked-seams')),
+      false,
+      'the armed-chain env must not reach the service process',
+    )
+  })
+}
+
+/** The dry-run plan names the resume id and the tmux fallback for step 5. */
+async function testDryRunPlanMentionsResume() {
+  await withServer({ running: 0, queued: 0 }, async ({ url }) => {
+    const uuid = '10b21e9f-7e77-40f3-9d1e-d2ee931f6ff6'
+    const box = await makeBox()
+    box.url = url
+    await writeResume(box, `${uuid}\n`)
+    const result = await cli(box, ['restart-all', '--dry-run'])
+    assert.equal(result.status, 0, output(result))
+    const text = output(result)
+    assert.match(text, new RegExp(`resume: --resume ${uuid}`))
+    assert.ok(
+      text.includes(`${process.execPath} ${box.presetCli} spv --resume ${uuid}`),
+      `the plan shows the resumed fallback launch:\n${text}`,
+    )
+    assert.match(text, /tmux new-session -d -s dsh-spv/)
+    assert.deepEqual(await calls(box), [], 'a dry run still runs nothing')
   })
 }
 
@@ -880,13 +1792,36 @@ try {
   await test('a failed install leaves the service stopped and logs the by-hand recovery', testFailedInstallAborts)
   await test('install.sh exit 3 is reported as a refusal, not a fixable failure', testInstallRefusedExit3)
   await test('--no-install skips install.sh and still restarts service and TUI', testNoInstall)
-  await test('a service-start failure still relaunches the TUI and exits 1', testServiceStartFailure)
+  await test('a service-start failure exits 1 without relaunching the TUI', testServiceStartFailure)
   await test('the parent wait times out without running a command', testReparentWait)
   await test('the kill set excludes self/ancestors/service and an ancestor aborts first', testKillTargetsAndAncestorAbort)
   await test('an armed chain whose pid no longer carries the patch is refused before mutation', testStaleArmedChain)
   await test('the command module registers one honest /restart-wheelchair-agent', testCommandModule)
   await test('the detached child logs a re-guard refusal and runs nothing', testDetachedReguard)
   await test('--detach arms a child that logs restart complete', testDetach)
+  await test('the spv loop narrates the log in order and relaunches in the same terminal', testSpvLoopNarratesAndRelaunches)
+  await test('two marked restarts in one loop relaunch twice', testSpvTwoRestartsInOneLoop)
+  await test('the launcher environment carries no CLI-private seams', testSpvLauncherEnvIsClean)
+  await test('a marker with no pid fails after the short startup grace', testSpvNarratorNoPidGrace)
+  await test('a failed install makes the narrator exit 1 and never relaunch', testSpvNarratorFailureNoRelaunch)
+  await test('the narrator timeout prints the log and the by-hand recovery', testSpvNarratorTimeout)
+  await test('a stale marker is cleared so a normal exit stays normal', testSpvStaleMarkerIgnored)
+  await test('a normal launcher exit keeps the child status', testSpvNormalExitKeepsStatus)
+  await test('the tmux fallback is already launched: print it and do not relaunch', testSpvFallbackAlreadyLaunched)
+  await test('a failed tmux fallback exits 1 instead of printing success', testSpvFallbackFailureIsNotSuccess)
+  await test('a dead orchestrator fails the narrator with the log path', testSpvNarratorDeathPath)
+  await test('the orchestrator takes tmux only when the terminal does not claim', testOrchestratorClaimVsFallback)
+  await test('a claim whose narrator died still takes the tmux fallback', testDeadClaimTakesFallback)
+  await test('a claimed run needs no tmux', testClaimedRunWithoutTmux)
+  await test('an unclaimed run without tmux fails with a logged reason', testUnclaimedRunWithoutTmuxFails)
+  await test('a dry run ignores the armed chain/patch overrides and scans /proc', testDryRunIgnoresArmedOverrides)
+  await test('the same-terminal relaunch resumes the recorded SPV session', testSpvRelaunchResumesSession)
+  await test('a missing resume file prints one note and starts a fresh session', testSpvCannotResumeStartsFresh)
+  await test('the relaunch drops stale operator session flags', testSpvRelaunchDropsStaleOperatorFlags)
+  await test('a rejected resume is retried once without the flag', testSpvResumeRefusedRetriesFresh)
+  await test('the tmux fallback resumes the same conversation, or logs one note', testTmuxFallbackResumes)
+  await test('the detached seams do not leak into the service it starts', testOrchestratorDoesNotLeakSeams)
+  await test('the dry-run plan names the resume id and the tmux fallback', testDryRunPlanMentionsResume)
 } finally {
   for (const server of SERVERS) {
     await new Promise(done => server.close(done)).catch(() => {})

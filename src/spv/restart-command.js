@@ -4,9 +4,10 @@
  * The command is deliberately thin: it runs the CLI's guard and arms the detached orchestrator, then tells
  * the operator their session is about to end. It never claims to have restarted anything itself, because it
  * cannot: it executes inside the very SPV session the restart has to stop. The actual work (service stop,
- * chain TERM/KILL, install.sh, service start, tmux relaunch) happens in `src/spv/restart.js`, driven by the
- * CLI; this file imports only `node:child_process` so the plugin has no dsh dependency and no duplicate
- * implementation.
+ * chain TERM/KILL, install.sh, service start) happens in `src/spv/restart.js`, driven by the CLI, and the
+ * terminal that launched `wheelchair-agent spv` narrates it and relaunches the TUI there
+ * (`src/spv/restart-ux.js`). tmux is only the fallback when that terminal is gone. This file imports only
+ * `node:child_process` so the plugin has no dsh dependency and no duplicate implementation.
  *
  * Only `--force` is accepted. `--force` interrupts running workers and queued tickets instead of refusing;
  * the CLI prints exactly what it is interrupting before it proceeds.
@@ -24,16 +25,31 @@ export const COMMAND = 'restart-wheelchair-agent'
 export const USAGE = `Usage: /restart-wheelchair-agent [--force]
 
 Restart everything this deployment runs: the superagent service, a cold install of the preset, and the SPV
-TUI session. This command only arms a detached orchestrator and returns; your session is about to end.
+TUI session. This command only arms a detached orchestrator and returns; this SPV session ends here.
+
+The terminal that launched "wheelchair-agent spv" stays open across the restart: it prints every step and
+brings the TUI back in that same terminal, resumed into the same SPV conversation (the session id comes from
+~/.dsh-tui/resume.txt; if that file is missing or does not hold a usable id, it says so and starts a fresh
+session). If that terminal is gone (closed, or the CLI died with it), the fallback is tmux session "dsh-spv"
+(attach with: tmux attach -t =dsh-spv), resumed the same way. Every step is appended to
+<root>/logs/restart-all.log (default ~/.wheelchair-agent/logs/restart-all.log), which is the record
+to read if the TUI does not come back.
+
+One-time rollout: a session started before the same-terminal narrator existed has no supervising
+"wheelchair-agent spv", so its first restart comes back in tmux "dsh-spv"; start a fresh
+"wheelchair-agent spv" afterwards. dsh-tui's own /update, /restart and /backend handoff also end the
+supervising CLI — run "wheelchair-agent spv" again to restore it. Do not pass --patch to
+"wheelchair-agent spv": the CLI would join the kill chain and forfeit the narrator.
 
 Arguments:
   --force   interrupt running workers and queued tickets instead of refusing. The command prints what it is
             interrupting before anything is stopped. At most once.
 
 The detached orchestrator stops the service, stops this SPV session's process chain (SIGTERM, then SIGKILL
-after a bounded wait), runs install.sh cold, starts the service again, and relaunches the TUI in tmux session
-"dsh-spv". Every step is appended to <root>/logs/restart-all.log (default
-~/.wheelchair-agent/logs/restart-all.log) with its command and exit code.
+after a bounded wait), runs install.sh cold and starts the service again. It does not relaunch the TUI itself
+unless no terminal claims the restart. A failed install or a service that does not start leaves the service
+stopped and does not relaunch a TUI into a broken deployment. Every step is appended to
+<root>/logs/restart-all.log (default ~/.wheelchair-agent/logs/restart-all.log) with its command and exit code.
 
 No other argument is accepted. Without --force the command refuses when the service reports a running worker
 or a queued ticket, because stopping the service then would throw that work away.`
@@ -100,7 +116,7 @@ function makeHandler(config = {}) {
 export function apply(ctx, config = {}) {
   ctx.commands.register({
     name: COMMAND,
-    description: 'Restart the deployment: superagent service, cold install and SPV TUI',
+    description: 'Restart the deployment and bring the SPV TUI back in this terminal',
     input: { hint: '[--force]' },
     handler: makeHandler(config),
   })

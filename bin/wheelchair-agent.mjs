@@ -6,8 +6,11 @@
  * `src/` 是纯函数库，插件与 CLI 都 import 它，谁都不许自己结束进程。
  *
  * 子命令的实现分三类：
- *   - `spv` / `prepare` / `service` / `jobctl`：`exec` 一个异构实现（sh / python3）。CLI 是门面，
+ *   - `prepare` / `service` / `jobctl`：`exec` 一个异构实现（sh / python3）。CLI 是门面，
  *     门面后面挂异构工具是正常的；`prepare.sh` 刻意保持 POSIX sh，不重写（`ARCHITECTURE/layout.md`）。
+ *   - `spv`：把启动器当子进程跑（终端用 `stdio: 'inherit'` 继承），子进程因 `restart-all --detach`
+ *     留下的 marker 退出时，由本进程叙述日志并在**同一终端**重新拉起；普通退出原样返回子进程的退出码。
+ *     实现在 `src/spv/restart-ux.js`，所以 CLI 不再用 `exec` 换掉自己。
  *   - `dispatch` / `status`：直接 import `src/spv/*.js`，**不 spawn 子进程**——队列格式只有
  *     一份实现，`spv_dispatch` 工具与这里走同一个 `submitTask`。
  *   - `check`：`src/spv/check.js` 的四项运行时检查。
@@ -45,7 +48,7 @@ const USAGE = `usage: wheelchair-agent <command> [options]
 The single entry point for the SPV session and the superagent service.
 
 commands:
-  spv [dsh-tui args...]        start the SPV session (starts the backend first, idempotently)
+  spv [dsh-tui args...]        start the SPV session (backend first; narrates a restart and comes back here)
   prepare                      the panel's prepare command: clone the project, install a managed
                                AGENTS.md, give tools/<name> a private GitHub remote
   service <start|stop|restart|status|open>
@@ -64,7 +67,7 @@ commands:
                                reclaim ticket clones that are clean, unused and fully pushed
   work restored <ticket>       print the commands that rebuild a reclaimed ticket clone
   restart-all [--dry-run] [--force] [--no-install] [--detach]
-                               restart the superagent service, cold-install the preset and relaunch the SPV TUI
+                               restart the superagent service, cold-install the preset and bring the SPV TUI back
   where [--json]               where this install put everything (data root, preset, wrappers, queue, logs)
   check                        runtime health: service, preset, panel prepare value, prepare dry run
   --help                       this text
@@ -170,8 +173,9 @@ const RESTART_USAGE = `usage: wheelchair-agent restart-all [--dry-run] [--force]
 
 Restart everything this deployment runs: the superagent service, a cold install of the preset, and the SPV TUI
 session. The cold-install guard refuses while the service or a live SPV session holds the install targets, so
-the order is fixed: guard -> service stop -> stop the SPV chain -> install.sh cold -> service start -> relaunch
-the TUI in tmux.
+the order is fixed: guard -> service stop -> stop the SPV chain -> install.sh cold -> service start -> the
+terminal that ran "wheelchair-agent spv" brings the TUI back in that same terminal. tmux session "dsh-spv" is
+only the fallback for a terminal that is gone.
 
 options:
   --dry-run     print the plan and change nothing (no log, no command, no signal)
@@ -182,9 +186,12 @@ options:
   --run         internal: run the orchestration in this process (used by --detach)
   --help        this text
 
-The TUI cannot be put back on this terminal from inside the session that must be stopped, so --detach
-relaunches it in tmux session "dsh-spv" and appends every step to <root>/logs/restart-all.log
-(default ~/.wheelchair-agent/logs/restart-all.log).
+--detach appends every step to <root>/logs/restart-all.log (default
+~/.wheelchair-agent/logs/restart-all.log). The terminal that ran "wheelchair-agent spv" stays open across the
+restart: it tails that log, prints each step, and starts the TUI again there, resumed into the same SPV
+conversation from ~/.dsh-tui/resume.txt (a missing or unusable id prints one note and starts a fresh
+session). If that terminal is gone, the orchestrator falls back to relaunching the TUI in tmux session
+"dsh-spv", resuming the same way.
 `
 
 /** 用法错误：退出码 2，与「命令失败」（1）分开。 */
@@ -289,14 +296,29 @@ function preview(text, limit) {
 
 // ------------------------------------------------------------------ commands
 
-/** `spv`：拉起后端（幂等）后启动 SPV 会话，其余参数透传给 dsh-tui。 */
-function commandSpv(argv) {
-  if (!existsSync(LAUNCHER)) {
-    process.stderr.write(`wheelchair-agent: the SPV launcher is missing at ${LAUNCHER}\n`)
+/**
+ * `spv`：拉起后端（幂等）后启动 SPV 会话，其余参数透传给 dsh-tui。
+ *
+ * 本命令**不** `exec` 启动器：它把启动器当子进程跑，终端由子进程继承，所以 TUI 退出后本进程还在。
+ * `restart-all --detach` 留下的 marker 让本进程变成叙述者——tail 日志、打印每一步、然后在同一终端重新
+ * 拉起启动器；没有 marker 时就是普通退出，退出码原样透传。循环本身在 `src/spv/restart-ux.js`。
+ * `WHEELCHAIR_AGENT_LAUNCHER`（绝对路径）是测试与手动覆盖用的 seam。
+ */
+async function commandSpv(argv) {
+  const configured = String(process.env.WHEELCHAIR_AGENT_LAUNCHER ?? '').trim()
+  const launcher = configured === '' ? LAUNCHER : configured
+  if (!existsSync(launcher)) {
+    process.stderr.write(`wheelchair-agent: the SPV launcher is missing at ${launcher}\n`)
     process.stderr.write('fix: run "bash install.sh" from the wheelchair-agent checkout\n')
     process.exit(1)
   }
-  exec('sh', [LAUNCHER, ...argv])
+  const { runSpvSession } = await load('src', 'spv', 'restart-ux.js')
+  process.exitCode = await runSpvSession({
+    launcher,
+    launcherArgv: argv,
+    stateDir: STATE_DIR,
+    env: process.env,
+  })
 }
 
 /**
@@ -636,7 +658,7 @@ async function commandWork(argv) {
 
 /**
  * `restart-all`：解析布尔开关后交给 `src/spv/restart.js`（服务停止 → SPV 链停止 → 冷安装 → 服务启动 →
- * tmux 里重开 TUI）。
+ * 由 `spv` 终端叙述并重开 TUI；tmux 只在终端消失时兜底）。
  *
  * 布尔项自己解析（`options()` 只处理带值选项）；任何未知项都在读服务/扫 `/proc` 之前报用法错误。退出码由
  * 实现返回，这里只写 `process.exitCode`，不结束进程。
@@ -831,7 +853,7 @@ try {
       process.stdout.write(`wheelchair-agent ${version()}\n`)
       break
     case 'spv':
-      commandSpv(rest)
+      await commandSpv(rest)
       break
     case 'prepare':
       commandPrepare(rest)
