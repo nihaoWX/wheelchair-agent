@@ -13,6 +13,10 @@
  * 占位符按模板声明，保存时校验；未知占位符和缺失的必填占位符都直接报错——收件箱的接收方需要评论与线程
  * 这两个事实才能行动。
  *
+ * 插口（hook）：`hooks` 是同一文件的顶层字段（形状见 `docs/hooks.md`）。事件 id 与内建行来自
+ * `src/shared/hook-events.js`，本文件只负责**校验、合并、落盘**，不执行任何脚本。它与其他字段共享同一条
+ * 乐观并发规则：过期 revision 是 409，磁盘一个字节都不动；坏子块则按字段 warning 后跳过，文件仍然可用。
+ *
  * 失败模式是刻意分开的：
  *   - 提交非法值（PUT / `saveSettings`）→ 抛 `SETTINGS_INVALID`，什么都不写；
  *   - 过期的 revision → 抛 `SETTINGS_CONFLICT`，什么都不写（HTTP 409）；
@@ -23,14 +27,15 @@
  * `$WHEELCHAIR_AGENT_HOME` 覆盖。旧位置 `<stateDir>/panel-settings.json` 仍会被读取一次并搬到新位置
  * （见那个模块的迁移说明）；文件内容、schema 与键名**不变**。
  *
- * 纯 Node builtins；`install.sh` 会把这个文件与 `home.js` 一起复制进 webui 包的 `lib/shared/`，它必须能
- * 单独存在。`stateDir` 参数仍可用，但只表示**旧的** state 目录（迁移与回退的来源）。
+ * 纯 Node builtins；`install.sh` 会把这个文件与 `home.js` / `hook-events.js` 一起复制进 webui 包的
+ * `lib/shared/`，它必须能单独存在。`stateDir` 参数仍可用，但只表示**旧的** state 目录（迁移与回退的来源）。
  */
 import { randomUUID } from 'node:crypto'
 import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname } from 'node:path'
 
 import { SETTINGS_FILE, dataPaths, resolveData } from './home.js'
+import { BUILTIN_ROWS, EVENTS, builtinRowById, eventById } from './hook-events.js'
 
 export { SETTINGS_FILE } from './home.js'
 
@@ -407,10 +412,310 @@ function cloneTemplateState(state) {
   return { active: state.active, customs }
 }
 
+// -------------------------------------------------------------------- hooks
+
+/** 一次 hook 运行的默认超时；`hooks.scriptTimeoutMs` 的默认值也是它。 */
+export const HOOK_TIMEOUT_DEFAULT = 10_000
+
+/**
+ * 单次 hook 的硬上限。读文件时超限的值被夹到上限并给一条 warning（文件整体仍然可用）；**写入时直接拒绝**
+ * （`SETTINGS_INVALID`，什么都不写），所以不会出现"看起来存了 10 分钟其实 5 分钟"的静默偏差。
+ * 一次只改 `values` / `templates` 的保存会原样保留磁盘上的 hooks 块，不会顺手把超限值改写成夹过的值。
+ */
+export const HOOK_TIMEOUT_CAP = 300_000
+
+/** 行名 / 标签的长度上限；CLI 与模板名用的是同一档。 */
+const HOOK_NAME_LIMIT = 120
+
+/** 脚本长度上限：比消息正文的 20000 宽一点没有意义，一段 `sh -c` 不该长过大模板。 */
+const HOOK_SCRIPT_LIMIT = 20_000
+
+/** 自定义 hook id：`hook-` 前缀让内建行（`builtin:` 前缀）永远不会被自定义行遮住。 */
+const HOOK_ITEM_ID = /^hook-[A-Za-z0-9][A-Za-z0-9._:-]{0,74}$/
+
+/** `hooks` 子块认识的字段；多出来的按坏字段处理（读时 warning、写时拒绝）。 */
+const HOOK_FIELDS = ['enabled', 'scriptTimeoutMs', 'items', 'labels']
+
+/** 默认的 `hooks` 子块：全开、10 秒、没有自定义行、没有改名。 */
+export function defaultHooks() {
+  return { enabled: true, scriptTimeoutMs: HOOK_TIMEOUT_DEFAULT, items: [], labels: {} }
+}
+
+/** 一个可改的深拷贝，保存路径在它上面做合并。 */
+function cloneHooks(hooks) {
+  return {
+    enabled: hooks.enabled,
+    scriptTimeoutMs: hooks.scriptTimeoutMs,
+    items: hooks.items.map(item => ({ ...item })),
+    labels: { ...hooks.labels },
+  }
+}
+
+/**
+ * 毫秒超时：整数、至少 1。超过硬上限时，`clamp` 为真（读磁盘）夹住，否则（写入）抛 `SETTINGS_INVALID`。
+ * 0 / 负数 / 小数 / `"10s"` 这一类都是显式错误：一个"没有超时"的 hook 会把串行队列卡死。
+ */
+function normalizeHookTimeout(raw, { clamp = false } = {}) {
+  if (typeof raw === 'boolean' || raw === null || typeof raw === 'object' || String(raw).trim() === '') {
+    throw invalid(`a hook timeout must be a number of milliseconds, got ${describeValue(raw)}.`)
+  }
+  const value = typeof raw === 'number' ? raw : Number(String(raw).trim())
+  if (!Number.isFinite(value) || !Number.isInteger(value)) {
+    throw invalid(`a hook timeout must be a whole number of milliseconds, got ${describeValue(raw)}.`)
+  }
+  if (value < 1) {
+    throw invalid(`a hook timeout must be at least 1 millisecond, got ${describeValue(raw)}.`)
+  }
+  if (value > HOOK_TIMEOUT_CAP) {
+    // 读文件时夹住（并 warning），写入时拒绝：磁盘上的手改可以救，API/CLI 的输入不行。
+    if (clamp) return HOOK_TIMEOUT_CAP
+    throw invalid(`a hook timeout must be at most ${HOOK_TIMEOUT_CAP} ms (the hard cap), got ${describeValue(raw)}.`)
+  }
+  return value
+}
+
+/** 行名：trim 后 1..120 字符、无控制字符（它会出现在一行式列表与提示词里）。 */
+function normalizeHookName(raw) {
+  const value = String(raw ?? '').trim()
+  if (value === '') throw invalid('a hook name cannot be empty.')
+  if (value.length > HOOK_NAME_LIMIT) {
+    throw invalid(`a hook name is ${value.length} characters, over the ${HOOK_NAME_LIMIT} limit.`)
+  }
+  if (CONTROL_CHARS.test(value)) {
+    throw invalid(`a hook name ${JSON.stringify(value)} contains a control character.`)
+  }
+  return value
+}
+
+/** 脚本：非空、无 NUL、不超过上限；**不 trim**——缩进和换行是作者要的。 */
+function normalizeHookScript(raw) {
+  if (typeof raw !== 'string') {
+    throw invalid(`a hook script must be a string, got ${typeof raw}.`)
+  }
+  if (raw.trim() === '') throw invalid('a hook script cannot be empty.')
+  if (raw.includes('\u0000')) throw invalid('a hook script cannot contain a NUL byte.')
+  if (raw.length > HOOK_SCRIPT_LIMIT) {
+    throw invalid(`a hook script is ${raw.length} characters, over the ${HOOK_SCRIPT_LIMIT} limit.`)
+  }
+  return raw
+}
+
+/** 一个自定义 hook 行；`id` 必须唯一（由调用方检查），`event` 必须是表里的事件。 */
+function normalizeHookItem(raw, index, { clampTimeout = false } = {}) {
+  if (!isPlainObject(raw)) throw invalid(`hooks.items[${index}] must be a JSON object.`)
+  for (const field of Object.keys(raw)) {
+    if (!['id', 'event', 'name', 'enabled', 'script', 'timeoutMs'].includes(field)) {
+      throw invalid(`unknown field ${JSON.stringify(field)} in hooks.items[${index}].`)
+    }
+  }
+  const id = String(raw.id ?? '').trim()
+  if (!HOOK_ITEM_ID.test(id)) {
+    throw invalid(
+      `hooks.items[${index}].id must look like "hook-<slug>" (letters, digits, dot, dash, colon, underscore; ` +
+        `at most 80 characters), got ${describeValue(raw.id)}.`,
+    )
+  }
+  const event = String(raw.event ?? '').trim()
+  if (eventById(event) === undefined) {
+    throw invalid(
+      `hooks.items[${index}].event ${JSON.stringify(raw.event)} is not a known event; known ids are ` +
+        `${EVENTS.map(entry => entry.id).join(', ')}.`,
+    )
+  }
+  const item = {
+    id,
+    event,
+    name: normalizeHookName(raw.name),
+    enabled: true,
+    script: normalizeHookScript(raw.script),
+  }
+  if (raw.enabled !== undefined) {
+    if (typeof raw.enabled !== 'boolean') {
+      throw invalid(`hooks.items[${index}].enabled must be true or false, got ${describeValue(raw.enabled)}.`)
+    }
+    item.enabled = raw.enabled
+  }
+  if (raw.timeoutMs !== undefined) {
+    item.timeoutMs = normalizeHookTimeout(raw.timeoutMs, { clamp: clampTimeout })
+  }
+  return item
+}
+
+/**
+ * `hooks.labels`：只认内建行 id；空串表示"改回默认标签"（不落盘）。
+ * 未知 id 一律拒绝：给一个不存在的行改名是永远看不到效果的输入错误。
+ */
+function normalizeHookLabels(raw) {
+  if (!isPlainObject(raw)) {
+    throw invalid('hooks.labels must be a JSON object of builtin row id -> label.')
+  }
+  const labels = {}
+  for (const [id, label] of Object.entries(raw)) {
+    if (builtinRowById(id) === undefined) {
+      throw invalid(
+        `hooks.labels refers to ${JSON.stringify(id)}, which is not a builtin row; known ids are ` +
+          `${BUILTIN_ROWS.map(row => row.id).join(', ')}.`,
+      )
+    }
+    if (typeof label !== 'string') {
+      throw invalid(`hooks.labels[${JSON.stringify(id)}] must be a string, got ${typeof label}.`)
+    }
+    const value = label.trim()
+    if (value === '') continue
+    if (value.length > HOOK_NAME_LIMIT) {
+      throw invalid(
+        `hooks.labels[${JSON.stringify(id)}] is ${value.length} characters, over the ${HOOK_NAME_LIMIT} limit.`,
+      )
+    }
+    if (CONTROL_CHARS.test(value)) {
+      throw invalid(`hooks.labels[${JSON.stringify(id)}] contains a control character.`)
+    }
+    labels[id] = value
+  }
+  return labels
+}
+
+/**
+ * 合并一次 `hooks` 写入。每个提供的字段**整体替换**（`items` / `labels` 不是逐个合并），省略的字段保留
+ * 现有值——与 `values` / `templates` 的部分保存语义一致，所以"只改一个标签"不必重发整张表。
+ */
+function applyHooks(raw, hooks) {
+  if (!isPlainObject(raw)) {
+    throw invalid('hooks must be a JSON object with enabled/scriptTimeoutMs/items/labels.')
+  }
+  for (const field of Object.keys(raw)) {
+    if (!HOOK_FIELDS.includes(field)) {
+      throw invalid(`unknown field ${JSON.stringify(field)} in hooks; use ${HOOK_FIELDS.join(', ')}.`)
+    }
+  }
+  if (raw.enabled !== undefined) {
+    if (typeof raw.enabled !== 'boolean') {
+      throw invalid(`hooks.enabled must be true or false, got ${describeValue(raw.enabled)}.`)
+    }
+    hooks.enabled = raw.enabled
+  }
+  if (raw.scriptTimeoutMs !== undefined) hooks.scriptTimeoutMs = normalizeHookTimeout(raw.scriptTimeoutMs)
+  if (raw.items !== undefined) {
+    if (!Array.isArray(raw.items)) throw invalid('hooks.items must be an array of hook rows.')
+    const items = []
+    const seen = new Set()
+    raw.items.forEach((entry, index) => {
+      const item = normalizeHookItem(entry, index)
+      if (seen.has(item.id)) {
+        throw invalid(`hooks.items has a duplicate id ${JSON.stringify(item.id)}; ids must be unique.`)
+      }
+      seen.add(item.id)
+      items.push(item)
+    })
+    hooks.items = items
+  }
+  if (raw.labels !== undefined) hooks.labels = normalizeHookLabels(raw.labels)
+}
+
+/**
+ * 读盘用的 `hooks`：坏字段各自一条 warning，能用的部分保留。文件整体坏了（JSON / version / revision）
+ * 仍然在 `readStored` 里变成 `fileState: "corrupt"`，这条路径只处理"文件整体没坏、子块有毛病"。
+ */
+function readStoredHooks(raw, warnings) {
+  const hooks = defaultHooks()
+  if (raw === undefined) return hooks
+  if (!isPlainObject(raw)) {
+    warnings.push('ignoring "hooks": it must be a JSON object.')
+    return hooks
+  }
+  for (const field of Object.keys(raw)) {
+    if (!HOOK_FIELDS.includes(field)) {
+      warnings.push(`ignoring unknown field ${JSON.stringify(field)} in "hooks".`)
+    }
+  }
+  if (raw.enabled !== undefined) {
+    if (typeof raw.enabled === 'boolean') hooks.enabled = raw.enabled
+    else warnings.push('ignoring hooks.enabled: it must be true or false.')
+  }
+  if (raw.scriptTimeoutMs !== undefined) {
+    try {
+      hooks.scriptTimeoutMs = normalizeHookTimeout(raw.scriptTimeoutMs, { clamp: true })
+      if (Number(raw.scriptTimeoutMs) > HOOK_TIMEOUT_CAP) {
+        warnings.push(`hooks.scriptTimeoutMs is over the ${HOOK_TIMEOUT_CAP} ms cap; using the cap.`)
+      }
+    } catch (error) {
+      warnings.push(`ignoring hooks.scriptTimeoutMs: ${error.message}`)
+    }
+  }
+  if (raw.items !== undefined) {
+    if (!Array.isArray(raw.items)) {
+      warnings.push('ignoring "hooks.items": it must be an array of hook rows.')
+    } else {
+      const seen = new Set()
+      raw.items.forEach((entry, index) => {
+        try {
+          const item = normalizeHookItem(entry, index, { clampTimeout: true })
+          if (isPlainObject(entry) && entry.timeoutMs !== undefined && Number(entry.timeoutMs) > HOOK_TIMEOUT_CAP) {
+            warnings.push(`hooks.items[${index}].timeoutMs is over the ${HOOK_TIMEOUT_CAP} ms cap; using the cap.`)
+          }
+          if (seen.has(item.id)) throw invalid(`duplicate hook id ${JSON.stringify(item.id)}; keeping the first.`)
+          seen.add(item.id)
+          hooks.items.push(item)
+        } catch (error) {
+          warnings.push(`ignoring hooks.items[${index}]: ${error.message}`)
+        }
+      })
+    }
+  }
+  if (raw.labels !== undefined) hooks.labels = readStoredHookLabels(raw.labels, warnings)
+  return hooks
+}
+
+/** `labels` 的逐条容错读取：一个坏条目不该把其他改名一起丢掉。 */
+function readStoredHookLabels(raw, warnings) {
+  const labels = {}
+  if (!isPlainObject(raw)) {
+    warnings.push('ignoring "hooks.labels": it must be a JSON object of builtin row id -> label.')
+    return labels
+  }
+  for (const [id, label] of Object.entries(raw)) {
+    if (builtinRowById(id) === undefined) {
+      warnings.push(`ignoring hooks.labels entry for unknown builtin row ${JSON.stringify(id)}.`)
+      continue
+    }
+    if (typeof label !== 'string') {
+      warnings.push(`ignoring hooks.labels[${JSON.stringify(id)}]: it must be a string.`)
+      continue
+    }
+    const value = label.trim()
+    if (value === '') continue
+    if (value.length > HOOK_NAME_LIMIT || CONTROL_CHARS.test(value)) {
+      warnings.push(`ignoring hooks.labels[${JSON.stringify(id)}]: not a usable label.`)
+      continue
+    }
+    labels[id] = value
+  }
+  return labels
+}
+
+/** 只写非默认字段：与模板一样，默认值不落盘，未来的默认值升级才不会被旧文件钉死。 */
+function serializeHooks(hooks) {
+  const stored = {}
+  if (!hooks.enabled) stored.enabled = false
+  if (hooks.scriptTimeoutMs !== HOOK_TIMEOUT_DEFAULT) stored.scriptTimeoutMs = hooks.scriptTimeoutMs
+  if (hooks.items.length > 0) stored.items = hooks.items.map(item => ({ ...item }))
+  if (Object.keys(hooks.labels).length > 0) stored.labels = { ...hooks.labels }
+  return stored
+}
+
 // -------------------------------------------------------------- file storage
 
 function corrupt(file, warning) {
-  return { file, fileState: 'corrupt', revision: 0, values: {}, templates: {}, warning }
+  return {
+    file,
+    fileState: 'corrupt',
+    revision: 0,
+    values: {},
+    templates: {},
+    hooks: defaultHooks(),
+    hooksRaw: undefined,
+    warning,
+  }
 }
 
 /** 读磁盘；任何坏文件都变成一个 `fileState`/`warning`，绝不抛给调用方。 */
@@ -421,7 +726,16 @@ function readStored({ env, home, stateDir, migrate = true } = {}) {
     text = readFileSync(file, 'utf8')
   } catch (error) {
     if (error?.code === 'ENOENT') {
-      return { file, fileState: 'missing', revision: 0, values: {}, templates: {}, warning: undefined }
+      return {
+        file,
+        fileState: 'missing',
+        revision: 0,
+        values: {},
+        templates: {},
+        hooks: defaultHooks(),
+        hooksRaw: undefined,
+        warning: undefined,
+      }
     }
     return corrupt(file, `${file} cannot be read (${error?.code ?? error?.message ?? error}); using defaults.`)
   }
@@ -449,7 +763,7 @@ function readStored({ env, home, stateDir, migrate = true } = {}) {
   }
   const warnings = []
   for (const field of Object.keys(parsed)) {
-    if (!['version', 'revision', 'values', 'templates'].includes(field)) {
+    if (!['version', 'revision', 'values', 'templates', 'hooks'].includes(field)) {
       warnings.push(`ignoring unknown settings field ${JSON.stringify(field)} in ${file}.`)
     }
   }
@@ -459,6 +773,10 @@ function readStored({ env, home, stateDir, migrate = true } = {}) {
     revision: parsed.revision,
     values: readStoredValues(parsed.values, warnings),
     templates: readStoredTemplates(parsed.templates, warnings),
+    hooks: readStoredHooks(parsed.hooks, warnings),
+    // 原样保留磁盘上的块：一次只改 values/templates 的保存必须把它逐字放回去，而不是用"读出来再规范化"
+    // 的结果覆盖（那会把超限的 timeout 夹成 300000，也会丢掉被忽略的字段）。
+    hooksRaw: isPlainObject(parsed.hooks) ? parsed.hooks : undefined,
     warning: warnings.length > 0 ? warnings.join('; ') : undefined,
   }
 }
@@ -694,6 +1012,12 @@ function compose({ stored, env, config }) {
     effective,
     rows,
     templates,
+    hooks: {
+      enabled: stored.hooks.enabled,
+      scriptTimeoutMs: stored.hooks.scriptTimeoutMs,
+      items: stored.hooks.items.map(item => ({ ...item })),
+      labels: { ...stored.hooks.labels },
+    },
   }
 }
 
@@ -720,6 +1044,7 @@ export function defaultSettings({ home, stateDir, env = process.env } = {}) {
       revision: 0,
       values: {},
       templates: {},
+      hooks: defaultHooks(),
       warning: undefined,
     },
     env: {},
@@ -875,9 +1200,19 @@ function serializeTemplates(templates) {
  *
  * `revision` 必须等于当前文件的 revision（乐观并发）：不等就抛 `SETTINGS_CONFLICT`，**磁盘一个字节都不动**。
  * `values` 是 dotted key -> 值（合并进已有显式覆盖）；`templates` 按模板 id 完整替换自定义预设；
- * `reset` 先执行（删覆盖 / 清空预设并回默认）。
+ * `hooks` 是插口子块的部分更新（提供的字段整体替换，省略的保留）；`reset` 先执行（删覆盖 / 清空预设并回默认）。
  */
-export function saveSettings({ home, stateDir, revision, values, templates, reset, env = process.env, config = {} } = {}) {
+export function saveSettings({
+  home,
+  stateDir,
+  revision,
+  values,
+  templates,
+  hooks,
+  reset,
+  env = process.env,
+  config = {},
+} = {}) {
   const stored = readStored({ home, stateDir, env })
   if (!Number.isInteger(revision) || revision < 0) {
     throw conflict(stored.revision, revision)
@@ -890,16 +1225,29 @@ export function saveSettings({ home, stateDir, revision, values, templates, rese
   for (const id of TEMPLATE_IDS) {
     nextTemplates[id] = cloneTemplateState(stored.templates[id] ?? emptyTemplateState())
   }
+  const nextHooks = cloneHooks(stored.hooks)
   if (reset !== undefined) applyReset(reset, nextValues, nextTemplates)
   if (values !== undefined) applyValues(values, nextValues)
   if (templates !== undefined) applyTemplates(templates, nextTemplates)
+  if (hooks !== undefined) applyHooks(hooks, nextHooks)
 
-  writeStored({ home, stateDir, env }, {
+  const payload = {
     version: SETTINGS_VERSION,
     revision: revision + 1,
     values: nextValues,
     templates: serializeTemplates(nextTemplates),
-  })
+  }
+  if (hooks !== undefined) {
+    // 默认的 hooks 子块不落盘：与 templates 同样的理由（默认值升级要能到达旧文件），也让新装机器上那份
+    // "empty-but-valid" 文件保持逐字节不变（install.sh / webui 挂载都断言这一点）。
+    const storedHooks = serializeHooks(nextHooks)
+    if (Object.keys(storedHooks).length > 0) payload.hooks = storedHooks
+  } else if (stored.hooksRaw !== undefined) {
+    // 这次没动 hooks：把磁盘上的块原样放回去（见 readStored 的 hooksRaw 说明）。
+    payload.hooks = stored.hooksRaw
+  }
+
+  writeStored({ home, stateDir, env }, payload)
   // 必须带上调用方的 env/config：否则 PUT 响应会丢掉 precedence 层，页面会把一个未被改动的行
   // 误报成 default/内置值（GET 与 PUT 于是给出两个不同的 effective/source）。
   return resolveSettings({ home, stateDir, env, config })
@@ -941,13 +1289,13 @@ async function readBoundedBody(req) {
   return Buffer.concat(chunks, size).toString('utf8')
 }
 
-const PUT_FIELDS = ['revision', 'values', 'templates', 'reset']
+const PUT_FIELDS = ['revision', 'values', 'templates', 'hooks', 'reset']
 
 /**
  * 面板设置的 HTTP 面：只认 `/wheelchair-settings` 一条精确路由。
  *
  * - `GET`  → 200 完整快照（no-store；每次请求都重读文件）；
- * - `PUT`  → `{ revision, values?, templates?, reset? }`；预设 CRUD 与 reset 都搭这一次 PUT，不另开路由；
+ * - `PUT`  → `{ revision, values?, templates?, hooks?, reset? }`；预设 CRUD、插口行与 reset 都搭这一次 PUT；
  *            过期 revision → 409 `{code:"conflict", revision, message}` 且不写；
  *            非法值 → 400 `{code:"SETTINGS_INVALID", message}`；体积/类型错误分别 413/415。
  *
@@ -1018,6 +1366,7 @@ export function createSettingsHandler({ home, stateDir, config, env = process.en
         revision: body.revision,
         values: body.values,
         templates: body.templates,
+        hooks: body.hooks,
         reset: body.reset,
         env,
         config,
