@@ -164,18 +164,33 @@ Only `tools/` directories with a GitHub origin are candidates. `research/` is lo
 never polled, pulled or pushed. The cold install is always performed by the operator (or the SPV
 session after the notice), never by the running service.
 
+### Layout
+
+The inbox and the Settings page share one width: `.wca-page` defines `--wca-content-max: 1200px`
+(the old common frame was 960) and every direct child uses it, so the two frames cannot drift apart.
+The inbox no longer reserves a 104px date rail on the left: a day is a structural `<section>` with
+an accessible name and 24px spacing (12px between cards), so the card column starts at the same left
+edge as the settings groups. Each letter shows its own timestamp (the day plus `HH:MM`, taken from
+`at` / `createdAt` / `updatedAt`, with the full value in `title`) right-aligned in its meta row, clear
+of the chips.
+
 ### Panel style
 
 `webui.style` selects the visual variant and defaults to **fluid**. Both variants share the same
 layout, so switching never moves a control:
 
-- **fluid** — Apple-like material and motion: translucent cards with a backdrop blur, two shadow
-  layers, an enter curve with a little spring, a `scale(.985)` press, a 240ms disclosure whose content
-  follows 40ms behind, a `clip-path` wipe on the status pill, an approve settle of 1px, and a 30ms
-  staggered arrival for letters a poll just added. Separation comes from cards and spacing; there are
-  no divider rules between groups or inside cards, and no stamp, flag, paper texture, rotated card or
-  console/HUD chrome.
-- **minimal** — the escape hatch: the same cards on a flat token background, with no blur, shadow or
+- **fluid** — material and motion. The page below a card is an opaque token surface, so a backdrop
+  blur would render as nothing; instead each card carries a visible tonal wash (an 18% token tint
+  over the layer background, fading into it), a tinted hairline border and two shadow layers that read
+  as elevation. Motion is always on: a 30ms staggered arrival on every mount/refresh (not only for
+  newly polled letters), a 2px hover lift with a visibly deeper ambient shadow, a press on the card
+  and on controls (`scale(.985)`), an enter curve with a little spring, a 240ms disclosure whose
+  content follows 40ms behind, a `clip-path` wipe on the status pill, and an approve settle of 1px.
+  Separation comes from cards and spacing; there are no divider rules between groups or inside cards,
+  and no stamp, flag, paper texture, rotated card or console/HUD chrome. The entry marker is cleared
+  when its animation ends (with a 900ms fallback for minimal/reduced-motion, where no animation event
+  fires), so a later status re-render does not replay it.
+- **minimal** — the escape hatch: the same cards on a flat token background, with no tint, shadow or
   animation. It stays fully usable and keeps the status spine and all controls.
 
 The panel reads the saved style on load. The Settings select previews a change immediately; Save
@@ -292,7 +307,7 @@ files); `lib/client.js` hot-reloads through dsh's client-bundle watcher.
 
 | Key | Default | What it changes |
 |---|---|---|
-| `webui.style` | `fluid` | Panel variant: `fluid` (translucent cards, layered shadows and motion) or `minimal` (flat cards, no blur or motion). Read when the panel loads; a save applies without a reload. |
+| `webui.style` | `fluid` | Panel variant: `fluid` (tonal card wash, layered shadows and motion) or `minimal` (flat cards, no tint, shadow or motion). Read when the panel loads; a save applies without a reload. |
 | `inbox.intervalSeconds` | `60` | Seconds between inbox polls. Every tick runs one `gh pr list` per repository. `0` pauses automatic refresh (the CLI still works). Env `SPV_INBOX_INTERVAL_SECONDS`; plugin config `intervalSeconds`. |
 | `merge.installRepo` | `wheelchair-agent` | Merges of this repository queue the cold-install notice instead of a plain pull. `owner/name` or `name`. Env `SPV_INSTALL_REPO`. |
 | `injection.intervalMs` | `1000` | How often the SPV-session result injector checks the outbox. |
@@ -520,6 +535,35 @@ sent, so no SPV notice or worker task was produced.
 - `docs/panel-style-after-settings-1000.png` — the same page at 1000×3852: the responsive single-column
   fallback below 1100px.
 - `docs/panel-style-after-settings-dark-1440.png` — the after Settings page in the host's dark theme.
+
+### Panel width, inbox timestamp and fluid material (this change)
+
+The before/after pair uses the **same seeded inbox, the same throwaway profile copy and the same
+1600×1000 viewport and light theme**; the baseline is `main` @ `1fcde56`, and the after is this
+branch. 1600 was chosen so the 960 → 1200 frame is visible at full width (`1440` is narrower than
+1200 + the sidebar and page padding). The sandbox used `DSH_HOME`, `WHEELCHAIR_AGENT_HOME`,
+`DSH_SUPERAGENT_STATE_DIR`, `SPV_QUEUE_DIR` and `SPV_INBOX_DIR` under `/tmp`,
+`SPV_INBOX_INTERVAL_SECONDS=0`, and seeded fixture letters only; no submission was sent and no live
+state was touched.
+
+- `docs/panel-layout-before-inbox-1600.png` — baseline inbox on `main` @ `1fcde56`: the 960px frame,
+  the 104px date rail on the left and the cards pushed right.
+- `docs/panel-layout-after-inbox-1600.png` — the same inbox on this branch: a 1200px frame, no rail,
+  the cards starting at the settings groups' left edge, each letter's own `Nov 16, 09:40` timestamp
+  in its meta row, and the fluid tonal wash, tinted border and layered shadow.
+- `docs/panel-layout-after-inbox-minimal-1600.png` — the same view with the Settings select
+  previewing `Minimal`: flat cards, no tint, shadow or motion, identical layout and timestamps.
+- `docs/panel-layout-after-inbox-hover-1600.png` — the first letter hovered: a 2px lift and a visibly
+  deeper ambient shadow than the `after-inbox` capture.
+- `docs/panel-layout-after-inbox-motion.gif` — an 1120×540 crop recorded while the panel mounts (the
+  staggered arrival: the first letter leads the second) and then the first card is hovered (the 2px
+  lift and deeper shadow settle in): the motion the operator could not see before this change.
+- `docs/panel-layout-before-settings-1600.png` — baseline Settings page on `main` @ `1fcde56`: the
+  960px frame.
+- `docs/panel-layout-after-settings-1600.png` — the same Settings page on this branch: the 1200px
+  frame and the fluid group cards (tonal wash, border and shadow).
+- `docs/panel-layout-after-inbox-dark-1600.png` — optional dark capture of the same after inbox, to
+  confirm the tokens and shadow layers still read in the host's dark theme.
 
 Earlier captures (`before-panel.png`, `before-sidebar.png` / `after-sidebar.png`,
 `after-pr-table.png`, `after-pr-code-dark.png`, `before-pr-body-dark.png` /

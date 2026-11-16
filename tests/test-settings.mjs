@@ -255,13 +255,29 @@ async function loadHostApply(box) {
 
 /** 用假的 `window.__ModuleLoader__` 载入浏览器 bundle（与 test-inbox-refresh 同一手法）。 */
 const CLIENT_MODULE = { current: undefined }
+/**
+ * A recording JSX runtime plus the React hooks the components call, so an offline test can lift the
+ * component tree and assert its structure without react-dom or a browser. `useState` returns its
+ * initial value once; the tests only read the first render.
+ */
+const RECORD_REACT = {
+  Fragment: Symbol('react.fragment'),
+  useState: value => [typeof value === 'function' ? value() : value, () => {}],
+  useRef: value => ({ current: value }),
+  useEffect: () => {},
+  useMemo: factory => factory(),
+  useCallback: fn => fn,
+}
+const recordJsx = (type, props, key) => ({ type, props: props ?? {}, key })
 async function loadClient() {
   if (CLIENT_MODULE.current !== undefined) return CLIENT_MODULE.current
   let captured
   globalThis.window = {
     __ModuleLoader__: {
       load: ({ factory }) => {
-        captured = factory(id => (id === 'react' ? {} : { jsx: () => null, jsxs: () => null }))
+        captured = factory(id =>
+          id === 'react' ? RECORD_REACT : { jsx: recordJsx, jsxs: recordJsx },
+        )
       },
     },
   }
@@ -272,6 +288,34 @@ async function loadClient() {
   }
   CLIENT_MODULE.current = captured
   return captured
+}
+
+/** Visit every recorded element in a lifted component tree, depth first. */
+function walkTree(node, visit) {
+  if (node === null || node === undefined || node === false) return
+  if (Array.isArray(node)) {
+    for (const child of node) walkTree(child, visit)
+    return
+  }
+  if (typeof node !== 'object') return
+  if (typeof node.type === 'string' || typeof node.type === 'function') visit(node)
+  walkTree(node.props?.children, visit)
+}
+
+/** The class list of one recorded element, as a string. */
+function classNamesOf(element) {
+  const value = element.props?.className
+  return Array.isArray(value) ? value.join(' ') : String(value ?? '')
+}
+
+/** Resolve the one page-width rule the way a browser would: var(--wca-content-max) -> 1200px. */
+function resolveContentMax(styles) {
+  const token = styles.match(/--wca-content-max:\s*([^;]+);/)?.[1]?.trim()
+  const block = styles.match(/\.wca-page > \*\s*\{([^}]*)\}/)?.[1] ?? ''
+  const width = block.match(/(?:^|;)\s*width:\s*([^;]+);/)?.[1]?.trim()
+  const maxWidth = block.match(/(?:^|;)\s*max-width:\s*([^;]+);/)?.[1]?.trim()
+  const resolved = maxWidth === 'var(--wca-content-max)' ? token : maxWidth
+  return { token, width, maxWidth, resolved }
 }
 
 /** 断言一个 promise/函数以某个错误码失败，并返回错误本身。 */
@@ -2144,16 +2188,28 @@ async function testClientStyleAndDraftHelpers() {
   assert.doesNotMatch(STYLES, /\.wca-day::before/, 'day groups are separated by cards and spacing, never a rail rule')
   assert.doesNotMatch(STYLES, /inset 0 1px 0/, 'letter cards have no inset seam rule')
   assert.doesNotMatch(STYLES, /\.wca-review\s*\{[^}]*border-left/, 'review records have no divider rule inside the card')
-  assert.doesNotMatch(STYLES, /\.wca-day-label[^{}]*\{[^}]*backdrop-filter/, 'backdrop-filter is limited to cards')
+  assert.doesNotMatch(STYLES, /wca-day-rail|wca-day-label|wca-day-sentinel/, 'the inbox no longer renders a date rail')
+  assert.doesNotMatch(STYLES, /backdrop-filter/, 'no backdrop blur: over the opaque page it would render as nothing')
   assert.match(STYLES, /@media \(prefers-reduced-motion: reduce\)\s*\{[\s\S]*?animation: none !important;[\s\S]*?transition: none !important;/, 'reduced motion disables every animation and transition')
   assert.equal((STYLES.match(/@keyframes/g) ?? []).length, 3, 'the fluid style introduces exactly three keyframes')
   assert.doesNotMatch(STYLES, /(?:transition|animation):[^;]*\blinear\b/, 'linear easing is banned')
   assert.match(STYLES, /\[data-wca-style="fluid"\]/, 'a variant is scoped by one root attribute')
   assert.doesNotMatch(STYLES, /^\s*\.(?!wca-)/m, 'every CSS rule is wca- prefixed')
   assert.match(STYLES, /\[data-wca-style="minimal"\] \.wca-letter/, 'the minimal variant keeps the same cards')
-  assert.match(STYLES, /backdrop-filter: blur\(12px\)/, 'the fluid material uses the specified blur')
-  assert.match(STYLES, /@supports not \(\(backdrop-filter/, 'a no-backdrop-filter fallback ships')
-  assert.match(STYLES, /@supports not \(\(backdrop-filter[\s\S]*?var\(--wca-tint/, 'the fallback keeps the brand/info tint')
+  // The width knob: one property, resolved by both the inbox and the settings page (both are page children).
+  assert.deepEqual(
+    resolveContentMax(STYLES),
+    { token: '1200px', width: '100%', maxWidth: 'var(--wca-content-max)', resolved: '1200px' },
+    'both sections resolve through one 1200px property',
+  )
+  assert.doesNotMatch(STYLES, /max-width:\s*960px/, 'the old 960 frame is gone')
+  // Fluid material is perceivable without a hover: a tinted wash, a tinted hairline and two shadow layers.
+  assert.match(STYLES, /\.wca-page\[data-wca-style="fluid"\] \.wca-letter,[^{}]*\{[^}]*color-mix\(in oklab, var\(--wca-wash\) 18%, var\(--dsw-alias-bg-layer-1\)\)/, 'fluid letter cards carry a visible tonal wash')
+  assert.match(STYLES, /\.wca-page\[data-wca-style="fluid"\] \.wca-letter\[data-draft="true"\] \{[^}]*--dsw-alias-state-warn-primary/, 'a draft keeps its warning border on top of the fluid material')
+  assert.match(STYLES, /box-shadow: var\(--wca-shadow-contact\), var\(--wca-shadow-ambient\)/, 'fluid cards keep the two-layer shadow')
+  assert.match(STYLES, /\.wca-letter:hover,[\s\S]*?transform: translateY\(-2px\)/, 'hover lifts the card two pixels')
+  assert.match(STYLES, /\.wca-letter:hover,[\s\S]*?var\(--wca-shadow-hover\)/, 'hover deepens the ambient shadow')
+  assert.match(STYLES, /\[data-wca-style="minimal"\][\s\S]*?animation: none/, 'minimal stays strictly static')
   // The motion contract: enter/exit curves, press, expand, wipe, approve settle, and the 30ms arrival stagger.
   assert.match(STYLES, /--wca-ease-enter: cubic-bezier\(\.22, 1, \.36, 1\)/)
   assert.match(STYLES, /--wca-ease-exit: cubic-bezier\(\.4, 0, \.2, 1\)/)
@@ -2162,7 +2218,8 @@ async function testClientStyleAndDraftHelpers() {
   assert.match(STYLES, /opacity 160ms var\(--wca-ease-enter\) 40ms/)
   assert.match(STYLES, /wca-wipe 200ms/)
   assert.match(STYLES, /animation-delay: calc\(var\(--wca-new-index, 0\) \* 30ms\)/)
-  assert.match(STYLES, /wca-arrive 280ms var\(--wca-ease-enter\) backwards/, 'the arrival animation does not pin the card after it ends')
+  assert.match(STYLES, /\[data-wca-style="fluid"\] \.wca-letter\[data-arriving="true"\] \{\s*animation: wca-arrive 280ms var\(--wca-ease-enter\) backwards;/, 'every letter animates on an ordinary mount, not only data-new items')
+  assert.doesNotMatch(STYLES, /data-new="true"\]/, 'the arrival animation is no longer gated on the new-item marker')
   // The two letter kinds differ by exactly the documented dimension set.
   assert.match(STYLES, /\.wca-letter \{[^}]*border-radius: 8px;[^}]*\}/)
   assert.match(STYLES, /\.wca-letter::before \{[^}]*width: 4px;[^}]*\}/)
@@ -2185,10 +2242,10 @@ async function testClientStyleAndDraftHelpers() {
   assert.deepEqual(stagedStyle.values, { 'webui.style': 'minimal' }, 'the enum row stages through the real save path')
   assert.deepEqual(stagedStyle.valueErrors, {})
 
-  // A ~60s refresh exists and only ids new to that response animate, each with its stagger index.
+  // A ~60s refresh exists and the fresh-id marker still tracks which ids a response added.
   assert.equal(INBOX_REFRESH_MS, 60000)
   assert.match(source, /setInterval\(\(\) => \{[\s\S]*?\}, INBOX_REFRESH_MS\)/, 'the panel polls the inbox on a timer')
-  assert.equal(freshItemIndices(null, [{ id: 'a' }]).size, 0, 'the first load does not animate')
+  assert.equal(freshItemIndices(null, [{ id: 'a' }]).size, 0, 'the first response has no fresh-id marker')
   assert.deepEqual(
     [...freshItemIndices(new Set(['a']), [{ id: 'a' }, { id: 'b' }, { id: 'c' }])],
     [['b', 0], ['c', 1]],
@@ -2238,6 +2295,139 @@ async function testClientStyleAndDraftHelpers() {
   )
 }
 
+/**
+ * The inbox structure and the shared width, lifted from the client's own exports: no rail/column in
+ * the markup, a timestamp inside every letter, and both feature pages resolving through one knob.
+ */
+async function testInboxMarkupAndWidth() {
+  const client = await loadClient()
+  const { STYLES, InboxItem, DayGroup, letterTimeOf, clearsArrival } = client.__test
+  assert.equal(typeof InboxItem, 'function', 'the client exposes the letter component to the offline test')
+  assert.equal(typeof DayGroup, 'function', 'the client exposes the day group to the offline test')
+  assert.equal(typeof letterTimeOf, 'function', 'the timestamp helper is testable without a browser')
+  assert.equal(typeof clearsArrival, 'function', 'the arrival-end guard is testable without a browser')
+
+  assert.deepEqual(
+    resolveContentMax(STYLES),
+    { token: '1200px', width: '100%', maxWidth: 'var(--wca-content-max)', resolved: '1200px' },
+    'the inbox and the settings page resolve to the same 1200px frame',
+  )
+  assert.doesNotMatch(STYLES, /\.wca-(?:inbox|settings|feature)[^{]*\{[^}]*max-width/, 'neither feature adds its own width')
+
+  const t = key => key
+  const items = [
+    {
+      id: 'acme-alpha-42',
+      kind: 'pr',
+      repo: 'acme/alpha',
+      pr: 42,
+      title: 'A PR letter',
+      state: 'OPEN',
+      additions: 12,
+      deletions: 3,
+      changedFiles: 2,
+      at: '2026-11-16T02:04:00.000Z',
+    },
+    {
+      id: 'spv-main-1',
+      kind: 'spv_message',
+      title: 'A decision letter',
+      thread: 'main',
+      at: '2026-11-16T03:05:00.000Z',
+    },
+  ]
+  const group = DayGroup({
+    day: '2026-11-16',
+    label: 'Nov 16, 2026',
+    items,
+    startIndex: 0,
+    t,
+    drafts: {},
+    newIds: new Map(),
+    onDraft: () => {},
+    onSubmitted: () => {},
+  })
+  const sectionElements = []
+  walkTree(group, element => sectionElements.push(element))
+  const section = sectionElements.find(element => element.type === 'section')
+  assert.ok(section, 'the day group is still a section')
+  assert.equal(section.props['aria-label'], 'Nov 16, 2026', 'the day keeps its accessible name')
+  assert.equal(section.props['data-day'], '2026-11-16')
+  const paintedClasses = sectionElements.map(classNamesOf)
+  assert.equal(
+    paintedClasses.some(name => /wca-day-(?:rail|label|sentinel)/.test(name)),
+    false,
+    'no date rail, sticky label or sentinel is rendered',
+  )
+  assert.deepEqual(
+    sectionElements.filter(element => classNamesOf(element) === 'wca-cards').length,
+    1,
+    'the section holds only the card column, with no empty rail column',
+  )
+
+  for (const [index, item] of items.entries()) {
+    const card = InboxItem({
+      item,
+      t,
+      draft: undefined,
+      isNew: false,
+      arrivalIndex: index,
+      onDraft: () => {},
+      onSubmitted: () => {},
+    })
+    const cardElements = []
+    walkTree(card, element => cardElements.push(element))
+    const meta = cardElements.find(element => classNamesOf(element) === 'wca-meta')
+    const time = cardElements.find(element => classNamesOf(element) === 'wca-letter-time')
+    assert.ok(meta, `letter ${item.id} has a meta row`)
+    assert.ok(time, `letter ${item.id} carries its own timestamp`)
+    let insideMeta = false
+    walkTree(meta, element => {
+      if (element === time) insideMeta = true
+    })
+    assert.ok(insideMeta, `letter ${item.id} puts its timestamp in the meta row, clear of the chips`)
+    const stamp = letterTimeOf(item)
+    assert.equal(time.type, 'time')
+    assert.equal(time.props.children, stamp.label)
+    assert.match(String(time.props.children), /\d{1,2}:\d{2}/, 'the label includes the time of day')
+    assert.equal(time.props.dateTime, stamp.datetime)
+    assert.equal(time.props.title, stamp.title)
+    assert.match(String(time.props.dateTime), /^2026-11-16T\d{2}:/)
+    assert.equal(card.props.style['--wca-new-index'], String(index), 'each card gets its stagger index')
+    assert.equal(card.props['data-arriving'], 'true', 'every card mounts with the arrival animation enabled')
+    assert.equal(typeof card.props.onAnimationEnd, 'function', 'the arrival marker has a clearing handler')
+    assert.equal(card.props['data-new'], undefined, 'an ordinary card is no longer marked new to animate')
+  }
+
+  // Only the card's own arrival ends the entry state; a child animation or the approve settle must not.
+  assert.equal(clearsArrival({ target: 'card', currentTarget: 'card', animationName: 'wca-arrive' }), true)
+  assert.equal(clearsArrival({ target: 'card', currentTarget: 'card', animationName: 'wca-settle' }), false)
+  assert.equal(clearsArrival({ target: 'child', currentTarget: 'card', animationName: 'wca-arrive' }), false)
+
+  // A letter with no parseable timestamp still renders a visible, localized placeholder.
+  const missing = InboxItem({
+    item: { id: 'spv-main-2', kind: 'spv_message', title: 'No date' },
+    t,
+    draft: undefined,
+    isNew: false,
+    arrivalIndex: 0,
+    onDraft: () => {},
+    onSubmitted: () => {},
+  })
+  const missingElements = []
+  walkTree(missing, element => missingElements.push(element))
+  const missingTime = missingElements.find(element => classNamesOf(element) === 'wca-letter-time')
+  assert.ok(missingTime, 'a dateless letter still has its timestamp node')
+  assert.equal(missingTime.props.children, 'day.unknown')
+  assert.equal(missingTime.props.title, 'day.unknown')
+  assert.equal(missingTime.props.dateTime, undefined)
+
+  // An unparseable value still yields the node, with the raw value as its label.
+  const broken = letterTimeOf({ at: 'not-a-date' })
+  assert.equal(broken.label, 'not-a-date')
+  assert.equal(broken.datetime, undefined)
+}
+
 // --------------------------------------------------------------------- main
 
 try {
@@ -2256,6 +2446,7 @@ try {
   await testStoredTemplatesOmitBuiltinText()
   await testClientSettingsHelpers()
   await testClientStyleAndDraftHelpers()
+  await testInboxMarkupAndWidth()
   await testClientTemplateStaging()
   await testHostSettingsRoute()
   await testHooksBlock()
