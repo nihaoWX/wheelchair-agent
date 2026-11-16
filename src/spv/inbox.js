@@ -16,7 +16,8 @@
  *   <owner>-<name>-<number>.json   一个 PR item
  *   spv-<thread>-<UTC>-<rand>.json 一个 SPV 决策信
  *   .<id>.lock                     该 item 的跨进程写锁（watcher 与 review POST 共用）
- * 每条审查决定追加到 item 的 `review` 数组。
+ * 每条审查决定追加到 item 的 `review` 数组；`issue`（无论 PR 还是决策信）只写一条 notice 给 SPV 入口会话，
+ * 不再派 worker 任务。
  */
 import { execFile, execFileSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
@@ -26,7 +27,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
 
-import { checkProject, checkTask, checkThread, submitTask } from './dispatch.js'
+import { checkThread } from './dispatch.js'
 import { resolveRoot } from './paths.js'
 import { HOME_DIR_NAME, INBOX_DIR, resolveData } from '../shared/home.js'
 import { dirsOf, writeMessage } from '../shared/queue.js'
@@ -37,7 +38,7 @@ const execFileAsync = promisify(execFile)
 /** 未指定时收件箱根目录的默认值（只是文档/诊断用；真正的解析在 `resolveInboxRoot()`）。 */
 export const INBOX_ROOT_DEFAULT = join(homedir(), HOME_DIR_NAME, INBOX_DIR)
 
-/** 一条评论的上限：够写清一条审查意见，又不至于把任务正文推过模型的单次预算。 */
+/** 一条评论的上限：够写清一条审查意见，又不至于把通知正文推过模型的单次预算。 */
 const REVIEW_LIMIT = 5000
 /** 决策信的标题与正文上限；正文够放一段完整的判断依据，又不会撑爆面板与工具输出。 */
 const TITLE_LIMIT = 500
@@ -309,13 +310,13 @@ function repoName(repo) {
 }
 
 /**
- * 一条「有问题」评论变成的任务正文：repo、PR 号、标题、URL、kind、评论原文，最后**恰好一句**指令。
+ * 一条「有问题」评论变成发给 SPV 的 notice 正文：repo、PR 号、标题、URL、kind、评论原文。
  *
- * 正文把事实全带上，worker 不需要回读收件箱；最后一句是唯一的行为约束，所以它必须只有一句。
- * 文本来自面板设置的 `prIssue` 模板；不传 `settings` 时用内置默认，输出与改造前逐字节一致。
- * 「通过」（approve）不派任务，因此不经过这个函数。
+ * 正文把事实全带上，SPV 不需要回读收件箱；最后一句要求 SPV 先结合上下文处理，不再声称派给 worker。
+ * 文本来自面板设置的 `prIssue` 模板；未传 `settings` 时用内置默认。
+ * 「通过」（approve）不发通知，因此不经过这个函数。
  */
-function taskText(item, comment, settings) {
+function prIssueText(item, comment, settings) {
   const snapshot = settings ?? defaultSettings()
   return renderTemplate('prIssue', snapshot.templates.prIssue.text, {
     repo: item.repo,
@@ -356,21 +357,25 @@ function readPanelSettings() {
 }
 
 /**
- * 追加一条审查决定，返回 `{ item, task }`；`task` 为 `null` 表示这条决定不派活。
+ * 追加一条审查决定，返回 `{ item, task }`；`task` 恒为 `null`（保留字段以兼容旧调用方）。
  *
  * 两种决定（`kind`）：
- *   - `approve`：通过，评论**可选**，只写 review，不派任务、不发消息；评论是操作者接受的理由，留给以后看。
- *   - `issue`：有问题，评论必填，先写 review，然后按信件种类分流：
- *       pr          → 派 `inbox-<pr>` 任务（与以前一样），不发 outbox 消息；
- *       spv_message → 发**恰好一条** `notice` 到 spv outbox，回到信件自己的 thread，不派任务。
+ *   - `approve`：通过，评论**可选**，只写 review，不发消息；评论是操作者接受的理由，留给以后看。
+ *   - `issue`：有问题，评论必填，写 review 后发**恰好一条** `notice` 到 spv outbox，交给 SPV 入口会话：
+ *       pr          → thread `inbox-<pr>`，正文来自 `prIssue` 模板；
+ *       spv_message → thread 是信件自己的 thread，正文来自 `spvObjection` 模板。
+ *     两条路径都不派 worker 任务；SPV 收到后自己决定讨论还是派活。
  * 旧数据里的 `question` / `fix` 只在 UI 读取时归一成 `issue`，这里不再写入旧 kind。
+ *
+ * 同一个 item 上重复提交完全相同的 issue 评论时，复用最后一条 review 的 index 与 notice id，只覆盖
+ * 那一个 outbox 文件，不再追加第二条 review/notice；这既让 HTTP 重试幂等，也让「review 已落盘但通知
+ * 写失败」之后的重试仍能把通知补上。
  *
  * 整个 read → 校验 → append → write 都在该 item 的跨进程锁内；watcher 的 read-modify-write 也在同一把
  * 锁里，所以两边不会用陈旧读取覆盖对方的改动。
  *
- * 顺序是刻意的：派生字段（project/thread/任务正文或通知正文）与评论先全部校验，再落盘，最后派活或发消息。
- * 派活/发消息失败时评论仍在，调用方拿到带原 item 的 502；校验失败则什么都不写，避免面板报错后重试又重复
- * 一条评论。
+ * 顺序是刻意的：thread、通知正文与评论先全部校验，再落盘，最后发消息。发消息失败时评论仍在，调用方
+ * 拿到带原 item 的 502；校验失败则什么都不写，避免面板报错后重试又重复一条评论。
  */
 export async function appendReview(root, { id, kind, text } = {}) {
   const itemId = checkItemId(id)
@@ -384,7 +389,7 @@ export async function appendReview(root, { id, kind, text } = {}) {
   if (comment.length > REVIEW_LIMIT) {
     throw invalid(`text is ${comment.length} characters, over the ${REVIEW_LIMIT} limit.`)
   }
-  // 一次调用只解析一次设置：同一份评论派生出的通知/任务正文用同一版模板，坏文件也只影响这一次读取。
+  // 一次调用只解析一次设置：同一份评论派生出的通知正文用同一版模板，坏文件也只影响这一次读取。
   const settings = readPanelSettings()
 
   return withItemLock(root, itemId, async () => {
@@ -394,15 +399,15 @@ export async function appendReview(root, { id, kind, text } = {}) {
 
     const review = Array.isArray(item.review) ? item.review : []
     if (approve) {
-      // 评论只记录：它不会派任务，也不会给 SPV 发消息。空评论与旧行为一致，仍然允许。
+      // 评论只记录：它不会发通知。空评论与旧行为一致，仍然允许。
       item.review = [...review, { at: new Date().toISOString(), kind: 'approve', text: comment }]
       await writeItem(root, item)
       return { item, task: null }
     }
 
+    let thread
+    let notice
     if (kindOf(item) === 'spv_message') {
-      // 这封信没有 repo/pr，所以完全不经过 checkProject 的预检；只校验回信线程与通知正文。
-      let thread
       try {
         thread = checkThread(item.thread)
       } catch (error) {
@@ -411,71 +416,55 @@ export async function appendReview(root, { id, kind, text } = {}) {
             `Cannot notify SPV: ${messageOf(error)} Nothing was saved.`,
         )
       }
-      // review index 在追加前确定，所以通知 id 对同一封信的同一轮质疑是稳定的。
-      const messageId = `inbox-${itemId}-review-${review.length}`
-      const notice = noticeText(item, comment, settings)
+      notice = noticeText(item, comment, settings)
+    } else {
+      if (!Number.isInteger(item.pr) || item.pr <= 0) {
+        throw invalid(
+          `inbox item ${JSON.stringify(itemId)} has no valid PR number (pr: ${JSON.stringify(item.pr)}). ` +
+            'Nothing was saved; delete the item so the watcher recreates it, then retry.',
+        )
+      }
+      if (typeof item.repo !== 'string' || !REPO_PATTERN.test(item.repo)) {
+        throw invalid(
+          `inbox item ${JSON.stringify(itemId)} has no valid repo (repo: ${JSON.stringify(item.repo)}). ` +
+            'Nothing was saved; delete the item so the watcher recreates it, then retry.',
+        )
+      }
+      try {
+        thread = checkThread(`inbox-${item.pr}`)
+      } catch (error) {
+        throw invalid(
+          `inbox item ${JSON.stringify(itemId)} cannot notify SPV: ${messageOf(error)} Nothing was saved.`,
+        )
+      }
+      notice = prIssueText(item, comment, settings)
+    }
+    if (String(notice).trim() === '') {
+      throw invalid(`inbox item ${JSON.stringify(itemId)} rendered an empty notice; nothing was saved.`)
+    }
+
+    const last = review[review.length - 1]
+    const lastKind = String(last?.kind ?? '').trim().toLowerCase()
+    const repeated = last !== undefined && lastKind !== 'approve' && String(last?.text ?? '') === comment
+    const reviewIndex = repeated ? review.length - 1 : review.length
+    const messageId = `inbox-${itemId}-review-${reviewIndex}`
+    if (!repeated) {
       item.review = [...review, { at: new Date().toISOString(), kind: 'issue', text: comment }]
       await writeItem(root, item)
-
-      try {
-        await writeMessage(dirsOf(resolveRoot()), {
-          id: messageId,
-          source: 'spv',
-          thread,
-          kind: 'notice',
-          text: notice,
-          at: new Date().toISOString(),
-        })
-      } catch (error) {
-        const failure = new Error(
-          `the review was saved on "${item.id}", but could not be sent to the spv outbox: ${messageOf(error)}. ` +
-            `fix: check that the queue at ${resolveRoot()} exists (the superagent spv Source creates it) and retry; ` +
-            'the saved comment is not lost.',
-        )
-        failure.code = 'INBOX_DISPATCH'
-        failure.item = item
-        throw failure
-      }
-      return { item, task: null }
     }
 
-    if (!Number.isInteger(item.pr) || item.pr <= 0) {
-      throw invalid(
-        `inbox item ${JSON.stringify(itemId)} has no valid PR number (pr: ${JSON.stringify(item.pr)}). ` +
-          'Nothing was saved; delete the item so the watcher recreates it, then retry.',
-      )
-    }
-    if (typeof item.repo !== 'string' || !REPO_PATTERN.test(item.repo)) {
-      throw invalid(
-        `inbox item ${JSON.stringify(itemId)} has no valid repo (repo: ${JSON.stringify(item.repo)}). ` +
-          'Nothing was saved; delete the item so the watcher recreates it, then retry.',
-      )
-    }
-    // Validate everything the comment will derive BEFORE saving: a malformed repo used to save the review
-    // first and answer 500, so the panel reported failure and a retry duplicated the review.
-    let project
-    let thread
-    let task
     try {
-      project = checkProject(`tools/${repoName(item.repo)}`)
-      thread = checkThread(`inbox-${item.pr}`)
-      task = checkTask(taskText(item, comment, settings))
-    } catch (error) {
-      throw invalid(
-        `inbox item ${JSON.stringify(itemId)} cannot be dispatched: ${messageOf(error)} ` +
-          'Nothing was saved; fix the item\'s repo/pr fields (or delete it so the watcher recreates it), then retry.',
-      )
-    }
-
-    item.review = [...review, { at: new Date().toISOString(), kind: 'issue', text: comment }]
-    await writeItem(root, item)
-
-    let record
-    try {
-      record = await submitTask(dirsOf(resolveRoot()), { project, task, thread })
+      await writeMessage(dirsOf(resolveRoot()), {
+        id: messageId,
+        source: 'spv',
+        thread,
+        kind: 'notice',
+        text: notice,
+        at: new Date().toISOString(),
+      })
     } catch (error) {
       const failure = new Error(
-        `the review was saved on "${item.id}", but could not be dispatched to the spv queue: ${messageOf(error)}. ` +
+        `the review was saved on "${item.id}", but could not be sent to the spv outbox: ${messageOf(error)}. ` +
           `fix: check that the queue at ${resolveRoot()} exists (the superagent spv Source creates it) and retry; ` +
           'the saved comment is not lost.',
       )
@@ -483,7 +472,7 @@ export async function appendReview(root, { id, kind, text } = {}) {
       failure.item = item
       throw failure
     }
-    return { item, task: record }
+    return { item, task: null }
   })
 }
 

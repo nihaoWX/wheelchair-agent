@@ -439,9 +439,23 @@ async function testPullFailureRecovers() {
     const retried = await readItem(box.inbox, 'acme-wheelchair-agent-3')
     assert.equal(retried.mergeHandledAt, undefined, 'the retry still failed, so it stays unhandled')
     assert.ok(retried.pullError, 'the retry records its failure again')
+  } finally {
+    watcher.stop()
+  }
+  await watcher.done
 
-    // Clean the tree: the next poll pulls the same transition again and completes it.
-    gitIn(clone.local, 'checkout', '--', 'file.txt')
+  // Stop the poller before touching the tree so its git index lock cannot race this checkout. A new
+  // watcher must pick the persisted mergeObservedAt up and complete the transition.
+  gitIn(clone.local, 'checkout', '--', 'file.txt')
+  const retryWatcher = startInboxWatcher({
+    root: box.inbox,
+    projectsRoot: box.projects,
+    intervalSeconds: 0.02,
+    gh: box.gh,
+    log: () => {},
+    unref: true,
+  })
+  try {
     await waitFor(
       async () => (await readItem(box.inbox, 'acme-wheelchair-agent-3'))?.pulledSha === mergedSha,
       'the retry after cleaning the tree',
@@ -453,9 +467,9 @@ async function testPullFailureRecovers() {
     assert.ok(recovered.noticeAt, 'the notice is recorded')
     assert.ok((await pullCount(box)) >= 2, 'the failed pull was retried')
   } finally {
-    watcher.stop()
+    retryWatcher.stop()
   }
-  await watcher.done
+  await retryWatcher.done
 }
 
 /** (c2) A transient outbox failure keeps the merge unhandled and retries only the notice. */
