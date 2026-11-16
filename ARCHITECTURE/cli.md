@@ -37,6 +37,11 @@
 | `wheelchair-agent status [--thread <n>]` | 非阻塞看队列 | `import src/spv/outbox.js` |
 | `wheelchair-agent inbox` | 打印面板在哪里（dsh Web UI 的 `wheelchair-agent` 面板）；不再起独立页 | — |
 | `wheelchair-agent inbox watch [--once] [--interval <秒>]` | 轮询 `tools/*` 的 `gh pr list`，把 PR 写进收件箱 | `import src/spv/inbox.js` |
+| `wheelchair-agent work <gc\|restored>` | 回收可重建的票目录；`restored <ticket>` 打印重建命令 | `import src/shared/work.js` |
+| `wheelchair-agent restart-all [--dry-run] [--force] [--no-install] [--detach]` | 停服务 → 等会话租约 → 冷安装 → 起服务 → 同终端 `--resume` 拉回会话（`/restart-wheelchair-agent` 的实现） | `import src/spv/restart.js` |
+| `wheelchair-agent session release [--session <id>] [--dry-run]` | 释放占着 `session.lock` 的残留进程 | `import src/spv/session.js` |
+| `wheelchair-agent hook <events\|list\|add\|enable\|disable\|rm\|rename\|test\|log\|prompt>` | 插口表与脚本的读写；`prompt <事件>` 打印可复制的"叫 agent 加一条"提示词 | `import src/spv/hook.js` |
+| `wheelchair-agent where [--json]` | 这套安装把东西装到哪了（数据根、preset、wrapper、队列、日志） | `import src/shared/home.js` |
 | `wheelchair-agent check` | **运行时**健康：服务在跑吗、preset 能加载吗、`prepare` 在假环境里能跑通吗 | 见下 |
 | `wheelchair-agent --help` / `--version` | 用法与版本 | — |
 

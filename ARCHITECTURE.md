@@ -19,17 +19,8 @@
 
 讨论已经结束的结论全部移到 **`ARCHITECTURE/decisions.md`**，每条附证据或实测结果。**不要重新推导。**
 
-| 结论 | 一句话 |
-|---|---|
-| 压缩成本 | 一次性 worker 与单会话 worker 成本相近，都避免不了压缩；压缩时机仍未解决 |
-| 降噪 | 靠架构（worker 权限 + orchestrator 过滤），**不**在本项目加消息分级规则 |
-| dsh 版本 | 锁 `0.2.1-rc.3`；`dsh-tui update` 会升回 `0.2.2-rc.1` |
-| GOAT 额度 | CLI 与 API 共用 5 小时 $20 / 每周 $50，所以 `maxWorkers=2` |
-| 派任务入口 | **CLI 可以**（2026-11-14 修订，旧结论作废）；`ACTOR` 仍写死 `operator`；**沙箱暂不做** |
-| 长任务 | 交给 systemd（`jobctl`），触发器是作业自己的结束事件，不是轮询 |
-| SPV 遇 API error | `wontfix`（账本 `R3-F1`），上游刻意设计，绕行＝代理或调高 `transportMaxRetries` |
-| 交付目标 | 不与环境变量对抗，改为给 worker 一份受管 `AGENTS.md` |
-| SPV preset | 普通 dsh 会话 + `spv_*`，纯增量；不 vendor liangshen 的本地 `.mjs` |
+结论**不在这里复述**：压缩时机、maxWorkers、派单入口、交付目标、长任务等全部落定在
+ **`ARCHITECTURE/decisions.md`**（每条附证据或实测），**不要重新推导**。本文件只留"读一次就够"的定义、边界与索引。
 
 # Structure
 
@@ -90,16 +81,18 @@ JSON Schema 与 render 只出现在插件入口。
 ```
 wheelchair-agent/
 ├── bin/wheelchair-agent.mjs      # CLI 入口：argv 解析 + process.exit，仅此
-├── src/shared/                   # 两侧共用，唯一的契约（queue.js, schema.js）
-├── src/superagent/               # 只被 superagent profile 加载（spv.js, watch.js）
-├── src/spv/                      # 只被 SPV preset 与 CLI 加载（paths, dispatch, outbox, injector, health, inbox, cron, tools, cron-plugin）
-├── preset/                       # 装到 ~/.dsh/.agent-presets/spv/（preset.yml, agent.cordis.yml, spv-launcher.sh, wheelchair-agent.sh, README.md）
+├── src/shared/                   # 两侧共用、纯 Node builtins（home, queue, schema, settings, work, hooks, hook-events）
+├── src/superagent/               # 只被 superagent profile 加载（spv.js 定义 Source kind，watch.js 跑轮询）
+├── src/spv/                      # 只被 SPV preset 与 CLI 加载（paths, dispatch, outbox, injector, health,
+│                                 #   inbox, cron, tools, cron-plugin, check, hook, restart, restart-ux,
+│                                 #   restart-command, session）
+├── preset/                       # 装到 ~/.dsh/.agent-presets/spv/（preset.yml, agent.cordis.yml, spv-launcher.sh, README.md）
 ├── commands/                     # 会被装成独立命令的实现（prepare.sh, jobctl.py, superagent-service.py）
 ├── webui/                        # 独立 dsh web client 包 wheelchair-agent-webui（装进 superagent profile，见下）
-├── build/render-preset.mjs       # 构建步骤，不是命令
-├── tests/                        # test-prepare.sh, test-layout.sh, test-injector.mjs
-├── install.sh                    # 只负责安装
-└── docs/
+├── build/                        # 构建步骤，不是命令（render-preset.mjs, refusal-notice.mjs）
+├── tests/                        # 12 套离线证据，清单见 ARCHITECTURE/layout.md（CI 逐个跑）
+├── install.sh                    # 只负责安装（冷安装，契约见 ARCHITECTURE/layout.md）
+└── docs/                         # 知识库：hooks / restart / work-gc / delivery-target / spv-source / setup/ / PITFALLS/
 ```
 
 安装布局：preset 目录是「SPV 侧的已安装包」（含 `cli.js`、`src/{shared,spv}/`、`commands/`、`prepare.sh`），
@@ -108,36 +101,41 @@ superagent 侧的 `src/superagent/` **从不进 preset 目录**：那个 profile
 `webui/` 是**第四种安装目标**：`install.sh` 把包拷进 `~/.dsh/profiles/superagent/node_modules/wheelchair-agent-webui/`，
 并往该 profile 的 `cordis.patch.yml` 追加一行 loader（见下）。
 
-## 审查收件箱 / `wheelchair-agent` 功能宿主（2026-11-14，2026-11-15 原生 React / 功能宿主）
+**`install.sh` 的契约在 `ARCHITECTURE/layout.md`**：只做冷安装（服务或活着的 SPV 会话占着目标就 `exit 3` 并写一条
+notice）、`--check` 只读地比"装进去的 == checkout"（过期 `exit 2`）、**拷贝不软链**、暂存后原子替换、幂等。
 
-面板不是"一个 PR 列表页"，而是 **`wheelchair-agent` 的功能宿主**：导航列功能，收件箱只是当前的第一个功能，
-渲染在自己的带边框功能面板里（标题、说明、筛选/刷新工具栏、PR 行列表）。页面是一个**原生 React 组件**
-（渲染在 `main` slot，因此继承 host 的 theme token、light/dark 与 `ctx.locale`），骨架由 `SECTIONS`
-数组驱动（`{ id, labelKey, titleKey, descriptionKey, Component }`）；加一个功能 = 加一个数组项 + 一个
-React 组件。PR 正文由 `lib/client.js` 自带的小 Markdown → React 渲染器生成，不写 `innerHTML`、不 require
-`@deepseek-ai/dsh-client-ui-primitives`。详见 `webui/README.md`。
+## 审查收件箱 / `wheelchair-agent` 功能宿主
 
-审查决定只有两种：`approve`（通过，`text` 为空，**只记录、不发消息**）和 `issue`（有问题，正文必填，
-发**一条** `notice` 给 SPV 入口会话：PR 用 thread `inbox-<pr>`，SPV 决策信回到自己的 thread；**不派
-worker 任务**）。item 状态不落盘，由最新一条 review 派生：无 → `pending`、`approve` → `approved`、
-`issue` → `issue`；旧数据的 `question`/`fix` 只在读取时归一成 `issue`，不改磁盘记录。UI 按派生状态提供
-全部 / 待审 / 有问题 / 已通过筛选（默认待审）。
+面板是 **`wheelchair-agent` 的功能宿主**（不是 iframe）：左侧栏一项 `wheelchair-agent`，页面是原生 React 组件，
+渲染在 host 的 `main` slot，继承 host 的 theme token 与 `ctx.locale`。当前两个功能：**收件箱**（PR 与 SPV 决策信；
+`approve` 只记录、`issue` 发一条 notice 回 SPV，**不派 worker**）与**设置**（只存本项目自己的键，superagent 的
+设置块不在这里重复）。功能由 `SECTIONS` 数组驱动，加一个功能 = 加一个数组项 + 一个组件。
 
-为什么是**独立包**：`dsh-client-modules` 的 `exactPackageSpecifier()` 只认裸包名，`wheelchair-agent/webui`
-这种子路径不会成为 loader 行、扫不到 `dsh.client`。所以包名 `wheelchair-agent-webui`、自己的 `package.json`
-与自己的 loader 行。面板 id、左侧栏标签、页面标题都是 `wheelchair-agent`，包名只是内部实现细节。
+面板是**独立包** `wheelchair-agent-webui`（`dsh-client-modules` 只认裸包名，子路径成不了 loader 行），
+`install.sh` 把它拷进 superagent profile 的 `node_modules` 并 append 一行 loader。`webui/lib/client.js` 是手写的
+预构建 bundle（无 JSX、无构建链、只用 `--dsw-alias-*` token、`wca-` 前缀）；host 半身 `webui/lib/index.js` 注册
+`/wheelchair-inbox/{items,review}` 与 `/wheelchair-settings` 三条 JSON 路由。
 
-同一个实现两面用：`install.sh` 把 `src/spv/inbox.js`、`dispatch.js`、`paths.js`、`src/shared/queue.js`
-拷进已安装包（`lib/core/`、`lib/shared/`），CLI（`wheelchair-agent inbox watch`）与面板都从这一份源生成。
-面板因此**不依赖共享的 preset 目录**——另一个 worktree 的 `install.sh` 覆盖 preset 时，面板不会被带坏。
-`webui/lib/client.js` 是手写的预构建 bundle（本仓库无 TS/构建链，不能用 JSX），host 半身用
-`ctx.webServer.register` 注册两个 `/wheelchair-inbox/*` 精确 JSON 路由（`items` / `review`），client 用
-`fetch()` 调；旧的 `pageHtml()`、`/wheelchair-inbox/page` 与独立页已删除。
+**面板的布局、样式变体（`webui.style` = `fluid` 默认 / `minimal` 逃生口）、宽度节奏、审查记录的渲染细节，全部
+归 `webui/README.md`。** 本文件只保留上面这些边界。
+
+## 插口（hooks）：可配置的副作用，永不参与 core path
+
+核心事件（`ticket.started|acknowledged|delivered|attention`、`inbox.approved|issue|merged`、`spv.dispatch`）上可以
+挂**用户脚本**，手感对齐 superagent 的 `executor.prepare`。事件表的唯一实现在 `src/shared/hook-events.js`，
+完整契约在 `docs/hooks.md`；这里只记三条硬边界：
+
+1. **core path 不可配置、不可取消**：review 落盘、notice 进队列、合并后的 `git pull --ff-only`、队列的 rename 消费
+   永远发生。hook 失败、超时、输出洪水只记账，**不 gate、不包裹、不重试** core path。
+2. **写设置只有一条路**：`wheelchair-agent hook …`（revision 校验，过期即 409 且不落盘）；没有手改
+   `settings.json` 的路径，也没有"取消内建行"的开关——内建行只描述、不执行。
+3. **脚本环境是白名单**：payload 走 stdin 的 JSON + 几个 `WCA_*` 变量；`*TOKEN*` / `*SECRET*` / `GH_*` / `DSH_*`
+   一律不传。
 
 ## CLI
 
 **契约见 `ARCHITECTURE/cli.md`。** 子命令：`spv` / `prepare` / `service` / `jobctl` / `dispatch` /
-`status` / `inbox [watch]` / `check`。`install.sh --check` 查"装进去的东西 == checkout"，`wheelchair-agent check` 查运行时
+`status` / `inbox [watch]` / `work` / `restart-all` / `session` / `hook` / `where` / `check`。`install.sh --check` 查"装进去的东西 == checkout"，`wheelchair-agent check` 查运行时
 健康，两个不重叠。
 
 `spv`、`superagent-service`、`jobctl` 继续作为独立命令存在（薄 wrapper），因为 worker 的 prompt 与
@@ -212,6 +210,12 @@ Ticket 状态（progress 不转发；ready/blocked/failed 才上浮）
 | **CLI 契约** | **`ARCHITECTURE/cli.md`** |
 | **审查收件箱 / UI 主页** | **`webui/README.md`** |
 | superagent 设计文档（9 篇） | `docs/repositories/dsh-superagent-prototype/docs/` |
+| **插口（hooks）事件表与脚本契约** | **`docs/hooks.md`**（表实现的唯一来源是 `src/shared/hook-events.js`） |
+| **重启链 `/restart-wheelchair-agent`** | **`docs/restart.md`** |
+| **票目录回收（`work gc`）** | **`docs/work-gc.md`** |
+| **交付目标 / 受管 AGENTS.md** | **`docs/delivery-target.md`** |
+| **spv Source 实现说明** | **`docs/spv-source.md`** |
+| **已踩过的坑（按问题一条）** | **`docs/PITFALLS/`** |
 | DSH 安装与 GOAT 接入 | `docs/setup/dsh-commandcode.md` |
 | superagent 源码 | `~/opt/dsh-plugins/dsh-superagent/`（独立仓库，在 bioagentforge 工作区之外） |
 | **spv Source 设计与踩坑** | **`docs/spv-source.md`** |

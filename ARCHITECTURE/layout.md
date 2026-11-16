@@ -49,7 +49,9 @@ wheelchair-agent/
 │   ├── jobctl.py
 │   └── superagent-service.py
 ├── build/render-preset.mjs       # 构建步骤，不是命令
-├── tests/                        # test-prepare.sh、test-layout.sh、test-injector.mjs 的可跑证据
+├── tests/                        # 12 套离线可跑证据（CI 逐个跑，清单见 package.json 的 test 脚本）
+│                                 #   prepare / layout / install / restart / inbox / inbox-refresh /
+│                                 #   injector / settings / work / home / clone-guard / hooks
 ├── install.sh                    # 只负责安装
 ├── AGENTS.md / ARCHITECTURE.md / PROGRESS.md / ARCHITECTURE/
 └── docs/
@@ -116,6 +118,19 @@ CLI 薄壳把 preset 目录路径烧进去（和 `spv` 启动器同样的 `sed s
 host 半身 `lib/index.js` 在 profile 里运行，**可以** import dsh 服务；`src/` 与 `bin/` 的规则 3 不适用于它。
 `install.sh` 把 `src/spv/inbox.js` + `dispatch.js` + `paths.js` + `src/shared/queue.js` 拷进包的
 `lib/core/`、`lib/shared/`，让面板不依赖共享 preset。
+
+## `install.sh` 的契约（冷安装 only）
+
+`install.sh` 是唯一的安装入口，**它自己不能在被装的东西正被使用时运行**：
+
+| 行为 | 契约 |
+|---|---|
+| 装什么 | preset 目录、webui 包 + loader 行、`~/.local/bin` 四个薄壳；**拷贝不是软链** |
+| 目标被占用 | superagent 服务或活着的 SPV 会话持有目标时 `exit 3`，并往 SPV 队列写**一条** notice（说明停谁、按什么顺序来） |
+| `--check` | 只读，比对"装进去的 == checkout"；过期/缺文件 `exit 2`，绝不写 |
+| 原子性 | 先在本目录暂存，再替换目标；失败回滚，不留半装的目录 |
+| 幂等 | 内容相同则不动；空设置文件用 `wx` 创建，不用解析后的默认值回写 |
+| 唯一自动化的替代 | `/restart-wheelchair-agent`（`wheelchair-agent restart-all`）：停服务 → 等会话租约 → 冷安装 → 起服务 → 同终端 `--resume` 拉回会话 |
 
 ## 顺手清掉的死东西
 

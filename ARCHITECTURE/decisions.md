@@ -42,7 +42,7 @@ agent 调用，而它投递的任务默认以 `operator` 身份进入 superagent
 **修订理由（实测）**：这个洞**现在就已经开着**，加 CLI 不新增它。
 
 - `scripts/spv_send.py` 的 `--actor` 默认 `None`，不传就不写 `actor` 字段；
-- `src/spv.js` 在任务文件没写 `actor` 时回落到 `config.actor`，而 `DEFAULT_ACTOR = 'operator'`。
+- `src/superagent/spv.js` 在任务文件没写 `actor` 时回落到 `config.actor`，而 `DEFAULT_ACTOR = 'operator'`。
 
 所以今天任何有 bash 的 worker 跑一句 `spv_send.py "..."` 就已经是 operator 身份。in-process 工具从来没
 提供过隔离，它只是让**文档里的入口**看起来是 agent 工具。
@@ -96,7 +96,7 @@ worker 环境里的 `DSH_SUPERAGENT_GITHUB_REPOSITORY` 永远是面板那一个�
 - **面板叫 `wheelchair-agent`，不叫"审查收件箱"**：它是 UI 主页，收件箱只是第一个 section。`PANEL_ID`、
   左侧栏 label、页面 `<h1>` 都是 `wheelchair-agent`；包名仍是 `wheelchair-agent-webui`
   （`dsh-client-modules` 只扫裸包名，而 `wheelchair-agent` 已被主包占用且以子路径挂载）。
-- **页面骨架由 `SECTIONS` 数组驱动**：`{ id, labelKey, Component }`；加 section = 一个数组项 +
+- **页面骨架由 `SECTIONS` 数组驱动**：`{ id, labelKey, titleKey, descriptionKey, Component }`（5 个键）；加 section = 一个数组项 +
   一个 React 组件，tab 条与内容区都从它生成。不引入插件系统。
 - **安装后的包必须自包含**：`install.sh` 把 `src/spv/inbox.js`、`dispatch.js`、`paths.js`、
   `src/shared/queue.js` 拷进包的 `lib/core/`、`lib/shared/`。理由（实测）：22:55 另一个 worktree 的
@@ -169,4 +169,53 @@ exit `cubic-bezier(.4,0,.2,1)`、无 `linear`、press `scale(.985)` 120ms、展�
 
 **证据**：`webui/docs/panel-style-{before,after}-*.png`（同 fixture、1440×900、light；另有 1000px 与
 dark 截图），`tests/test-settings.mjs` 的 CSS/轮询/草稿断言，`tests/test-install.sh` 的 0644/空文件/
-不覆盖断言。`fluid` 的 backdrop blur 在 dsh 的滚动侧栏里实测正常；`@supports` 退回分支保留。
+不覆盖断言。**2026-11-16 更正**：`backdrop-filter` 在不透明的页面底色上模糊的是底色本身，等于什么都不做，
+所以 `fluid` 的层级**不靠** blur，而靠色调洗（tonal wash）+ 带色发丝边 + 两层阴影；`@supports` 退回分支保留，
+用于完全没有模糊能力的环境。
+
+## 插口（hooks）：可配置的是副作用，不可配置的是核心（2026-11-16）
+
+在核心事件上挂用户脚本，手感对齐 superagent 的 `executor.prepare`。三条边界定死：
+
+- **core path 不可配置、不可取消**：review 落盘、notice 进 SPV 队列、合并后的 `git pull --ff-only`、队列的
+  rename 消费永远发生。hook 失败/超时/输出洪水只记账，不 gate、不包裹、不重试 core path——否则一个写坏的
+  脚本就能让收件箱罢工。
+- **内建行只描述、不执行**：`builtin:prepare / injection / prIssue / spvObjection / reviewRecord / mergePull /
+  coldInstallNotice` 在设置里可见、可改名（`labels`），但不可删除；其中"文本可编辑、触发不可取消"的（注入消息、
+  issue 通知）指向现有模板 id，不新造第二份文案。
+- **新增 = 一段可复制的提示词，不是 UI 里的 shell 输入框**：`wheelchair-agent hook prompt <事件>` 生成中文说明
+  （事件含义 / 何时触发 / 能触发几次 / 载荷字段 / 该写成什么 `hook add`），面板原样展示。加脚本永远由 agent 落笔。
+
+事件名的诚实性：`ticket.delivered` 而不是 `ticket.ended`——队列只给 `acknowledgement / reply / notice`，
+拿不到工单终态，叫 `ended` 的名字会被后来的人用错。冷安装挂 `inbox.merged` 而不是 `ticket.delivered`：
+挂在 worker 报告上会在 PR 存在之前就触发。
+
+## orchestrator 保留在派单路径上（2026-11-16）
+
+`spv_dispatch` 的 trigger 会先进主 Session（评估→`orchestrator_route`）再建票。对 explicit 请求它没有判断要做，
+只有命名（title / worktree_name）和一句 acknowledgement，但**决定不删这条快路**：它在推断型触发（GitHub/飞书）
+上是真正的产品能力，且作为质量门成本很低。若将来要加速，只做"explicit 且 source=spv 时直接 accept"的最小快路，
+保持 `leftToWorkers` 语义；**不要**把整个评估层去掉。
+
+## 主 Session 也要按水位线压缩（2026-11-16）
+
+`dsh-compaction-basic` 的默认阈值是 **80%**，主 Session 活整个部署周期，20%→80% 这一段每一轮都在为历史付费。
+因此在 dsh-superagent 里加 `eval.compactRatio`（默认 0.2，0 关闭）与 `eval.compactMinIntervalMs`（默认 60s）：
+只对主 Session、复用 `sessions.compact()` 的软失败语义、压成功后**必须重新测到一次低于阈值**才允许下一次（防陈旧
+样本反复压）。它只**前置**通用策略，不替换。已知缺口：这两个键目前只有 API，面板没有输入项。
+
+## 服务必须离开调用者的 cgroup scope（2026-11-16）
+
+`service start` 用 tmux 起服务时，node 进程继承调用者的 systemd cgroup scope：从 dsh 的工具 shell 起就落在
+`dsh-terminal-<pid>-<hash>.scope`，那个 scope 一被拆（会话重置），服务被整组 SIGKILL，且**没有任何日志**。
+从操作者终端起则落在 `session-N.scope`，宿主 logind 一崩（本机实测 `systemd-logind/resolved/timesyncd` 会在开机
+191 秒时 SIGABRT）同样连坐。所以：起服务必须**离开调用者 scope**（用户级瞬时 unit：
+`systemd-run --user --unit=… --property=RemainAfterExit=yes --property=KillMode=none`，PATH 需含
+`~/.local/bin` 与 `~/.npm-global/bin`），并在启动后**验证** `/proc/<pid>/cgroup` 与调用者不同，否则不许打印
+`OK: running`。
+
+## 面板宽度与 fluid 材质（2026-11-16）
+
+收件箱与设置页共用 **一条**宽度变量 `--wca-content-max: 1200px`（`AGENTS.md` 之外的 960 旧值 × 1.25，操作者口径），
+两页不可能再各走各的。收件箱不再有左侧 104px 日期栏，时间落到每封信自己的元信息行——空列是"太偏右"的根因。
+`fluid` 的可见性靠材质与**挂载即播**的入场动画（不再门控 `data-new`），`minimal` 严格静止；两者布局结构完全相同。
