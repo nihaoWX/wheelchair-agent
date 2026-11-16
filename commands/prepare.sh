@@ -25,7 +25,9 @@
 #   SPV_PROJECTS_ROOT           where the projects live; default $HOME/bioagentforge
 #   SPV_PREPARE_TEMPLATES       template directory; default <this script's directory>/agentsmd-examples
 #   SPV_PREPARE_DRY_RUN=1       do not mutate the project or GitHub; print what would be done (for tests)
-#   SPV_PREPARE_LOG             traceability log; default <DSH_HOME>/state/superagent/prepare.log
+#   SPV_PREPARE_LOG             traceability log; default <root>/logs/prepare.log, where <root> is
+#                               $WHEELCHAIR_AGENT_HOME or $HOME/.wheelchair-agent. The old
+#                               <DSH_HOME>/state/superagent/prepare.log is moved there once.
 #
 # Exit status: 0 when the Ticket is ready, 1 with a "FAILED at <step>" line otherwise.
 set -eu
@@ -35,12 +37,88 @@ step() { printf 'prepare: %s\n' "$*" >&2; }
 die() { printf 'prepare: FAILED at %s: %s\n' "$STEP" "$*" >&2; exit 1; }
 dry_run() { [ "${SPV_PREPARE_DRY_RUN:-0}" = 1 ]; }
 
-# The script is installed at <DSH_HOME>/.agent-presets/spv/prepare.sh, so its own location names the state
-# directory. Do not read $DSH_HOME: the prepare command runs as a child process, and DSH_* names are
-# stripped from a child environment, so the variable would always look unset here.
+# The script is installed at <DSH_HOME>/.agent-presets/spv/prepare.sh, so its own location names the legacy
+# state directory. Do not read $DSH_HOME: the prepare command runs as a child process, and DSH_* names are
+# stripped from a child environment, so the variable would always look unset here. $DSH_SUPERAGENT_STATE_DIR
+# is honoured when it survives (a test or a manual run); the installed path derives it from the script.
 SELF_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P) || { printf 'prepare: FAILED at start: cannot resolve the script directory\n' >&2; exit 1; }
 STATE_DIR=$(CDPATH= cd -- "$SELF_DIR/../.." 2>/dev/null && pwd -P) || STATE_DIR=$HOME/.dsh
-LOG=${SPV_PREPARE_LOG:-$STATE_DIR/state/superagent/prepare.log}
+LEGACY_STATE_DIR=${DSH_SUPERAGENT_STATE_DIR:-$STATE_DIR/state/superagent}
+LEGACY_LOG=$LEGACY_STATE_DIR/prepare.log
+
+# Our own data root. Absolute only: a relative value would make every path depend on the ticket cwd, so it
+# fails loudly even when $SPV_PREPARE_LOG makes the root otherwise unused.
+resolve_data_root() {
+  if [ -n "${WHEELCHAIR_AGENT_HOME:-}" ]; then
+    case $WHEELCHAIR_AGENT_HOME in
+      /*) DATA_ROOT=$WHEELCHAIR_AGENT_HOME ;;
+      *) printf 'prepare: FAILED at start: WHEELCHAIR_AGENT_HOME must be an absolute path, got %s\n' "$WHEELCHAIR_AGENT_HOME" >&2; exit 1 ;;
+    esac
+  else
+    DATA_ROOT=${HOME:-}/.wheelchair-agent
+  fi
+}
+
+migration_note() {
+  new_log=$DATA_ROOT/logs/migration.log
+  mkdir -p "$(dirname "$new_log")" 2>/dev/null || return 0
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$new_log" 2>/dev/null || return 0
+}
+
+# Move the old prepare.log to <root>/logs/prepare.log once, under the same lock the Node readers use.
+# On any failure keep appending to the old path (the fallback), so no line is ever lost or unreachable.
+adopt_legacy_prepare_log() {
+  [ -e "$LOG" ] && return 0
+  [ -e "$LEGACY_LOG" ] || return 0
+  if ! mkdir -p "$DATA_ROOT/logs" 2>/dev/null; then
+    LOG=$LEGACY_LOG
+    migration_note "failed to move $LEGACY_LOG -> $DATA_ROOT/logs/prepare.log: cannot create $DATA_ROOT/logs; keeping $LEGACY_LOG reachable"
+    return 0
+  fi
+  lock=$DATA_ROOT/.migrate.lock
+  held=0
+  tries=0
+  while [ "$held" -eq 0 ]; do
+    if ( set -C; : > "$lock" ) 2>/dev/null; then
+      held=1
+      break
+    fi
+    if [ -e "$lock" ]; then
+      age=$(( $(date +%s) - $(stat -c %Y "$lock" 2>/dev/null || echo 0) ))
+      if [ "$age" -gt 30 ]; then
+        # Reap by rename, exactly like the Node side: only one process wins and unlinks.
+        if mv "$lock" "$lock.reap.$$" 2>/dev/null; then rm -f "$lock.reap.$$"; fi
+        continue
+      fi
+    fi
+    tries=$((tries + 1))
+    [ "$tries" -ge 40 ] && break
+    sleep 0.05 2>/dev/null || sleep 1
+  done
+  if [ "$held" -ne 1 ]; then
+    LOG=$LEGACY_LOG
+    migration_note "failed to move $LEGACY_LOG -> $DATA_ROOT/logs/prepare.log: the migration lock $lock is held; keeping $LEGACY_LOG reachable"
+    return 0
+  fi
+  printf '%s %s\n' "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$lock" 2>/dev/null || true
+  if [ -e "$LOG" ]; then
+    : # another process already moved it after our first check
+  elif mv "$LEGACY_LOG" "$LOG" 2>/dev/null; then
+    migration_note "moved $LEGACY_LOG -> $LOG"
+  else
+    LOG=$LEGACY_LOG
+    migration_note "failed to move $LEGACY_LOG -> $DATA_ROOT/logs/prepare.log: mv failed; keeping $LEGACY_LOG reachable"
+  fi
+  rm -f "$lock"
+}
+
+resolve_data_root
+if [ -n "${SPV_PREPARE_LOG:-}" ]; then
+  LOG=$SPV_PREPARE_LOG
+else
+  LOG=$DATA_ROOT/logs/prepare.log
+  adopt_legacy_prepare_log
+fi
 log() {
   mkdir -p "$(dirname "$LOG")" 2>/dev/null || return 0
   printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$*" >> "$LOG" 2>/dev/null || return 0

@@ -25,7 +25,8 @@
 # never run), it skips the notice, says so in one line, and keeps exit 3.
 #
 # --check is read-only and always allowed, even while everything is running. It reports the in-use holders
-# as notes and exits 2 only when the installed files differ from this checkout.
+# as notes, plus the data root, which layout is on disk (new / old / both) and whether a first-run
+# migration is pending; it exits 2 only when the installed files differ from this checkout.
 #
 # Exit status:
 #   0  installed, or --check found everything as expected
@@ -42,6 +43,9 @@
 #   3. the CLI               -> ~/.local/bin/wheelchair-agent   (the one entry point)
 #   4. compatibility names   -> ~/.local/bin/{spv,superagent-service,jobctl}
 #      (thin wrappers: `exec wheelchair-agent <subcommand> "$@"`)
+#   5. the data root          -> $WHEELCHAIR_AGENT_HOME, else ~/.wheelchair-agent
+#      (settings.json, inbox/, records/, logs/; created empty and never deleted. The superagent
+#       state directory still owns the spv/ queue and work/ root: that is the interface, not our data.)
 #
 # Design rules (references/tool-install.md):
 #   - nothing is hard-coded to one machine: paths derive from $HOME and this script's own directory;
@@ -67,11 +71,14 @@ JOBCTL=$BIN_DIR/jobctl
 TARGET_PLUGIN_URL="file://$PRESET_DIR/src/spv/tools.js"
 TARGET_CRON_URL="file://$PRESET_DIR/src/spv/cron-plugin.js"
 TARGET_RESTART_URL="file://$PRESET_DIR/src/spv/restart-command.js"
-PROFILE_DIR=$DSH_HOME_DIR/profiles/superagent
+PROFILE_ID=${DSH_SUPERAGENT_PROFILE:-superagent}
+PROFILE_DIR=$DSH_HOME_DIR/profiles/$PROFILE_ID
 WEBUI_TARGET=$PROFILE_DIR/node_modules/wheelchair-agent-webui
-SERVICE_PROFILE=${DSH_SUPERAGENT_PROFILE:-superagent}
+SERVICE_PROFILE=$PROFILE_ID
 SERVICE_PORT=${SPV_SERVICE_PORT:-3082}
 SERVICE_URL=${DSH_SUPERAGENT_URL:-http://127.0.0.1:$SERVICE_PORT}
+DATA_ROOT=${WHEELCHAIR_AGENT_HOME:-$HOME/.wheelchair-agent}
+LEGACY_STATE_DIR=${DSH_SUPERAGENT_STATE_DIR:-$DSH_HOME_DIR/state/superagent}
 
 CHECK=0
 for arg in "$@"; do
@@ -221,7 +228,7 @@ render_into() {
     fix "check that $SELF_DIR/bin/wheelchair-agent.mjs exists and is readable, then rerun this script"
     return 1
   fi
-  for file in shared/queue.js shared/schema.js shared/settings.js shared/work.js spv/check.js spv/cron-plugin.js spv/cron.js spv/dispatch.js spv/health.js spv/inbox.js spv/injector.js spv/outbox.js spv/paths.js spv/restart-command.js spv/restart.js spv/tools.js; do
+  for file in shared/home.js shared/queue.js shared/schema.js shared/settings.js shared/work.js spv/check.js spv/cron-plugin.js spv/cron.js spv/dispatch.js spv/health.js spv/inbox.js spv/injector.js spv/outbox.js spv/paths.js spv/restart-command.js spv/restart.js spv/tools.js; do
     if ! cp "$SELF_DIR/src/$file" "$dest/src/$file"; then
       fail "cannot copy src/$file from this checkout"
       fix "check that $SELF_DIR/src/$file exists and is readable, then rerun this script"
@@ -313,7 +320,7 @@ render_webui_into() {
   done
   # `settings.js` lives in `lib/shared/` (not `lib/core/`) for the same reason `queue.js` does: the copied
   # `lib/core/inbox.js` imports `../shared/settings.js`, and `lib/core/` is for the src/spv files.
-  for pair in "spv/inbox.js:lib/core/inbox.js" "spv/dispatch.js:lib/core/dispatch.js" "spv/paths.js:lib/core/paths.js" "shared/queue.js:lib/shared/queue.js" "shared/settings.js:lib/shared/settings.js"; do
+  for pair in "spv/inbox.js:lib/core/inbox.js" "spv/dispatch.js:lib/core/dispatch.js" "spv/paths.js:lib/core/paths.js" "shared/home.js:lib/shared/home.js" "shared/queue.js:lib/shared/queue.js" "shared/settings.js:lib/shared/settings.js"; do
     src=${pair%%:*}
     target=${pair##*:}
     if ! cp "$SELF_DIR/src/$src" "$dest/$target"; then
@@ -350,7 +357,7 @@ check_preset() {
     fix 'run: bash tools/wheelchair-agent/install.sh'
   fi
   actual=$(find "$PRESET_DIR" -type f | sed "s|^$PRESET_DIR/||" | sort | tr '\n' ' ')
-  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/work.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/dispatch.js src/spv/health.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/paths.js src/spv/restart-command.js src/spv/restart.js src/spv/tools.js "
+  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/home.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/work.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/dispatch.js src/spv/health.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/paths.js src/spv/restart-command.js src/spv/restart.js src/spv/tools.js "
   if [ "$actual" = "$expected" ]; then
     ok 'the installed preset holds only the whitelisted files'
   else
@@ -358,6 +365,63 @@ check_preset() {
     fix 'delete them, or rerun: bash tools/wheelchair-agent/install.sh'
   fi
   rm -rf "$staged"
+}
+
+# The data root and the one-shot migration it may still need. Informational only: a missing root is what a
+# pre-upgrade install looks like, and an "old" layout is a valid state until the next reader migrates it.
+# --check is read-only, so this only stats; it never creates the root or moves a file.
+check_data_root() {
+  case $DATA_ROOT in
+    /*) ;;
+    *)
+      fail "WHEELCHAIR_AGENT_HOME must be an absolute path, got ${WHEELCHAIR_AGENT_HOME:-$DATA_ROOT}"
+      fix 'set WHEELCHAIR_AGENT_HOME to an absolute directory, or unset it to use ~/.wheelchair-agent'
+      return ;;
+  esac
+  if [ -d "$DATA_ROOT" ]; then
+    ok "data root: $DATA_ROOT"
+  else
+    note "data root: $DATA_ROOT (not created yet; a real install creates it)"
+  fi
+  local new=0 old=0 pending=0
+  present() { [ "$1" = dir ] && [ -d "$2" ] && [ -n "$(ls -A "$2" 2>/dev/null)" ] || { [ "$1" = file ] && [ -e "$2" ]; }; }
+  # settings
+  [ -e "$DATA_ROOT/settings.json" ] && new=1
+  [ -e "$LEGACY_STATE_DIR/panel-settings.json" ] && old=1
+  if [ ! -e "$DATA_ROOT/settings.json" ] && [ -e "$LEGACY_STATE_DIR/panel-settings.json" ]; then pending=1; fi
+  # inbox (a directory counts as data only when it holds at least one entry); $SPV_INBOX_DIR is explicit
+  if [ -z "${SPV_INBOX_DIR:-}" ]; then
+    present dir "$DATA_ROOT/inbox" && new=1
+    present dir "$LEGACY_STATE_DIR/inbox" && old=1
+    if ! present dir "$DATA_ROOT/inbox" && present dir "$LEGACY_STATE_DIR/inbox"; then pending=1; fi
+  fi
+  # append-only files
+  local pair current legacy
+  for pair in "records/work-reclaimed.jsonl:work-reclaimed.jsonl" "logs/restart-all.log:restart-all.log" "logs/prepare.log:prepare.log"; do
+    current=${pair%%:*}
+    legacy=${pair##*:}
+    # An explicit $SPV_PREPARE_LOG is outside the root and never migrates.
+    if [ "$legacy" = prepare.log ] && [ -n "${SPV_PREPARE_LOG:-}" ]; then continue; fi
+    [ -e "$DATA_ROOT/$current" ] && new=1
+    [ -e "$LEGACY_STATE_DIR/$legacy" ] && old=1
+    if [ ! -e "$DATA_ROOT/$current" ] && [ -e "$LEGACY_STATE_DIR/$legacy" ]; then pending=1; fi
+  done
+  # An install-created empty root is the new layout; old data alone still reports "old".
+  if [ "$new" -eq 0 ] && [ "$old" -eq 0 ] && [ -d "$DATA_ROOT" ]; then new=1; fi
+  if [ "$new" -eq 1 ] && [ "$old" -eq 1 ]; then
+    note "data layout: both (new data under $DATA_ROOT, old data still under $LEGACY_STATE_DIR)"
+  elif [ "$new" -eq 1 ]; then
+    note "data layout: new ($DATA_ROOT)"
+  elif [ "$old" -eq 1 ]; then
+    note "data layout: old (our data is still under $LEGACY_STATE_DIR; the first reader moves it)"
+  else
+    note "data layout: none (nothing of ours is on disk yet)"
+  fi
+  if [ "$pending" -eq 1 ]; then
+    note "migration: pending (the first reader moves it to $DATA_ROOT; $LEGACY_STATE_DIR stays readable on failure)"
+  else
+    note "migration: none"
+  fi
 }
 
 # The loader row must be a real `name:` line, not a comment that happens to mention the package.
@@ -588,6 +652,26 @@ refuse_install() {
 
 # ------------------------------------------------------------------ install mode
 
+# Create the data root and its empty subdirectories. Idempotent and additive: an existing inbox, settings
+# file or log is never touched or deleted. A relative WHEELCHAIR_AGENT_HOME is a loud failure, not a path
+# resolved against the checkout.
+create_data_root() {
+  case $DATA_ROOT in
+    /*) ;;
+    *)
+      fail "WHEELCHAIR_AGENT_HOME must be an absolute path, got ${WHEELCHAIR_AGENT_HOME:-$DATA_ROOT}"
+      fix 'set WHEELCHAIR_AGENT_HOME to an absolute directory, or unset it to use ~/.wheelchair-agent'
+      return 1 ;;
+  esac
+  if mkdir -p "$DATA_ROOT/logs" "$DATA_ROOT/records" "$DATA_ROOT/inbox"; then
+    ok "data root: $DATA_ROOT"
+    return 0
+  fi
+  fail "cannot create the data root $DATA_ROOT"
+  fix "check that $DATA_ROOT (and its parent) is writable, or set WHEELCHAIR_AGENT_HOME, then rerun this script"
+  return 1
+}
+
 install_preset() {
   local staged backup
   staged=$(mktemp -d) || { fail 'could not create a staging directory'; return 1; }
@@ -751,6 +835,7 @@ if [ "$CHECK" -eq 1 ]; then
   else
     note 'python3 is missing, so the in-use pre-flight was skipped; --check cannot prove a cold install is allowed'
   fi
+  check_data_root
   check_preset
   check_webui
   check_cli
@@ -789,6 +874,10 @@ if [ -n "$SERVICE_PIDS" ] || [ -n "$SPV_PIDS" ]; then
   refuse_install
 fi
 
+if ! create_data_root; then
+  printf '\n1 problem(s) blocked the install.\n'
+  exit 1
+fi
 install_preset
 install_webui
 ensure_webui_loader

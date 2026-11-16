@@ -37,6 +37,9 @@ const SANDBOXES = []
 const HERMETIC_STATE = await mkdtemp(join(tmpdir(), 'wheelchair-agent-inbox-state-'))
 const SAVED_STATE_DIR = process.env.DSH_SUPERAGENT_STATE_DIR
 process.env.DSH_SUPERAGENT_STATE_DIR = HERMETIC_STATE
+// Settings and the inbox now live in our own data root; pin it too so no real file can change the text.
+const SAVED_HOME = process.env.WHEELCHAIR_AGENT_HOME
+process.env.WHEELCHAIR_AGENT_HOME = join(HERMETIC_STATE, 'data')
 
 /** 一个 `mkdtemp` 沙箱；所有测试结束后统一删掉。 */
 async function sandbox() {
@@ -119,6 +122,24 @@ async function getItems(root, query = '') {
   return { status: res.statusCode, body: JSON.parse(res.text) }
 }
 
+/** 调 `GET /wheelchair-inbox/items` through a root provider; proves the root is resolved per request. */
+async function getItemsFrom(rootOf) {
+  const handler = createInboxHandler({ rootOf })
+  const res = {
+    statusCode: 0,
+    headers: {},
+    text: '',
+    setHeader(name, value) {
+      this.headers[String(name).toLowerCase()] = value
+    },
+    end(chunk) {
+      if (chunk !== undefined) this.text += String(chunk)
+    },
+  }
+  await handler({ url: '/wheelchair-inbox/items', method: 'GET' }, res)
+  return { status: res.statusCode, body: JSON.parse(res.text) }
+}
+
 /** `items` 响应里的 id 列表，保持顺序。 */
 const idsOf = payload => payload.items.map(item => item.id)
 
@@ -152,7 +173,7 @@ async function testTwoWriterEntryPoints() {
   const bodyFile = join(box.base, 'body.md')
   await writeFile(bodyFile, '## Decision\n\n- retried\n- kept the old config\n', 'utf8')
   const state = join(box.base, 'state')
-  const env = { ...process.env, DSH_SUPERAGENT_STATE_DIR: state }
+  const env = { ...process.env, WHEELCHAIR_AGENT_HOME: join(box.base, 'data'), DSH_SUPERAGENT_STATE_DIR: state }
   delete env.SPV_INBOX_DIR
   delete env.SPV_QUEUE_DIR
   const stdout = execFileSync(
@@ -161,7 +182,7 @@ async function testTwoWriterEntryPoints() {
     { encoding: 'utf8', env },
   )
   const id = stdout.trim()
-  const inboxRoot = join(state, 'inbox')
+  const inboxRoot = join(box.base, 'data', 'inbox')
   const written = await readItem(inboxRoot, id)
   assert.equal(written.kind, 'spv_message')
   assert.equal(written.title, 'CLI decision')
@@ -454,6 +475,24 @@ async function testFilters() {
   assert.equal(badSince.body.code, 'bad-request')
 }
 
+/** The host resolves the inbox root per request, so a later migration is visible without a restart. */
+async function testRootProviderPerRequest() {
+  const box = await sandbox()
+  const first = join(box.base, 'first')
+  const second = join(box.base, 'second')
+  await createSpvMessage(first, { title: 'first', body: 'one' })
+  await createSpvMessage(second, { title: 'second', body: 'two' })
+  let current = first
+  const before = await getItemsFrom(() => current)
+  assert.equal(before.status, 200)
+  assert.equal((await readItem(first, before.body.items[0].id)).title, 'first')
+  current = second
+  const after = await getItemsFrom(() => current)
+  assert.equal(after.status, 200)
+  assert.equal((await readItem(second, after.body.items[0].id)).title, 'second')
+  assert.throws(() => createInboxHandler({ rootOf: 'not-a-function' }), /rootOf must be a function/)
+}
+
 // ------------------------------------------------------------------- main
 
 try {
@@ -470,6 +509,7 @@ try {
   await testIssueOnSpvMessage()
   await testLegacyPrTimeFilter()
   await testFilters()
+  await testRootProviderPerRequest()
   process.stdout.write('ok\n')
 } catch (error) {
   process.stderr.write(`not ok: ${error?.stack ?? error}\n`)
@@ -478,5 +518,7 @@ try {
   for (const base of SANDBOXES) await rm(base, { recursive: true, force: true })
   if (SAVED_STATE_DIR === undefined) delete process.env.DSH_SUPERAGENT_STATE_DIR
   else process.env.DSH_SUPERAGENT_STATE_DIR = SAVED_STATE_DIR
+  if (SAVED_HOME === undefined) delete process.env.WHEELCHAIR_AGENT_HOME
+  else process.env.WHEELCHAIR_AGENT_HOME = SAVED_HOME
   await rm(HERMETIC_STATE, { recursive: true, force: true })
 }

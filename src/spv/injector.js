@@ -101,7 +101,7 @@ async function fileExists(file) {
  * 依赖全部可注入（`unread` / `consume` / `inject` / `logger`），所以 `tests/test-injector.mjs` 不需要真队列。
  * `getAgent()` 返回 undefined 时**不消费**任何消息：会话还没接受过任务，此时消费等于把结果丢在没有读者的地方。
  *
- * 每次 tick 都重读面板设置（`stateDir` 可指定；`settingsOf` 是测试缝），所以改 `injection.intervalMs`、
+ * 每次 tick 都重读面板设置（`home` / `stateDir` 可指定；`settingsOf` 是测试缝），所以改 `injection.intervalMs`、
  * 模板或正文上限都**不需要重启会话**。调度用自排的 `setTimeout` 而不是固定 `setInterval`：间隔是每轮重新
  * 取的，改小改大下一轮就生效。坏设置文件由 `resolveSettings` 自己退回默认，这里只记一条 warn。
  */
@@ -112,6 +112,7 @@ export function startResultInjector({
   logger = console,
   intervalMs = INJECT_INTERVAL_MS,
   settingsOf,
+  home,
   stateDir,
   timers = { setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: id => clearTimeout(id) },
   unread = unreadMessages,
@@ -146,7 +147,7 @@ export function startResultInjector({
   function currentSettings() {
     try {
       const snapshot =
-        typeof settingsOf === 'function' ? settingsOf() : resolveSettings(stateDir === undefined ? {} : { stateDir })
+        typeof settingsOf === 'function' ? settingsOf() : resolveSettings({ home, stateDir })
       if (snapshot?.warning !== undefined && snapshot.warning !== lastWarning) {
         lastWarning = snapshot.warning
         logger?.warn?.(`[spv] panel settings ignored: ${snapshot.warning}`)

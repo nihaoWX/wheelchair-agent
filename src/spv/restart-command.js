@@ -32,7 +32,8 @@ Arguments:
 
 The detached orchestrator stops the service, stops this SPV session's process chain (SIGTERM, then SIGKILL
 after a bounded wait), runs install.sh cold, starts the service again, and relaunches the TUI in tmux session
-"dsh-spv". Every step is appended to <stateDir>/restart-all.log with its command and exit code.
+"dsh-spv". Every step is appended to <root>/logs/restart-all.log (default
+~/.wheelchair-agent/logs/restart-all.log) with its command and exit code.
 
 No other argument is accepted. Without --force the command refuses when the service reports a running worker
 or a queued ticket, because stopping the service then would throw that work away.`

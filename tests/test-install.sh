@@ -156,6 +156,8 @@ check '(2) the preset landed' "$([ -f "$SB/dsh/.agent-presets/spv/preset.yml" ] 
 check '(2) the CLI landed' "$([ -x "$SB/local-bin/wheelchair-agent" ] && echo yes || echo no)" yes
 check '(2) the webui package landed' \
   "$([ -f "$SB/dsh/profiles/superagent/node_modules/wheelchair-agent-webui/package.json" ] && echo yes || echo no)" yes
+check '(2) the data root and its subdirectories were created' \
+  "$([ -d "$SB/home/.wheelchair-agent/logs" ] && [ -d "$SB/home/.wheelchair-agent/records" ] && [ -d "$SB/home/.wheelchair-agent/inbox" ] && echo yes || echo no)" yes
 run_install
 check '(2) the second cold install exits 0' "$?" 0
 check '(2) the second cold install reports up to date' \
@@ -164,6 +166,9 @@ check '(2) the second cold install replaced nothing' "$(grep -c '^OK: installed'
 run_install --check
 check '(2) --check exits 0 on a cold install' "$?" 0
 check '(2) --check says a cold install is allowed' "$(grep -c 'a cold install is allowed' "$SB/stdout")" 1
+check '(2) --check reports the data root' "$(grep -c '^OK: data root: ' "$SB/stdout")" 1
+check '(2) --check reports the new layout' "$(grep -c '^note: data layout: new' "$SB/stdout")" 1
+check '(2) --check reports no pending migration' "$(grep -c '^note: migration: none' "$SB/stdout")" 1
 
 # (3) --check while both holders run: it reports them and mutates nothing.
 set_state both
@@ -228,6 +233,46 @@ check '(8) the real probe does not count itself as an SPV session' \
   "$(printf '%s\n' "$real_probe" | sed -n 's/^spv_pids=//p')" ''
 check '(8) the real probe reports the port from the URL' \
   "$(printf '%s\n' "$real_probe" | sed -n 's/^service_port=//p')" 0
+
+# (9) --check reports the old layout and a pending migration, and stays read-only.
+rm -rf "$SB/home/.wheelchair-agent"
+mkdir -p "$SB/dsh/state/superagent/inbox"
+printf '{"version":1,"revision":1,"values":{}}\n' > "$SB/dsh/state/superagent/panel-settings.json"
+printf '{"id":"old-1","kind":"pr"}\n' > "$SB/dsh/state/superagent/inbox/old-1.json"
+set_state
+before=$(install_snapshot)
+run_install --check
+check '(9) --check with an old layout exits 0' "$?" 0
+check '(9) --check reports the old layout' "$(grep -c '^note: data layout: old' "$SB/stdout")" 1
+check '(9) --check reports the pending migration' "$(grep -c '^note: migration: pending' "$SB/stdout")" 1
+check '(9) --check changed nothing' "$(install_snapshot)" "$before"
+check '(9) --check did not move the old settings file' \
+  "$([ -f "$SB/dsh/state/superagent/panel-settings.json" ] && echo present || echo absent)" present
+
+# (9b) Both layouts at once (an installed older copy kept writing the old path) are reported and untouched.
+mkdir -p "$SB/home/.wheelchair-agent"
+printf '{"version":1,"revision":2,"values":{}}\n' > "$SB/home/.wheelchair-agent/settings.json"
+before=$(install_snapshot)
+run_install --check
+check '(9b) --check with both layouts exits 0' "$?" 0
+check '(9b) --check reports both layouts' "$(grep -c '^note: data layout: both' "$SB/stdout")" 1
+check '(9b) --check still reports the pending old inbox' "$(grep -c '^note: migration: pending' "$SB/stdout")" 1
+check '(9b) --check changed nothing' "$(install_snapshot)" "$before"
+
+# (10) A relative WHEELCHAIR_AGENT_HOME fails loudly before any install write.
+set_state
+before=$(install_snapshot)
+(
+  export HOME="$SB/home" DSH_HOME="$SB/dsh" SPV_BIN_DIR="$SB/local-bin" \
+    SPV_QUEUE_DIR="$SB/queue" SPV_INSTALL_PROBE="$SB/tools/fake-probe" \
+    FAKE_PROBE_SERVICE="$SERVICE_MARKER" FAKE_PROBE_SPV="$SPV_MARKER" \
+    SPV_SERVICE_PORT=3082 WHEELCHAIR_AGENT_HOME=relative/root PATH="$SB/tools:$PATH"
+  bash "$INSTALL"
+) >"$SB/stdout" 2>"$SB/stderr"
+check '(10) a relative data root exits 1' "$?" 1
+check '(10) the failure names the absolute-path rule' \
+  "$(grep -c 'WHEELCHAIR_AGENT_HOME must be an absolute path' "$SB/stdout")" 1
+check '(10) the relative install changed nothing' "$(install_snapshot)" "$before"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

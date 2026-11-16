@@ -173,6 +173,7 @@ async function makeSandbox() {
     home: join(base, 'home'),
     dshHome: join(base, 'home', '.dsh'),
     state: join(base, 'state'),
+    root: join(base, 'data'),
     proc: join(base, 'proc'),
     bin: join(base, 'bin'),
     checkout: join(base, 'checkout'),
@@ -186,6 +187,7 @@ async function makeSandbox() {
   for (const dir of [
     box.home,
     box.state,
+    box.root,
     box.proc,
     box.bin,
     box.checkout,
@@ -267,10 +269,18 @@ async function makeBox({ chainCount = 2, service = true, startPid = 900_000 } = 
 
 /** The environment the CLI child sees; HOME, DSH_HOME and every target point inside the sandbox. */
 function cliEnv(box, overrides = {}) {
+  // A test run may itself be a detached restart child (that is how the deployment runs the worker);
+  // its WHEELCHAIR_RESTART_* variables would turn every CLI call into a re-guard. Cases that need them
+  // pass them through `overrides`.
+  const env = { ...process.env }
+  for (const key of ['WHEELCHAIR_RESTART_CHAIN', 'WHEELCHAIR_RESTART_PARENT_PID', 'WHEELCHAIR_RESTART_PRESET_PATCH']) {
+    delete env[key]
+  }
   return {
-    ...process.env,
+    ...env,
     HOME: box.home,
     DSH_HOME: box.dshHome,
+    WHEELCHAIR_AGENT_HOME: box.root,
     DSH_SUPERAGENT_STATE_DIR: box.state,
     DSH_SUPERAGENT_URL: box.url,
     WHEELCHAIR_PROC_ROOT: box.proc,
@@ -321,7 +331,7 @@ async function calls(box) {
 
 /** The restart log as lines; a missing file is no log. */
 async function logLines(box) {
-  const text = await readFile(join(box.state, LOG_NAME), 'utf8').catch(error => {
+  const text = await readFile(join(box.root, 'logs', LOG_NAME), 'utf8').catch(error => {
     if (error.code === 'ENOENT') return ''
     throw error
   })
@@ -413,7 +423,7 @@ async function testGuardRefusesRunning() {
     assert.match(output(result), /refusing to restart/)
     assert.match(output(result), /1 worker running/)
     assert.deepEqual(await calls(box), [], 'the refusal runs no command')
-    assert.equal(await exists(join(box.state, LOG_NAME)), false, 'the refusal writes no log')
+    assert.equal(await exists(join(box.root, 'logs', LOG_NAME)), false, 'the refusal writes no log')
   })
 }
 
@@ -425,7 +435,7 @@ async function testGuardRefusesQueued() {
     assert.equal(result.status, 1)
     assert.match(output(result), /1 ticket queued/)
     assert.deepEqual(await calls(box), [])
-    assert.equal(await exists(join(box.state, LOG_NAME)), false)
+    assert.equal(await exists(join(box.root, 'logs', LOG_NAME)), false)
   })
 }
 
@@ -443,14 +453,14 @@ async function testGuardRefusesUnreadable() {
       assert.match(output(refused), /answered at .* but its load could not be read/)
       assert.match(output(refused), /may be running work/)
       assert.deepEqual(await calls(box), [], 'the unreadable-load refusal runs no command')
-      assert.equal(await exists(join(box.state, LOG_NAME)), false, 'the dry-run refusal writes no log')
+      assert.equal(await exists(join(box.root, 'logs', LOG_NAME)), false, 'the dry-run refusal writes no log')
 
       const forced = await cli(box, ['restart-all', '--dry-run', '--force'])
       assert.equal(forced.status, 0)
       assert.match(output(forced), /amount of running work is unknown/)
       assert.match(output(forced), /restart-all plan \(dry run; nothing is changed\)/)
       assert.deepEqual(await calls(box), [], '--force --dry-run still runs nothing')
-      assert.equal(await exists(join(box.state, LOG_NAME)), false)
+      assert.equal(await exists(join(box.root, 'logs', LOG_NAME)), false)
     },
   )
 }
@@ -467,7 +477,7 @@ async function testForceOverridesGuard() {
     )
     assert.match(output(result), /restart-all plan \(dry run; nothing is changed\)/)
     assert.deepEqual(await calls(box), [], '--dry-run --force still runs nothing')
-    assert.equal(await exists(join(box.state, LOG_NAME)), false)
+    assert.equal(await exists(join(box.root, 'logs', LOG_NAME)), false)
   })
 }
 
@@ -482,7 +492,7 @@ async function testDryRunPlan() {
     assert.match(text, new RegExp(`pid ${box.servicePid}`), 'the plan names the service pid')
     for (const pid of box.chainPids) assert.ok(text.includes(String(pid)), `the plan names SPV pid ${pid}`)
     assert.ok(text.includes(TMUX_SESSION), 'the plan names the tmux session')
-    assert.ok(text.includes(join(box.state, LOG_NAME)), 'the plan names the log path')
+    assert.ok(text.includes(join(box.root, 'logs', LOG_NAME)), 'the plan names the log path')
     assert.ok(text.includes(box.checkout), 'the plan names the checkout')
     assert.ok(text.includes('wheelchair-agent service stop'), 'the plan shows service stop')
     assert.ok(text.includes(`bash ${join(box.checkout, 'install.sh')}`), 'the plan shows install.sh')
@@ -500,7 +510,7 @@ async function testDryRunPlan() {
     ]
     assert.deepEqual([...order].sort((left, right) => left - right), order, 'the commands are in order')
     assert.deepEqual(await calls(box), [], 'the dry run runs no command')
-    assert.equal(await exists(join(box.state, LOG_NAME)), false, 'the dry run creates no log')
+    assert.equal(await exists(join(box.root, 'logs', LOG_NAME)), false, 'the dry run creates no log')
   })
 }
 
@@ -817,12 +827,12 @@ async function testDetach() {
     assert.equal(result.status, 0, output(result))
     const text = output(result)
     assert.ok(text.includes(TMUX_SESSION), 'the command names the tmux session it comes back in')
-    assert.ok(text.includes(join(box.state, LOG_NAME)), 'the command names the log path')
+    assert.ok(text.includes(join(box.root, 'logs', LOG_NAME)), 'the command names the log path')
     assert.match(text, /has not restarted anything itself/)
     assert.match(text, /about to end/)
 
     await waitFor(
-      async () => (await exists(join(box.state, LOG_NAME))) && (await readFile(join(box.state, LOG_NAME), 'utf8')).includes('restart complete'),
+      async () => (await exists(join(box.root, 'logs', LOG_NAME))) && (await readFile(join(box.root, 'logs', LOG_NAME), 'utf8')).includes('restart complete'),
       'the detached orchestrator to log restart complete',
     )
     const log = (await logLines(box)).join('\n')

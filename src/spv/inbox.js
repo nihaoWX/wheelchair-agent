@@ -11,7 +11,8 @@
  *
  * 纯 Node builtins：不 import dsh，不 `process.exit`。
  *
- * 目录布局（缺省 `<stateDir>/inbox/`）：
+ * 目录布局（缺省 `<root>/inbox/`，root 默认 `~/.wheelchair-agent`，`$WHEELCHAIR_AGENT_HOME` 可覆盖；
+ * `$SPV_INBOX_DIR` 仍是显式覆盖）：
  *   <owner>-<name>-<number>.json   一个 PR item
  *   spv-<thread>-<UTC>-<rand>.json 一个 SPV 决策信
  *   .<id>.lock                     该 item 的跨进程写锁（watcher 与 review POST 共用）
@@ -26,14 +27,15 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 
 import { checkProject, checkTask, checkThread, submitTask } from './dispatch.js'
-import { DEFAULT_STATE_DIR, resolveRoot } from './paths.js'
+import { resolveRoot } from './paths.js'
+import { HOME_DIR_NAME, INBOX_DIR, resolveData } from '../shared/home.js'
 import { dirsOf, writeMessage } from '../shared/queue.js'
 import { KEY_SPECS, defaultSettings, renderTemplate, resolveSettings } from '../shared/settings.js'
 
 const execFileAsync = promisify(execFile)
 
-/** 未指定时收件箱根目录（绝对路径）。 */
-export const INBOX_ROOT_DEFAULT = join(DEFAULT_STATE_DIR, 'inbox')
+/** 未指定时收件箱根目录的默认值（只是文档/诊断用；真正的解析在 `resolveInboxRoot()`）。 */
+export const INBOX_ROOT_DEFAULT = join(homedir(), HOME_DIR_NAME, INBOX_DIR)
 
 /** 一条评论的上限：够写清一条审查意见，又不至于把任务正文推过模型的单次预算。 */
 const REVIEW_LIMIT = 5000
@@ -71,12 +73,14 @@ const INSTALL_REPO_DEFAULT = KEY_SPECS['merge.installRepo'].default
 const ITEMS_PATH = '/wheelchair-inbox/items'
 const REVIEW_PATH = '/wheelchair-inbox/review'
 
-/** `$SPV_INBOX_DIR`，否则 `<stateDir>/inbox`。 */
-export function resolveInboxRoot() {
-  const fromEnv = String(process.env.SPV_INBOX_DIR ?? '').trim()
-  if (fromEnv) return fromEnv
-  const stateDir = String(process.env.DSH_SUPERAGENT_STATE_DIR ?? '').trim() || DEFAULT_STATE_DIR
-  return join(stateDir, 'inbox')
+/**
+ * 收件箱根目录：`$SPV_INBOX_DIR`（显式覆盖，原样使用），否则数据根的 `<root>/inbox`
+ * （默认 `~/.wheelchair-agent/inbox`，`$WHEELCHAIR_AGENT_HOME` 可覆盖）。
+ *
+ * 旧位置 `<stateDir>/inbox` 会在这次解析时搬到新位置；搬不动就回退到旧目录继续用。
+ */
+export function resolveInboxRoot({ env = process.env, home, stateDir } = {}) {
+  return resolveData({ env, home, stateDir }).inbox
 }
 
 /** 收件箱只有一个目录；保留这个形状是为了和 `dirsOf` 的调用点一致，且将来好扩展。 */
@@ -732,12 +736,13 @@ function checkIntervalSeconds(raw) {
  *   （host 半身 catch 后回退 60 并告警），环境变量非法同样抛错，避免静默接受拼写错误；
  * - 设置文件本身的问题由 `resolveSettings` 忽略并告警，不会抛。
  *
- * `stateDir` 省略时用 `$DSH_SUPERAGENT_STATE_DIR` / `~/.dsh/state/superagent`（与 `paths.js` 同一条规则）。
+ * `home` 是显式的数据根；`stateDir` 只是旧 superagent 目录（旧文件的迁移与回退来源）。
  */
-export function resolveInboxIntervalSeconds(configured, { stateDir, env = process.env } = {}) {
+export function resolveInboxIntervalSeconds(configured, { home, stateDir, env = process.env } = {}) {
   const hasConfigured = !(configured === undefined || configured === null || String(configured).trim() === '')
   // 先解析一次（不预先校验低层）：行来源为 file 就说明磁盘上有合法的显式值，直接返回。
   const settings = resolveSettings({
+    home,
     stateDir,
     env,
     config: hasConfigured ? { 'inbox.intervalSeconds': configured } : {},
@@ -770,7 +775,8 @@ export function resolveInboxIntervalSeconds(configured, { stateDir, env = proces
  * `intervalSeconds` contract holds (positive number, invalid values throw).
  */
 export function startInboxWatcher({
-  root = resolveInboxRoot(),
+  root,
+  rootOf,
   projectsRoot = defaultProjectsRoot(),
   intervalSeconds = INBOX_INTERVAL_DEFAULT,
   intervalSecondsOf,
@@ -779,6 +785,10 @@ export function startInboxWatcher({
   unref = false,
   once = false,
 } = {}) {
+  if (rootOf !== undefined && typeof rootOf !== 'function') {
+    throw new Error('rootOf must be a function returning the inbox root.')
+  }
+  const currentRoot = () => (typeof rootOf === 'function' ? rootOf() : root ?? resolveInboxRoot())
   const dynamic = intervalSecondsOf !== undefined
   if (dynamic && typeof intervalSecondsOf !== 'function') {
     throw new Error('intervalSecondsOf must be a function returning the interval in seconds.')
@@ -825,7 +835,7 @@ export function startInboxWatcher({
   const done = new Promise(resolve => { wake = resolve })
   const poll = async () => {
     try {
-      await pollOnce({ root, projectsRoot, gh, log: warn })
+      await pollOnce({ root: currentRoot(), projectsRoot, gh, log: warn })
     } catch (error) {
       warn(`warning: poll failed: ${messageOf(error)}`)
     }
@@ -961,8 +971,8 @@ export async function pollOnce({ root = resolveInboxRoot(), projectsRoot = defau
  * 与 web host 的自动刷新共用 `startInboxWatcher()`：这里只是把“等它结束”暴露成一个 promise，
  * CLI 的信号处理仍然直接 `process.exit`，所以行为与旧的 for (;;) 循环一致。
  */
-export async function watch({ root = resolveInboxRoot(), projectsRoot = defaultProjectsRoot(), intervalSeconds = INBOX_INTERVAL_DEFAULT, once = false, log = () => {} } = {}) {
-  const watcher = startInboxWatcher({ root, projectsRoot, intervalSeconds, once, log })
+export async function watch({ root, rootOf, projectsRoot = defaultProjectsRoot(), intervalSeconds = INBOX_INTERVAL_DEFAULT, once = false, log = () => {} } = {}) {
+  const watcher = startInboxWatcher({ root, rootOf, projectsRoot, intervalSeconds, once, log })
   await watcher.done
 }
 
@@ -1129,10 +1139,24 @@ async function handleReview(root, req, res) {
  * 收件箱的 HTTP 面：dsh 的 webserver 拥有 `/`，插件只注册两个 `/wheelchair-inbox/*` 精确路由；
  * 页面本身由 `webui/lib/client.js` 在 Client 端渲染，Host 不再发 HTML。
  */
-export function createInboxHandler({ root = resolveInboxRoot() } = {}) {
+export function createInboxHandler({ root, rootOf } = {}) {
+  if (rootOf !== undefined && typeof rootOf !== 'function') {
+    throw new Error('rootOf must be a function returning the inbox root.')
+  }
+  // The root is resolved per request, not captured once: the first resolution may have fallen back to the
+  // legacy inbox (lock held, root not writable yet), and a later migration must be picked up without a
+  // service restart.
+  const currentRoot = () => (typeof rootOf === 'function' ? rootOf() : root ?? resolveInboxRoot())
   return async function handle(req, res) {
     const pathname = pathOf(req)
     const method = String(req.method ?? 'GET').toUpperCase()
+    let root
+    try {
+      root = currentRoot()
+    } catch (error) {
+      sendJson(res, 500, { code: 'internal-error', message: messageOf(error) })
+      return
+    }
     if (pathname === ITEMS_PATH) {
       if (method !== 'GET') {
         sendMethodNotAllowed(res, 'GET')

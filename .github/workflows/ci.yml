@@ -48,6 +48,9 @@ jobs:
       - name: Ticket-directory reclamation
         run: node tests/test-work.mjs
 
+      - name: Data root and one-shot migration
+        run: node tests/test-home.mjs
+
       - name: Layout boundary rules
         run: bash tests/test-layout.sh
 

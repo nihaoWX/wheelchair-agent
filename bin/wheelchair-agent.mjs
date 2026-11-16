@@ -65,6 +65,7 @@ commands:
   work restored <ticket>       print the commands that rebuild a reclaimed ticket clone
   restart-all [--dry-run] [--force] [--no-install] [--detach]
                                restart the superagent service, cold-install the preset and relaunch the SPV TUI
+  where [--json]               where this install put everything (data root, preset, wrappers, queue, logs)
   check                        runtime health: service, preset, panel prepare value, prepare dry run
   --help                       this text
   --version                    the installed version
@@ -109,10 +110,11 @@ const WORK_USAGE = `usage: wheelchair-agent work <command>
 
 Reclaim ticket clones under the execution root. A clone is reclaimed only when nothing has its cwd
 inside it, its working tree is clean, and every commit is already pushed. The record it leaves in
-<stateDir>/work-reclaimed.jsonl is enough to rebuild it.
+<root>/records/work-reclaimed.jsonl (default ~/.wheelchair-agent) is enough to rebuild it.
 
 environment:
-  DSH_SUPERAGENT_STATE_DIR  deployment state dir (default ~/.dsh/state/superagent)
+  WHEELCHAIR_AGENT_HOME     our data root for records and logs (default ~/.wheelchair-agent)
+  DSH_SUPERAGENT_STATE_DIR  superagent state dir; still owns the queue and the work root
   DSH_SUPERAGENT_WORK_DIR   settings.executor.directory, when it is not <stateDir>/work
   SPV_SUPERAGENT_URL        management API base URL (default http://127.0.0.1:3082)
   DSH_SUPERAGENT_URL        service-manager fallback base URL
@@ -139,7 +141,8 @@ options:
                      work.keepDays, built-in 0)
 
 environment:
-  DSH_SUPERAGENT_STATE_DIR  deployment state dir (default ~/.dsh/state/superagent)
+  WHEELCHAIR_AGENT_HOME     our data root for records and logs (default ~/.wheelchair-agent)
+  DSH_SUPERAGENT_STATE_DIR  superagent state dir; still owns the queue and the work root
   DSH_SUPERAGENT_WORK_DIR   settings.executor.directory, when it is not <stateDir>/work
   SPV_SUPERAGENT_URL        management API base URL (default http://127.0.0.1:3082)
   DSH_SUPERAGENT_URL        service-manager fallback base URL
@@ -148,8 +151,20 @@ environment:
 const WORK_RESTORED_USAGE = `usage: wheelchair-agent work restored <ticket>
 
 Print copy-paste commands that rebuild a reclaimed ticket clone from
-<stateDir>/work-reclaimed.jsonl. The directory name is the ticket name, for example
-"agent-tool-dsh-install-0312cf6b4046".`
+<root>/records/work-reclaimed.jsonl (default ~/.wheelchair-agent). The directory name is the ticket name,
+for example "agent-tool-dsh-install-0312cf6b4046".`
+
+const WHERE_USAGE = `usage: wheelchair-agent where [--json]
+
+Print where this install put everything: the wheelchair-agent data root (settings, inbox, rebuild records
+and logs), the preset directory, the four command wrappers, the webui package, the checkout that install.sh
+comes from, the superagent queue, the ticket work root, the logs and the panel URL.
+
+Nothing is created, moved or changed: this is a read-only listing. The one-shot data migration runs when a
+reader actually resolves a path, not here.
+
+options:
+  --json    print one JSON object for scripting`
 
 const RESTART_USAGE = `usage: wheelchair-agent restart-all [--dry-run] [--force] [--no-install] [--detach]
 
@@ -168,7 +183,8 @@ options:
   --help        this text
 
 The TUI cannot be put back on this terminal from inside the session that must be stopped, so --detach
-relaunches it in tmux session "dsh-spv" and appends every step to <stateDir>/restart-all.log.
+relaunches it in tmux session "dsh-spv" and appends every step to <root>/logs/restart-all.log
+(default ~/.wheelchair-agent/logs/restart-all.log).
 `
 
 /** 用法错误：退出码 2，与「命令失败」（1）分开。 */
@@ -474,6 +490,7 @@ async function commandInboxWatch(argv) {
   process.once('SIGTERM', stop)
   await watch({
     root,
+    rootOf: () => resolveInboxRoot(),
     intervalSeconds,
     once,
     log: message => process.stdout.write(`${message}\n`),
@@ -539,7 +556,7 @@ async function commandWorkGc(argv) {
   let settingsKeepDays = KEEP_DAYS_DEFAULT
   try {
     const { resolveSettings } = await load('src', 'shared', 'settings.js')
-    const effective = resolveSettings({ stateDir: STATE_DIR }).effective
+    const effective = resolveSettings({ stateDir: STATE_DIR, migrate: !parsed.dryRun }).effective
     settingsKeep = effective['work.keep']
     settingsKeepDays = effective['work.keepDays']
   } catch {
@@ -658,6 +675,121 @@ async function commandRestartAll(argv) {
   process.exitCode = code
 }
 
+/**
+ * `where`：只读地列出这次安装把东西放在哪。
+ *
+ * 它回答的是「这东西到底把什么写到了哪里」——此前要读三个文件再加一次 `--check`。数据根的布局
+ * （new/old/both）和待迁移状态只是描述，不触发迁移；真正的搬迁发生在第一个读文件的进程里。
+ */
+async function commandWhere(argv) {
+  let json = false
+  for (const word of argv) {
+    if (word === '--json') {
+      json = true
+      continue
+    }
+    if (word === '--help' || word === '-h') {
+      process.stdout.write(`${WHERE_USAGE}\n`)
+      return
+    }
+    throw new UsageError(`unknown option ${JSON.stringify(word)} for "where"`)
+  }
+  const { dataPaths, describeData } = await load('src', 'shared', 'home.js')
+  const { resolveRoot } = await load('src', 'spv', 'paths.js')
+  const { resolveWorkRoot } = await load('src', 'shared', 'work.js')
+  const { resolveCheckout, resolveServiceUrl } = await load('src', 'spv', 'restart.js')
+  const paths = dataPaths({ env: process.env, stateDir: STATE_DIR })
+  const described = describeData({ env: process.env, stateDir: STATE_DIR })
+  // The four wrappers are installed into BIN_DIR (SPV_BIN_DIR or ~/.local/bin), never into the preset
+  // directory, so an installed CLI reports the same directory as a checkout CLI.
+  const binDir = String(process.env.SPV_BIN_DIR ?? '').trim() || join(homedir(), '.local', 'bin')
+  const wrappers = ['wheelchair-agent', 'spv', 'superagent-service', 'jobctl'].map(name => {
+    const path = join(binDir, name)
+    return { name, path, exists: existsSync(path) }
+  })
+  const profile = String(process.env.DSH_SUPERAGENT_PROFILE ?? '').trim() || 'superagent'
+  const webuiPackage = join(DSH_HOME, 'profiles', profile, 'node_modules', 'wheelchair-agent-webui')
+  let checkout = null
+  try {
+    checkout = resolveCheckout({
+      env: process.env,
+      root: ROOT,
+      presetDir: PRESET_DIR,
+      cwd: process.cwd(),
+      installed: INSTALLED,
+    }) ?? null
+  } catch {
+    // A malformed installed package.json must not hide every other path.
+  }
+  let workRoot
+  let workRootError
+  try {
+    workRoot = resolveWorkRoot({ stateDir: STATE_DIR })
+  } catch (error) {
+    workRootError = error instanceof Error ? error.message : String(error)
+  }
+  const queue = resolveRoot()
+  const payload = {
+    root: paths.root,
+    rootExists: existsSync(paths.root),
+    layout: described.layout,
+    migrationPending: described.migrationPending,
+    legacyStateDir: paths.legacyStateDir,
+    data: {
+      settings: paths.settings.current,
+      inbox: paths.inbox.current,
+      records: paths.records,
+      reclaimed: paths.reclaimed.current,
+      logs: paths.logs,
+      restartLog: paths.restartLog.current,
+      prepareLog: paths.prepareLog.current,
+      migrationLog: paths.migrationLog,
+    },
+    presetDir: PRESET_DIR,
+    presetDirExists: existsSync(PRESET_DIR),
+    binDir,
+    wrappers,
+    webuiPackage,
+    webuiPackageExists: existsSync(webuiPackage),
+    checkout,
+    checkoutExists: checkout !== null && existsSync(checkout),
+    queue: { path: queue, exists: existsSync(queue) },
+    workRoot: workRootError === undefined
+      ? { path: workRoot, exists: existsSync(workRoot) }
+      : { path: null, exists: false, error: workRootError },
+    logs: { dir: paths.logs, restartAll: paths.restartLog.current, prepare: paths.prepareLog.current },
+    panelUrl: resolveServiceUrl({ env: process.env }),
+  }
+  if (json) {
+    process.stdout.write(`${JSON.stringify(payload, null, 2)}\n`)
+    return
+  }
+  const yes = value => (value ? 'exists' : 'missing')
+  const lines = [
+    `wheelchair-agent ${version()}`,
+    `  root:          ${payload.root} (${yes(payload.rootExists)}; layout ${payload.layout}` +
+      `${payload.migrationPending ? ', migration pending' : ''})`,
+    `    settings:    ${payload.data.settings}`,
+    `    inbox:       ${payload.data.inbox}`,
+    `    records:     ${payload.data.records}`,
+    `    reclaimed:   ${payload.data.reclaimed}`,
+    `    logs:        ${payload.data.logs}`,
+    `  preset:        ${payload.presetDir} (${yes(payload.presetDirExists)})`,
+    `  wrappers:      ${payload.binDir}`,
+    ...payload.wrappers.map(wrapper => `    ${wrapper.name.padEnd(18)} ${wrapper.path} (${yes(wrapper.exists)})`),
+    `  webui package: ${payload.webuiPackage} (${yes(payload.webuiPackageExists)})`,
+    `  checkout:      ${payload.checkout ?? '(not resolved)'} (${yes(payload.checkoutExists)})`,
+    `  queue:         ${payload.queue.path} (${yes(payload.queue.exists)})`,
+    `  work root:     ${payload.workRoot.path ?? `(not resolved: ${payload.workRoot.error})`} ` +
+      `(${yes(payload.workRoot.exists)})`,
+    `  logs:          ${payload.logs.dir}`,
+    `    restart-all: ${payload.logs.restartAll}`,
+    `    prepare:     ${payload.logs.prepare}`,
+    `  panel:         ${payload.panelUrl}`,
+  ]
+  process.stdout.write(`${lines.join('\n')}\n`)
+}
+
 /** `check`：四项运行时健康检查，任一项失败退出 1。 */
 async function commandCheck() {
   const { runChecks } = await load('src', 'spv', 'check.js')
@@ -724,6 +856,9 @@ try {
       break
     case 'restart-all':
       await commandRestartAll(rest)
+      break
+    case 'where':
+      await commandWhere(rest)
       break
     case 'check':
       await commandCheck()

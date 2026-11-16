@@ -124,8 +124,8 @@ increasing precedence:
 
 - `SPV_INBOX_INTERVAL_SECONDS=<seconds>` in the service's environment;
 - the webui plugin's config: `intervalSeconds: <seconds>`;
-- `inbox.intervalSeconds` in the panel settings file (`<stateDir>/panel-settings.json`, editable
-  from the Settings section), which wins over both.
+- `inbox.intervalSeconds` in the panel settings file (`<root>/settings.json`, editable from the
+  Settings section), which wins over both.
 
 `0` disables the automatic poller (the CLI still works). The poller re-reads the settings file before every
 schedule, so changing the interval applies without a restart; a paused poller re-checks every second and
@@ -200,7 +200,7 @@ without the page having to guess its rules.
 
 ### The store file
 
-One JSON file at `<stateDir>/panel-settings.json`:
+One JSON file at `<root>/settings.json`:
 
 ```json
 {
@@ -221,9 +221,11 @@ Only **custom** presets are written. The built-in `default` text always comes fr
 from the file, and a stored `default` entry from an older version is advisory and ignored: it never
 changes the built-in text and never produces a warning.
 
-`stateDir` is `$DSH_SUPERAGENT_STATE_DIR`, else `~/.dsh/state/superagent` (the same rule as
-`src/spv/paths.js`). `values` holds only explicit overrides, so changing a built-in default is not
-pinned by an old file. Writes are atomic (temp file + rename; the directory is created first).
+`<root>` is `$WHEELCHAIR_AGENT_HOME`, else `~/.wheelchair-agent` (see `src/shared/home.js`); the
+superagent state directory is only where the old `panel-settings.json` is read from once and moved to
+`<root>/settings.json`. `values` holds only explicit overrides, so changing a built-in default is not
+pinned by an old file. Writes are atomic (temp file + rename; the directory is created first). A corrupt
+file or a failed move keeps working through the old path and says so in the snapshot's `warning`.
 
 A corrupt file, a missing one, an unsupported `version` or a bad field never throws: `resolveSettings()`
 ignores it, falls back to the next precedence layer, and reports `fileState`
@@ -236,7 +238,7 @@ keeps working.
 
 Highest to lowest:
 
-1. `panel-settings.json` (`values`);
+1. `settings.json` (`values`);
 2. the plugin config (`intervalSeconds`), then the environment (`SPV_INBOX_INTERVAL_SECONDS`,
    `SPV_INSTALL_REPO`) — the config is checked before the environment within this tier;
 3. the built-in default.
@@ -312,9 +314,9 @@ both locales and offers no template for them.
 
 ### Wiring, copy location and tests
 
-`install.sh` copies `src/shared/settings.js` to `lib/shared/settings.js` — **not** `lib/core/`. The
-copied `lib/core/inbox.js` imports `../shared/settings.js`, exactly like `queue.js` lives in
-`lib/shared/`; `lib/core/` is for files copied from `src/spv/`. The installed package stays
+`install.sh` copies `src/shared/settings.js` and `src/shared/home.js` to `lib/shared/` — **not**
+`lib/core/`. The copied `lib/core/inbox.js` imports `../shared/settings.js` and `../shared/home.js`,
+exactly like `queue.js` lives in `lib/shared/`; `lib/core/` is for files copied from `src/spv/`. The installed package stays
 self-contained, and `install.sh --check` diffs the copy like the other generated files.
 
 `tests/test-settings.mjs` is the offline proof (mkdtemp sandboxes, no network, no dsh): defaults,
@@ -335,19 +337,21 @@ Block nesting is capped so a hostile body cannot exhaust the stack.
 
 ## Self-contained installed package
 
-`install.sh` copies this package into the profile's `node_modules` **and** copies the five core
+`install.sh` copies this package into the profile's `node_modules` **and** copies the six core
 files it imports from the checkout:
 
 ```
 src/spv/inbox.js       -> lib/core/inbox.js
 src/spv/dispatch.js    -> lib/core/dispatch.js
 src/spv/paths.js       -> lib/core/paths.js
+src/shared/home.js     -> lib/shared/home.js
 src/shared/queue.js    -> lib/shared/queue.js
 src/shared/settings.js -> lib/shared/settings.js
 ```
 
 The relative imports line up (`inbox.js` imports `./dispatch.js`, `./paths.js`,
-`../shared/queue.js`, `../shared/settings.js`), so the installed package is self-contained: replacing
+`../shared/queue.js`, `../shared/settings.js`, `../shared/home.js`; `settings.js` imports
+`./home.js`), so the installed package is self-contained: replacing
 `~/.dsh/.agent-presets/spv/` (for example, another worktree running its own `install.sh`) can no
 longer break the plugin's import, and the next service restart keeps working.
 

@@ -38,6 +38,9 @@ const TIMEOUT_MS = 2000
 const HERMETIC_STATE = await mkdtemp(join(tmpdir(), 'wheelchair-agent-injector-state-'))
 const SAVED_STATE_DIR = process.env.DSH_SUPERAGENT_STATE_DIR
 process.env.DSH_SUPERAGENT_STATE_DIR = HERMETIC_STATE
+// Same for our own data root: settings live there now, and the legacy state dir is only a fallback.
+const SAVED_HOME = process.env.WHEELCHAIR_AGENT_HOME
+process.env.WHEELCHAIR_AGENT_HOME = join(HERMETIC_STATE, 'data')
 
 /**
  * 一套假依赖：outbox 是可变数组，`unread` 记读取次数（证明「真的又跑了一轮」），`consume` 按
@@ -525,5 +528,7 @@ try {
 } finally {
   if (SAVED_STATE_DIR === undefined) delete process.env.DSH_SUPERAGENT_STATE_DIR
   else process.env.DSH_SUPERAGENT_STATE_DIR = SAVED_STATE_DIR
+  if (SAVED_HOME === undefined) delete process.env.WHEELCHAIR_AGENT_HOME
+  else process.env.WHEELCHAIR_AGENT_HOME = SAVED_HOME
   await rm(HERMETIC_STATE, { recursive: true, force: true })
 }

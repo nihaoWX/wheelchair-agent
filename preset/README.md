@@ -136,6 +136,7 @@ thread，让 SPV 回顾当时的判断。
 wheelchair-agent dispatch --project tools/foo --task "..." --thread t1
 wheelchair-agent status [--thread t1]
 wheelchair-agent inbox add --title "决定" --body "正文 / @文件" [--thread t1]
+wheelchair-agent where [--json] # 只读列出数据根、preset、四个 wrapper、webui 包、checkout、队列、work root、日志与面板 URL
 wheelchair-agent check          # 运行时健康：服务 / preset / 面板 prepare 值 / prepare dry run
 wheelchair-agent work gc --dry-run   # 回收可重建的 ticket 克隆；挂载时同一实现自动跑一次
 wheelchair-agent work restored <ticket>  # 从 work-reclaimed.jsonl 打印重建命令
@@ -153,7 +154,7 @@ wheelchair-agent restart-all             # 停服务 → 停 SPV 链 → 冷安�
 `install.sh` 冷安装 → 服务启动 → tmux 重开 TUI**；这个顺序是 `install.sh` 的冷安装守卫唯一接受的
 （服务或活着的 SPV 会话占用时它会拒绝，且半安装的服务比停着的服务更糟）。它只接受 `--force`：打断
 正在跑的 worker 与排队的 ticket（会先打印打断了什么）。每一步连同命令与退出码写进
-`<stateDir>/restart-all.log`。详见 `docs/restart.md`。
+`<root>/logs/restart-all.log`（默认 `~/.wheelchair-agent`）。详见 `docs/restart.md`。
 
 ## 标准工具从哪来
 

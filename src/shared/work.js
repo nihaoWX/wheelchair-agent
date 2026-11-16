@@ -12,7 +12,9 @@
  * It lives in `src/shared/` because both programs may import that tree, and for no other reason.
  *
  * Nothing here reads or writes dsh-superagent's database. The record file is our own:
- *   `<stateDir>/work-reclaimed.jsonl`, one JSON object per reclaimed directory.
+ *   `<root>/records/work-reclaimed.jsonl` (default `~/.wheelchair-agent`, `$WHEELCHAIR_AGENT_HOME`
+ *   overrides), one JSON object per reclaimed directory. The old `<stateDir>/work-reclaimed.jsonl` is
+ *   migrated by `src/shared/home.js` and stays readable through its fallback.
  *
  * Every git call is asynchronous (`execFile`, with a timeout) because the mount hook runs this inside the service
  * process: a synchronous spawn would stall the Source's own event loop.
@@ -23,10 +25,11 @@ import { homedir } from 'node:os'
 import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { promisify } from 'node:util'
 
+import { resolveData } from './home.js'
+
 const execFileAsync = promisify(execFile)
 
-/** Name of the append-only rebuild record inside the deployment's state directory. */
-export const RECLAIMED_FILE = 'work-reclaimed.jsonl'
+export { RECLAIMED_FILE } from './home.js'
 
 /** No age retention by default: the reconstructibility gate, not age, is what makes a delete safe. */
 export const KEEP_DAYS_DEFAULT = 0
@@ -575,7 +578,9 @@ function appendRecord(file, value) {
  */
 export async function reclaimWork({
   root,
+  home,
   stateDir,
+  env = process.env,
   keep = KEEP_DEFAULT,
   keepDays = KEEP_DAYS_DEFAULT,
   dryRun = false,
@@ -596,7 +601,7 @@ export async function reclaimWork({
     }
   }
 
-  const file = join(stateDir, RECLAIMED_FILE)
+  const file = resolveData({ env, home, stateDir }).reclaimed
   let reclaimed = 0
   let freedBytes = 0
   for (const entry of plan.entries) {
@@ -609,7 +614,7 @@ export async function reclaimWork({
       continue
     }
     try {
-      await mkdir(stateDir, { recursive: true })
+      await mkdir(dirname(file), { recursive: true })
       await appendRecord(file, entry.record)
     } catch (error) {
       entry.action = 'keep'
@@ -650,8 +655,8 @@ export async function reclaimWork({
  * The last record for `ticket`, or an error that names the exact file that was searched. A retraction line
  * (`retracted: true`) cancels the record before it, so a failed delete never produces rebuild instructions.
  */
-export async function readReclaimed({ stateDir, ticket }) {
-  const file = join(stateDir, RECLAIMED_FILE)
+export async function readReclaimed({ home, stateDir, env = process.env, ticket }) {
+  const file = resolveData({ env, home, stateDir }).reclaimed
   let text
   try {
     text = await readFile(file, 'utf8')

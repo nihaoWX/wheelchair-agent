@@ -65,8 +65,10 @@ it logs and exits without mutating anything.
 
 ## The log
 
-Every run appends to `<stateDir>/restart-all.log` (default
-`~/.dsh/state/superagent/restart-all.log`), one `[ISO timestamp] text` line per entry:
+Every run appends to `<root>/logs/restart-all.log` (default
+`~/.wheelchair-agent/logs/restart-all.log`; `$WHEELCHAIR_AGENT_HOME` moves the root), one
+`[ISO timestamp] text` line per entry. A pre-upgrade `~/.dsh/state/superagent/restart-all.log` is
+moved there once, and the old path stays readable if that move fails:
 
 ```
 [2026-11-15T12:00:00.000Z] step 1/5: wheelchair-agent service stop -> exit 0
