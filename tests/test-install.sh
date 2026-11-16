@@ -158,6 +158,10 @@ check '(2) the webui package landed' \
   "$([ -f "$SB/dsh/profiles/superagent/node_modules/wheelchair-agent-webui/package.json" ] && echo yes || echo no)" yes
 check '(2) the data root and its subdirectories were created' \
   "$([ -d "$SB/home/.wheelchair-agent/logs" ] && [ -d "$SB/home/.wheelchair-agent/records" ] && [ -d "$SB/home/.wheelchair-agent/inbox" ] && echo yes || echo no)" yes
+check '(2) install created the settings file' \
+  "$([ -f "$SB/home/.wheelchair-agent/settings.json" ] && echo yes || echo no)" yes
+check '(2) the shipped settings file is empty-but-valid' \
+  "$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(s.version===1&&s.revision===0&&Object.keys(s.values).length===0&&Object.keys(s.templates).length===0?"yes":"no")' "$SB/home/.wheelchair-agent/settings.json" 2>/dev/null)" yes
 run_install
 check '(2) the second cold install exits 0' "$?" 0
 check '(2) the second cold install reports up to date' \

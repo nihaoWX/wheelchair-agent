@@ -672,6 +672,20 @@ create_data_root() {
   return 1
 }
 
+# Create the settings file ship-empty instead of warning about it. Empty `values` means "use the
+# built-in defaults", so a later default change still reaches this machine; the installer must never
+# write resolved values. Existing files are left untouched (the Node helper opens with `wx`).
+ensure_settings_file() {
+  if node -e "import(process.argv[1]).then(({ ensureSettingsFile }) => ensureSettingsFile())" \
+      "file://$SELF_DIR/src/shared/settings.js" >/dev/null 2>&1; then
+    ok "settings file: $DATA_ROOT/settings.json"
+    return 0
+  fi
+  fail "cannot create the settings file $DATA_ROOT/settings.json"
+  fix "check that $DATA_ROOT is writable, fix the error above, then rerun this script"
+  return 1
+}
+
 install_preset() {
   local staged backup
   staged=$(mktemp -d) || { fail 'could not create a staging directory'; return 1; }
@@ -875,6 +889,10 @@ if [ -n "$SERVICE_PIDS" ] || [ -n "$SPV_PIDS" ]; then
 fi
 
 if ! create_data_root; then
+  printf '\n1 problem(s) blocked the install.\n'
+  exit 1
+fi
+if ! ensure_settings_file; then
   printf '\n1 problem(s) blocked the install.\n'
   exit 1
 fi
