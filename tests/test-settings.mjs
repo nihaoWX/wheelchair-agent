@@ -4,8 +4,7 @@
  *
  * 覆盖：
  *   - 默认值解析：没有文件时 revision 0、`fileState: "missing"`、七行都是内置默认；
- *   - 内置模板与改造前逐字节一致：`formatResult()`、`taskText()`、`noticeText()` 的旧输出由本文件
- *     重新算一遍（不是从实现里抄），默认路径必须相等；
+ *   - 内置模板：`injection` / `spvObjection` 与改造前逐字节一致；`prIssue` 是新的 SPV notice 正文；
  *   - 保存：部分保存合并、revision 递增、文件只有 version/revision/values/templates、原子写不留临时文件；
  *     过期 revision 抛 SETTINGS_CONFLICT 且**磁盘一个字节都不动**；未知键/坏值整体拒绝；
  *   - 坏文件：JSON 语法错、版本不认、手改出非法值/非法预设都不抛，退回默认并给出 warning；
@@ -15,7 +14,7 @@
  *     非法名字；
  *   - 优先级：文件 > 插件 config > 环境变量 > 默认；`rows` 的 source/overridden/env 说清楚被压住的值；
  *   - HTTP 面：GET/PUT、405 Allow、415、413、400、409、404，reset 与预设 CRUD 都走同一条 PUT；
- *   - 消费方：`resolveInboxIntervalSeconds()` 的优先级与非法值、`appendReview` 用自定义模板写任务/通知、
+ *   - 消费方：`resolveInboxIntervalSeconds()` 的优先级与非法值、`appendReview` 用自定义模板写通知、
  *     `startResultInjector` 用自定义模板与自定义截断上限、`injection.intervalMs` 改值无需重启、
  *     轮询器 0 暂停/恢复无需重启、`merge.installRepo` 文件值压过环境变量、`work gc` 用设置的 keep 默认、
  *     挂载回收被 `work.sweepOnMount=false` 整体跳过。
@@ -297,24 +296,6 @@ function legacyFormatResult(message, { read } = {}) {
   return `${header}\n${body === '' ? '(empty message)' : body}`
 }
 
-/** 改造前 `taskText()` 的公式。 */
-function legacyTaskText(item, comment) {
-  return [
-    '审查收件箱转来一条 GitHub PR 评论，请处理。',
-    '',
-    `repo: ${item.repo}`,
-    `PR: #${item.pr}`,
-    `title: ${item.title ?? ''}`,
-    `url: ${item.url ?? ''}`,
-    'kind: issue',
-    '',
-    '评论原文（原样保留）：',
-    comment,
-    '',
-    '操作者认为这个 PR 有问题，请按评论处理。',
-  ].join('\n')
-}
-
 /** 改造前 `noticeText()` 的公式。 */
 function legacyNoticeText(item, comment) {
   return [
@@ -328,6 +309,24 @@ function legacyNoticeText(item, comment) {
     comment,
     '',
     '这是对你在无人看管时自己作出的决定的质疑；请回顾当时的判断并处理。',
+  ].join('\n')
+}
+
+/** The new default `prIssue` notice, pinned independently of the implementation. */
+function defaultPrIssueNotice(item, comment) {
+  return [
+    '审查收件箱转来一条对 GitHub PR 的质疑，请先处理。',
+    '',
+    `repo: ${item.repo}`,
+    `PR: #${item.pr}`,
+    `title: ${item.title ?? ''}`,
+    `url: ${item.url ?? ''}`,
+    'kind: issue',
+    '',
+    '评论原文（原样保留）：',
+    comment,
+    '',
+    '操作者认为这个 PR 有问题。请你（SPV）先结合上下文和操作者讨论怎么改，再决定是否派活。',
   ].join('\n')
 }
 
@@ -378,11 +377,6 @@ function spvItem(overrides = {}) {
   }
 }
 
-async function pendingTexts(box) {
-  const names = (await readdir(join(box.queue, 'pending')).catch(() => [])).filter(name => name.endsWith('.json'))
-  return Promise.all(names.map(name => readJson(join(box.queue, 'pending', name))))
-}
-
 async function outboxMessages(box) {
   const names = (await readdir(join(box.queue, 'outbox')).catch(() => [])).filter(name => name.endsWith('.json'))
   return Promise.all(names.map(name => readJson(join(box.queue, 'outbox', name))))
@@ -424,8 +418,8 @@ async function testDefaults() {
   assert.equal(settingsPath(box), join(box.root, SETTINGS_FILE))
 }
 
-/** 内置模板必须复刻改造前的输出：formatResult / taskText / noticeText 逐字节比较。 */
-async function testDefaultTemplatesAreByteIdentical() {
+/** 默认模板：injection / spvObjection 保持旧输出，prIssue 是新的 SPV notice。 */
+async function testDefaultTemplates() {
   const samples = [
     { kind: 'reply', thread: 't1', ticketId: 'tk-1', text: '答复正文' },
     { kind: 'notice', thread: 't9', text: '  \n' },
@@ -440,26 +434,28 @@ async function testDefaultTemplatesAreByteIdentical() {
     legacyFormatResult({ kind: 'reply', thread: 't1', ticketId: 'tk-1', text: 'no read path' }),
   )
 
-  // appendReview 的默认输出：任务正文与通知正文都用旧公式重算后比较。
   const box = await sandbox()
   const saved = { ...process.env }
   try {
     process.env.WHEELCHAIR_AGENT_HOME = box.root
     process.env.DSH_SUPERAGENT_STATE_DIR = box.state
     process.env.SPV_QUEUE_DIR = box.queue
-    delete process.env.SPV_INBOX_REPO
     const pr = prItem({ id: 'acme-alpha-1', pr: 1 })
     const prComment = '  这条评论的首尾空格要 trim  '
     await writeItem(box.inbox, pr)
     await appendReview(box.inbox, { id: pr.id, kind: 'issue', text: prComment })
-    const [task] = await pendingTexts(box)
-    assert.equal(task.text, legacyTaskText(pr, prComment.trim()), 'the default prIssue template reproduces taskText byte for byte')
+    const messages = await outboxMessages(box)
+    assert.equal(messages.length, 1, 'a PR issue writes one notice')
+    assert.equal(messages[0].thread, 'inbox-1')
+    assert.equal(messages[0].text, defaultPrIssueNotice(pr, prComment.trim()), 'the default prIssue template is the new SPV notice')
 
     const message = spvItem({ id: 'spv-ops-20261113T120000Z-abcd', thread: 'ops', title: 'Retried the deploy' })
     await writeItem(box.inbox, message)
     await appendReview(box.inbox, { id: message.id, kind: 'issue', text: 'You should have asked.' })
-    const [notice] = await outboxMessages(box)
-    assert.equal(notice.text, legacyNoticeText(message, 'You should have asked.'), 'the default spvObjection template reproduces noticeText')
+    const notices = await outboxMessages(box)
+    assert.equal(notices.length, 2)
+    const objection = notices.find(item => item.thread === 'ops')
+    assert.equal(objection.text, legacyNoticeText(message, 'You should have asked.'), 'the default spvObjection template reproduces noticeText')
   } finally {
     restoreEnv(saved)
   }
@@ -576,10 +572,12 @@ async function testCorruptAndHandEditedFiles() {
     process.env.SPV_QUEUE_DIR = box.queue
     const item = prItem({ id: 'acme-alpha-9', pr: 9 })
     await writeItem(box.inbox, item)
-    const { task } = await appendReview(box.inbox, { id: item.id, kind: 'issue', text: 'still dispatches' })
-    assert.ok(task !== null, 'a corrupt settings file does not block dispatch')
-    const [record] = await pendingTexts(box)
-    assert.ok(record.text.includes('still dispatches'))
+    const { task } = await appendReview(box.inbox, { id: item.id, kind: 'issue', text: 'still notifies' })
+    assert.equal(task, null, 'a corrupt settings file does not block the notice')
+    const notices = await outboxMessages(box)
+    assert.equal(notices.length, 1)
+    assert.equal(notices[0].thread, 'inbox-9')
+    assert.ok(notices[0].text.includes('still notifies'))
   } finally {
     restoreEnv(saved)
   }
@@ -1140,7 +1138,7 @@ async function testHostSettingsRoute() {
 
 // --------------------------------------------------------------- consumers
 
-/** 自定义 prIssue / spvObjection 模板真的进了派单与 outbox。 */
+/** 自定义 prIssue / spvObjection 模板真的进了 outbox notice。 */
 async function testAppendReviewUsesTemplates() {
   const box = await sandbox()
   save(box, {
@@ -1148,7 +1146,7 @@ async function testAppendReviewUsesTemplates() {
       prIssue: {
         active: 'custom',
         presets: {
-          custom: { text: 'CUSTOM TASK {repo} #{pr} {title} {url}\nCOMMENT: {comment}' },
+          custom: { text: 'CUSTOM PR NOTICE {repo} #{pr} {title} {url}\nCOMMENT: {comment}' },
         },
       },
       spvObjection: {
@@ -1167,19 +1165,20 @@ async function testAppendReviewUsesTemplates() {
     const pr = prItem({ id: 'acme-alpha-2', pr: 2, title: 'Fix the thing' })
     await writeItem(box.inbox, pr)
     const { task } = await appendReview(box.inbox, { id: pr.id, kind: 'issue', text: 'please fix' })
-    assert.ok(task !== null)
-    const [record] = await pendingTexts(box)
+    assert.equal(task, null)
+    const prNotice = (await outboxMessages(box)).find(message => message.thread === 'inbox-2')
     assert.equal(
-      record.text,
-      `CUSTOM TASK acme/alpha #2 Fix the thing https://github.com/acme/alpha/pull/2\nCOMMENT: please fix`,
+      prNotice.text,
+      `CUSTOM PR NOTICE acme/alpha #2 Fix the thing https://github.com/acme/alpha/pull/2\nCOMMENT: please fix`,
     )
 
     const message = spvItem({ id: 'spv-ops-20261113T120000Z-beef', thread: 'ops', title: 'Retried' })
     await writeItem(box.inbox, message)
     await appendReview(box.inbox, { id: message.id, kind: 'issue', text: 'why?' })
-    const messages = await outboxMessages(box)
-    assert.equal(messages.length, 1)
-    assert.equal(messages[0].text, `CUSTOM NOTICE Retried / ${message.id} / ops\nCOMMENT: why?`)
+    const notices = await outboxMessages(box)
+    assert.equal(notices.length, 2)
+    const objection = notices.find(item => item.thread === 'ops')
+    assert.equal(objection.text, `CUSTOM NOTICE Retried / ${message.id} / ops\nCOMMENT: why?`)
   } finally {
     restoreEnv(saved)
   }
@@ -1817,7 +1816,7 @@ async function testStoredTemplatesOmitBuiltinText() {
 
 try {
   await testDefaults()
-  await testDefaultTemplatesAreByteIdentical()
+  await testDefaultTemplates()
   await testSaveMergeAndStaleRevision()
   await testCorruptAndHandEditedFiles()
   testTemplateValidation()

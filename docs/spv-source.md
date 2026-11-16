@@ -123,7 +123,7 @@ worker preset）。`triggerOf()` 把除 `text` / `thread` / `actor` 之外的字
 挂载时还会删除 work root 内目录已消失的 dsh workspace 记录（只删注册行，会话与日志保留）。完整说明见
 [work-gc.md](work-gc.md)。
 
-## 6. 收件箱里的 SPV 决策信
+## 6. 收件箱里的通知：SPV 决策信与 PR 质疑
 
 操作者的审查收件箱（`src/spv/inbox.js`）不再只装 GitHub PR。每个 item 有 `kind`：
 
@@ -139,11 +139,14 @@ worker preset）。`triggerOf()` 把除 `text` / `thread` / `actor` 之外的字
 审查语义：
 
 - `approve` 的评论是**可选**的，只追加到 `review`，不派任务、不发 outbox —— 它是操作者接受的理由。
-- `issue` on `pr` 与以前一样：写 `review`，然后派 `inbox-<pr>` worker 任务，不发 outbox。
-- `issue` on `spv_message`：写 `review`，然后通过 `writeMessage()` 往 spv outbox 写**恰好一条**
-  `kind: "notice"` 的消息。id 由信件 id 与 review index 派生（`inbox-<item id>-review-<index>`），
-  `thread` 是信件自己的 thread；正文带信件标题、id 与操作者评论原文，所以 SPV 知道被质疑的是哪个决定。
-  **不派 worker 任务**，也完全不经过 `checkProject()` 的 repo/pr 预检。
+- `issue` on `pr`：写 `review`，然后通过 `writeMessage()` 往 spv outbox 写**恰好一条**
+  `kind: "notice"` 的消息，`thread` 是 `inbox-<pr>`。正文来自面板的 `prIssue` 模板，带 repo、PR 号、
+  标题、URL 与操作者评论原文。**不派 worker 任务**；这条正文进入 SPV 入口会话，由 SPV 决定先讨论还是派活。
+- `issue` on `spv_message`：写 `review`，同样写**恰好一条** `notice`，`thread` 是信件自己的 thread，
+  正文来自 `spvObjection` 模板（标题、id、thread 与评论原文）。**不派 worker 任务**。
+- 两种 `issue` 的消息 id 都是 `inbox-<item id>-review-<index>`（index 是 review 数组下标）；同一个 item
+  上重复提交完全相同的评论会复用最后一条 review 的 index 与 id，只覆盖那一个 outbox 文件，不再堆第二条
+  notice。两条路径都不再经过 `checkProject()` 的预检；PR 只校验 `repo`/`pr` 的形状，另加 thread、评论非空与模板非空。
 
 这条 `notice` 由 `src/spv/injector.js` 在 SPV 会话里消费，作为一条新消息出现；它和 worker 停下来的
 `notice` 走同一个 outbox 通道，因此队列格式没有第二种。与 worker 的答复一样，注入器只投递**会话挂载之后**

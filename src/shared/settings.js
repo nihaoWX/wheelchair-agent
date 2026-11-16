@@ -118,9 +118,10 @@ export const KEY_SPECS = {
 }
 
 /**
- * 内置模板。三段文本必须与改造前的输出**逐字节一致**，否则没有设置文件的老部署会看到消息变了：
+ * 内置模板。`injection` 与 `spvObjection` 保持改造前的输出；`prIssue` 现在是 PR「有问题」评论发给
+ * SPV 入口会话的 notice 正文（它不再派 worker，所以不能再复刻旧任务正文）：
  *   - `injection` 复刻 `formatResult()` 的头 + 正文；
- *   - `prIssue` 复刻 `taskText()`（「有问题」评论派给 worker 的任务正文）；
+ *   - `prIssue` 是 SPV 收到的 PR 质疑 notice；
  *   - `spvObjection` 复刻 `noticeText()`（对 SPV 自主决定的质疑）。
  */
 const INJECTION_DEFAULT = [
@@ -129,7 +130,7 @@ const INJECTION_DEFAULT = [
 ].join('\n')
 
 const PR_ISSUE_DEFAULT = [
-  '审查收件箱转来一条 GitHub PR 评论，请处理。',
+  '审查收件箱转来一条对 GitHub PR 的质疑，请先处理。',
   '',
   'repo: {repo}',
   'PR: #{pr}',
@@ -140,7 +141,7 @@ const PR_ISSUE_DEFAULT = [
   '评论原文（原样保留）：',
   '{comment}',
   '',
-  '操作者认为这个 PR 有问题，请按评论处理。',
+  '操作者认为这个 PR 有问题。请你（SPV）先结合上下文和操作者讨论怎么改，再决定是否派活。',
 ].join('\n')
 
 const SPV_OBJECTION_DEFAULT = [

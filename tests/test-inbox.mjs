@@ -6,8 +6,9 @@
  *   - `spv_message` 写入后按 `kind` 读回，且没有 `repo` / `pr`；
  *   - `approve` 带评论：评论进 `review`，不派任务、不发 outbox；
  *   - `approve` 不带评论：同上；
- *   - `issue` on `pr`：恰好一个 `pending/` 任务（thread `inbox-<pr>`），outbox 仍为空；
- *   - `issue` on `spv_message`：零个任务，恰好一条 `notice`，回到信件的 thread，正文带标题、id 与评论原文。
+ *   - `issue` on `pr`：零个任务，恰好一条 `notice`（thread `inbox-<pr>`），正文带 repo、PR 与评论原文；
+ *   - `issue` on `spv_message`：零个任务，恰好一条 `notice`，回到信件的 thread，正文带标题、id 与评论原文；
+ *   - 重复提交同一条 issue 评论不会追加第二条 review 或第二个 notice 文件。
  *
  * 还覆盖 `GET /wheelchair-inbox/items` 的服务端过滤：`kind` / `repo` / `since` / `until` 单独与组合，
  * 以及没有查询参数时与 `readItems()` 完全一致。时间过滤对 PR 使用 `createdAt`（PR 的年龄），不是 watcher
@@ -271,30 +272,32 @@ async function testApproveWithoutComment() {
   assert.deepEqual(await jsonNames(join(box.queue, 'outbox')), [])
 }
 
-/** `issue` on a PR：一个 pending 任务，thread 为 `inbox-<pr>`，没有 outbox 消息。 */
+/** `issue` on a PR：零个任务，恰好一条 notice，thread 为 `inbox-<pr>`。 */
 async function testIssueOnPr() {
   const box = await sandbox()
   useQueue(box.queue)
   const item = prItem({ id: 'acme-alpha-4', pr: 4 })
   await writeItem(box.inbox, item)
+  const comment = 'The migration is missing its down path.'
 
-  const { item: updated, task } = await appendReview(box.inbox, {
-    id: item.id,
-    kind: 'issue',
-    text: 'The migration is missing its down path.',
-  })
-  assert.ok(task !== null)
+  const { item: updated, task } = await appendReview(box.inbox, { id: item.id, kind: 'issue', text: comment })
+  assert.equal(task, null)
   assert.equal(updated.review[0].kind, 'issue')
-  const pending = await jsonNames(join(box.queue, 'pending'))
-  assert.equal(pending.length, 1, 'exactly one task is queued')
-  const record = JSON.parse(await readFile(join(box.queue, 'pending', pending[0]), 'utf8'))
-  assert.equal(record.thread, 'inbox-4')
-  assert.equal(record.project, 'tools/alpha')
-  assert.ok(record.text.includes('The migration is missing its down path.'))
-  assert.deepEqual(await jsonNames(join(box.queue, 'outbox')), [], 'a PR issue does not message SPV')
+  assert.deepEqual(await jsonNames(join(box.queue, 'pending')), [], 'a PR issue dispatches no worker')
+
+  const outbox = await jsonNames(join(box.queue, 'outbox'))
+  assert.equal(outbox.length, 1, 'exactly one notice is written')
+  const message = JSON.parse(await readFile(join(box.queue, 'outbox', outbox[0]), 'utf8'))
+  assert.equal(message.kind, 'notice')
+  assert.equal(message.thread, 'inbox-4')
+  assert.equal(message.id, `inbox-${item.id}-review-0`)
+  assert.ok(message.text.includes('acme/alpha'), 'the notice names the repo')
+  assert.ok(message.text.includes('#4'), 'the notice names the PR')
+  assert.ok(message.text.includes(comment), 'the notice quotes the comment verbatim')
+  assert.ok(message.text.includes('SPV'), 'the default prIssue text addresses SPV, not a worker')
 }
 
-/** 旧磁盘记录没有 `kind`：按 PR 处理，`issue` 仍然派任务。 */
+/** 旧磁盘记录没有 `kind`：按 PR 处理，`issue` 仍然只发一条 notice。 */
 async function testLegacyPrWithoutKind() {
   const box = await sandbox()
   useQueue(box.queue)
@@ -302,17 +305,15 @@ async function testLegacyPrWithoutKind() {
   delete item.kind
   await writeItem(box.inbox, item)
 
-  const { item: updated, task } = await appendReview(box.inbox, {
-    id: item.id,
-    kind: 'issue',
-    text: 'Legacy item still needs a worker.',
-  })
-  assert.ok(task !== null)
+  const { item: updated, task } = await appendReview(box.inbox, { id: item.id, kind: 'issue', text: 'Legacy item still needs attention.' })
+  assert.equal(task, null)
   assert.equal(updated.review[0].kind, 'issue')
-  const pending = await jsonNames(join(box.queue, 'pending'))
-  assert.equal(pending.length, 1)
-  const record = JSON.parse(await readFile(join(box.queue, 'pending', pending[0]), 'utf8'))
-  assert.equal(record.thread, 'inbox-5')
+  assert.deepEqual(await jsonNames(join(box.queue, 'pending')), [])
+  const outbox = await jsonNames(join(box.queue, 'outbox'))
+  assert.equal(outbox.length, 1)
+  const message = JSON.parse(await readFile(join(box.queue, 'outbox', outbox[0]), 'utf8'))
+  assert.equal(message.thread, 'inbox-5')
+  assert.ok(message.text.includes('Legacy item still needs attention.'))
 }
 
 /** `issue` on an spv_message：零任务，恰好一条 notice，回到信件的 thread。 */
@@ -384,19 +385,34 @@ async function testValidationBeforeWrite() {
     error => error.code === 'INBOX_INVALID',
   )
   const prAfter = await readItem(box.inbox, pr.id)
-  assert.deepEqual(prAfter.review, [], 'a PR that cannot be dispatched saves no review')
-  assert.deepEqual(await jsonNames(join(box.queue, 'pending')), [], 'a PR that cannot be dispatched queues no task')
+  assert.deepEqual(prAfter.review, [], 'a PR that cannot be validated saves no review')
+  assert.deepEqual(await jsonNames(join(box.queue, 'pending')), [], 'a PR that cannot be validated queues no task')
+  assert.deepEqual(await jsonNames(join(box.queue, 'outbox')), [], 'a PR that cannot be validated sends no notice')
 }
 
-/** 发消息/派活失败：评论已经落盘，错误码是 INBOX_DISPATCH（HTTP 层回 502）。 */
-async function testDispatchFailureKeepsReview() {
+/** 空 issue 评论仍然拒绝，且什么都不写。 */
+async function testEmptyIssueRejected() {
+  const box = await sandbox()
+  useQueue(box.queue)
+  const item = prItem({ id: 'acme-alpha-8', pr: 8 })
+  await writeItem(box.inbox, item)
+  await assert.rejects(
+    appendReview(box.inbox, { id: item.id, kind: 'issue', text: '   ' }),
+    /cannot be empty/,
+  )
+  assert.deepEqual((await readItem(box.inbox, item.id)).review, [])
+  assert.deepEqual(await jsonNames(join(box.queue, 'outbox')), [])
+}
+
+/** 通知写失败：评论已经落盘，错误码是 INBOX_DISPATCH（HTTP 层回 502），PR 与决策信都一样。 */
+async function testNoticeFailureKeepsReview() {
   const box = await sandbox()
   const queueFile = join(box.base, 'queue-is-a-file')
   await writeFile(queueFile, 'not a directory', 'utf8')
   process.env.SPV_QUEUE_DIR = queueFile
+
   const message = spvItem({ id: 'spv-main-20261113T150000Z-feed' })
   await writeItem(box.inbox, message)
-
   await assert.rejects(
     appendReview(box.inbox, { id: message.id, kind: 'issue', text: 'the outbox is unavailable' }),
     error => error.code === 'INBOX_DISPATCH' && error.item?.id === message.id,
@@ -404,6 +420,49 @@ async function testDispatchFailureKeepsReview() {
   const saved = await readItem(box.inbox, message.id)
   assert.equal(saved.review.length, 1, 'the review survives a failed outbox write')
   assert.equal(saved.review[0].text, 'the outbox is unavailable')
+
+  const pr = prItem({ id: 'acme-alpha-9', pr: 9 })
+  await writeItem(box.inbox, pr)
+  await assert.rejects(
+    appendReview(box.inbox, { id: pr.id, kind: 'issue', text: 'the PR notice cannot be written' }),
+    error =>
+      error.code === 'INBOX_DISPATCH' &&
+      error.item?.id === pr.id &&
+      error.message.includes(String(queueFile)) &&
+      /saved comment is not lost/.test(error.message),
+  )
+  const savedPr = await readItem(box.inbox, pr.id)
+  assert.equal(savedPr.review.length, 1, 'the PR review survives a failed outbox write')
+  assert.equal(savedPr.review[0].text, 'the PR notice cannot be written')
+  assert.deepEqual(await jsonNames(join(box.queue, 'pending')), [], 'a failed notice dispatch queues no worker')
+
+  // After fixing the queue, retrying the same submission must deliver the notice without duplicating the review.
+  process.env.SPV_QUEUE_DIR = box.queue
+  const retried = await appendReview(box.inbox, { id: pr.id, kind: 'issue', text: 'the PR notice cannot be written' })
+  assert.equal(retried.task, null)
+  assert.equal((await readItem(box.inbox, pr.id)).review.length, 1, 'a retry does not append a second review')
+  assert.equal((await jsonNames(join(box.queue, 'outbox'))).length, 1, 'a retry delivers one notice')
+}
+
+/** 重复提交同一条 issue：review 和 outbox 都只有一份；通知写失败后的重试也走同一条幂等路径。 */
+async function testRepeatedIssueDoesNotStack() {
+  const box = await sandbox()
+  useQueue(box.queue)
+  const item = prItem({ id: 'acme-alpha-10', pr: 10 })
+  await writeItem(box.inbox, item)
+  const comment = 'The same comment submitted twice.'
+  await appendReview(box.inbox, { id: item.id, kind: 'issue', text: comment })
+  const first = await readItem(box.inbox, item.id)
+  assert.equal(first.review.length, 1)
+  assert.equal((await jsonNames(join(box.queue, 'outbox'))).length, 1)
+
+  const { task } = await appendReview(box.inbox, { id: item.id, kind: 'issue', text: comment })
+  assert.equal(task, null)
+  const second = await readItem(box.inbox, item.id)
+  assert.equal(second.review.length, 1, 'a repeated identical issue does not append another review')
+  const outbox = await jsonNames(join(box.queue, 'outbox'))
+  assert.equal(outbox.length, 1, 'a repeated identical issue overwrites one notice, not two')
+  assert.equal(outbox[0], `inbox-${item.id}-review-0.json`)
 }
 
 /** 旧 PR item 没有 `createdAt`：时间筛选不能拿 watcher 的 `at` 冒充年龄。 */
@@ -503,10 +562,12 @@ try {
   await testApproveWithoutComment()
   await testStaleLockAndAtomicWrite()
   await testValidationBeforeWrite()
-  await testDispatchFailureKeepsReview()
+  await testEmptyIssueRejected()
+  await testNoticeFailureKeepsReview()
   await testIssueOnPr()
   await testLegacyPrWithoutKind()
   await testIssueOnSpvMessage()
+  await testRepeatedIssueDoesNotStack()
   await testLegacyPrTimeFilter()
   await testFilters()
   await testRootProviderPerRequest()

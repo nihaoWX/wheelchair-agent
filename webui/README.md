@@ -86,10 +86,12 @@ The review status is derived from the **latest `review` entry**, with no stored 
 | `issue` | `issue` (有问题) | error badge |
 
 `approve` takes an **optional** comment; it is recorded only and never notifies the agent. `issue`
-requires a comment and branches by letter type: a `pr` dispatches the usual `inbox-<pr>` worker
-task; an `spv_message` writes **exactly one** `notice` into the spv outbox on the letter's thread,
-so the SPV session sees which decision is being questioned. Neither path sends an outbox message for
-a PR issue. Legacy `question` / `fix` records are normalized to `issue` on read, and the old disk
+requires a comment and writes **exactly one** `notice` into the spv outbox for **both** letter
+types: a `pr` uses thread `inbox-<pr>` and the `prIssue` template; an `spv_message` uses the
+letter's own thread and the `spvObjection` template. Nothing is dispatched to a worker: the notice
+reaches the SPV entry session, which decides whether to discuss or dispatch. A repeated identical
+submission reuses the last review index and overwrites the same notice file instead of stacking a
+second one. Legacy `question` / `fix` records are normalized to `issue` on read, and the old disk
 records are never rewritten.
 
 ### Filters
@@ -250,7 +252,7 @@ point of the display: a value that looks applied but is not is the failure mode 
 
 The file (and the environment/config layers) are re-read **on use**: the inbox poller re-resolves
 before every schedule (`0` pauses with no `gh` calls and re-checks every second), the injector
-re-reads on every tick, `taskText()`/`noticeText()` render the active template per call, `work gc`
+re-reads on every tick, `prIssueText()`/`noticeText()` render the active template per call, `work gc`
 reads its defaults per run, and the mount sweep reads `work.sweepOnMount` when it starts. A save from
 the page therefore applies without restarting the service or the SPV session. What still needs the
 next normal service restart is the **host-half code** itself (`lib/index.js` and the copied core
@@ -277,13 +279,13 @@ in the config/environment layer, as before.
 
 ### Templates and presets
 
-Three templates are editable, each with a built-in default that reproduces today's output
-byte-for-byte:
+Three templates are editable. `injection` and `spvObjection` keep their previous default output
+byte-for-byte; `prIssue` has the new SPV-notice wording:
 
 | Template id | Used by | Allowed placeholders | Required |
 |---|---|---|---|
 | `injection` | `formatResult()` in the injector: the header + body injected into the SPV session | `{kind}` `{thread}` `{ticket}` `{body}` | `{thread}` `{body}` |
-| `prIssue` | `taskText()` in `inbox.js`: the task a PR "issue" comment is dispatched as | `{repo}` `{pr}` `{title}` `{url}` `{comment}` | `{repo}` `{pr}` `{comment}` |
+| `prIssue` | `prIssueText()` in `inbox.js`: the notice a PR "issue" comment becomes for SPV | `{repo}` `{pr}` `{title}` `{url}` `{comment}` | `{repo}` `{pr}` `{comment}` |
 | `spvObjection` | `noticeText()` in `inbox.js`: the notice an objection to an `spv_message` becomes | `{title}` `{id}` `{thread}` `{comment}` | `{thread}` `{comment}` |
 
 The required placeholders are the facts the receiving agent needs to act (the thread and the
@@ -432,8 +434,12 @@ route registration itself is covered by the test suite.
   badges, and the two separate actions.
 - `docs/after-approve-form.png` — "Approve" opens the optional comment box; its hint says the text
   is recorded only and does not notify the agent.
+- `docs/before-issue-form-pr.png` / `docs/after-issue-form-pr.png` — "Flag issue" on a PR in the
+  same inbox: the old installed copy said submitting dispatches it to a worker; the branch's
+  `client.js` (served to the same running app) says it notifies SPV. The after capture is 1440×900,
+  light, like the before.
 - `docs/after-issue-form.png` — "Flag issue" on an `spv_message`: the comment is required and the
-  hint says submitting notifies SPV (on a PR the same action says it dispatches a worker).
+  hint says submitting notifies SPV.
 - `docs/after-letter-types-dark.png` — the same two-letter inbox in dark theme.
 - `docs/after-filter-pending.png`, `docs/after-filter-issues.png`,
   `docs/after-filter-approved.png`, `docs/after-filter-all.png` — historical PR #13 captures of the
