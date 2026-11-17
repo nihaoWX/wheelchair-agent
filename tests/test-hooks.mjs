@@ -1349,6 +1349,16 @@ async function waitForText(file, label, timeoutMs = 8000) {
 }
 
 /** Wait until the hook wrote a complete JSON payload (the marker file appears before `cat` finishes). */
+/** Wait until hooks.jsonl contains every expected record; the marker may appear before the record append. */
+async function waitForRecords(box, predicate, label, timeoutMs = 12000) {
+  let found = []
+  await waitFor(async () => {
+    found = await readHookRecords({ env: box.env })
+    return predicate(found)
+  }, label, timeoutMs)
+  return found
+}
+
 async function waitForJson(file, label, timeoutMs = 8000) {
   let value
   await waitFor(async () => {
@@ -1667,7 +1677,15 @@ async function testStage2InboxWiring() {
   await waitForText(isoMarker, 'the hook after the failing and timing-out ones')
   const stored = await readJson(join(box.inbox, `${item.id}.json`))
   assert.equal(stored.review.length, 3, 'the approve review is still persisted after the hook failures')
-  const records = await readHookRecords({ env: box.env })
+  const records = await waitForRecords(
+    box,
+    list =>
+      list.some(record => record.hookId === failing.id && record.exit === 1) &&
+      list.some(record => record.hookId === hanging.id && record.timedOut === true) &&
+      list.some(record => record.hookId === after.id && record.exit === 0) &&
+      list.some(record => record.hookId === after.id && String(record.stderr).includes('noise')),
+    'the failing, timing-out and following inbox.approved records',
+  )
   assert.ok(records.some(record => record.hookId === failing.id && record.exit === 1), 'the exit-1 hook is recorded')
   assert.ok(records.some(record => record.hookId === hanging.id && record.timedOut === true), 'the timeout is recorded')
   assert.ok(records.some(record => record.hookId === after.id && record.exit === 0), 'the next hook ran')
