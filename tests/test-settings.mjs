@@ -1113,6 +1113,37 @@ async function testClientTemplateStaging() {
 }
 
 /** host 半身：注册 SETTINGS_PATH、同一道 fence、GET 的 config 来源、PUT 的 409 与成功。 */
+/** Stage 3: a rename PUT must carry every existing label, and empty/default restores one. */
+async function testClientHookHelpers() {
+  const client = await loadClient()
+  const { nextHookLabels, hookLabelError, hookStatusText } = client.__test
+  assert.equal(typeof nextHookLabels, 'function', 'the client exposes nextHookLabels')
+  const t = key => key
+  assert.deepEqual(
+    nextHookLabels({ labels: { 'builtin:injection': 'A' } }, { id: 'builtin:injection', defaultLabel: 'D' }, 'B'),
+    { 'builtin:injection': 'B' },
+  )
+  assert.deepEqual(
+    nextHookLabels(
+      { labels: { 'builtin:injection': 'A', 'builtin:prIssue': 'P' } },
+      { id: 'builtin:injection', defaultLabel: 'D' },
+      '',
+    ),
+    { 'builtin:prIssue': 'P' },
+    'clearing one label keeps the other overrides',
+  )
+  assert.deepEqual(
+    nextHookLabels({ labels: { 'builtin:injection': 'A' } }, { id: 'builtin:injection', defaultLabel: 'D' }, 'D'),
+    {},
+    'typing the default name removes the override',
+  )
+  assert.equal(hookLabelError('x'.repeat(121), t), 'hooks.rename.error.long')
+  assert.equal(hookLabelError('bad\u0007name', t), 'hooks.rename.error.control')
+  assert.equal(hookLabelError('ok', t), '')
+  assert.equal(hookStatusText(t, 'timeout'), 'hooks.run.timeout')
+  assert.equal(hookStatusText(t, 'nope'), 'hooks.run.failed', 'an unknown status falls back to failed, never a raw key')
+}
+
 async function testHostSettingsRoute() {
   const box = await sandbox()
   const apply = await loadHostApply(box)
@@ -1162,6 +1193,10 @@ async function testHostSettingsRoute() {
     assert.equal(intervalRow.source, 'config', 'the plugin config is the source when the file has no override')
     assert.equal(intervalRow.value, 0.02, 'the legacy fractional plugin config is accepted')
     assert.equal(get.body.templates.injection.active, 'default')
+    assert.ok(get.body.hookView, 'the snapshot carries the stage-3 hook view')
+    assert.equal(get.body.hookView.events.length, 8, 'the view renders all eight events')
+    assert.equal(get.body.hookView.events[0].id, 'ticket.started', 'events keep the table order')
+    assert.equal(typeof get.body.hookView.events[0].prompt, 'string', 'each event carries its generated prompt')
 
     const stale = await call(route.handler, { method: 'PUT', body: { revision: 5, values: { 'work.keep': 2 } } })
     assert.equal(stale.status, 409)
@@ -2461,6 +2496,7 @@ try {
   await testClientStyleAndDraftHelpers()
   await testInboxMarkupAndWidth()
   await testClientTemplateStaging()
+  await testClientHookHelpers()
   await testHostSettingsRoute()
   await testHooksBlock()
   await testHookTimeoutsAndRawPreservation()

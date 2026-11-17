@@ -34,6 +34,59 @@ window.__ModuleLoader__.load({
 			"section.settings": "设置",
 			"feature.settings.title": "设置",
 			"feature.settings.description": "调整面板的外观，以及只因为 wheelchair-agent 存在而存在的旋钮：收件箱刷新、合并处理、消息注入、派单模板与工作回收。保存后立即生效，不需要重启服务或 SPV 会话。",
+			"section.hooks": "插口",
+			"feature.hooks.title": "插口",
+			"feature.hooks.description": "查看每个事件是什么意思、什么时候触发、脚本能拿到什么，以及它下面有哪些内建行和自定义行。内建行属于 core path，只能改名；新增插口是一段给 agent 的提示词，不是在这里写 shell。",
+			"hooks.loading": "正在加载插口…",
+			"hooks.loadFailed": "加载插口失败：{message}",
+			"hooks.viewMissing": "当前 host 没有返回插口视图；更新并重启 host 后可见。",
+			"hooks.viewError": "插口视图加载失败：{message}",
+			"hooks.reload": "刷新",
+			"hooks.summary": "{events} 个事件 · {builtin} 条内建行 · {custom} 条自定义行",
+			"hooks.enabled": "总开关：开启",
+			"hooks.disabled": "总开关：关闭（只记录 paused，不跑脚本）",
+			"hooks.interval": "runner 每 {seconds} 秒看一次（0 = 暂停）",
+			"hooks.saved": "已保存，revision {revision}",
+			"hooks.conflict": "设置在别处已被改动（当前 revision {revision}）。改名草稿还在；刷新后再保存。",
+			"hooks.saveFailed": "保存失败：{message}",
+			"hooks.event.when": "什么时候触发",
+			"hooks.event.repeat": "能重复吗",
+			"hooks.event.repeatable": "能。",
+			"hooks.event.once": "每个对象只一次。",
+			"hooks.event.payload": "负载字段（{count}）",
+			"hooks.event.rows": "行（{count}）",
+			"hooks.event.history": "最近 {count} 次执行",
+			"hooks.event.noRows": "这个事件没有内建行或自定义行。",
+			"hooks.event.noRuns": "还没有执行记录。",
+			"hooks.row.core": "core path",
+			"hooks.row.notCancellable": "这是 core path，不能取消、不能删。",
+			"hooks.row.renamable": "内建行可以改显示名称，但不能停用或删除；留空恢复默认。",
+			"hooks.row.renamed": "已改名",
+			"hooks.row.defaultLabel": "默认名称：{label}",
+			"hooks.row.template": "正文在「设置 → 派单文本」的 {template} 模板里，改模板不会改触发。",
+			"hooks.row.pointer": "真正的实现在 superagent 设置里的 {pointer}；这里只是指针，不复制、不遮蔽、不执行。",
+			"hooks.row.openTemplates": "去设置模板组",
+			"hooks.row.script": "脚本预览（只读）",
+			"hooks.row.enabled": "启用中",
+			"hooks.row.disabled": "已停用",
+			"hooks.rename.label": "显示名称",
+			"hooks.rename.save": "保存名称",
+			"hooks.rename.saving": "保存中…",
+			"hooks.rename.error.long": "名称最多 120 个字符。",
+			"hooks.rename.error.control": "名称不能包含控制字符。",
+			"hooks.prompt.add": "新增",
+			"hooks.prompt.close": "收起",
+			"hooks.prompt.hint": "让 agent 照这段提示词去改。",
+			"hooks.prompt.copy": "复制提示词",
+			"hooks.prompt.copied": "已复制",
+			"hooks.prompt.copyFailed": "复制失败，请手动选择文本复制。",
+			"hooks.run.ok": "成功",
+			"hooks.run.failed": "失败",
+			"hooks.run.timeout": "超时",
+			"hooks.run.paused": "已暂停",
+			"hooks.run.pausedName": "（总开关关闭，整个事件只记一条）",
+			"hooks.run.duration": "{ms} ms",
+			"hooks.run.last": "最近一次：",
 			"settings.loading": "正在加载设置…",
 			"settings.loadFailed": "加载设置失败：{message}",
 			"settings.reload": "重新加载",
@@ -219,6 +272,59 @@ window.__ModuleLoader__.load({
 			"section.settings": "Settings",
 			"feature.settings.title": "Settings",
 			"feature.settings.description": "Adjust how the panel looks, plus the knobs that exist because wheelchair-agent exists: inbox refresh, merge handling, message injection, dispatch text and work reclaim. Changes apply immediately; no service or SPV-session restart is needed.",
+			"section.hooks": "Hooks",
+			"feature.hooks.title": "Hooks",
+			"feature.hooks.description": "See what each event means, when it fires, what a script receives, and which built-in and custom rows belong to it. Built-in rows are the core path and can only be renamed; adding a hook is a prompt for an agent, not a shell box here.",
+			"hooks.loading": "Loading hooks…",
+			"hooks.loadFailed": "Could not load hooks: {message}",
+			"hooks.viewMissing": "This host did not return the hook view; update and restart the host to see it.",
+			"hooks.viewError": "Could not build the hook view: {message}",
+			"hooks.reload": "Refresh",
+			"hooks.summary": "{events} events · {builtin} built-in rows · {custom} custom rows",
+			"hooks.enabled": "Master switch: on",
+			"hooks.disabled": "Master switch: off (records paused only, runs no script)",
+			"hooks.interval": "runner checks every {seconds}s (0 = paused)",
+			"hooks.saved": "Saved at revision {revision}",
+			"hooks.conflict": "Settings changed elsewhere (current revision {revision}). Your rename draft is kept; refresh before saving.",
+			"hooks.saveFailed": "Could not save: {message}",
+			"hooks.event.when": "When it fires",
+			"hooks.event.repeat": "Can it repeat?",
+			"hooks.event.repeatable": "Yes.",
+			"hooks.event.once": "Once per object.",
+			"hooks.event.payload": "Payload fields ({count})",
+			"hooks.event.rows": "Rows ({count})",
+			"hooks.event.history": "Last {count} runs",
+			"hooks.event.noRows": "This event has no built-in or custom rows.",
+			"hooks.event.noRuns": "No runs recorded yet.",
+			"hooks.row.core": "core path",
+			"hooks.row.notCancellable": "This is the core path; it cannot be cancelled or deleted.",
+			"hooks.row.renamable": "Built-in rows can be renamed but never disabled or deleted; leave empty to restore the default.",
+			"hooks.row.renamed": "Renamed",
+			"hooks.row.defaultLabel": "Default name: {label}",
+			"hooks.row.template": "The text lives in the {template} template under Settings → Dispatch text; editing it does not change when the row fires.",
+			"hooks.row.pointer": "The real implementation is {pointer} in the superagent settings; this is a pointer only, not a copy, shadow or execution site.",
+			"hooks.row.openTemplates": "Open the templates group",
+			"hooks.row.script": "Script preview (read-only)",
+			"hooks.row.enabled": "Enabled",
+			"hooks.row.disabled": "Disabled",
+			"hooks.rename.label": "Display name",
+			"hooks.rename.save": "Save name",
+			"hooks.rename.saving": "Saving…",
+			"hooks.rename.error.long": "A name can be at most 120 characters.",
+			"hooks.rename.error.control": "A name cannot contain control characters.",
+			"hooks.prompt.add": "Add",
+			"hooks.prompt.close": "Collapse",
+			"hooks.prompt.hint": "Have an agent make the change from this prompt.",
+			"hooks.prompt.copy": "Copy prompt",
+			"hooks.prompt.copied": "Copied",
+			"hooks.prompt.copyFailed": "Could not copy; select the text and copy it manually.",
+			"hooks.run.ok": "OK",
+			"hooks.run.failed": "Failed",
+			"hooks.run.timeout": "Timed out",
+			"hooks.run.paused": "Paused",
+			"hooks.run.pausedName": "(master switch off; one record per occurrence)",
+			"hooks.run.duration": "{ms} ms",
+			"hooks.run.last": "Last run: ",
 			"settings.loading": "Loading settings…",
 			"settings.loadFailed": "Could not load settings: {message}",
 			"settings.reload": "Reload",
@@ -1835,6 +1941,212 @@ window.__ModuleLoader__.load({
 			.wca-template-new { display: flex; align-items: flex-end; gap: 8px; flex-wrap: wrap; }
 			.wca-settings-notes { display: flex; flex-direction: column; gap: 6px; padding: 4px 2px 0; }
 
+			/* Hooks: one card per event. The card is a reading surface, not a control surface: the
+			   only writable thing is a built-in row's display name, which goes through the same
+			   revision-checked settings PUT as the Settings section. */
+			.wca-hooks { display: flex; flex-direction: column; gap: 12px; padding: 6px 0 16px; }
+			.wca-hooks-summary {
+				display: flex;
+				align-items: center;
+				gap: 8px 14px;
+				flex-wrap: wrap;
+				color: var(--dsw-alias-label-tertiary);
+				font-size: 12px;
+				line-height: 18px;
+			}
+			.wca-hooks-summary[data-off="true"] { color: var(--dsw-alias-state-warn-primary); }
+			.wca-hooks-event {
+				display: flex;
+				flex-direction: column;
+				gap: 10px;
+				min-width: 0;
+				padding: 16px;
+				border: 1px solid var(--dsw-alias-border-l2);
+				border-radius: 16px;
+				background: var(--dsw-alias-bg-layer-1);
+			}
+			.wca-hooks-event-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+			.wca-hooks-event-title { margin: 0; font-size: 15px; font-weight: 500; line-height: 22px; }
+			.wca-hooks-code {
+				color: var(--dsw-alias-label-secondary);
+				font: var(--dsw-font-markdown-code);
+				font-size: 11px;
+				line-height: 17px;
+				overflow-wrap: anywhere;
+			}
+			.wca-hooks-badge {
+				padding: 1px 7px;
+				border-radius: 999px;
+				background: var(--dsw-alias-bg-module-platform);
+				color: var(--dsw-alias-label-secondary);
+				font-size: 11px;
+				line-height: 17px;
+				white-space: nowrap;
+			}
+			.wca-hooks-explanation {
+				margin: 0;
+				color: var(--dsw-alias-label-secondary);
+				font-size: 13px;
+				line-height: 20px;
+				overflow-wrap: anywhere;
+			}
+			.wca-hooks-explanation .wca-md,
+			.wca-hooks-row-desc .wca-md,
+			.wca-hooks-meta dd .wca-md { color: var(--dsw-alias-label-secondary); font-size: 13px; line-height: 20px; }
+			.wca-hooks-explanation .wca-md p,
+			.wca-hooks-row-desc .wca-md p,
+			.wca-hooks-meta dd .wca-md p { margin: 0; }
+			.wca-hooks-meta {
+				display: grid;
+				grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+				gap: 8px 20px;
+				margin: 0;
+			}
+			.wca-hooks-meta div { min-width: 0; }
+			.wca-hooks-meta dt {
+				color: var(--dsw-alias-label-tertiary);
+				font-size: 12px;
+				line-height: 18px;
+				font-weight: 600;
+			}
+			.wca-hooks-meta dd {
+				margin: 1px 0 0;
+				color: var(--dsw-alias-label-secondary);
+				font-size: 12px;
+				line-height: 18px;
+				overflow-wrap: anywhere;
+			}
+			.wca-hooks-payload summary,
+			.wca-hooks-script summary {
+				color: var(--dsw-alias-label-secondary);
+				font-size: 12px;
+				line-height: 18px;
+				cursor: pointer;
+			}
+			.wca-hooks-payload ul { margin: 6px 0 0; padding-inline-start: 18px; }
+			.wca-hooks-payload li {
+				color: var(--dsw-alias-label-secondary);
+				font-size: 12px;
+				line-height: 18px;
+				overflow-wrap: anywhere;
+			}
+			.wca-hooks-rows { display: flex; flex-direction: column; gap: 8px; }
+			.wca-hooks-row {
+				display: flex;
+				flex-direction: column;
+				gap: 6px;
+				min-width: 0;
+				padding: 10px 12px;
+				border: .5px solid var(--dsw-alias-border-l3);
+				border-radius: 12px;
+				background: var(--dsw-alias-bg-base);
+			}
+			.wca-hooks-row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-width: 0; }
+			.wca-hooks-row-name { font-size: 13px; line-height: 20px; font-weight: 500; overflow-wrap: anywhere; }
+			.wca-hooks-row-desc,
+			.wca-hooks-row-note {
+				margin: 0;
+				color: var(--dsw-alias-label-secondary);
+				font-size: 12px;
+				line-height: 18px;
+				overflow-wrap: anywhere;
+			}
+			.wca-hooks-row-note { color: var(--dsw-alias-label-tertiary); }
+			.wca-hooks-rename { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+			.wca-hooks-rename-label { color: var(--dsw-alias-label-tertiary); font-size: 12px; line-height: 18px; }
+			.wca-hooks-input {
+				box-sizing: border-box;
+				width: min(320px, 100%);
+				height: 30px;
+				padding: 0 8px;
+				border: .5px solid var(--dsw-alias-border-l3);
+				border-radius: var(--dsw-radius-sm);
+				background: var(--dsw-alias-bg-base);
+				color: var(--dsw-alias-label-primary);
+				font: inherit;
+				font-size: 13px;
+				line-height: 20px;
+			}
+			.wca-hooks-error { margin: 0; color: var(--dsw-alias-state-error-primary); font-size: 12px; line-height: 18px; }
+			.wca-hooks-runs { display: flex; flex-direction: column; gap: 6px; }
+			.wca-hooks-run {
+				display: grid;
+				grid-template-columns: 150px 150px minmax(0, 1fr) 84px auto;
+				gap: 4px 10px;
+				align-items: baseline;
+				padding: 6px 8px;
+				border-radius: var(--dsw-radius-sm);
+				background: var(--dsw-alias-bg-module-platform);
+				color: var(--dsw-alias-label-secondary);
+				font-size: 12px;
+				line-height: 18px;
+			}
+			.wca-hooks-run[data-status="ok"] .wca-hooks-run-status { color: var(--dsw-alias-state-success-primary); }
+			.wca-hooks-run[data-status="failed"] .wca-hooks-run-status { color: var(--dsw-alias-state-error-primary); }
+			.wca-hooks-run[data-status="timeout"] .wca-hooks-run-status { color: var(--dsw-alias-state-warn-primary); }
+			.wca-hooks-run-status { font-weight: 600; }
+			.wca-hooks-run-time,
+			.wca-hooks-run-event,
+			.wca-hooks-run-duration {
+				color: var(--dsw-alias-label-tertiary);
+				font-variant-numeric: tabular-nums;
+			}
+			.wca-hooks-run-name { min-width: 0; overflow-wrap: anywhere; }
+			.wca-hooks-run-duration { text-align: end; }
+			.wca-hooks-stderr {
+				grid-column: 1 / -1;
+				margin: 4px 0 0;
+				padding: 8px;
+				max-height: 140px;
+				overflow: auto;
+				border-radius: var(--dsw-radius-sm);
+				background: var(--dsw-alias-bg-base);
+				color: var(--dsw-alias-label-secondary);
+				font: var(--dsw-font-markdown-code);
+				font-size: 11px;
+				line-height: 17px;
+				white-space: pre-wrap;
+				overflow-wrap: anywhere;
+			}
+			.wca-hooks-script pre {
+				margin: 6px 0 0;
+				padding: 8px;
+				max-height: 180px;
+				overflow: auto;
+				border-radius: var(--dsw-radius-sm);
+				background: var(--dsw-alias-bg-module-platform);
+				color: var(--dsw-alias-label-secondary);
+				font: var(--dsw-font-markdown-code);
+				font-size: 11px;
+				line-height: 17px;
+				white-space: pre-wrap;
+				overflow-wrap: anywhere;
+			}
+			.wca-hooks-add { display: flex; flex-direction: column; gap: 8px; padding-top: 2px; }
+			.wca-hooks-prompt { display: flex; flex-direction: column; gap: 8px; }
+			.wca-hooks-prompt-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+			.wca-hooks-prompt-text {
+				margin: 0;
+				padding: 12px;
+				max-height: 360px;
+				overflow: auto;
+				border: .5px solid var(--dsw-alias-border-l3);
+				border-radius: var(--dsw-radius-sm);
+				background: var(--dsw-alias-bg-base);
+				color: var(--dsw-alias-label-primary);
+				font: var(--dsw-font-markdown-code);
+				font-size: 12px;
+				line-height: 18px;
+				white-space: pre-wrap;
+				overflow-wrap: anywhere;
+				user-select: text;
+			}
+			@media (max-width: 760px) {
+				.wca-hooks-run { grid-template-columns: minmax(0, 1fr) auto; }
+				.wca-hooks-run-event,
+				.wca-hooks-run-name { grid-column: 1 / -1; }
+			}
+
 			/* Fluid: token-only material and physical motion. This is the only block allowed to animate.
 			   The page under a card is an opaque token surface, so a backdrop blur would blur nothing;
 			   the material instead comes from a visible tinted wash, a tinted hairline border and a
@@ -1847,7 +2159,8 @@ window.__ModuleLoader__.load({
 				--wca-shadow-hover: 0 22px 44px -18px color-mix(in oklab, var(--dsw-alias-label-primary) 54%, transparent);
 			}
 			.wca-page[data-wca-style="fluid"] .wca-letter,
-			.wca-page[data-wca-style="fluid"] .wca-settings-group {
+			.wca-page[data-wca-style="fluid"] .wca-settings-group,
+			.wca-page[data-wca-style="fluid"] .wca-hooks-event {
 				/* PR and SPV letters set --wca-tint; settings groups and any other surface fall back to
 				   the info family, so every fluid card carries a wash instead of matching the page. */
 				--wca-wash: var(--wca-tint, var(--dsw-alias-state-business-primary));
@@ -1869,7 +2182,8 @@ window.__ModuleLoader__.load({
 				border-color: color-mix(in oklab, var(--dsw-alias-state-warn-primary) 45%, var(--dsw-alias-border-l2));
 			}
 			.wca-page[data-wca-style="fluid"] .wca-letter:hover,
-			.wca-page[data-wca-style="fluid"] .wca-settings-group:hover {
+			.wca-page[data-wca-style="fluid"] .wca-settings-group:hover,
+			.wca-page[data-wca-style="fluid"] .wca-hooks-event:hover {
 				border-color: color-mix(in oklab, var(--wca-wash) 38%, var(--dsw-alias-border-l2));
 				box-shadow: var(--wca-shadow-contact), var(--wca-shadow-hover);
 				transform: translateY(-2px);
@@ -1942,7 +2256,8 @@ window.__ModuleLoader__.load({
 				100% { transform: translateY(1px); }
 			}
 			.wca-page[data-wca-style="minimal"] .wca-letter,
-			.wca-page[data-wca-style="minimal"] .wca-settings-group {
+			.wca-page[data-wca-style="minimal"] .wca-settings-group,
+			.wca-page[data-wca-style="minimal"] .wca-hooks-event {
 				background: var(--dsw-alias-bg-layer-1);
 				box-shadow: none;
 				animation: none;
@@ -1964,7 +2279,8 @@ window.__ModuleLoader__.load({
 					scroll-behavior: auto !important;
 				}
 				.wca-page[data-wca-style="fluid"] .wca-letter:hover,
-				.wca-page[data-wca-style="fluid"] .wca-settings-group:hover { transform: none; }
+				.wca-page[data-wca-style="fluid"] .wca-settings-group:hover,
+				.wca-page[data-wca-style="fluid"] .wca-hooks-event:hover { transform: none; }
 			}
 		`;
 		//#endregion
@@ -4088,6 +4404,7 @@ window.__ModuleLoader__.load({
 		function SettingsSection(props) {
 			const t = props.t;
 			const feature = props.feature;
+			const focusGroup = typeof props.focusGroup === "string" ? props.focusGroup : null;
 			const [snapshot, setSnapshot] = react.useState(null);
 			const [drafts, setDrafts] = react.useState({});
 			const [templateDrafts, setTemplateDrafts] = react.useState({});
@@ -4100,6 +4417,7 @@ window.__ModuleLoader__.load({
 			const [savedRevision, setSavedRevision] = react.useState(null);
 			const alive = react.useRef(true);
 			const requestId = react.useRef(0);
+			const focusApplied = react.useRef(false);
 			const storage = react.useRef(null);
 			if (storage.current === null) storage.current = browserStorage();
 			const draftsRef = react.useRef(drafts);
@@ -4217,6 +4535,16 @@ window.__ModuleLoader__.load({
 					alive.current = false;
 				};
 			}, [load]);
+
+			// A hook's "open the templates group" button lands here with the group id. The panel remounts
+			// on a section switch, so scrolling once after that mount is enough.
+			react.useEffect(() => {
+				if (focusGroup === null || snapshot === null || focusApplied.current || typeof document === "undefined") return;
+				const node = document.getElementById(`wca-settings-group-${focusGroup}`);
+				if (node === null) return;
+				focusApplied.current = true;
+				node.scrollIntoView({ block: "start", behavior: "auto" });
+			}, [focusGroup, snapshot]);
 
 			// Persist after every edit; a successful save or an explicit Reload clears it in adopt().
 			react.useEffect(() => {
@@ -4591,6 +4919,7 @@ window.__ModuleLoader__.load({
 														return jsxs(
 															"div",
 															{
+																id: `wca-settings-group-${group.id}`,
 																className: "wca-settings-group",
 																children: [
 																	jsx("h3", { className: "wca-settings-group-title", children: t(group.titleKey) }, "title"),
@@ -4624,7 +4953,786 @@ window.__ModuleLoader__.load({
 				"feature"
 			);
 		}
+		// ------------------------------------------------------------------ hooks
+
+		/** Format one recorded run time; an unparseable timestamp is shown verbatim instead of "Invalid Date". */
+		function hookRunTime(at) {
+			if (typeof at !== "string" || at === "") return "";
+			const date = new Date(at);
+			if (!Number.isFinite(date.getTime())) return at;
+			return date.toLocaleString(undefined, {
+				month: "short",
+				day: "numeric",
+				hour: "2-digit",
+				minute: "2-digit",
+				second: "2-digit",
+				hour12: false
+			});
+		}
+
+		/**
+		* The full `hooks.labels` object a rename PUT must send: the server replaces the whole map, so
+		* omitting the other overrides would silently drop them. An empty or default label removes the
+		* override and restores `defaultLabel`.
+		*/
+		function nextHookLabels(view, row, draft) {
+			const labels = { ...(view?.labels ?? {}) };
+			const value = String(draft ?? "").trim();
+			if (value === "" || value === String(row?.defaultLabel ?? "")) delete labels[String(row?.id ?? "")];
+			else labels[String(row?.id ?? "")] = value;
+			return labels;
+		}
+
+		/** Mirror the server's label rules for inline feedback; the server still owns the final check. */
+		function hookLabelError(label, t) {
+			const value = String(label ?? "").trim();
+			if (value.length > 120) return t("hooks.rename.error.long");
+			if (/[\u0000-\u001f\u007f]/.test(value)) return t("hooks.rename.error.control");
+			return "";
+		}
+
+		function hookStatusText(t, status) {
+			const known = new Set(["ok", "failed", "timeout", "paused"]);
+			return t(`hooks.run.${known.has(status) ? status : "failed"}`);
+		}
+
+		/** One row of the "last N runs" list; stderr is already trimmed and capped server-side. */
+		function HookRunRow(props) {
+			const t = props.t;
+			const run = props.run;
+			const detail = run.stderrTail !== "" ? run.stderrTail : run.error ?? "";
+			return jsxs(
+				"div",
+				{
+					className: "wca-hooks-run",
+					"data-status": run.status,
+					children: [
+						jsx("span", { className: "wca-hooks-run-time", children: hookRunTime(run.at) }, "time"),
+						jsx("code", { className: "wca-hooks-run-event", children: run.event }, "event"),
+						jsx(
+							"span",
+							{
+								className: "wca-hooks-run-name",
+								children: run.name ?? t("hooks.run.pausedName")
+							},
+							"name"
+						),
+						jsx("span", { className: "wca-hooks-run-status", children: hookStatusText(t, run.status) }, "status"),
+						jsx(
+							"span",
+							{
+								className: "wca-hooks-run-duration",
+								children: run.durationMs === null ? "" : t("hooks.run.duration", { ms: run.durationMs })
+							},
+							"duration"
+						),
+						detail === ""
+							? null
+							: jsx("pre", { className: "wca-hooks-stderr", children: detail }, "stderr")
+					]
+				},
+				props.rowKey
+			);
+		}
+
+		/** A compact "last run" line inside a row (the full list lives at the card foot). */
+		function HookRunLine(props) {
+			const t = props.t;
+			const run = props.run;
+			if (run === null) return null;
+			return jsxs(
+				"p",
+				{
+					className: "wca-hooks-row-note",
+					children: [
+						jsx("span", { children: t("hooks.run.last") }, "label"),
+						jsx("span", { children: hookStatusText(t, run.status) }, "status"),
+						run.durationMs === null
+							? null
+							: jsx("span", { children: ` · ${t("hooks.run.duration", { ms: run.durationMs })}` }, "duration")
+					]
+				},
+				"last"
+			);
+		}
+
+		/**
+		* One event card: meaning, payload, built-in and custom rows, last five runs, and the "Add"
+		* disclosure. Every prose field comes from the host snapshot, which renders `hook-events.js`;
+		* this component never retypes an event explanation or a prompt.
+		*/
+		function HookEvent(props) {
+			const t = props.t;
+			const event = props.event;
+			const view = props.view;
+			const rows = Array.isArray(event.rows) ? event.rows : [];
+			const customRows = Array.isArray(event.customRows) ? event.customRows : [];
+			const runs = Array.isArray(event.lastRuns) ? event.lastRuns : [];
+			const open = props.openPrompt === event.id;
+			const copied = props.copied === event.id;
+			const renderBuiltin = row => {
+				const draft = Object.hasOwn(props.labelDrafts, row.id) ? props.labelDrafts[row.id] : row.label;
+				const trimmed = String(draft ?? "").trim();
+				const changed = row.renamed ? trimmed !== row.label : trimmed !== "" && trimmed !== row.label;
+				const error = String(props.rowErrors[row.id] ?? "");
+				const saving = props.savingId === row.id;
+				return jsxs(
+					"div",
+					{
+						className: "wca-hooks-row",
+						"data-kind": "builtin",
+						"data-row-id": row.id,
+						children: [
+							jsxs(
+								"div",
+								{
+									className: "wca-hooks-row-head",
+									children: [
+										jsx("span", { className: "wca-hooks-row-name", children: row.label }, "name"),
+										jsx("code", { className: "wca-hooks-code", children: row.id }, "id"),
+										jsx("span", { className: "wca-hooks-badge", children: t("hooks.row.core") }, "core"),
+										row.renamed
+											? jsx("span", { className: "wca-hooks-badge", children: t("hooks.row.renamed") }, "renamed")
+											: null
+									]
+								},
+								"head"
+							),
+							row.description === undefined
+								? null
+								: jsx(
+										"div",
+										{
+											className: "wca-hooks-row-desc",
+											children: jsx(Markdown, { text: row.description }, "markdown")
+										},
+										"desc"
+									),
+							jsx("p", { className: "wca-hooks-row-note", children: t("hooks.row.notCancellable") }, "core-note"),
+							row.template === undefined
+								? null
+								: jsxs(
+										"p",
+										{
+											className: "wca-hooks-row-note",
+											children: [
+												jsx("span", { children: t("hooks.row.template", { template: `\`${row.template}\`` }) }, "text"),
+												jsx(
+													"button",
+													{
+														type: "button",
+														className: "wca-btn",
+														"data-variant": "outline",
+														onClick: () => props.onNavigate("settings", "templates"),
+														children: t("hooks.row.openTemplates")
+													},
+													"open"
+												)
+											]
+										},
+										"template"
+									),
+							row.pointer === undefined
+								? null
+								: jsx(
+										"p",
+										{
+											className: "wca-hooks-row-note",
+											children: t("hooks.row.pointer", { pointer: `\`${row.pointer}\`` })
+										},
+										"pointer"
+									),
+							jsxs(
+								"div",
+								{
+									className: "wca-hooks-rename",
+									children: [
+										jsx("label", { className: "wca-hooks-rename-label", htmlFor: `wca-hook-label-${row.id}`, children: t("hooks.rename.label") }, "label"),
+										jsx("input", {
+											id: `wca-hook-label-${row.id}`,
+											className: "wca-hooks-input",
+											type: "text",
+											value: draft,
+											maxLength: 120,
+											placeholder: row.defaultLabel,
+											"aria-invalid": error !== "",
+											disabled: saving,
+											onChange: change => props.onLabelDraft(row.id, change.target.value)
+										}, "input"),
+										jsx(
+											"button",
+											{
+												type: "button",
+												className: "wca-btn",
+												"data-variant": "outline",
+												disabled: !changed || saving || props.savingId !== "" || props.conflict === true,
+												onClick: () => props.onSaveLabel(row, draft),
+												children: saving ? t("hooks.rename.saving") : t("hooks.rename.save")
+											},
+											"save"
+										)
+									]
+								},
+								"rename"
+							),
+							row.renamed
+								? jsx("p", { className: "wca-hooks-row-note", children: t("hooks.row.defaultLabel", { label: row.defaultLabel }) }, "default")
+								: null,
+							error === "" ? null : jsx("p", { className: "wca-hooks-error", role: "alert", children: error }, "error"),
+							jsx("p", { className: "wca-hooks-row-note", children: t("hooks.row.renamable") }, "rename-note"),
+							jsx(HookRunLine, { t, run: row.lastRun ?? null }, "last")
+						]
+					},
+					row.id
+				);
+			};
+			const renderCustom = row =>
+				jsxs(
+					"div",
+					{
+						className: "wca-hooks-row",
+						"data-kind": "custom",
+						"data-row-id": row.id,
+						children: [
+							jsxs(
+								"div",
+								{
+									className: "wca-hooks-row-head",
+									children: [
+										jsx("span", { className: "wca-hooks-row-name", children: row.name }, "name"),
+										jsx("code", { className: "wca-hooks-code", children: row.id }, "id"),
+										jsx(
+											"span",
+											{
+												className: "wca-hooks-badge",
+												children: row.enabled === false ? t("hooks.row.disabled") : t("hooks.row.enabled")
+											},
+											"enabled"
+										)
+									]
+								},
+								"head"
+							),
+							jsxs(
+								"details",
+								{
+									className: "wca-hooks-script",
+									children: [
+										jsx("summary", { children: t("hooks.row.script") }, "summary"),
+										jsx("pre", { children: row.script }, "script")
+									]
+								},
+								"script"
+							),
+							jsx(HookRunLine, { t, run: row.lastRun ?? null }, "last")
+						]
+					},
+					row.id
+				);
+			return jsxs(
+				"article",
+				{
+					className: "wca-hooks-event",
+					"data-event-id": event.id,
+					children: [
+						jsxs(
+							"div",
+							{
+								className: "wca-hooks-event-head",
+								children: [
+									jsx("code", { className: "wca-hooks-code", children: event.id }, "id"),
+									jsx("h3", { className: "wca-hooks-event-title", children: event.title }, "title"),
+									jsx("span", { className: "wca-hooks-badge", children: t("hooks.event.rows", { count: rows.length + customRows.length }) }, "count"),
+									jsx(
+										"span",
+										{
+											className: "wca-hooks-badge",
+											children: event.repeatable ? t("hooks.event.repeatable") : t("hooks.event.once")
+										},
+										"repeat"
+									)
+								]
+							},
+							"head"
+						),
+						jsx(
+							"div",
+							{
+								className: "wca-hooks-explanation",
+								children: jsx(Markdown, { text: event.explanation }, "markdown")
+							},
+							"explanation"
+						),
+						jsxs(
+							"dl",
+							{
+								className: "wca-hooks-meta",
+								children: [
+									jsxs(
+										"div",
+										{
+											children: [
+												jsx("dt", { children: t("hooks.event.when") }, "label"),
+												jsx("dd", { children: jsx(Markdown, { text: event.when }, "markdown") }, "value")
+											]
+										},
+										"when"
+									),
+									jsxs(
+										"div",
+										{
+											children: [
+												jsx("dt", { children: t("hooks.event.repeat") }, "label"),
+												jsx(
+													"dd",
+													{
+														children: jsx(
+															Markdown,
+															{
+																text: `${event.repeatable ? t("hooks.event.repeatable") : t("hooks.event.once")} ${event.repeatNote}`
+															},
+															"markdown"
+														)
+													},
+													"value"
+												)
+											]
+										},
+										"repeat"
+									)
+								]
+							},
+							"meta"
+						),
+						jsxs(
+							"details",
+							{
+								className: "wca-hooks-payload",
+								children: [
+									jsx("summary", { children: t("hooks.event.payload", { count: event.payload.length }) }, "summary"),
+									jsx(
+										"ul",
+										{
+											children: event.payload.map(field =>
+												jsxs(
+													"li",
+													{
+														children: [
+															jsx("code", { children: field.name }, "name"),
+															" ",
+															jsx("span", { children: field.description }, "desc")
+														]
+													},
+													field.name
+												)
+											)
+										},
+										"list"
+									)
+								]
+							},
+							"payload"
+						),
+						jsxs(
+							"div",
+							{
+								className: "wca-hooks-rows",
+								children: [
+									jsx("p", { className: "wca-hooks-row-note", children: t("hooks.event.rows", { count: rows.length + customRows.length }) }, "label"),
+									...rows.map(renderBuiltin),
+									...customRows.map(renderCustom),
+									rows.length + customRows.length === 0
+										? jsx("p", { className: "wca-hooks-row-note", children: t("hooks.event.noRows") }, "empty")
+										: null
+								]
+							},
+							"rows"
+						),
+						jsxs(
+							"div",
+							{
+								className: "wca-hooks-runs",
+								children: [
+									jsx("p", { className: "wca-hooks-row-note", children: t("hooks.event.history", { count: view.runLimit }) }, "label"),
+									runs.length === 0
+										? jsx("p", { className: "wca-hooks-row-note", children: t("hooks.event.noRuns") }, "empty")
+										: runs.map((run, index) => jsx(HookRunRow, { t, run, rowKey: `${event.id}-${index}` }, `${event.id}-${index}`))
+								]
+							},
+							"runs"
+						),
+						jsxs(
+							"div",
+							{
+								className: "wca-hooks-add",
+								children: [
+									jsx(
+										"button",
+										{
+											type: "button",
+											className: "wca-btn",
+											"data-variant": "outline",
+											"aria-expanded": open,
+											onClick: () => props.onTogglePrompt(event.id),
+											children: open ? t("hooks.prompt.close") : t("hooks.prompt.add")
+										},
+										"toggle"
+									),
+									open
+										? jsxs(
+												"div",
+												{
+													className: "wca-hooks-prompt",
+													children: [
+														jsx("p", { className: "wca-hint", children: t("hooks.prompt.hint") }, "hint"),
+														jsxs(
+															"div",
+															{
+																className: "wca-hooks-prompt-actions",
+																children: [
+																	jsx(
+																		"button",
+																		{
+																			type: "button",
+																			className: "wca-btn",
+																			"data-variant": "primary",
+																			onClick: () => props.onCopyPrompt(event),
+																			children: copied ? t("hooks.prompt.copied") : t("hooks.prompt.copy")
+																		},
+																		"copy"
+																	)
+																]
+															},
+															"actions"
+														),
+														jsx(
+															"pre",
+															{
+																className: "wca-hooks-prompt-text",
+																tabIndex: 0,
+																children: event.prompt
+															},
+															"text"
+														)
+													]
+												},
+												"prompt"
+											)
+										: null
+								]
+							},
+							"add"
+						)
+					]
+				},
+				event.id
+			);
+		}
+
+		/** The third feature: a read-only hook view with one revision-checked rename writer. */
+		function HooksSection(props) {
+			const t = props.t;
+			const feature = props.feature;
+			const [snapshot, setSnapshot] = react.useState(null);
+			const [loading, setLoading] = react.useState(true);
+			const [pageError, setPageError] = react.useState("");
+			const [conflict, setConflict] = react.useState(null);
+			const [labelDrafts, setLabelDrafts] = react.useState({});
+			const [rowErrors, setRowErrors] = react.useState({});
+			const [savingId, setSavingId] = react.useState("");
+			const [savedRevision, setSavedRevision] = react.useState(null);
+			const [openPrompt, setOpenPrompt] = react.useState(null);
+			const [copied, setCopied] = react.useState(null);
+			const alive = react.useRef(true);
+			const requestId = react.useRef(0);
+			const hintTimer = react.useRef(null);
+			const view = snapshot?.hookView ?? null;
+
+			const load = react.useCallback(() => {
+				const current = ++requestId.current;
+				setLoading(true);
+				return (async () => {
+					try {
+						const response = await fetch(SETTINGS_URL, {
+							headers: { accept: "application/json" },
+							cache: "no-store"
+						});
+						const payload = await response.json().catch(() => ({}));
+						if (!alive.current || current !== requestId.current) return;
+						if (!response.ok) throw new Error(payload?.message ?? `HTTP ${response.status}`);
+						setSnapshot(payload);
+						setLabelDrafts({});
+						setRowErrors({});
+						setConflict(null);
+						setSavedRevision(null);
+						setPageError("");
+					} catch (failure) {
+						if (!alive.current || current !== requestId.current) return;
+						setPageError(t("hooks.loadFailed", { message: failure instanceof Error ? failure.message : String(failure) }));
+					} finally {
+						if (alive.current && current === requestId.current) setLoading(false);
+					}
+				})();
+			}, [t]);
+
+			react.useEffect(() => {
+				alive.current = true;
+				load();
+				return () => {
+					alive.current = false;
+					if (hintTimer.current !== null) clearTimeout(hintTimer.current);
+				};
+			}, [load]);
+
+			const setLabelDraft = (id, value) => {
+				setLabelDrafts(previous => ({ ...previous, [id]: value }));
+				setRowErrors(previous => {
+					if (previous[id] === undefined) return previous;
+					const next = { ...previous };
+					delete next[id];
+					return next;
+				});
+			};
+
+			const saveLabel = async (row, draft) => {
+				if (snapshot === null || view === null || savingId !== "" || conflict !== null) return;
+				const error = hookLabelError(draft, t);
+				if (error !== "") {
+					setRowErrors(previous => ({ ...previous, [row.id]: error }));
+					return;
+				}
+				const labels = nextHookLabels(view, row, draft);
+				setSavingId(row.id);
+				setPageError("");
+				setRowErrors(previous => {
+					const next = { ...previous };
+					delete next[row.id];
+					return next;
+				});
+				try {
+					const response = await fetch(SETTINGS_URL, {
+						method: "PUT",
+						headers: { "content-type": "application/json" },
+						body: JSON.stringify({ revision: snapshot.revision, hooks: { labels } })
+					});
+					const payload = await response.json().catch(() => ({}));
+					if (!alive.current) return;
+					if (response.status === 409) {
+						const revision = Number(payload?.revision);
+						const current = Number.isFinite(revision) ? revision : "?";
+						setConflict({ revision: Number.isFinite(revision) ? revision : null });
+						setPageError(t("hooks.conflict", { revision: current }));
+						return;
+					}
+					if (!response.ok) {
+						const message = String(payload?.message ?? `HTTP ${response.status}`);
+						setRowErrors(previous => ({ ...previous, [row.id]: message }));
+						setPageError(t("hooks.saveFailed", { message }));
+						return;
+					}
+					setSnapshot(payload);
+					setLabelDrafts(previous => {
+						const next = { ...previous };
+						delete next[row.id];
+						return next;
+					});
+					setConflict(null);
+					const revision = Number(payload?.revision);
+					setSavedRevision(Number.isFinite(revision) ? revision : null);
+				} catch (failure) {
+					if (!alive.current) return;
+					setPageError(t("hooks.saveFailed", { message: failure instanceof Error ? failure.message : String(failure) }));
+				} finally {
+					if (alive.current) setSavingId("");
+				}
+			};
+
+			const copyPrompt = async event => {
+				const text = String(event.prompt ?? "");
+				let ok = false;
+				try {
+					if (typeof navigator !== "undefined" && navigator.clipboard?.writeText !== undefined) {
+						await navigator.clipboard.writeText(text);
+						ok = true;
+					}
+				} catch {
+					ok = false;
+				}
+				if (!ok && typeof document !== "undefined") {
+					try {
+						const node = document.createElement("textarea");
+						node.value = text;
+						node.setAttribute("readonly", "");
+						node.style.position = "fixed";
+						node.style.opacity = "0";
+						document.body.appendChild(node);
+						node.select();
+						ok = document.execCommand("copy");
+						node.remove();
+					} catch {
+						ok = false;
+					}
+				}
+				setCopied(ok ? event.id : null);
+				setPageError(ok ? "" : t("hooks.prompt.copyFailed"));
+				if (hintTimer.current !== null) clearTimeout(hintTimer.current);
+				if (ok) {
+					hintTimer.current = setTimeout(() => {
+						if (alive.current) setCopied(null);
+					}, 1800);
+				}
+			};
+
+			const eventCount = view === null ? 0 : view.events.length;
+			const rowCount = view === null ? 0 : view.events.reduce((count, event) => count + event.rows.length + event.customRows.length, 0);
+			const summary = view === null
+				? ""
+				: t("hooks.summary", {
+						events: eventCount,
+						builtin: view.builtin.length,
+						custom: view.items.length
+					});
+			const status =
+				pageError !== ""
+					? pageError
+					: loading
+						? t("hooks.loading")
+						: savedRevision !== null
+							? t("hooks.saved", { revision: savedRevision })
+							: "";
+			const titleId = `wca-feature-${feature.id}`;
+			return jsxs(
+				"section",
+				{
+					className: "wca-feature",
+					"aria-labelledby": titleId,
+					children: [
+						jsxs(
+							"header",
+							{
+								className: "wca-feature-head",
+								children: [
+									jsxs(
+										"div",
+										{
+											className: "wca-feature-heading",
+											children: [
+												jsx("h2", { id: titleId, className: "wca-feature-title", children: t(feature.titleKey) }, "title"),
+												jsx("p", { className: "wca-feature-desc", children: t(feature.descriptionKey) }, "desc")
+											]
+										},
+										"heading"
+									),
+									jsxs(
+										"div",
+										{
+											className: "wca-settings-toolbar",
+											children: [
+												jsx(
+													"button",
+													{
+														type: "button",
+														className: "wca-btn",
+														"data-variant": "outline",
+														disabled: loading || savingId !== "",
+														onClick: () => load(),
+														children: t("hooks.reload")
+													},
+													"reload"
+												)
+											]
+										},
+										"toolbar"
+									)
+								]
+							},
+							"head"
+						),
+						jsxs(
+							"div",
+							{
+								className: "wca-feature-body",
+								children: [
+									jsx(
+										"p",
+										{
+											className: "wca-status",
+											"data-tone": pageError !== "" ? "error" : savedRevision !== null ? "success" : undefined,
+											role: pageError !== "" ? "alert" : undefined,
+											children: status
+										},
+										"status"
+									),
+									view === null
+										? jsx(
+												"p",
+												{
+													className: "wca-hint",
+													children:
+														snapshot !== null && typeof snapshot.hookViewError === "string"
+															? t("hooks.viewError", { message: snapshot.hookViewError })
+															: t("hooks.viewMissing")
+												},
+												"missing"
+											)
+										: jsxs(
+												"div",
+												{
+													className: "wca-hooks",
+													children: [
+														jsxs(
+															"div",
+															{
+																className: "wca-hooks-summary",
+																"data-off": view.enabled === false,
+																children: [
+																	jsx("span", { children: summary }, "summary"),
+																	jsx("span", { children: view.enabled === false ? t("hooks.disabled") : t("hooks.enabled") }, "switch"),
+																	jsx("span", { children: t("hooks.interval", { seconds: view.intervalSeconds }) }, "interval"),
+																	jsx("span", { children: t("hooks.event.rows", { count: rowCount }) }, "rows")
+																]
+															},
+															"summary"
+														),
+														...view.events.map(event =>
+															jsx(
+																HookEvent,
+																{
+																	t,
+																	event,
+																	view,
+																	labelDrafts,
+																	rowErrors,
+																	savingId,
+																	openPrompt,
+																	copied,
+																	conflict: conflict !== null,
+																	onLabelDraft: setLabelDraft,
+																	onSaveLabel: saveLabel,
+																	onTogglePrompt: id => setOpenPrompt(previous => (previous === id ? null : id)),
+																	onCopyPrompt: copyPrompt,
+																	onNavigate: id => {
+																		if (typeof props.onNavigate === "function") props.onNavigate(id);
+																	}
+																},
+																event.id
+															)
+														)
+													]
+												},
+												"body"
+											)
+								]
+							},
+							"content"
+						)
+					]
+				},
+				"feature"
+			);
+		}
 		//#endregion
+
 
 		/**
 		* The features this page hosts. Adding a feature is exactly one array entry plus its
@@ -4644,6 +5752,13 @@ window.__ModuleLoader__.load({
 				titleKey: "feature.settings.title",
 				descriptionKey: "feature.settings.description",
 				Component: SettingsSection
+			},
+			{
+				id: "hooks",
+				labelKey: "section.hooks",
+				titleKey: "feature.hooks.title",
+				descriptionKey: "feature.hooks.description",
+				Component: HooksSection
 			}
 		];
 
@@ -4651,6 +5766,7 @@ window.__ModuleLoader__.load({
 		function PanelPage(props) {
 			const t = props.t;
 			const [active, setActive] = react.useState(SECTIONS[0].id);
+			const [focusGroup, setFocusGroup] = react.useState(null);
 			const [style, setStyle] = react.useState("fluid");
 			const section = SECTIONS.find((candidate) => candidate.id === active) ?? SECTIONS[0];
 			const Component = section.Component;
@@ -4724,7 +5840,10 @@ window.__ModuleLoader__.load({
 														"aria-controls": `wca-panel-${candidate.id}`,
 														className: "wca-tab",
 														"aria-selected": candidate.id === section.id,
-														onClick: () => setActive(candidate.id),
+														onClick: () => {
+															setFocusGroup(null);
+															setActive(candidate.id);
+														},
 														children: t(candidate.labelKey)
 													},
 													candidate.id
@@ -4743,7 +5862,16 @@ window.__ModuleLoader__.load({
 								id: `wca-panel-${section.id}`,
 								role: "tabpanel",
 								"aria-labelledby": `wca-tab-${section.id}`,
-								children: jsx(Component, { t, feature: section, onStyleChange: setStyle })
+								children: jsx(Component, {
+									t,
+									feature: section,
+									onStyleChange: setStyle,
+									focusGroup,
+									onNavigate: (id, group) => {
+										setFocusGroup(typeof group === "string" ? group : null);
+										setActive(id);
+									}
+								})
 							},
 							"section"
 						)
@@ -4808,7 +5936,11 @@ window.__ModuleLoader__.load({
 			letterTimeOf,
 			clearsArrival,
 			InboxItem,
-			DayGroup
+			DayGroup,
+			nextHookLabels,
+			hookLabelError,
+			hookRunTime,
+			hookStatusText
 		};
 		return module.exports;
 	}

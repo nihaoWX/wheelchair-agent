@@ -45,8 +45,8 @@ export const EVENTS = [
       '成功结束时写进 hook spool（`<数据根>/records/hook-events/`），服务侧的 runner 在下一轮 drain 里执行脚本；' +
       'prepare 自己永远不内联跑 hook，所以一个慢脚本不会拖住工单启动。',
     when:
-      'prepare 命令成功结束、worker 启动之前；它把这次 occurrence 写进 spool，服务侧 runner 在同一个 tick 里' +
-      '和队列事件一起 drain。成功的 prepare 每次启动写一次。',
+      'prepare 命令成功结束之后：它把这次 occurrence 写进 spool，服务侧 runner 在同一个 tick 里和队列事件一起' +
+      'drain（脚本可能在 worker 启动之后才跑）。成功的 prepare 每次启动写一次。',
     repeatable: true,
     repeatNote: '工单被后续消息复活、重新派 worker 时会再次启动，每次启动都是一次新的 occurrence。',
     cancellable: false,

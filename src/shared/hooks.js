@@ -81,6 +81,12 @@ export const CURSOR_VERSION = 1
 /** 一次运行在记录里保留的 stdout / stderr **尾部**字节数。 */
 export const OUTPUT_LIMIT = 8 * 1024
 
+/** 面板每个事件显示的最后几次运行。 */
+export const HOOK_PANEL_RUN_LIMIT = 5
+
+/** 面板里失败记录的 stderr 尾部最多显示多少个字符（再长就截断，完整记录仍在 hooks.jsonl）。 */
+export const HOOK_PANEL_STDERR_LIMIT = 600
+
 /** 超时后先 SIGTERM，宽限这么久再 SIGKILL（见 `docs/hooks.md`）。 */
 export const KILL_GRACE_MS = 500
 
@@ -1246,4 +1252,111 @@ export function buildHookPrompt(eventId, opts = {}) {
   ]
   if (cwd !== undefined) lines.push('', `（生成这段文字时的 checkout：${cwd}）`)
   return lines.join('\n')
+}
+
+// ------------------------------------------------------------------ panel view
+
+/** 记录里的 stderr 尾部：去掉首尾空白后再截到面板上限，前面加省略号。 */
+function stderrTail(value) {
+  const text = typeof value === 'string' ? value.trim() : ''
+  if (text === '') return ''
+  if (text.length <= HOOK_PANEL_STDERR_LIMIT) return text
+  return `…${text.slice(-HOOK_PANEL_STDERR_LIMIT)}`
+}
+
+/**
+ * 把 hooks.jsonl 的一行变成面板要展示的一次运行。`status` 是四个稳定值之一：
+ * `ok` / `failed` / `timeout` / `paused`，前端只做本地化，不再猜退出码。
+ */
+export function describeHookRun(record) {
+  const paused = record?.skipped === 'paused'
+  const timedOut = record?.timedOut === true
+  const exit = typeof record?.exit === 'number' ? record.exit : null
+  const failed = !paused && !timedOut && (exit !== 0 || record?.error !== undefined)
+  return {
+    at: typeof record?.ts === 'string' ? record.ts : null,
+    event: typeof record?.event === 'string' ? record.event : null,
+    eventId: typeof record?.eventId === 'string' ? record.eventId : null,
+    hookId: typeof record?.hookId === 'string' ? record.hookId : null,
+    name: typeof record?.name === 'string' && record.name !== '' ? record.name : null,
+    status: paused ? 'paused' : timedOut ? 'timeout' : failed ? 'failed' : 'ok',
+    durationMs: Number.isFinite(record?.durationMs) ? record.durationMs : null,
+    exit,
+    signal: typeof record?.signal === 'string' ? record.signal : null,
+    stderrTail: failed ? stderrTail(record?.stderr) : '',
+    error: failed && typeof record?.error === 'string' ? record.error : null,
+  }
+}
+
+/** 一个事件最近 `limit` 次运行，**最新在前**；没有记录时返回空数组。 */
+export function latestHookRuns(records, eventId, limit = HOOK_PANEL_RUN_LIMIT) {
+  const rows = []
+  if (!Array.isArray(records)) return rows
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index]
+    if (record?.event !== eventId) continue
+    rows.push({ record, index })
+  }
+  rows.sort((left, right) => {
+    const leftAt = Date.parse(left.record?.ts)
+    const rightAt = Date.parse(right.record?.ts)
+    if (Number.isFinite(leftAt) && Number.isFinite(rightAt) && leftAt !== rightAt) return rightAt - leftAt
+    // 文件是 append-only：同一时刻（或坏 ts）按写入顺序倒序，最后写进来的就是最新的。
+    return right.index - left.index
+  })
+  return rows.slice(0, Math.max(0, limit)).map(row => describeHookRun(row.record))
+}
+
+/** 面板行上可用的动作：内建行只能改名；自定义行在面板里完全只读（新增走提示词）。 */
+const BUILTIN_ACTIONS = Object.freeze({ rename: true, toggle: false, remove: false })
+const CUSTOM_ACTIONS = Object.freeze({ rename: false, toggle: false, remove: false })
+
+/**
+ * stage 3 面板的一份**只读 JSON 视图**：事件表 + 内建/自定义行 + 每个事件最近 5 次运行 + 原样提示词。
+ *
+ * 它是 `readHooks()` 的超集：事件/行文本仍从 `hook-events.js` 来，提示词仍由 `buildHookPrompt()` 生成，
+ * 面板不许抄任何一段散文。`settings` 给定时不再重复读盘；`records` 给定时不再读 `hooks.jsonl`（测试用）。
+ */
+export function buildHookPanel({
+  settings,
+  env = process.env,
+  home,
+  stateDir,
+  records,
+  runLimit = HOOK_PANEL_RUN_LIMIT,
+  warn = () => {},
+} = {}) {
+  const model = readHooks({ env, home, stateDir, settings })
+  const allRecords = Array.isArray(records) ? records : readHookRecords({ env, home, stateDir, warn })
+  const runByHook = new Map()
+  for (const record of allRecords) {
+    const run = describeHookRun(record)
+    if (run.hookId !== null) runByHook.set(run.hookId, run)
+  }
+  const lastRunsOf = eventId =>
+    latestHookRuns(allRecords, eventId, Math.max(1, Number.isInteger(runLimit) ? runLimit : HOOK_PANEL_RUN_LIMIT))
+  const items = model.items.map(item => ({
+    ...item,
+    actions: { ...CUSTOM_ACTIONS },
+    lastRun: runByHook.get(item.id) ?? null,
+  }))
+  const builtin = model.builtin.map(row => ({
+    ...row,
+    actions: { ...BUILTIN_ACTIONS },
+    lastRun: runByHook.get(row.id) ?? null,
+  }))
+  const events = model.events.map(event => ({
+    ...event,
+    rows: builtin.filter(row => row.events.includes(event.id)),
+    customRows: items.filter(item => item.event === event.id),
+    lastRuns: lastRunsOf(event.id),
+    prompt: buildHookPrompt(event.id, settings === undefined ? { env } : { env, settings }),
+  }))
+  return {
+    ...model,
+    runLimit: Math.max(1, Number.isInteger(runLimit) ? runLimit : HOOK_PANEL_RUN_LIMIT),
+    items,
+    builtin,
+    events,
+  }
 }

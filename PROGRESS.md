@@ -11,17 +11,18 @@
 **数据根**：`~/.wheelchair-agent/`（`settings.json`、`inbox/`、`records/`、`logs/`），与 superagent 不耦合；
 队列仍在 `~/.dsh/state/superagent/spv/`，superagent 自己的 state 在 `~/.dsh/state/superagent/`。
 
-**面板**：dsh web 里左侧栏 `wheelchair-agent`（功能宿主，不是 iframe），当前两个功能——收件箱、设置。
-`webui.style` = `fluid`（默认）/ `minimal`；两页共用 1200px 宽度变量，收件箱无左侧日期栏。
+**面板**：dsh web 里左侧栏 `wheelchair-agent`（功能宿主，不是 iframe），当前三个功能——收件箱、设置、
+插口（hooks 的只读视图）。`webui.style` = `fluid`（默认）/ `minimal`；各页共用 1200px 宽度变量，
+收件箱无左侧日期栏。
 面板 URL 每次服务重启都换 token，只能从 `wheelchair-agent service status` 的 `panel:` 行或
 `wheelchair-agent service open` 取（见 `docs/PITFALLS/dsh-web-panel-token-is-per-instance.md`）。
 
 **服务**：当前跑在用户级瞬时 unit `wca-svc.service`（app.slice，不在任何 logind session scope 里），
 不是从终端直接起的 tmux server。`wheelchair-agent service stop/start` 会把它拉回调用者 scope，慎用。
 
-**插口（hooks）**：stage 1 已合并并安装（`#28`）：事件表（`src/shared/hook-events.js`）、引擎
-（`src/shared/hooks.js`）、设置块 `hooks`、CLI `wheelchair-agent hook …`、`docs/hooks.md`。
-**事件尚未接线**（stage 2 在 ticket `29ffe928` 上进行），所以现在挂脚本不会被触发。
+**插口（hooks）**：stage 1（`#28`, `27d4463`）与 stage 2（`#29`, main `2788bbc`）已合并：事件表、
+引擎、设置块、CLI、runner 与八个事件的接线都在。stage 3 面板「插口」已在本票实现（PR 待审）：事件含义/
+行/最近 5 次执行/可复制的 `hook prompt`，内建行改名仍走 revision 检查的同一 PUT；面板不执行脚本。
 
 # Completed
 
@@ -29,6 +30,9 @@
   （色调洗 + 发丝边 + 两层阴影 + 挂载即播的错峰入场），`minimal` 严格静止。
 - **插口 stage 1（`#28`, `27d4463`）**：8 个事件 id、7 条内建行、脚本执行（stdin JSON + `WCA_*` 白名单、
   超时/截断/串行/软失败）、cursor 去重、`records/hooks.jsonl` 记账、`hook prompt` 生成可复制提示词。
+- **插口 stage 2（`#29`, `2788bbc`）**：service 侧唯一 runner；队列 acknowledgement/reply/notice、
+  收件箱 approved/issue/merged、prepare 与 dispatch 的 spool 全部接线；`hooks.intervalSeconds`；
+  核心路径先完成，hook 只记录、不阻塞。
 - **orchestrator 自压缩**（dsh-superagent `6aec7c5` 本地）：`eval.compactRatio` 0.2 + 60s 滞回，只对主 Session，
   失败软；`lib/` 已 build，服务重启后生效。
 - **数据根 / 冷安装 / 重启链**（`#21`/`#22`/`#24`/`#25`）：`~/.wheelchair-agent` 一次性迁移 + 票 clone 守卫；
@@ -44,9 +48,9 @@
 
 # In Progress
 
-- **hooks stage 2**（ticket `29ffe928`，thread `hooks`）：把事件接上——队列 `acknowledgement/reply/notice` →
-  `ticket.{acknowledged,delivered,attention}`、收件箱 `approved/issue/merged`、`prepare.sh` 与 `dispatch.js`
-  通过 spool 发 `ticket.started` / `spv.dispatch`。
+- **hooks stage 3**（ticket `29ffe928`，thread `hooks`）：面板第三个功能段「插口」——渲染事件表与
+  内建/自定义行、最近 5 次执行、`hook prompt` 原文；内建行改名复用 `PUT /wheelchair-settings` 的
+  revision 检查。PR 待审。
 
 # Known Issues
 
@@ -64,8 +68,8 @@
 
 # Next Steps
 
-1. hooks stage 2 回来 → 审 diff / CI 绿 → 合并 → 派 stage 3（面板「插口」一节：事件含义、内建行可改名、
-   最近 5 次执行、`hook prompt` 原样展示）。
+1. hooks stage 3 PR 回来 → 审 diff / CI 绿 → 合并；合并后按面板提示做一次正常冷安装，新 host 才会带
+   `hookView` 与第三段。
 2. 重派 `service-detach`（带禁令），并把 `service open` 作为最后一步并入 `/restart-wheelchair-agent`
    （`src/spv/restart.js` + `tests/test-restart.mjs`，见 `docs/PITFALLS/dsh-web-panel-token-is-per-instance.md`
    的「改法」一节）。
