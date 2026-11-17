@@ -1355,7 +1355,18 @@ const PUT_FIELDS = ['revision', 'values', 'templates', 'hooks', 'reset']
  *
  * Host 半身把它包在既有的 `ctx.connection.requestRejection` fence 后面注册，与 `/wheelchair-inbox/*` 一致。
  */
-export function createSettingsHandler({ home, stateDir, config, env = process.env } = {}) {
+export function createSettingsHandler({ home, stateDir, config, env = process.env, decorate } = {}) {
+  // Optional read-only view decorator (stage 3 panel). It runs on the same snapshot the store just
+  // produced, so the panel never gains a second reader or writer. A decorator failure must not turn a
+  // successful save into a 500: fall back to the plain snapshot and let the caller's view report itself.
+  const decorated = snapshot => {
+    if (typeof decorate !== 'function') return snapshot
+    try {
+      return decorate(snapshot)
+    } catch {
+      return snapshot
+    }
+  }
   return async function handle(req, res) {
     const pathname = pathOf(req)
     if (pathname !== SETTINGS_PATH) {
@@ -1371,7 +1382,7 @@ export function createSettingsHandler({ home, stateDir, config, env = process.en
     }
     if (method === 'GET') {
       try {
-        sendJson(res, 200, resolveSettings({ home, stateDir, env, config }))
+        sendJson(res, 200, decorated(resolveSettings({ home, stateDir, env, config })))
       } catch (error) {
         sendJson(res, 500, { code: 'internal-error', message: messageOf(error) })
       }
@@ -1425,7 +1436,7 @@ export function createSettingsHandler({ home, stateDir, config, env = process.en
         env,
         config,
       })
-      sendJson(res, 200, snapshot)
+      sendJson(res, 200, decorated(snapshot))
     } catch (error) {
       if (error?.code === 'SETTINGS_CONFLICT') {
         sendJson(res, 409, { code: 'conflict', revision: error.revision, message: messageOf(error) })

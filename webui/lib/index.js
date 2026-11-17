@@ -35,6 +35,7 @@ import {
 } from './core/inbox.js'
 import { startHookRunner } from './core/hook-runner.js'
 import { resolveRoot } from './core/paths.js'
+import { buildHookPanel } from './shared/hooks.js'
 import { SETTINGS_PATH, createSettingsHandler, ensureSettingsFile } from './shared/settings.js'
 
 export const name = 'wheelchair-agent-webui'
@@ -85,7 +86,23 @@ export function apply(ctx, config = {}) {
   }
   const rootOf = () => resolveInboxRoot()
   const handler = createInboxHandler({ rootOf })
-  const settingsHandler = createSettingsHandler({ config: settingsConfig(config) })
+  const settingsHandler = createSettingsHandler({
+    config: settingsConfig(config),
+    // The panel reads one snapshot: the settings store owns the write path and the hook view is a
+    // read-only projection of the same snapshot plus records/hooks.jsonl. A broken projection falls
+    // back to `hookView: null` so the Settings section still loads.
+    decorate: snapshot => {
+      try {
+        return { ...snapshot, hookView: buildHookPanel({ settings: snapshot, env: process.env }) }
+      } catch (error) {
+        return {
+          ...snapshot,
+          hookView: null,
+          hookViewError: error instanceof Error ? error.message : String(error),
+        }
+      }
+    },
+  })
   const guarded = async (req, res) => {
     if (rejected(ctx, req, res)) return
     await handler(req, res)

@@ -35,8 +35,8 @@ its own loader row in `~/.dsh/profiles/superagent/cordis.patch.yml` (written by 
 
 ## Features and the review model
 
-The page is a **feature host**, not a PR list: the nav lists features (review inbox and Settings
-today, shaped so adding another is one array entry) and the active feature renders in its own bordered
+The page is a **feature host**, not a PR list: the nav lists features (review inbox, Settings and
+Hooks, shaped so adding another is one array entry) and the active feature renders in its own bordered
 panel with its own title, description and toolbar. `SECTIONS` is the single declaration:
 
 ```js
@@ -45,6 +45,8 @@ const SECTIONS = [
     descriptionKey: 'feature.inbox.description', Component: InboxSection },
   { id: 'settings', labelKey: 'section.settings', titleKey: 'feature.settings.title',
     descriptionKey: 'feature.settings.description', Component: SettingsSection },
+  { id: 'hooks', labelKey: 'section.hooks', titleKey: 'feature.hooks.title',
+    descriptionKey: 'feature.hooks.description', Component: HooksSection },
 ]
 ```
 
@@ -219,7 +221,8 @@ page says so in both locales.
 `ctx.connection.requestRejection` fence as `/wheelchair-inbox/*`. There is no per-action route:
 
 - `GET` returns the full snapshot (`revision`, `version`, `file`, `fileState`, `warning`, `values`,
-  `effective`, `rows`, `templates`), `cache-control: no-store`, re-read from disk on every request.
+  `effective`, `rows`, `templates`, and the Hooks section's read-only `hookView`), `cache-control:
+  no-store`, re-read from disk on every request.
 - `PUT` takes `{ revision, values?, templates?, reset? }` (JSON, body ≤ 64 KiB):
   - `values` is a merge of dotted key → value; an unknown key or invalid value refuses the whole
     write (`400`, `code: "SETTINGS_INVALID"`), naming the field.
@@ -372,6 +375,39 @@ merge + stale revision, corrupt files, unknown keys, template/preset rules, prec
 codes, consumer integration (injector, `appendReview`, poller, `work gc`, mount sweep), the pure
 client helpers loaded through a fake `window.__ModuleLoader__`, and the host route behind the
 connection fence. It runs in `npm test`, in CI, and on its own with `node tests/test-settings.mjs`.
+
+## Hooks
+
+The third feature is **Hooks** (插口): a read-only view of the same `hooks` block the CLI owns. It is
+not a second settings authority and adds no writer.
+
+- **Snapshot, not a second route**: the host's `createSettingsHandler({ decorate })` adds
+  `hookView` to the normal `GET /wheelchair-settings` response. `buildHookPanel()` (in the copied
+  `lib/shared/hooks.js`) composes `readHooks()` with `records/hooks.jsonl`; no new HTTP route is
+  registered.
+- **What it renders**: every `EVENTS` entry in table order, with its id, localized title,
+  explanation, `when`, `repeatNote`, payload fields and rows. Built-in rows come from
+  `builtinRowsFor()` (effective label, default label, description, `template`/`pointer`, and the
+  `cancellable: false` fact); custom rows come from `hooks.items` filtered by event and show name,
+  enabled badge, collapsed script preview and last run. The last five runs per event are read from
+  `<data root>/records/hooks.jsonl`, newest first, with `ok`/`failed`/`timeout`/`paused`, duration and
+  a trimmed stderr tail on failure.
+- **Rename, one writer**: the only writable control is a built-in row's display name. It sends the
+  same `PUT /wheelchair-settings` as the Settings page with
+  `{ revision, hooks: { labels: <complete map> } }`; `hooks.labels` is replace-whole, so the client
+  merges every existing override instead of dropping the others. A stale revision is the normal 409,
+  the draft is kept and Refresh re-reads. Built-in rows have no enable/delete control; custom rows
+  are read-only.
+- **Add is a prompt**: the "Add" disclosure shows the exact `buildHookPrompt()` text (the same bytes
+  as `wheelchair-agent hook prompt <event>`) with a Copy button and the line "Have an agent make the
+  change from this prompt". There is no script textarea and no execute button; the panel runs
+  nothing.
+- **Copied files**: `install.sh` already copies `src/shared/hooks.js` and `hook-events.js` into
+  `lib/shared/`; the client stays a hand-written prebuilt bundle and receives the view through
+  `hookView` rather than importing Node code.
+
+The host-route and pure-helper checks live in `tests/test-settings.mjs`; the event/row/history/prompt
+and rename checks live in `tests/test-hooks.mjs`.
 
 ## Markdown
 
@@ -574,3 +610,32 @@ Earlier captures (`before-panel.png`, `before-sidebar.png` / `after-sidebar.png`
 `after-pr-table.png`, `after-pr-code-dark.png`, `before-pr-body-dark.png` /
 `after-pr-body-dark.png`) document the earlier iframe → feature-host change at commit `7e8bfff`;
 they predate the letter types and are kept as history.
+
+### Hooks section (this change)
+
+The before/after pair uses the **same seeded data root, the same throwaway `web` profile copy, the
+same 1440×1000 viewport and light theme**. The baseline is `main` @ `2788bbc`; the after is this
+branch. Both runs used a copy of the profile under `mkdtemp`, `DSH_HOME` / `WHEELCHAIR_AGENT_HOME` /
+`DSH_SUPERAGENT_STATE_DIR` / `SPV_QUEUE_DIR` / `SPV_INBOX_DIR` inside it,
+`SPV_INBOX_INTERVAL_SECONDS=0`, and a seeded `settings.json` plus six `ticket.delivered` rows in
+`records/hooks.jsonl`; no live state was read or written and no hook ran. The section was captured in
+the real dsh host (Chromium against the profile's own page), not a mock.
+
+- `docs/hooks-panel-before-1440.png` — `main` @ `2788bbc`: the feature nav has only 收件箱 / 设置;
+  there is no 插口 tab.
+- `docs/hooks-panel-after-1440.png` — the same page and viewport on this branch, 插口 selected:
+  收件箱 / 设置 / 插口, the eight-event summary, and the first event with its built-in row, the
+  "cannot cancel or delete" line, the rename input and the empty last-five-runs area.
+- `docs/hooks-panel-after-history-1440.png` — the `ticket.delivered` card scrolled to its history:
+  five rows newest-first (成功 / 已暂停 / 超时 / 失败 with the trimmed stderr / 成功), the custom
+  row's collapsed script preview and its last run.
+- `docs/hooks-panel-after-prompt-1440.png` — `ticket.acknowledged` expanded: 收起, the copy button,
+  the sentence "让 agent 照这段提示词去改" and the generated prompt text (no script box, no run
+  button).
+- `docs/hooks-panel-after-rename-1440.png` — `builtin:injection` renamed from the panel; the PUT
+  moved the file from revision 7 to 8 and the row shows 已改名 plus the default-name hint.
+- `docs/hooks-panel-after-minimal-1440.png` — the same Hooks section with `webui.style=minimal`
+  (flat cards, no tint/shadow/motion); layout, widths and every control stay identical.
+
+The captures confirm the visual side only; the revision/stale-409 behavior is asserted in
+`tests/test-hooks.mjs` and `tests/test-settings.mjs`.

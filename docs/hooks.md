@@ -13,8 +13,8 @@
 一条规则贯穿全文：**hook 从不包裹、不 gate、不重试 core path。** 一个坏脚本最多让自己那一条记录变成失败。
 
 stage 1 交付引擎、设置面、CLI、队列原语与文档；stage 2 把八个事件接到各自 core path 完成之后，并由
-service 侧 runner 统一执行；stage 3 做面板。事件表、内建行与提示词文本已经在这里定型，stage 3 直接渲染，
-不许再抄一份。
+service 侧 runner 统一执行；stage 3 交付面板「插口」一节（§10）。事件表、内建行与提示词文本已经在这里
+定型，面板直接渲染，不再抄一份。
 
 ---
 
@@ -25,7 +25,7 @@ service 侧 runner 统一执行；stage 3 做面板。事件表、内建行与�
 
 | 事件 id | 什么时候触发 | 能重复吗 | 内建行 | 内建行可取消 |
 |---|---|---|---|---|
-| `ticket.started` | 工作区准备好之后、worker 启动之前 | 能（工单复活后会重新启动） | `builtin:prepare` | 否 |
+| `ticket.started` | prepare 成功结束之后（脚本可能在 worker 启动后才跑） | 能（工单复活后会重新启动） | `builtin:prepare` | 否 |
 | `ticket.acknowledged` | 队列里出现 `kind: "acknowledgement"` | 能 | — | —（没有内建行） |
 | `ticket.delivered` | 队列里出现 `kind: "reply"` | 能 | `builtin:injection` | 否 |
 | `ticket.attention` | 队列里出现 `kind: "notice"` | 能 | `builtin:injection` | 否 |
@@ -329,7 +329,8 @@ wheelchair-agent hook prompt <event>         # 可复制给 agent 的中文提�
 - `hook prompt`：中文、可整段复制。它只从 `EVENTS` 生成，包含事件 id、含义、触发时机、重复性、负载字段、
   `WCA_*`、cwd、超时，以及要写出来的
   `wheelchair-agent hook add --event <id> --name "<名字>" --script '<sh>' [--timeout <ms>]`。
-  这正是 stage 3 面板「新增」按钮要显示的文字。
+  这正是 stage 3 面板「新增」按钮要显示的文字；面板与 CLI 用同一个生成函数，输出逐字节相同（CLI 不再
+  附加 checkout 行）。
 
 ### 「新增」是提示词，不是 shell 输入框
 
@@ -371,9 +372,41 @@ worker 报告时自动合并 PR 的 hook，现在拿不到要合并哪一个。s
 | `src/shared/settings.js` | `hooks` 子块的校验、合并、落盘、HTTP 面（含 `intervalSeconds`） |
 | `src/spv/hook.js` | `wheelchair-agent hook ...` 的命令逻辑 |
 | `src/spv/hook-runner.js` | service 侧唯一 runner：drain spool + 队列，按 `hooks.intervalSeconds` 调度 |
-| `webui/lib/index.js` | 在 host 里挂 runner（与 `startInboxWatcher` 同一层，`ctx.effect` 停止） |
+| `webui/lib/index.js` | 在 host 里挂 runner（与 `startInboxWatcher` 同一层，`ctx.effect` 停止）；给 settings 快照挂只读的 `hookView` |
+| `webui/lib/client.js` | 第三个功能段「插口」：事件/行/最近 5 次执行的只读视图；内建行改名走同一个 revision PUT |
 | `src/spv/inbox.js` | review / notice / merge 的 core path，之后 fire `inbox.*` |
 | `src/spv/dispatch.js` | 任务落进 `pending/` 后写 `spv.dispatch` spool |
 | `commands/prepare.sh` | 成功结束时写 `ticket.started` spool（纯 sh、best effort、dry-run 不写） |
 | `bin/wheelchair-agent.mjs` | argv → 命令、退出码、`--help` |
-| `tests/test-hooks.mjs` / `tests/test-settings.mjs` / `tests/test-inbox*.mjs` / `tests/test-prepare.sh` | 离线证据 |
+| `tests/test-hooks.mjs` / `tests/test-settings.mjs` / `tests/test-inbox*.mjs` / `tests/test-prepare.sh` | 离线证据（含 stage 3 视图、提示词逐字节相等、改名与陈旧 revision） |
+
+## 10. stage 3：面板「插口」
+
+面板是**第三个功能段**，与「收件箱」「设置」共用 `SECTIONS`、`webui.style`（`fluid` 默认 / `minimal`）
+和唯一的内容宽度 `--wca-content-max`。它是一份**只读视图**，不是第二个设置权威：
+
+- **数据从哪来**：`GET /wheelchair-settings` 的同一份快照多一个 `hookView` 字段，由
+  `src/shared/hooks.js` 的 `buildHookPanel()` 生成。它复用 `readHooks()` 的模型，事件含义 / `when` /
+  `repeatNote` / `payload` 仍来自 `src/shared/hook-events.js`；提示词仍由 `buildHookPrompt()` 生成，
+  与 `wheelchair-agent hook prompt <event>` 的输出逐字节相同（CLI 不再附加 checkout 行）。
+- **事件**：按 `EVENTS` 顺序显示 id、中文名、说明、触发时机、重复说明、负载字段；内建行按
+  `builtinRowsFor(eventId)` 显示，自定义行来自 `hooks.items` 按事件过滤。
+- **内建行**：显示有效标签、默认标签、`description`、`cancellable: false` 的事实与文本位置
+  （`pointer: executor.prepare`，或 `template: injection` 等指向「设置 → 派单文本」）。`cancellable:
+  false` 的行**不能停用、不能删除**；面板不提供这两个动作。内建行可以改名，写的是 `hooks.labels`。
+- **自定义行**：只显示名称、启用状态、折叠的脚本预览和最近一次运行；面板没有执行、停用、删除入口。
+- **最近 5 次执行**：每个事件从 `<数据根>/records/hooks.jsonl` 取最近 5 条，最新在前；显示 `at`、事件 id、
+  行名、`ok` / `failed` / `timeout` / `paused`、耗时，失败时附上 trim 后的 stderr 尾部（最多 600 字符；
+  完整记录仍在 jsonl 里）。
+- **改名写路径**：与设置页完全相同的一次 `PUT /wheelchair-settings`，body 是
+  `{ revision, hooks: { labels: <完整 labels 映射> } }`；`labels` 在存储层是整体替换，所以面板发送合并后的
+  完整映射，不是单条覆盖。过期 revision 仍然是 **409**，磁盘一个字节都不写；面板保留草稿并提示刷新。
+  没有手改 `settings.json`、没有新增写路由。
+- **新增插口**：不是面板动作。「新增」只展开该事件的 `hook prompt` 原文，可选中 / 复制，并写明
+  「让 agent 照这段提示词去改」。面板没有 shell 输入框、没有执行按钮，也不跑任何脚本。
+- **边界**：HTTP 面仍然只有 `/wheelchair-settings` 的 GET/PUT 与收件箱两条路由；hook 的读盘/执行仍在
+  service runner 与 CLI，面板不 import `dsh-superagent`、不接触脚本执行器。
+
+证据：`tests/test-hooks.mjs` 的 `testPanelView()`（8 个事件全渲染、内建行不可停用、提示词与 CLI 逐字节相同、
+最近 5 条顺序与 stderr trim、改名 round-trip 与陈旧 revision 不写盘）和 `tests/test-settings.mjs` 的
+`testClientHookHelpers()` / host route 断言（快照带 `hookView`，改名映射不丢其它标签）。

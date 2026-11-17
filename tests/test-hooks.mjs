@@ -36,9 +36,13 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import {
   BUILTIN_ROWS,
   EVENTS,
+  HOOK_PANEL_RUN_LIMIT,
   HOOKS_RECORD_FILE,
   QUEUE_EVENT_KINDS,
+  buildHookPanel,
   buildHookPrompt,
+  describeHookRun,
+  latestHookRuns,
   claimEvent,
   eventIdFor,
   eventsCursorPath,
@@ -969,6 +973,122 @@ async function testPromptIsGeneratedFromTheTable() {
   assert.ok(attention.includes('builtin:injection'), 'notice injection is shown on ticket.attention too')
 }
 
+/**
+ * Stage 3 view: every event rendered from EVENTS, built-ins cannot be toggled, a rename goes through
+ * the revision-checked store, prompts are the CLI's prompt byte-for-byte, and the last five runs are
+ * newest-first with a trimmed stderr tail.
+ */
+async function testPanelView() {
+  const box = await sandbox()
+  const custom = addHook(box, {
+    event: 'ticket.delivered',
+    name: '我的手机通知',
+    script: 'echo "$WCA_EVENT_ID"',
+    timeoutMs: 2500,
+  })
+  const base = snapshot(box)
+  const renamed = saveSettings({
+    env: box.env,
+    revision: base.revision,
+    hooks: { labels: { ...base.hooks.labels, 'builtin:injection': '推进 SPV 会话（我改的）' } },
+  })
+  const panel = buildHookPanel({ env: box.env, settings: renamed, records: [] })
+
+  assert.deepEqual(panel.events.map(event => event.id), EVENTS.map(event => event.id), 'every event, in table order')
+  for (const [index, entry] of EVENTS.entries()) {
+    const event = panel.events[index]
+    assert.equal(event.title, entry.title, `title for ${entry.id}`)
+    assert.equal(event.explanation, entry.explanation, `explanation for ${entry.id}`)
+    assert.equal(event.when, entry.when, `when for ${entry.id}`)
+    assert.equal(event.repeatNote, entry.repeatNote, `repeat note for ${entry.id}`)
+    assert.deepEqual(event.payload, entry.payload, `payload for ${entry.id}`)
+    assert.equal(event.prompt, buildHookPrompt(entry.id, { env: box.env }), `prompt for ${entry.id} is generated`)
+    const cliPrompt = cli(box, ['hook', 'prompt', entry.id])
+    assert.equal(cliPrompt.status, 0, `hook prompt ${entry.id} exits 0`)
+    assert.equal(event.prompt, cliPrompt.stdout.trim(), `panel prompt equals CLI output for ${entry.id}`)
+  }
+
+  const delivered = panel.events.find(event => event.id === 'ticket.delivered')
+  const injection = delivered.rows.find(row => row.id === 'builtin:injection')
+  assert.equal(injection.label, '推进 SPV 会话（我改的）', 'the built-in label is renamed in the view')
+  assert.equal(injection.renamed, true)
+  assert.equal(injection.cancellable, false)
+  assert.deepEqual(injection.actions, { rename: true, toggle: false, remove: false }, 'a built-in row can only be renamed')
+  assert.equal(delivered.customRows.length, 1)
+  assert.equal(delivered.customRows[0].id, custom.id)
+  assert.equal(delivered.customRows[0].enabled, true)
+  assert.equal(delivered.customRows[0].timeoutMs, 2500)
+  assert.deepEqual(delivered.customRows[0].actions, { rename: false, toggle: false, remove: false })
+
+  // A stale rename is a 409-class conflict and leaves the stored labels untouched.
+  const beforeStale = resolveSettings({ env: box.env })
+  assert.throws(
+    () =>
+      saveSettings({
+        env: box.env,
+        revision: base.revision,
+        hooks: { labels: { 'builtin:injection': 'stale write must lose' } },
+      }),
+    error => error?.code === 'SETTINGS_CONFLICT',
+  )
+  const afterStale = resolveSettings({ env: box.env })
+  assert.equal(afterStale.revision, beforeStale.revision, 'a rejected rename does not bump the revision')
+  assert.equal(afterStale.hooks.labels['builtin:injection'], '推进 SPV 会话（我改的）', 'a rejected rename writes nothing')
+
+  // Six records for the event: only the newest five survive, newest first.
+  const now = Date.now()
+  const record = (offset, fields) => ({
+    ts: new Date(now + offset).toISOString(),
+    event: 'ticket.delivered',
+    eventId: `occ-${offset}`,
+    hookId: custom.id,
+    name: '我的手机通知',
+    exit: 0,
+    durationMs: Math.abs(offset),
+    stdout: '',
+    stderr: '',
+    timedOut: false,
+    ...fields,
+  })
+  const history = [
+    record(-5000, { name: 'oldest', exit: 1, stderr: 'old failure' }),
+    record(-4000, { exit: 0 }),
+    record(-3000, { timedOut: true, exit: null, stderr: 'killed' }),
+    record(-2000, { exit: 1, stderr: '\n  boom: details  \n\n', durationMs: 17 }),
+    { ts: new Date(now - 1000).toISOString(), event: 'ticket.delivered', eventId: 'occ-paused', skipped: 'paused' },
+    record(0, { exit: 0, durationMs: 3 }),
+    { ts: new Date(now - 10).toISOString(), event: 'ticket.acknowledged', eventId: 'other', hookId: 'hook-other', name: 'other', exit: 0 },
+  ]
+  const view = buildHookPanel({ env: box.env, settings: afterStale, records: history })
+  const runs = view.events.find(event => event.id === 'ticket.delivered').lastRuns
+  assert.equal(runs.length, HOOK_PANEL_RUN_LIMIT, 'the view caps at the last five runs')
+  assert.equal(runs[0].durationMs, 3, 'newest run first')
+  assert.equal(runs[0].status, 'ok')
+  assert.equal(runs[1].status, 'paused', 'the paused occurrence is a run with no row name')
+  assert.equal(runs[1].name, null)
+  assert.equal(runs[2].status, 'failed')
+  assert.equal(runs[2].stderrTail, 'boom: details', 'stderr is trimmed for display')
+  assert.equal(runs[3].status, 'timeout')
+  assert.equal(runs[4].status, 'ok')
+  assert.ok(!runs.some(run => run.name === 'oldest'), 'the sixth-oldest run is dropped')
+  assert.equal(view.events.find(event => event.id === 'ticket.acknowledged').lastRuns.length, 1, 'runs stay per event')
+
+  assert.deepEqual(describeHookRun({ skipped: 'paused' }), {
+    at: null,
+    event: null,
+    eventId: null,
+    hookId: null,
+    name: null,
+    status: 'paused',
+    durationMs: null,
+    exit: null,
+    signal: null,
+    stderrTail: '',
+    error: null,
+  })
+  assert.deepEqual(latestHookRuns(history, 'ticket.delivered', 1).map(run => run.status), ['ok'])
+}
+
 /** cursor 永不裁剪：5100 条历史 id 仍然挡住旧 id，新认领不挤掉任何旧 id。 */
 async function testCursorIsDurable() {
   const box = await sandbox()
@@ -1607,6 +1727,7 @@ try {
   await testTimeoutAndSamples()
   await testExplicitTestRunsAnyway()
   await testPromptIsGeneratedFromTheTable()
+  await testPanelView()
   process.stdout.write('ok\n')
 } catch (error) {
   process.stderr.write(`not ok: ${error?.stack ?? error}\n`)

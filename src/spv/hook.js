@@ -571,7 +571,7 @@ function commandPrompt(argv, io) {
   }
   if (argv.length !== 1 || argv[0].startsWith('-')) throw usageError('hook prompt needs exactly one event id')
   const entry = requireEventForArgv(argv[0])
-  io.write(`${buildHookPrompt(entry.id, { env: io.env, cwd: io.cwd })}\n`)
+  io.write(`${buildHookPrompt(entry.id, { env: io.env })}\n`)
   return 0
 }
 
