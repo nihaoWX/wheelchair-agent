@@ -4417,6 +4417,7 @@ window.__ModuleLoader__.load({
 			const [savedRevision, setSavedRevision] = react.useState(null);
 			const alive = react.useRef(true);
 			const requestId = react.useRef(0);
+			const focusApplied = react.useRef(false);
 			const storage = react.useRef(null);
 			if (storage.current === null) storage.current = browserStorage();
 			const draftsRef = react.useRef(drafts);
@@ -4538,10 +4539,12 @@ window.__ModuleLoader__.load({
 			// A hook's "open the templates group" button lands here with the group id. The panel remounts
 			// on a section switch, so scrolling once after that mount is enough.
 			react.useEffect(() => {
-				if (focusGroup === null || typeof document === "undefined") return;
+				if (focusGroup === null || snapshot === null || focusApplied.current || typeof document === "undefined") return;
 				const node = document.getElementById(`wca-settings-group-${focusGroup}`);
-				if (node !== null) node.scrollIntoView({ block: "start", behavior: "auto" });
-			}, [focusGroup]);
+				if (node === null) return;
+				focusApplied.current = true;
+				node.scrollIntoView({ block: "start", behavior: "auto" });
+			}, [focusGroup, snapshot]);
 
 			// Persist after every edit; a successful save or an explicit Reload clears it in adopt().
 			react.useEffect(() => {
