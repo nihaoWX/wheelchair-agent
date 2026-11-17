@@ -11,6 +11,8 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
+import { writeHookSpoolEvent } from '../shared/hooks.js'
+
 /**
  * 本工具写的任务固定携带的身份，以及它**不**作为参数接受的原因。
  *
@@ -122,5 +124,18 @@ export async function submitTask(dirs, { project, task, thread, preset }) {
   const temporary = join(dirs.pending, `.${id}.tmp`)
   await writeFile(temporary, `${JSON.stringify(record, null, 2)}\n`, { encoding: 'utf8', mode: 0o644 })
   await rename(temporary, join(dirs.pending, `${id}.json`))
+  // 任务已经原子落盘（core path 完成），spool 只是额外副作用：写不进去也不影响派活，writer 永不抛。
+  writeHookSpoolEvent(
+    'spv.dispatch',
+    {
+      taskId: record.id,
+      thread: record.thread,
+      project: record.project,
+      text: record.text,
+      ...(record.preset === undefined ? {} : { preset: record.preset }),
+      at: record.at,
+    },
+    { eventId: `dispatch:${record.id}` },
+  )
   return record
 }

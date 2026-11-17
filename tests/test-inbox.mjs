@@ -21,12 +21,13 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { appendReview, createInboxHandler, createSpvMessage, readItem, readItems, writeItem } from '../src/spv/inbox.js'
+import { resolveSettings, saveSettings } from '../src/shared/settings.js'
 import { defineSpvTools } from '../src/spv/tools.js'
 
 const CLI = fileURLToPath(new URL('../bin/wheelchair-agent.mjs', import.meta.url))
@@ -552,11 +553,71 @@ async function testRootProviderPerRequest() {
   assert.throws(() => createInboxHandler({ rootOf: 'not-a-function' }), /rootOf must be a function/)
 }
 
+/** A hook on inbox.approved runs after the review is persisted and cannot change the core result. */
+async function testHookAfterApprove() {
+  const box = await sandbox()
+  const marker = join(box.base, 'approved-hook.json')
+  const savedHome = process.env.WHEELCHAIR_AGENT_HOME
+  useQueue(join(box.base, 'queue'))
+  process.env.WHEELCHAIR_AGENT_HOME = join(box.base, 'data')
+  try {
+    const current = resolveSettings({ env: process.env })
+    saveSettings({
+      env: process.env,
+      revision: current.revision,
+      hooks: {
+        items: [
+          {
+            id: 'hook-inbox-approved-0001',
+            event: 'inbox.approved',
+            name: 'approved',
+            enabled: true,
+            script: `cat > ${JSON.stringify(marker)}`,
+          },
+        ],
+      },
+    })
+    await mkdir(box.inbox, { recursive: true })
+    const item = {
+      id: 'acme-demo-1',
+      kind: 'pr',
+      pr: 1,
+      repo: 'acme/demo',
+      title: 'demo',
+      url: 'https://github.com/acme/demo/pull/1',
+      state: 'OPEN',
+      body: '',
+      at: new Date().toISOString(),
+      review: [],
+    }
+    await writeItem(box.inbox, item)
+    const { item: updated } = await appendReview(box.inbox, { id: item.id, kind: 'approve', text: 'ok' })
+    assert.equal(updated.review.length, 1, 'the approve review is persisted')
+    const deadline = Date.now() + 8000
+    let payload
+    while (Date.now() < deadline) {
+      try {
+        payload = JSON.parse(await readFile(marker, 'utf8'))
+        break
+      } catch {
+        await new Promise(resolve => setTimeout(resolve, 10))
+      }
+    }
+    assert.ok(payload, 'the inbox.approved hook ran')
+    assert.equal(payload.itemId, item.id)
+    assert.equal(payload.reviewIndex, 0)
+    assert.equal(payload.comment, 'ok')
+  } finally {
+    process.env.WHEELCHAIR_AGENT_HOME = savedHome
+  }
+}
+
 // ------------------------------------------------------------------- main
 
 try {
   await testWriteSpvMessage()
   await testTwoWriterEntryPoints()
+  await testHookAfterApprove()
   await testApproveWithComment()
   await testApproveOnSpvMessage()
   await testApproveWithoutComment()

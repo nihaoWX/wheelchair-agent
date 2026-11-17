@@ -37,6 +37,7 @@ import {
   resolveInboxIntervalSeconds,
   startInboxWatcher,
 } from '../src/spv/inbox.js'
+import { resolveSettings, saveSettings } from '../src/shared/settings.js'
 
 const REAL_GIT = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
 const REPO = fileURLToPath(new URL('..', import.meta.url))
@@ -51,6 +52,58 @@ async function waitFor(predicate, label, timeoutMs = 5000) {
     await sleep(5)
   }
   throw new Error(`timed out after ${timeoutMs}ms waiting for ${label}`)
+}
+
+async function waitForText(file, label, timeoutMs = 5000) {
+  await waitFor(async () => {
+    try {
+      await readFile(file)
+      return true
+    } catch {
+      return false
+    }
+  }, label, timeoutMs)
+  return readFile(file, 'utf8')
+}
+
+/** Wait until the hook has written a complete JSON payload (the file may exist before `cat` finishes). */
+async function waitForJson(file, label, timeoutMs = 5000) {
+  let value
+  await waitFor(async () => {
+    try {
+      value = JSON.parse(await readFile(file, 'utf8'))
+      return true
+    } catch {
+      return false
+    }
+  }, label, timeoutMs)
+  return value
+}
+
+/** One shell-quoted argument for a hook script. */
+function shellQuote(value) {
+  return `'${String(value).replaceAll("'", "'\\''")}'`
+}
+
+/** Install a single inbox.merged hook that dumps its stdin payload into `marker`. */
+function installMergedHook(box, marker) {
+  const current = resolveSettings({ env: process.env })
+  saveSettings({
+    env: process.env,
+    revision: current.revision,
+    hooks: {
+      items: [
+        {
+          id: 'hook-inbox-merged-0001',
+          event: 'inbox.merged',
+          name: 'merged',
+          enabled: true,
+          script: `cat > ${shellQuote(marker)}`,
+        },
+      ],
+    },
+  })
+  return marker
 }
 
 /** Run the real git binary; test setup must never go through the logging wrapper. */
@@ -249,6 +302,7 @@ async function testWatcherRefreshes() {
 /** (b) MERGED -> one --ff-only pull -> one cold-install notice; repeated poll/restart does neither again. */
 async function testMergePullAndNotice() {
   const box = await sandbox()
+  const mergedMarker = installMergedHook(box, join(box.base, 'merged-hook.json'))
   const clone = await makeClone(box, 'wheelchair-agent')
   const mergedSha = await pushChange(clone.seed)
   const open = prPayload({ number: 7, repo: 'acme/wheelchair-agent', state: 'OPEN' })
@@ -276,6 +330,14 @@ async function testMergePullAndNotice() {
     await waitFor(async () => (await readItem(box.inbox, 'acme-wheelchair-agent-7'))?.pulledSha === mergedSha, 'the merged item to be pulled')
     await waitFor(async () => (await outboxNames(box)).length === 1, 'one cold-install notice')
     assert.equal(await pullCount(box), 1, 'exactly one --ff-only pull')
+
+    const mergedPayload = await waitForJson(mergedMarker, 'the inbox.merged hook payload')
+    assert.equal(mergedPayload.itemId, 'acme-wheelchair-agent-7')
+    assert.equal(mergedPayload.pr, 7)
+    assert.equal(mergedPayload.repo, 'acme/wheelchair-agent')
+    assert.equal(mergedPayload.pulledSha, mergedSha)
+    assert.equal(mergedPayload.mergeCommit, mergedSha)
+    assert.equal(mergedPayload.localPath, clone.local)
 
     const item = await readItem(box.inbox, 'acme-wheelchair-agent-7')
     assert.equal(item.mergedAt, '2026-11-15T00:00:00.000Z')
@@ -475,6 +537,7 @@ async function testPullFailureRecovers() {
 /** (c2) A transient outbox failure keeps the merge unhandled and retries only the notice. */
 async function testNoticeFailureRetries() {
   const box = await sandbox()
+  const mergedMarker = installMergedHook(box, join(box.base, 'merged-hook.json'))
   const clone = await makeClone(box, 'wheelchair-agent')
   const mergedSha = await pushChange(clone.seed)
   const badQueue = join(box.base, 'queue-is-a-file')
@@ -504,12 +567,20 @@ async function testNoticeFailureRetries() {
     assert.ok(failed.pullError === undefined, 'the pull itself succeeded')
     assert.equal(failed.pulledSha, mergedSha)
     assert.equal(failed.mergeHandledAt, undefined, 'a failed notice is not marked handled')
+    await assert.rejects(() => readFile(mergedMarker), 'a failed cold-install notice fires no inbox.merged hook')
 
     // Fix the queue: the next poll must retry the notice without pulling the already-updated clone again.
     process.env.SPV_QUEUE_DIR = box.queue
     const firstPull = await pullCount(box)
     await waitFor(async () => (await outboxNames(box)).length === 1, 'the notice retry')
+    await waitFor(
+      async () => Boolean((await readItem(box.inbox, 'acme-wheelchair-agent-5'))?.mergeHandledAt),
+      'the merge to be marked handled',
+    )
     const recovered = await readItem(box.inbox, 'acme-wheelchair-agent-5')
+    const recoveredPayload = await waitForJson(mergedMarker, 'the recovered inbox.merged hook payload')
+    assert.equal(recoveredPayload.itemId, 'acme-wheelchair-agent-5')
+    assert.equal(recoveredPayload.pulledSha, mergedSha)
     assert.ok(recovered.mergeHandledAt, 'the recovered notice marks the merge handled')
     assert.equal(recovered.noticeError, undefined, 'the notice error is cleared')
     assert.ok(recovered.noticeAt)
@@ -594,9 +665,11 @@ async function loadHostApply(box) {
   for (const [source, target] of [
     ['src/spv/inbox.js', 'lib/core/inbox.js'],
     ['src/spv/dispatch.js', 'lib/core/dispatch.js'],
+    ['src/spv/hook-runner.js', 'lib/core/hook-runner.js'],
     ['src/spv/paths.js', 'lib/core/paths.js'],
     ['src/shared/home.js', 'lib/shared/home.js'],
     ['src/shared/hook-events.js', 'lib/shared/hook-events.js'],
+    ['src/shared/hooks.js', 'lib/shared/hooks.js'],
     ['src/shared/queue.js', 'lib/shared/queue.js'],
     ['src/shared/settings.js', 'lib/shared/settings.js'],
     ['webui/lib/index.js', 'lib/index.js'],

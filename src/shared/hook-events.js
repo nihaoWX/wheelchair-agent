@@ -41,23 +41,28 @@ export const EVENTS = [
     explanation:
       'superagent 为一张工单启动 worker 之前的那一刻：工作区已经准备好（clone、受管 AGENTS.md、tools/ 的私有远端），' +
       '但 worker 还什么都没做。它唯一的内建行是 superagent 自己的 `executor.prepare` 命令——那一行住在 ' +
-      '**superagent 的设置**里，这里只显示一个指针行，绝不复制、不遮蔽，也不在这里执行它。',
-    when: '工作区准备好之后、worker 进程启动之前；每次启动触发一次。',
+      '**superagent 的设置**里，这里只显示一个指针行，绝不复制、不遮蔽，也不在这里执行它。事件由 prepare 命令' +
+      '成功结束时写进 hook spool（`<数据根>/records/hook-events/`），服务侧的 runner 在下一轮 drain 里执行脚本；' +
+      'prepare 自己永远不内联跑 hook，所以一个慢脚本不会拖住工单启动。',
+    when:
+      'prepare 命令成功结束、worker 启动之前；它把这次 occurrence 写进 spool，服务侧 runner 在同一个 tick 里' +
+      '和队列事件一起 drain。成功的 prepare 每次启动写一次。',
     repeatable: true,
     repeatNote: '工单被后续消息复活、重新派 worker 时会再次启动，每次启动都是一次新的 occurrence。',
     cancellable: false,
     payload: fields({
-      ticketId: '工单 id，例如 agent-hooks-29ffe928947d。',
-      thread: '工单所在的队列 thread，也就是对 SPV 说话的通道。',
-      project: '项目路径，例如 tools/wheelchair-agent。',
-      workspace: 'worker 将要使用的目录（绝对路径）；同时是脚本的 cwd 来源之一。',
-      at: '这次启动的时间（ISO 8601）。',
+      ticketId: '工单 id，例如 agent-hooks-29ffe928947d（来自 `DSH_SUPERAGENT_TICKET`，缺失时退到工单目录名）。',
+      name: '工单名（`DSH_SUPERAGENT_NAME`），没有时省略。',
+      project: '项目路径，例如 tools/wheelchair-agent（env 没有时是 prepare 实际解析到的那个）。',
+      workspace: 'worker 将要使用的目录（绝对路径）；同时是脚本的 cwd 来源。',
+      at: '这次启动的时间（ISO 8601，由 prepare 在成功结束时取）。',
     }),
     builtin: ['builtin:prepare'],
     sample: {
       ticketId: 'agent-demo-0123abcd',
-      thread: 'demo-0123abcd',
+      name: 'demo-0123abcd',
       project: 'tools/demo',
+      workspace: '/home/operator/.dsh/state/superagent/work/demo-0123abcd',
       at: SAMPLE_AT,
     },
   },
@@ -67,7 +72,7 @@ export const EVENTS = [
     explanation:
       'SPV 队列里出现一条 `kind: "acknowledgement"` 的消息：worker 收下了这份活，或者你的追问已经排队。' +
       '它证明任务被接住了，不证明有结果。这个事件没有内建行，全部是操作者自己的脚本。',
-    when: 'acknowledgement 消息出现在 SPV 队列（`outbox/` 或 `outbox/read/`）时，由读取方按消息 id 触发一次。',
+    when: 'acknowledgement 消息出现在 SPV 队列（`outbox/` 或 `outbox/read/`）时，由服务侧 runner 按消息 id 触发一次。',
     repeatable: true,
     repeatNote: '每次接单 / 排队回执都是一条独立消息，各算一次 occurrence。',
     cancellable: true,
@@ -76,7 +81,9 @@ export const EVENTS = [
       ticketId: '工单 id。',
       thread: '队列 thread。',
       kind: '消息种类，固定为 acknowledgement。',
-      text: '回执正文。',
+      text: '回执正文；超过 12000 个字符时截断。',
+      textTruncated: '`text` 被截断时为 true（缺省不出现）；完整正文可用 `file` 自己读。',
+      file: '这条消息的绝对路径（`outbox/` 或 `outbox/read/` 里的那个文件）。',
       at: '消息写入时间（ISO 8601）。',
     }),
     builtin: [],
@@ -86,6 +93,7 @@ export const EVENTS = [
       thread: 'demo-0123abcd',
       kind: 'acknowledgement',
       text: '收到，开始处理。',
+      file: '/home/operator/.dsh/state/superagent/spv/outbox/msg-ack-0001.json',
       at: SAMPLE_AT,
     },
   },
@@ -106,7 +114,9 @@ export const EVENTS = [
       ticketId: '工单 id。',
       thread: '队列 thread。',
       kind: '消息种类，固定为 reply。',
-      text: 'worker 的报告正文。',
+      text: 'worker 的报告正文；超过 12000 个字符时截断。',
+      textTruncated: '`text` 被截断时为 true（缺省不出现）；完整正文可用 `file` 自己读。',
+      file: '这条消息的绝对路径（`outbox/` 或 `outbox/read/` 里的那个文件）。',
       at: '消息写入时间（ISO 8601）。',
     }),
     builtin: ['builtin:injection'],
@@ -135,7 +145,9 @@ export const EVENTS = [
       ticketId: '工单 id（notice 可能不属于任何工单，此时缺失）。',
       thread: '队列 thread。',
       kind: '消息种类，固定为 notice。',
-      text: '通知正文。',
+      text: '通知正文；超过 12000 个字符时截断。',
+      textTruncated: '`text` 被截断时为 true（缺省不出现）；完整正文可用 `file` 自己读。',
+      file: '这条消息的绝对路径（`outbox/` 或 `outbox/read/` 里的那个文件）。',
       at: '消息写入时间（ISO 8601）。',
     }),
     builtin: ['builtin:injection'],
@@ -197,7 +209,8 @@ export const EVENTS = [
       repo: '仓库 owner/name（仅 kind=pr）。',
       reviewIndex: '这条 review 的下标。',
       comment: '操作者的评论原文（已 trim）。',
-      messageId: '转给 SPV 的那条 notice 的 id；也是 `WCA_EVENT_ID` 的来源。',
+      messageId: '转给 SPV 的那条 notice 的 id（队列侧 `ticket.attention` 的 occurrence 用它）；' +
+        '`inbox.issue` 自己的 `WCA_EVENT_ID` 是 `inbox.issue:<itemId>:<reviewIndex>`。',
       thread: 'notice 发往的 thread：inbox-<pr>，或决策信自己的 thread。',
       at: 'review / notice 的时间（ISO 8601）。',
     }),

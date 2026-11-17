@@ -48,6 +48,8 @@ import { EVENTS, BUILTIN_ROWS, builtinRowsFor, eventById } from './hook-events.j
 import { assertNotTicketClone, dataPaths } from './home.js'
 import { dirsOf } from './queue.js'
 import {
+  HOOK_INTERVAL_DEFAULT,
+  HOOK_INTERVAL_MAX,
   HOOK_TIMEOUT_CAP,
   HOOK_TIMEOUT_DEFAULT,
   defaultHooks,
@@ -56,13 +58,22 @@ import {
 } from './settings.js'
 
 export { EVENTS, BUILTIN_ROWS, builtinRowById, builtinRowsFor, eventById } from './hook-events.js'
-export { HOOK_TIMEOUT_CAP, HOOK_TIMEOUT_DEFAULT } from './settings.js'
+export { HOOK_INTERVAL_DEFAULT, HOOK_INTERVAL_MAX, HOOK_TIMEOUT_CAP, HOOK_TIMEOUT_DEFAULT } from './settings.js'
 
 /** 记录文件：一行一次运行（JSON Lines）。 */
 export const HOOKS_RECORD_FILE = 'hooks.jsonl'
 
 /** cursor 文件：处理过的 occurrence id。 */
 export const EVENTS_CURSOR_FILE = 'events-cursor.json'
+
+/** 插口 spool 的目录名，位于 `<数据根>/records/` 下；一个文件一次 occurrence。 */
+export const HOOK_SPOOL_DIR = 'hook-events'
+
+/** spool 文件格式版本；不认识的版本按坏文件隔离（不猜怎么执行）。 */
+export const HOOK_SPOOL_VERSION = 1
+
+/** 队列事件负载里 `text` 的上限（Unicode code point）。超过时截断并带 `textTruncated`。 */
+export const QUEUE_TEXT_LIMIT = 12_000
 
 /** cursor 文件格式版本；不认识就当作空 cursor（重放一轮，而不是永远卡住）。 */
 export const CURSOR_VERSION = 1
@@ -189,7 +200,7 @@ function describeBuiltinRow(row, labels) {
  *
  * 形状（stage 3 的面板就按这个渲染）：
  *   {
- *     enabled, scriptTimeoutMs, timeoutCap, items, labels, revision, fileState, warning?,
+ *     enabled, scriptTimeoutMs, intervalSeconds, timeoutCap, items, labels, revision, fileState, warning?,
  *     recordsFile, cursorFile,               // 两个文件的绝对路径（数据根不可用时为 undefined）
  *     events: [{ ...事件表, rows: [内建行], customCount, rowCount }],
  *     builtin: [所有内建行（含有效 label）],
@@ -219,6 +230,7 @@ export function readHooks({ env = process.env, home, stateDir, settings } = {}) 
   return {
     enabled: hooks.enabled !== false,
     scriptTimeoutMs: hooks.scriptTimeoutMs,
+    intervalSeconds: hooks.intervalSeconds ?? HOOK_INTERVAL_DEFAULT,
     timeoutCap: HOOK_TIMEOUT_CAP,
     items: hooks.items.map(item => ({ ...item })),
     labels,
@@ -246,11 +258,15 @@ export function requireEvent(eventId) {
   return entry
 }
 
-/** 事件的文档示例负载；`now` 给定时覆盖 `at`（`hook test` 用真实时间）。 */
-export function samplePayload(eventId, { now } = {}) {
+/**
+ * 事件的文档示例负载；`now` 给定时覆盖 `at`（`hook test` 用真实时间），`workspace` 给定时覆盖
+ * `ticket.started` 的示例目录（`hook test` 必须有一个真实存在的 cwd，否则 spawn 会失败）。
+ */
+export function samplePayload(eventId, { now, workspace } = {}) {
   const entry = requireEvent(eventId)
   const payload = JSON.parse(JSON.stringify(entry.sample ?? {}))
   if (now !== undefined) payload.at = now
+  if (workspace !== undefined && entry.id === 'ticket.started') payload.workspace = workspace
   return payload
 }
 
@@ -259,7 +275,9 @@ export function samplePayload(eventId, { now } = {}) {
  *
  * 派生规则（stage 2 的 runner 可以直接用，也可以自己传 eventId）：
  *   - 队列事件 → 消息 id；
- *   - 收件箱 review → `review:<itemId>:<reviewIndex>`，有 messageId 时优先用它；
+ *   - 收件箱 review → `inbox.approved:<itemId>:<reviewIndex>` / `inbox.issue:<itemId>:<reviewIndex>`；
+ *     **不要**用 notice 的 message id——队列读取器会用同一个 id 派生 `ticket.attention`，全局 cursor
+ *     会把队列那次 occurrence 吞掉；
  *   - 合并 → `merge:<itemId>:<mergeCommit|pulledSha|at>`；
  *   - worker 启动 → `<ticketId>:<at>`（**必须带 at**，否则同一张工单的两次启动会被当成一次）；
  *   - 派活 → `dispatch:<taskId>`。
@@ -278,11 +296,16 @@ export function eventIdFor(eventId, payload = {}) {
       return nonEmpty(payload.messageId)
     case 'inbox.approved':
     case 'inbox.issue': {
-      const messageId = nonEmpty(payload.messageId)
-      if (messageId !== undefined) return messageId
+      // Namespace by event: inbox.approved and inbox.issue are different occurrences, and the notice's
+      // message id must never be reused (the queue reader derives ticket.attention from it; the cursor is
+      // global). A separate prefix also removes the latent approved/issue collision class entirely.
+      const prefix = entry.id
       const itemId = nonEmpty(payload.itemId)
-      if (itemId === undefined) return undefined
-      return `review:${itemId}:${payload.reviewIndex === undefined ? 'latest' : payload.reviewIndex}`
+      if (itemId !== undefined) {
+        return `${prefix}:${itemId}:${payload.reviewIndex === undefined ? 'latest' : payload.reviewIndex}`
+      }
+      const messageId = nonEmpty(payload.messageId)
+      return messageId === undefined ? undefined : `${prefix}:${messageId}`
     }
     case 'inbox.merged': {
       const itemId = nonEmpty(payload.itemId)
@@ -847,6 +870,173 @@ export async function runHooksFor(event, payload = {}, opts = {}) {
   return summary
 }
 
+// ---------------------------------------------------------------------- spool
+
+/**
+ * 插口 spool 目录：`<数据根>/records/hook-events/`。数据根不可用时 `undefined`。
+ *
+ * 为什么需要它：`ticket.started` 与 `spv.dispatch` 发生在任何服务 tick 之外（worker 启动前的
+ * `prepare.sh`、SPV 派活），而执行脚本的 runner 只在服务侧 webui host 里跑（一个读者，见 docs/hooks.md）。
+ * 写一个文件是微秒级、不需要 node/python、也不会阻塞调用方；服务活着就由它在同一轮 drain 里执行，服务
+ * 关着就等着。重建执行目录是懒的：`hookSpoolDir()` 只算路径，`writeHookSpoolEvent()` 才 mkdir。
+ */
+export function hookSpoolDir({ env = process.env, home, stateDir } = {}) {
+  const records = pathsOf({ env, home, stateDir }).records
+  return records === undefined ? undefined : join(records, HOOK_SPOOL_DIR)
+}
+
+/** 文件名里安全的一段：只留字母、数字、点、下划线、连字符。 */
+function spoolFilePart(value, limit = 80) {
+  const text = String(value ?? '')
+    .replace(/[^A-Za-z0-9._-]+/g, '_')
+    .replace(/^_+/, '')
+  return (text === '' ? 'occurrence' : text).slice(0, limit)
+}
+
+/**
+ * 写一个 spool occurrence：同目录临时文件（点开头，读者跳过）+ rename，所以读者永远看不到半写的 JSON。
+ *
+ * **best effort，永不抛**：spool 是额外的副作用，写不进去最多丢掉一次 hook 运行，绝不能让
+ * `prepare.sh` 的工单或派活失败。返回落盘的文件路径；失败返回 `undefined`。
+ */
+export function writeHookSpoolEvent(event, payload = {}, { eventId, at, env = process.env, home, stateDir } = {}) {
+  let temporary
+  try {
+    const name = nonEmpty(event)
+    if (name === undefined) return undefined
+    const dir = hookSpoolDir({ env, home, stateDir })
+    if (dir === undefined) return undefined
+    mkdirSync(dir, { recursive: true })
+    const id = nonEmpty(eventId) ?? eventIdFor(name, payload)
+    const stamp = nonEmpty(at) ?? new Date().toISOString()
+    const record = {
+      version: HOOK_SPOOL_VERSION,
+      event: name,
+      ...(id === undefined ? {} : { eventId: String(id) }),
+      at: stamp,
+      payload: isPlainObject(payload) ? payload : {},
+    }
+    const file = join(
+      dir,
+      `${spoolFilePart(name)}-${spoolFilePart(id ?? stamp)}-${process.pid}-${randomBytes(4).toString('hex')}.json`,
+    )
+    temporary = join(dir, `.tmp-${process.pid}-${randomBytes(6).toString('hex')}`)
+    writeFileSync(temporary, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o644 })
+    // writeFileSync's mode is filtered by the umask; pin 0644 before the atomic rename.
+    chmodSync(temporary, 0o644)
+    renameSync(temporary, file)
+    temporary = undefined
+    return file
+  } catch {
+    if (temporary !== undefined) {
+      try {
+        unlinkSync(temporary)
+      } catch {
+        // The temporary file may never have been created.
+      }
+    }
+    return undefined
+  }
+}
+
+/**
+ * 读 spool 目录：跳过点开头的临时文件，坏 JSON / 不认识的事件 / 坏版本进 `bad`（由调用方隔离），
+ * **不删除任何文件**——删除是负责任的 drain 的最后一步。
+ *
+ * 排序与队列读取同一套规则：`at` 可解析就按它，否则用文件 mtime 派生的 ISO，再按 mtime、文件名决出同刻
+ * 顺序。返回 `{events, bad, error?}`，其中 `events` 是 `[{file, event, eventId?, at, payload, mtime}]`。
+ */
+export async function readHookSpoolEvents({ env = process.env, home, stateDir } = {}) {
+  const result = { events: [], bad: [] }
+  const dir = hookSpoolDir({ env, home, stateDir })
+  if (dir === undefined) return result
+  let names
+  try {
+    names = await readdir(dir)
+  } catch (error) {
+    if (error?.code === 'ENOENT') return result
+    return { ...result, error: messageOf(error) }
+  }
+  const entries = []
+  for (const name of names) {
+    if (!name.endsWith('.json') || name.startsWith('.')) continue
+    const file = join(dir, name)
+    let info
+    try {
+      info = await stat(file)
+    } catch {
+      continue
+    }
+    let parsed
+    try {
+      parsed = JSON.parse(await readFile(file, 'utf8'))
+    } catch (error) {
+      result.bad.push({ file, error: messageOf(error) })
+      continue
+    }
+    if (!isPlainObject(parsed)) {
+      result.bad.push({ file, error: 'the spool entry is not a JSON object' })
+      continue
+    }
+    if (parsed.version !== HOOK_SPOOL_VERSION) {
+      result.bad.push({ file, error: `unsupported spool version ${JSON.stringify(parsed.version)}` })
+      continue
+    }
+    const event = nonEmpty(parsed.event)
+    if (event === undefined || eventById(event) === undefined) {
+      result.bad.push({ file, error: `unknown hook event ${JSON.stringify(parsed.event)}` })
+      continue
+    }
+    if (!isPlainObject(parsed.payload)) {
+      result.bad.push({ file, error: 'the spool entry has no payload object' })
+      continue
+    }
+    const at = String(parsed.at ?? '')
+    const parsedAt = at === '' ? Number.NaN : Date.parse(at)
+    const mtime = info.mtimeMs ?? 0
+    entries.push({
+      file,
+      event,
+      eventId: nonEmpty(parsed.eventId),
+      at,
+      payload: parsed.payload,
+      mtime,
+      sortAt: Number.isFinite(parsedAt) ? new Date(parsedAt).toISOString() : new Date(mtime || 0).toISOString(),
+    })
+  }
+  result.events = entries.sort((left, right) => {
+    const byTime = left.sortAt.localeCompare(right.sortAt)
+    if (byTime !== 0) return byTime
+    if (left.mtime !== right.mtime) return left.mtime - right.mtime
+    return left.file.localeCompare(right.file)
+  })
+  return result
+}
+
+/** 删掉一个 spool 文件（drain 的最后一步）。best effort，返回是否真的删掉了。 */
+export function removeHookSpoolEvent(file) {
+  try {
+    unlinkSync(file)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * 隔离一个坏 spool 文件：rename 成 `<file>.bad`（保留证据、不再重试）。rename 失败就删掉——
+ * 一个永远读不了的文件不能被无限重试。
+ */
+export function quarantineHookSpoolEvent(file) {
+  try {
+    renameSync(file, `${file}.bad`)
+    return `${file}.bad`
+  } catch {
+    removeHookSpoolEvent(file)
+    return undefined
+  }
+}
+
 // --------------------------------------------------------------------- queue
 
 /** 队列根：`$SPV_QUEUE_DIR` → `<stateDir>/spv`。与 `src/spv/paths.js` 同一条规则（那个模块属于 SPV 侧，
@@ -906,7 +1096,9 @@ function threadOfMessage(message) {
  * - 只映射三种 kind；`ticket.started` / `inbox.*` / `spv.dispatch` 不来自队列，安排给 stage 2 的其它
  *   调用点（见 docs/hooks.md 的「stage 2 放在哪」）。
  *
- * 返回 `[{event, eventId, payload, message, file}]`；`payload` 就是脚本会从 stdin 收到的那份。
+ * 返回 `[{event, eventId, payload, message, file}]`；`payload` 就是脚本会从 stdin 收到的那份。负载里的
+ * `file` 是这条消息在磁盘上的路径（`outbox/` 或 `outbox/read/`），脚本可以自己读全文；`text` 在超过
+ * `QUEUE_TEXT_LIMIT` 个 code point 时被截断并带 `textTruncated: true`。
  */
 export async function readQueueEvents({
   root,
@@ -958,11 +1150,18 @@ export async function readQueueEvents({
     })
   const chosen = limit !== undefined && limit >= 0 ? events.slice(0, limit) : events
   return chosen.map(entry => {
+    const text = String(entry.message.text ?? '')
+    // 按 Unicode code point 截断（不是 UTF-16 code unit）：代理对不会被切成半个字符，脚本仍能从 `file`
+    // 读到完整正文。12000 已经远大于一条正常结果，截断只是防止一个输出洪水把 stdin 撑爆。
+    const points = Array.from(text)
+    const truncated = points.length > QUEUE_TEXT_LIMIT
     const payload = {
       messageId: entry.id,
       kind: entry.kind,
-      text: String(entry.message.text ?? ''),
+      text: truncated ? points.slice(0, QUEUE_TEXT_LIMIT).join('') : text,
+      ...(truncated ? { textTruncated: true } : {}),
       thread: threadOfMessage(entry.message),
+      file: entry.file,
       at: entry.atIsValid ? entry.at : entry.sortAt,
     }
     const ticketId = nonEmpty(entry.message.ticketId)
@@ -1008,7 +1207,13 @@ export function buildHookPrompt(eventId, opts = {}) {
     '- 环境变量：`WCA_EVENT`（事件 id）、`WCA_EVENT_ID`（本次 occurrence 的稳定 id，用它做幂等）、',
     '  `WCA_EVENT_AT`、`WCA_HOME`（数据根）、`WCA_TICKET`（有工单时）、`WCA_CWD`（脚本的 cwd）。',
     '  其余环境只有白名单（`PATH`、`HOME`、`LANG`、`LC_*`、`TZ`、`TMPDIR` 等）；凭证类变量一律不传。',
-    `- cwd：${entry.id.startsWith('ticket.') ? '工单的 workspace（`opts.workspace` → payload.workspace → checkout 根）' : 'checkout 根（CLI 传当前目录）'}。`,
+    `- cwd：${
+      entry.id === 'ticket.started'
+        ? '工单的 workspace（`payload.workspace`，prepare 写入）'
+        : entry.id.startsWith('ticket.')
+          ? '队列事件没有 workspace；service runner 用 service 进程的 cwd，CLI 用当前目录'
+          : 'CLI 用当前目录；service runner 用 service 进程的 cwd'
+    }。`,
     `- 超时：默认 ${HOOK_TIMEOUT_DEFAULT} ms，行内 \`timeoutMs\` 优先，硬上限 ${HOOK_TIMEOUT_CAP} ms；超时先 SIGTERM，${KILL_GRACE_MS} ms 后 SIGKILL。`,
     `- 输出：stdout / stderr 各只保留最后 ${OUTPUT_LIMIT / 1024} KiB，写进 \`<数据根>/records/hooks.jsonl\`。失败或超时只记录，**不影响 core path**。`,
     '',

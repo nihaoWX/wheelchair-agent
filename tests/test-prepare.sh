@@ -36,7 +36,7 @@ trap cleanup EXIT
 
 # ---------------------------------------------------------------- fixtures
 
-mkdir -p "$SB/projects/tools" "$SB/projects/research" "$SB/work" "$SB/bin" "$SB/remotes"
+mkdir -p "$SB/projects/tools" "$SB/projects/research" "$SB/work" "$SB/bin" "$SB/remotes" "$SB/home" "$SB/data"
 
 # A project with a commit and a GitHub remote.
 git init -q -b main "$SB/projects/tools/with-remote"
@@ -131,6 +131,7 @@ run() {
       FAKE_GH_LOG="$SB/gh-calls.log" FAKE_GH_REMOTES="$SB/remotes" \
       SPV_PROJECTS_ROOT="$SB/projects" SPV_PREPARE_LOG="$SB/prepare.log" \
       SPV_PREPARE_TEMPLATES="$TEMPLATES" \
+      HOME="$SB/home" WHEELCHAIR_AGENT_HOME="$SB/data" \
       DSH_SUPERAGENT_SPV_PROJECT="$project" DSH_SUPERAGENT_DIR="$SB/work/$name"
     for assignment in "$@"; do export "$assignment"; done   # after the defaults, so a case can override them
     sh "$PREPARE"
@@ -149,18 +150,47 @@ check '(a) ticket origin is the GitHub URL' "$(origin_of "$SB/work/a")" https://
 check '(a) AGENTS.md is the project-development template' \
   "$(same_as "$SB/work/a/AGENTS.md" "$TEMPLATES/proj-dev-agentsmd.md")" yes
 check '(a) the managed AGENTS.md is not in git status' "$(git -C "$SB/work/a" status --porcelain)" ''
+SPOOL=$(find "$SB/data/records/hook-events" -type f -name 'ticket.started-*.json' 2>/dev/null | head -1)
+check '(a) a successful prepare writes one ticket.started spool' "$([ -n "$SPOOL" ] && echo yes || echo no)" yes
+check '(a) the spool names the event' "$(grep -c '"event":"ticket.started"' "$SPOOL")" 1
+check '(a) the spool carries the ticket workspace' \
+  "$(grep -cF "\"workspace\":\"$SB/work/a\"" "$SPOOL")" 1
+
+# (a2) A hook that sleeps for 5s must not delay prepare: prepare only writes the spool, never runs hooks.
+cat > "$SB/data/settings.json" <<SETTINGS
+{"version":1,"revision":0,"values":{},"templates":{},"hooks":{"items":[{"id":"hook-ticket-started-0001","event":"ticket.started","name":"slow","enabled":true,"script":"sleep 5"},{"id":"hook-ticket-started-0002","event":"ticket.started","name":"inline","enabled":true,"script":"touch $SB/data/inline-marker"}]}}
+SETTINGS
+start=$(date +%s%N)
+run tools/with-remote a2
+check '(a2) exit status' "$?" 0
+end=$(date +%s%N)
+elapsed=$(( (end - start) / 1000000 ))
+check '(a2) a configured 5s hook does not delay prepare' "$([ "$elapsed" -lt 2000 ] && echo yes || echo no)" yes
+check '(a2) the hook was not run inline' "$([ -e "$SB/data/inline-marker" ] && echo present || echo absent)" absent
+check '(a2) the success wrote another spool entry' \
+  "$(find "$SB/data/records/hook-events" -type f -name 'ticket.started-*.json' | wc -l | tr -d ' ')" 2
+
+# (a3) A multi-line name with quotes/backslashes on later lines must still produce valid JSON.
+MULTILINE_NAME=$(printf 'line1 "q" \\ s\nline2 "q2" \\ s2')
+run tools/with-remote a3 "DSH_SUPERAGENT_NAME=$MULTILINE_NAME"
+check '(a3) exit status' "$?" 0
+A3_SPOOL=$(grep -l '"ticketId":"a3"' "$SB/data/records/hook-events"/*.json 2>/dev/null | head -1)
+check '(a3) the multi-line name produces valid JSON' \
+  "$(node -e 'const fs=require("fs"); const j=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); process.stdout.write(String(j.payload.name).includes("line2")?"yes":"no")' "$A3_SPOOL" 2>/dev/null || echo no)" yes
 
 # (b) tools project with no remote, dry run: nothing is created.
-run tools/no-remote b SPV_PREPARE_DRY_RUN=1
+run tools/no-remote b SPV_PREPARE_DRY_RUN=1 WHEELCHAIR_AGENT_HOME="$SB/data-dry"
 check '(b) exit status' "$?" 0
+check '(b) a dry run writes no hook spool' "$([ -e "$SB/data-dry/records/hook-events" ] && echo present || echo absent)" absent
 check '(b) the project still has no remote' "$(git -C "$SB/projects/tools/no-remote" remote)" ''
 check '(b) the ticket origin is still the local path' "$(origin_of "$SB/work/b")" "$SB/projects/tools/no-remote"
 check '(b) the dry run names the repository it would create' \
   "$(grep -c 'would create the PRIVATE repository testowner/no-remote' "$SB/stderr")" 1
 
 # (b2) tools project with no .git, dry run: nothing is initialised.
-run tools/no-git b2 SPV_PREPARE_DRY_RUN=1
+run tools/no-git b2 SPV_PREPARE_DRY_RUN=1 WHEELCHAIR_AGENT_HOME="$SB/data-dry2"
 check '(b2) exit status' "$?" 0
+check '(b2) a dry run writes no hook spool' "$([ -e "$SB/data-dry2/records/hook-events" ] && echo present || echo absent)" absent
 check '(b2) the project still has no .git' "$([ -d "$SB/projects/tools/no-git/.git" ] && echo present || echo absent)" absent
 
 # (b3) tools project with no remote, real path against the fake gh: a PRIVATE repository is created,
@@ -281,7 +311,8 @@ for tool in git sh cp mkdir rm ls grep cmp cat date dirname basename tr head cut
 done
 (
   export PATH="$SB/no-rsync"
-  export GIT_CONFIG_GLOBAL="$SB/gitconfig" SPV_PROJECTS_ROOT="$SB/projects" \
+  export HOME="$SB/home" WHEELCHAIR_AGENT_HOME="$SB/data-n" \
+    GIT_CONFIG_GLOBAL="$SB/gitconfig" SPV_PROJECTS_ROOT="$SB/projects" \
     SPV_PREPARE_LOG="$SB/prepare.log" SPV_PREPARE_TEMPLATES="$TEMPLATES" \
     DSH_SUPERAGENT_SPV_PROJECT=research/no-git-task DSH_SUPERAGENT_DIR="$SB/work/n"
   sh "$PREPARE"
@@ -351,17 +382,22 @@ check '(s1) exit status' "$?" 0
     FAKE_GH_LOG="$SB/gh-calls.log" FAKE_GH_REMOTES="$SB/remotes" \
     SPV_PROJECTS_ROOT="$SB/projects" SPV_PREPARE_LOG="$SB/prepare.log" \
     SPV_PREPARE_TEMPLATES="$TEMPLATES" \
+    HOME="$SB/home" WHEELCHAIR_AGENT_HOME="$SB/data-s2" \
     DSH_SUPERAGENT_SPV_PROJECT=tools/with-remote/ DSH_SUPERAGENT_DIR=relative-ticket
   sh "$PREPARE"
 ) 2>"$SB/stderr"
 check '(s2) a trailing slash is tolerated' "$?" 0
+check '(s2) the relative-ticket run writes its spool under the sandbox data root' \
+  "$(find "$SB/data-s2/records/hook-events" -type f -name 'ticket.started-*.json' 2>/dev/null | wc -l | tr -d ' ')" 1
 check '(s2) a relative ticket directory resolves from the cwd' \
   "$(origin_of "$SB/work/relative-ticket")" https://github.com/testowner/with-remote.git
 
 # (k) a missing template fails at agentsmd instead of leaving the Ticket without rules.
-run tools/with-remote k SPV_PREPARE_TEMPLATES=/nonexistent
+run tools/with-remote k SPV_PREPARE_TEMPLATES=/nonexistent WHEELCHAIR_AGENT_HOME="$SB/data-fail"
 check '(k) exit status' "$?" 1
 check '(k) the failure names the step' "$(grep -c 'FAILED at agentsmd' "$SB/stderr")" 1
+check '(k) a failed prepare writes no hook spool' \
+  "$([ -e "$SB/data-fail/records/hook-events" ] && echo present || echo absent)" absent
 
 # (t) the default log is under the data root; the old log is moved there once and stays readable on failure.
 mkdir -p "$SB/state"

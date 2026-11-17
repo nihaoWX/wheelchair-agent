@@ -385,21 +385,26 @@ Block nesting is capped so a hostile body cannot exhaust the stack.
 
 ## Self-contained installed package
 
-`install.sh` copies this package into the profile's `node_modules` **and** copies the six core
+`install.sh` copies this package into the profile's `node_modules` **and** copies the core
 files it imports from the checkout:
 
 ```
-src/spv/inbox.js       -> lib/core/inbox.js
-src/spv/dispatch.js    -> lib/core/dispatch.js
-src/spv/paths.js       -> lib/core/paths.js
-src/shared/home.js     -> lib/shared/home.js
-src/shared/queue.js    -> lib/shared/queue.js
-src/shared/settings.js -> lib/shared/settings.js
+src/spv/inbox.js          -> lib/core/inbox.js
+src/spv/dispatch.js       -> lib/core/dispatch.js
+src/spv/hook-runner.js    -> lib/core/hook-runner.js
+src/spv/paths.js          -> lib/core/paths.js
+src/shared/home.js        -> lib/shared/home.js
+src/shared/hook-events.js -> lib/shared/hook-events.js
+src/shared/hooks.js       -> lib/shared/hooks.js
+src/shared/queue.js       -> lib/shared/queue.js
+src/shared/settings.js    -> lib/shared/settings.js
 ```
 
 The relative imports line up (`inbox.js` imports `./dispatch.js`, `./paths.js`,
-`../shared/queue.js`, `../shared/settings.js`, `../shared/home.js`; `settings.js` imports
-`./home.js`), so the installed package is self-contained: replacing
+`../shared/queue.js`, `../shared/hooks.js`, `../shared/settings.js`, `../shared/home.js`;
+`hook-runner.js` imports `./paths.js`, `../shared/hooks.js`, `../shared/queue.js`;
+`hooks.js` imports `./home.js`, `./queue.js`, `./settings.js`, `./hook-events.js`), so the
+installed package is self-contained: replacing
 `~/.dsh/.agent-presets/spv/` (for example, another worktree running its own `install.sh`) can no
 longer break the plugin's import, and the next service restart keeps working.
 
