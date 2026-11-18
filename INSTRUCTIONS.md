@@ -85,6 +85,8 @@ cli + 插件，插件是为了与dsh/dsh-superagent接入，通常是薄入口�
 # spv配置
 在普通dsh会话的工具列表之上增加spv工具，skill和其他新增工具均与普通dsh一样正常加载
 
+- 系统提示词与普通dsh一致，不要额外写任何的关于wheelchair-agent或spv的提示词注入给spv，因为关于spv的概念用户已经在`AGENTS.md`交代了，无需多余内容
+
 ## spv工具
 - `spv_dispatch`: 派遣worker，派遣信息发送给orchestrator，orchestrator真正派遣worker。可以选择preset，preset指的是dsh的preset，内置有普通模式，创造模式等。
 - `spv_status`: 获取状态
