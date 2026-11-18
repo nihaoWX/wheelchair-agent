@@ -41,11 +41,16 @@
 #      (an independent dsh web client plugin whose inbox core is copied in, so a preset replacement
 #       by another worktree cannot break it; its loader row is appended to the profile patch)
 #   3. the CLI               -> ~/.local/bin/wheelchair-agent   (the one entry point)
+#      the Rust core binary  -> ~/.local/bin/wheelchair-agent-core (planWork's single implementation)
 #   4. compatibility names   -> ~/.local/bin/{spv,superagent-service,jobctl}
 #      (thin wrappers: `exec wheelchair-agent <subcommand> "$@"`)
 #   5. the data root          -> $WHEELCHAIR_AGENT_HOME, else ~/.wheelchair-agent
 #      (settings.json, inbox/, records/, logs/; created empty and never deleted. The superagent
 #       state directory still owns the spv/ queue and work/ root: that is the interface, not our data.)
+#
+# The Rust planner runs as a separate process (`wheelchair-agent-core`, installed next to the thin
+# shell), because that keeps a Rust panic from aborting the service or SPV session. install.sh never runs
+# cargo: a missing artifact is a loud failure naming `bash build/build-core.sh`.
 #
 # Design rules (references/tool-install.md):
 #   - nothing is hard-coded to one machine: paths derive from $HOME and this script's own directory;
@@ -79,6 +84,11 @@ SERVICE_PORT=${SPV_SERVICE_PORT:-3082}
 SERVICE_URL=${DSH_SUPERAGENT_URL:-http://127.0.0.1:$SERVICE_PORT}
 DATA_ROOT=${WHEELCHAIR_AGENT_HOME:-$HOME/.wheelchair-agent}
 LEGACY_STATE_DIR=${DSH_SUPERAGENT_STATE_DIR:-$DSH_HOME_DIR/state/superagent}
+# The planner binary `src/shared/work.js` spawns. A checkout runs the artifact directly; an installed
+# preset finds the copy on PATH.
+CORE_ARTIFACT_REL=build/artifacts/wheelchair-agent-core-linux-x64
+CORE_ARTIFACT=$SELF_DIR/$CORE_ARTIFACT_REL
+CORE_BIN=$BIN_DIR/wheelchair-agent-core
 
 CHECK=0
 for arg in "$@"; do
@@ -199,6 +209,17 @@ require_python3() {
 }
 
 # ------------------------------------------------------------------- rendering
+
+# The Rust planner is required, not optional: `src/shared/work.js` throws without it and there is no
+# JavaScript fallback. install.sh does not build it (that needs cargo); it only reports the exact fix.
+require_core_artifact() {
+  if [ -f "$CORE_ARTIFACT" ]; then
+    return 0
+  fi
+  fail "the Rust core binary is not built ($CORE_ARTIFACT)"
+  fix 'run: bash build/build-core.sh'
+  return 1
+}
 
 # Render the preset into $1.
 #
@@ -533,6 +554,34 @@ check_jobctl() {
 
 render_service_wrapper() { render_wrapper "$1" service; }
 render_jobctl_wrapper() { render_wrapper "$1" jobctl; }
+
+# Stage the planner binary for `install_bin`; it is copied verbatim and made executable.
+render_core_binary() {
+  local dest=$1
+  require_core_artifact || return 1
+  cp "$CORE_ARTIFACT" "$dest" || return 1
+  chmod 0755 "$dest"
+}
+
+check_core_binary() {
+  require_core_artifact || return
+  if [ ! -f "$CORE_BIN" ]; then
+    fail "the Rust core binary is not installed at $CORE_BIN"
+    fix 'run: bash tools/wheelchair-agent/install.sh'
+    return
+  fi
+  if [ ! -x "$CORE_BIN" ]; then
+    fail "the Rust core binary at $CORE_BIN is not executable"
+    fix "run: chmod 0755 $CORE_BIN"
+    return
+  fi
+  if cmp -s "$CORE_ARTIFACT" "$CORE_BIN"; then
+    ok "core binary matches this checkout ($CORE_BIN)"
+  else
+    fail "the Rust core binary at $CORE_BIN differs from this checkout"
+    fix 'run: bash tools/wheelchair-agent/install.sh'
+  fi
+}
 
 # The first running superagent service PID, or empty.
 #
@@ -880,6 +929,7 @@ if [ "$CHECK" -eq 1 ]; then
   check_launcher
   check_service
   check_jobctl
+  check_core_binary
   check_service_path
   if [ "$PROBLEMS" -gt 0 ]; then
     printf '\n%d check(s) failed.\n' "$PROBLEMS"
@@ -912,6 +962,11 @@ if [ -n "$SERVICE_PIDS" ] || [ -n "$SPV_PIDS" ]; then
   refuse_install
 fi
 
+if ! require_core_artifact; then
+  printf '\n1 problem(s) blocked the install.\n'
+  exit 1
+fi
+
 if ! create_data_root; then
   printf '\n1 problem(s) blocked the install.\n'
   exit 1
@@ -924,6 +979,7 @@ install_preset
 install_webui
 ensure_webui_loader
 install_bin "$CLI" render_cli
+install_bin "$CORE_BIN" render_core_binary
 install_bin "$LAUNCHER" render_launcher
 install_bin "$SERVICE" render_service_wrapper
 install_bin "$JOBCTL" render_jobctl_wrapper

@@ -164,6 +164,8 @@ set_state
 run_install
 check '(2) the cold install exits 0' "$?" 0
 check '(2) the preset landed' "$([ -f "$SB/dsh/.agent-presets/spv/preset.yml" ] && echo yes || echo no)" yes
+check '(2) the Rust core binary landed' \
+  "$([ -x "$SB/local-bin/wheelchair-agent-core" ] && echo yes || echo no)" yes
 check '(2) the CLI landed' "$([ -x "$SB/local-bin/wheelchair-agent" ] && echo yes || echo no)" yes
 check '(2) the webui package landed' \
   "$([ -f "$SB/dsh/profiles/superagent/node_modules/wheelchair-agent-webui/package.json" ] && echo yes || echo no)" yes
@@ -300,6 +302,20 @@ check '(10) a relative data root exits 1' "$?" 1
 check '(10) the failure names the absolute-path rule' \
   "$(grep -c 'WHEELCHAIR_AGENT_HOME must be an absolute path' "$SB/stdout")" 1
 check '(10) the relative install changed nothing' "$(install_snapshot)" "$before"
+
+# (11) --check compares the installed core binary with the checkout: stale is exit 2, a rerun repairs it.
+set_state
+run_install
+check '(11) the pre-tamper install exits 0' "$?" 0
+printf 'stale' >> "$SB/local-bin/wheelchair-agent-core"
+run_install --check
+check '(11) --check exits 2 on a stale core binary' "$?" 2
+check '(11) --check reports the core binary differs' \
+  "$(grep -c 'the Rust core binary at .* differs from this checkout' "$SB/stdout")" 1
+run_install
+check '(11) the repairing cold install exits 0' "$?" 0
+run_install --check
+check '(11) --check is clean after the repair' "$?" 0
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
