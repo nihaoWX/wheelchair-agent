@@ -208,7 +208,7 @@ require_python3() {
 # and it never enters the preset directory (ARCHITECTURE/layout.md).
 #
 # prepare.sh and the two AGENTS.md templates are installed here because the panel's prepare command runs
-# from a user-level path, not from this development tree (ARCHITECTURE/delivery.md, constraint 6).
+# from a user-level path, not from this development tree (ARCHITECTURE/preset.md, constraint 6).
 render_into() {
   local dest=$1 file
   if ! mkdir -p "$dest/src/shared" "$dest/src/spv" "$dest/commands" "$dest/agentsmd-examples"; then

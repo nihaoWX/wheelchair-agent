@@ -79,7 +79,7 @@ superagent 的 sqlite**，而 `install.sh` 管不到它——它只 `printf` 一
 
 - 换 `DSH_HOME`、换用户名、换 preset 目录 → 面板值静默失效，**每个工单都在 prepare 阶段失败**
 - 重装不会修好它，因为重装只是又打印一遍
-- `ARCHITECTURE/delivery.md` 里那句"已通过管理 API 保存"是 worker 当时手动存的一次性动作，不是
+- 当时那句"已通过管理 API 保存"是 worker 手动存的一次性动作，不是
   `install.sh` 的行为
 
 绝对路径本来没必要：`PATH` 是继承的。改成命令名后，面板值变成机器无关的常量，设一次就够。

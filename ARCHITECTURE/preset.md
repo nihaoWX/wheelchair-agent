@@ -70,8 +70,20 @@ superagent 的 sqlite 里，`install.sh` 管不到它，绝对路径会在换 `D
 `install.sh --check` 会读服务进程的 `/proc/<pid>/environ`，确认 `~/.local/bin` 在那个 PATH 里。
 
 `prepare` 负责 clone 项目、按项目类型装受管 `AGENTS.md`、给 `tools/` 项目建私有 GitHub 远端并把工单的
-`origin` 指过去；`research/` 永不配远端。行为与约束见 `ARCHITECTURE/delivery.md`，可跑证据是
-`tests/test-prepare.sh`。
+`origin` 指过去；`research/` 永不配远端。可跑证据是 `tests/test-prepare.sh`。
+
+### 受管 `AGENTS.md` 与私有远端的六条约束
+
+`prepare` 会创建外部状态（远端仓库），也会覆盖 `AGENTS.md`，所以它的行为不是可选项：
+
+1. 补齐远端时**只建 PRIVATE**，永不创建公开仓库。
+2. 创建远端属于外部状态，必须可追溯：仓库名、可见性、归属都要有确定来源；失败要说清哪一步没成，
+   不许"继续往下走"。
+3. `research/<name>` 是 local-only：永不给它配远端、永不 push。脚本必须能区分"该有远端"与"不该有"，
+   不能对所有缺 remote 的项目一视同仁。
+4. 每张工单的工作副本都带一份与项目类型匹配的 `AGENTS.md`（worker 读不到工作区根目录的约定）。
+5. 那份 `AGENTS.md` 是受管的：**缺失即补、过期即覆盖**，不做合并——否则旧副本会长期压过新规则。
+6. 模板来自**已安装**的 preset（`~/.dsh/.agent-presets/spv/agentsmd-examples/`），不写死开发树路径。
 
 前置：`dsh-tui` 在 `PATH` 上、`node` >= 22、`python3`（服务管理与冷安装探测）。缺了 `install.sh` 会 FAIL
 并给获取方式。

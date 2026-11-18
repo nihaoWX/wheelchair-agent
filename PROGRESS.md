@@ -32,7 +32,8 @@
 
 - **HARNESS 整理（第二批次）**：`docs/{hooks,restart,spv-source,work-gc}.md`、`preset/README.md`、
   `webui/README.md` 全部移入 `ARCHITECTURE/`（webui 拆成 `index/settings/hooks/screenshots`）；
-  被删的 `docs/delivery-target.md` 以原文复活为 `ARCHITECTURE/delivery.md`；新增 `boundaries.md`；
+  操作者删掉的 `docs/delivery-target.md` 不再保留副本，其中仍然成立的六条约束落进 `ARCHITECTURE/preset.md`；
+  新增 `boundaries.md`；
   `ARCHITECTURE.md` 13.9KB → 5.4KB，细节全部下沉到分册；`layout.md` 补「当前目录布局」并修正
   「两个路由」的旧说法；仓库内旧路径引用全部重指（17 个文件、`src/` 与 `install.sh`、`commands/prepare.sh`、`tests/`、`ARCHITECTURE/` 都有），`webui/package.json` 去掉已不存在的 README；
   `AGENTS.md` 的 `<20kb` 改为 `<10kb`；R2 历史夹具的路径与本仓现状对齐。证据：`npm test` 全绿。

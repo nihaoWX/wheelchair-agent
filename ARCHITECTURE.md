@@ -38,7 +38,7 @@
 | spv Source（本机队列接入 superagent）与数据根边界 | `ARCHITECTURE/spv-source.md` |
 | 票目录回收（`work gc`）与挂载时的自动回收 | `ARCHITECTURE/work-gc.md` |
 | SPV preset 怎么装/起/用、标准工具从哪来、模块解析、superagent profile 配置现状 | `ARCHITECTURE/preset.md` |
-| 交付目标：仓库随项目走、受管 `AGENTS.md` | `ARCHITECTURE/delivery.md` |
+| 交付目标：仓库随项目走、受管 `AGENTS.md` 的六条约束 | `ARCHITECTURE/preset.md` |
 | 已定型的结论（每条附证据，**勿重新推导**） | `ARCHITECTURE/decisions.md` |
 | 已踩过的坑（一条一个问题） | `docs/PITFALLS/` |
 | superagent 设计文档（9 篇） | `docs/repositories/dsh-superagent-prototype/docs/` |

@@ -13,7 +13,7 @@ R2 的结论是「配置层消不掉这个单值，方向定为给 worker 一份
     不覆盖）在族3。
 族3 同名变量不覆盖、只并排渲染两行（R2-F1）：调 `environmentLines()` 传两个同键变量，断言输出
     两行、两行都带该键。这是「让 spv 声明同名变量」那条路走不通的机械依据。
-族4 已定方向的材料还在（R2-F1）：`ARCHITECTURE/delivery.md` 记着方向，两份模板都在，研究任务模板的
+族4 已定方向的材料还在（R2-F1）：`ARCHITECTURE/preset.md` 记着方向，两份模板都在，研究任务模板的
     `GIT` 一节明写 local-only。
 
 族1 / 族2 / 族3 要读本机上的兄弟目录（`bioagentforge` 根、上游 `~/opt/dsh-plugins/dsh-superagent`），工单目录是
@@ -32,7 +32,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parents[3]                       # round-data/R2 → PITFALLS → docs → wheelchair-agent
 TEMPLATES = REPO / "docs" / "agentsmd-examples"
-DELIVERY = REPO / "ARCHITECTURE" / "delivery.md"
+DELIVERY = REPO / "ARCHITECTURE" / "preset.md"
 
 FAILS = []
 
@@ -188,10 +188,10 @@ def family3():
 # 族 4：已定方向的材料还在（R2-F1）
 # --------------------------------------------------------------------------- #
 def family4():
-    need(DELIVERY.is_file(), f"ARCHITECTURE/delivery.md 不存在：{DELIVERY}")
+    need(DELIVERY.is_file(), f"ARCHITECTURE/preset.md 不存在：{DELIVERY}")
     text = DELIVERY.read_text(encoding="utf-8", errors="replace")
     need("AGENTS.md" in text and "受管" in text,
-         "ARCHITECTURE/delivery.md no longer records the settled direction (a managed AGENTS.md telling the "
+         "ARCHITECTURE/preset.md no longer records the settled direction (a managed AGENTS.md telling the "
          "worker whether this project should be pushed): R2's finding is a suggestion whose value is that "
          "decision record — if the direction changed, the ledger entry must change with it")
     for name in ("proj-dev-agentsmd.md", "research-task-agentsmd.md"):

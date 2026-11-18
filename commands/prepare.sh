@@ -10,7 +10,7 @@
 #      clone at it, so a worker's `git push` and `gh pr create` reach the project, not the panel's
 #      configured repository.
 #
-# The six binding constraints are in ARCHITECTURE/delivery.md:
+# The six binding constraints (also recorded in ARCHITECTURE/preset.md):
 #   1. a repository this script creates is PRIVATE, never public;
 #   2. creating a remote is external state, so it is logged (name, visibility, owner) and a failure
 #      names the step that failed instead of continuing;
