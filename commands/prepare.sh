@@ -10,7 +10,7 @@
 #      clone at it, so a worker's `git push` and `gh pr create` reach the project, not the panel's
 #      configured repository.
 #
-# The six binding constraints are in docs/delivery-target.md:
+# The six binding constraints are in ARCHITECTURE/delivery.md:
 #   1. a repository this script creates is PRIVATE, never public;
 #   2. creating a remote is external state, so it is logged (name, visibility, owner) and a failure
 #      names the step that failed instead of continuing;
@@ -381,7 +381,7 @@ fi
 
 # --- hook spool: ticket.started ---------------------------------------------------------------
 #
-# The service-side hook runner is the only executor (see docs/hooks.md). prepare never runs a hook
+# The service-side hook runner is the only executor (see ARCHITECTURE/hooks.md). prepare never runs a hook
 # inline: it writes one atomic JSON file under <data root>/records/hook-events/ and exits, so a slow
 # or failing script can never delay or fail a Ticket. Pure POSIX sh: no node, no python.
 json_escape() {

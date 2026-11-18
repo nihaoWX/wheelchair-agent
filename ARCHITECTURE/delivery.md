@@ -168,3 +168,25 @@ UTC 时间 + 仓库名 + 归属 + 可见性。旧的 `<DSH_HOME>/state/superagen
 | prepare 命令本体 | `commands/prepare.sh` |
 | prepare 命令的可跑证据 | `tests/test-prepare.sh`（`sh tests/test-prepare.sh`，77 条断言） |
 | superagent 的交付契约与合并规则 | `~/opt/dsh-plugins/dsh-superagent/prompts/work.md`、`~/opt/dsh-plugins/dsh-superagent/prompts/team/delivery.md` |
+
+---
+
+## 关键机制：AGENTS.md 的隔离靠 `.git`
+
+DSH 的 `dsh-agent-instructions` 这样找规则文件：
+
+```js
+findProjectRoot(cwd, markers=[".git"])   // 从 cwd 向上找第一个含 .git 的目录
+ancestorChain(projectRoot, cwd)          // 该目录到 cwd 的整条链
+// 链上每个目录的 AGENTS.md 全部加载（从宽到窄）
+```
+
+**实测结论**（`/tmp/agents-test`）：
+
+| cwd | 加载的 AGENTS.md |
+|---|---|
+| `bioagentforge/`（根有 `.git`） | 只有根版 |
+| `.../tools/proj/`（自带 `.git`） | **只有 proj 版，根版不加载** |
+
+所以 2026-11-11 把 `tools/` 下 20 个目录全部拆成独立 git 仓库，正是为了让"项目 worker 只读自己项目的规则"
+成立，而不是靠提示词约定。

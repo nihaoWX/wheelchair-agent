@@ -1,7 +1,7 @@
 /**
  * `wheelchair-agent hook ...` 的实现：插口（hook）表的打印、增删改、试跑、日志与中文提示词。
  *
- * 契约见 `docs/hooks.md`，事件表在 `src/shared/hook-events.js`，执行器在 `src/shared/hooks.js`。
+ * 契约见 `ARCHITECTURE/hooks.md`，事件表在 `src/shared/hook-events.js`，执行器在 `src/shared/hooks.js`。
  * 本文件只做**命令逻辑**：不 `process.exit`（退出码由 `bin/wheelchair-agent.mjs` 决定），也不 import
  * 任何 dsh 包（`tests/test-layout.sh` 规则 3）。
  *

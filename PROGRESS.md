@@ -20,12 +20,24 @@
 **服务**：当前跑在用户级瞬时 unit `wca-svc.service`（app.slice，不在任何 logind session scope 里），
 不是从终端直接起的 tmux server。`wheelchair-agent service stop/start` 会把它拉回调用者 scope，慎用。
 
-**插口（hooks）**：stage 1（`#28`, `27d4463`）与 stage 2（`#29`, main `2788bbc`）已合并：事件表、
-引擎、设置块、CLI、runner 与八个事件的接线都在。stage 3 面板「插口」已在本票实现（PR 待审）：事件含义/
-行/最近 5 次执行/可复制的 `hook prompt`，内建行改名仍走 revision 检查的同一 PUT；面板不执行脚本。
+**插口（hooks）**：stage 1（`#28`, `27d4463`）、stage 2（`#29`, `2788bbc`）、stage 3 面板「插口」
+（`#30`, main `35be1f5`）都已合并；新 host 需要一次冷安装才带 `hookView` 与第三段。
+
+**HARNESS 结构**：构建规则只在 `ARCHITECTURE` 里。`ARCHITECTURE.md`（5.4KB）只留定义 + 分册索引 +
+角色与信息流；分册为 `boundaries` / `cli` / `layout` / `decisions` / `hooks` / `restart` / `spv-source` /
+`work-gc` / `preset` / `delivery` / `webui/{index,settings,hooks,screenshots}`。`docs/` 只剩
+`PITFALLS/`、`setup/`、`agentsmd-examples/`。`INSTRUCTIONS.md`（操作者维护、最高权威）已存在但未入 git。
 
 # Completed
 
+- **HARNESS 整理（第二批次）**：`docs/{hooks,restart,spv-source,work-gc}.md`、`preset/README.md`、
+  `webui/README.md` 全部移入 `ARCHITECTURE/`（webui 拆成 `index/settings/hooks/screenshots`）；
+  被删的 `docs/delivery-target.md` 以原文复活为 `ARCHITECTURE/delivery.md`；新增 `boundaries.md`；
+  `ARCHITECTURE.md` 13.9KB → 5.4KB，细节全部下沉到分册；`layout.md` 补「当前目录布局」并修正
+  「两个路由」的旧说法；仓库内旧路径引用全部重指（17 个文件、`src/` 与 `install.sh`、`commands/prepare.sh`、`tests/`、`ARCHITECTURE/` 都有），`webui/package.json` 去掉已不存在的 README；
+  `AGENTS.md` 的 `<20kb` 改为 `<10kb`；R2 历史夹具的路径与本仓现状对齐。证据：`npm test` 全绿。
+- **插口 stage 3（`#30`,`35be1f5`）**：面板第三段「插口」——事件含义/行/最近 5 次执行/可复制的
+  `hook prompt`，内建行改名走 revision 检查的同一 PUT，面板不执行脚本。
 - **面板（`#27`）**：960→1200px 共用宽度变量；收件箱去掉 104px 日期栏、时间进每封信；`fluid` 重做材质
   （色调洗 + 发丝边 + 两层阴影 + 挂载即播的错峰入场），`minimal` 严格静止。
 - **插口 stage 1（`#28`, `27d4463`）**：8 个事件 id、7 条内建行、脚本执行（stdin JSON + `WCA_*` 白名单、
@@ -48,9 +60,7 @@
 
 # In Progress
 
-- **hooks stage 3**（ticket `29ffe928`，thread `hooks`）：面板第三个功能段「插口」——渲染事件表与
-  内建/自定义行、最近 5 次执行、`hook prompt` 原文；内建行改名复用 `PUT /wheelchair-settings` 的
-  revision 检查。PR 待审。
+（无。冷安装等操作者：`service stop` → 退出 SPV → `bash install.sh` → `service start` → `wheelchair-agent spv`。）
 
 # Known Issues
 
@@ -65,11 +75,14 @@
   拆分前必须先改 `tests/docs.spec.ts` 里硬编码的 `docs/007-architecture.md` 路径。
 - **两个新压缩设置是 API-only**：dsh-superagent 的 `src/client/eval.tsx` 没有 `compactRatio` / `compactMinIntervalMs` 的输入项。
 - **"待冷安装"没有自我清除机制**：每次 install 仓库合并都会排一封 notice，即使几分钟后就装了。
+- **HARNESS 里仍有 23 处规则重述**（冷安装契约 4 份、面板必须是真包 4 份、`hooks.md` 与
+  `ARCHITECTURE/webui/hooks.md` 互相重述）：移动已完成，去重是下一件事，优先级低于功能；动之前先看是否某处已有更权威的一份。
+- **`hooks.md` / `restart.md` 各 28KB 单文件**：同为单主题，暂不拆；要拆的切点在「执行契约」与
+  「Releasing a stuck session」之前。
 
 # Next Steps
 
-1. hooks stage 3 PR 回来 → 审 diff / CI 绿 → 合并；合并后按面板提示做一次正常冷安装，新 host 才会带
-   `hookView` 与第三段。
+1. 操作者执行一次冷安装（`#29`/`#30` 需要新 host 才生效）。
 2. 重派 `service-detach`（带禁令），并把 `service open` 作为最后一步并入 `/restart-wheelchair-agent`
    （`src/spv/restart.js` + `tests/test-restart.mjs`，见 `docs/PITFALLS/dsh-web-panel-token-is-per-instance.md`
    的「改法」一节）。

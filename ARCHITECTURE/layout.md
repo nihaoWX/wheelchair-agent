@@ -36,14 +36,12 @@ wheelchair-agent/
 │       └── cron-plugin.js        # 插件入口：`/spv-cron` 薄壳
 ├── webui/                        # 独立 dsh web client 包 wheelchair-agent-webui
 │   ├── package.json              # dsh.client + exports ".", "./client", "./package.json"
-│   ├── lib/index.js              # host 半身：两个 /wheelchair-inbox/* JSON 路由
+│   ├── lib/index.js              # host 半身：/wheelchair-inbox/* 与 /wheelchair-settings JSON 路由
 │   ├── lib/client.js             # 手写预构建 bundle：功能宿主 + 收件箱面板 + 自带 Markdown 渲染器
-│   └── README.md                 # 为什么独立、怎么加载、怎么加 section
 ├── preset/                       # 原 dsh/：装到 ~/.dsh/.agent-presets/spv/
 │   ├── preset.yml
 │   ├── agent.cordis.yml          # 工具面 + compaction 组
 │   ├── spv-launcher.sh           # 启动器模板（先拉起服务，再开 TUI）
-│   └── README.md                 # 原 dsh/README.md
 ├── commands/                     # 会被装成独立命令的实现
 │   ├── prepare.sh                # 面板 prepare 命令的实现（保持 sh，见下）
 │   ├── jobctl.py
@@ -151,3 +149,37 @@ host 半身 `lib/index.js` 在 profile 里运行，**可以** import dsh 服务�
 2. **`preset/wheelchair-agent.sh` 是 CLI 薄壳的模板**，与 `spv-launcher.sh` 同样用 `@SPV_HOME@` 占位符。
    安装后它是 `~/.local/bin/wheelchair-agent`，内容是 `exec node <preset>/cli.js "$@"`。不用软链：preset
    目录是原子替换的，软链会短暂指向不存在的路径。
+
+---
+
+# 当前目录布局（2026-11 现状；以上是 11-14 的定案记录）
+
+**布局与三条机械可查的规则见 `ARCHITECTURE/layout.md`（`tests/test-layout.sh` 逐条断言）。**
+`src/` 已按 `shared/` `superagent/` `spv/` 三分，边界在布局上一眼可见。
+
+```
+wheelchair-agent/
+├── bin/wheelchair-agent.mjs      # CLI 入口：argv 解析 + process.exit，仅此
+├── src/shared/                   # 两侧共用、纯 Node builtins（home, queue, schema, settings, work, hooks, hook-events）
+├── src/superagent/               # 只被 superagent profile 加载（spv.js 定义 Source kind，watch.js 跑轮询）
+├── src/spv/                      # 只被 SPV preset 与 CLI 加载（paths, dispatch, outbox, injector, health,
+│                                 #   inbox, cron, tools, cron-plugin, check, hook, restart, restart-ux,
+│                                 #   restart-command, session）
+├── preset/                       # 装到 ~/.dsh/.agent-presets/spv/（preset.yml, agent.cordis.yml, spv-launcher.sh）
+├── commands/                     # 会被装成独立命令的实现（prepare.sh, jobctl.py, superagent-service.py）
+├── webui/                        # 独立 dsh web client 包 wheelchair-agent-webui（装进 superagent profile，见下）
+├── build/                        # 构建步骤，不是命令（render-preset.mjs, refusal-notice.mjs）
+├── tests/                        # 12 套离线证据，清单见 ARCHITECTURE/layout.md（CI 逐个跑）
+├── install.sh                    # 只负责安装（冷安装，契约见 ARCHITECTURE/layout.md）
+├── ARCHITECTURE.md ARCHITECTURE/  # 定义 + 索引 + 分册（构建规则只允许记在这里）
+└── docs/                         # 只剩 PITFALLS/、setup/、agentsmd-examples/
+```
+
+安装布局：preset 目录是「SPV 侧的已安装包」（含 `cli.js`、`src/{shared,spv}/`、`commands/`、`prepare.sh`），
+`~/.local/bin/wheelchair-agent` 是薄壳，`spv` / `superagent-service` / `jobctl` 是它的兼容名。
+superagent 侧的 `src/superagent/` **从不进 preset 目录**：那个 profile 用自己的 `node_modules` 软链加载它。
+`webui/` 是**第四种安装目标**：`install.sh` 把包拷进 `~/.dsh/profiles/superagent/node_modules/wheelchair-agent-webui/`，
+并往该 profile 的 `cordis.patch.yml` 追加一行 loader（见下）。
+
+**`install.sh` 的契约在 `ARCHITECTURE/layout.md`**：只做冷安装（服务或活着的 SPV 会话占着目标就 `exit 3` 并写一条
+notice）、`--check` 只读地比"装进去的 == checkout"（过期 `exit 2`）、**拷贝不软链**、暂存后原子替换、幂等。

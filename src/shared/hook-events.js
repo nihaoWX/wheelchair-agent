@@ -3,7 +3,7 @@
  * 以及它有哪些**内建行**（core path 拥有的行，永远不可取消）。
  *
  * 这是唯一实现：`src/shared/hooks.js` 执行它、`src/spv/hook.js` 打印它、`hook prompt` 从它生成中文提示词、
- * stage 3 的面板也读它（见 `docs/hooks.md`）。**不要在任何地方抄第二份**——一个事件的说明只写在这里。
+ * stage 3 的面板也读它（见 `ARCHITECTURE/hooks.md`）。**不要在任何地方抄第二份**——一个事件的说明只写在这里。
  *
  * 为什么单独一个文件、而不是塞进 `hooks.js`：设置存储（`src/shared/settings.js`）在保存时必须校验
  * `hooks.items[].event` 与 `hooks.labels` 的键，而执行器（`hooks.js`）又要 import 设置存储去读当前值。
@@ -103,7 +103,7 @@ export const EVENTS = [
     explanation:
       'SPV 队列里出现一条 `kind: "reply"` 的消息：worker 报告了这次的结果。**这就是本项目里"worker 完成了"的定义，' +
       '但它不是终态**——工单可以被后续消息复活，然后再报告一次。所以不要把 delivered 当成"结束"，也不要把需要 PR ' +
-      '身份的自动动作挂在这里（队列消息只带 `ticketId` 与 `thread`，没有 PR 号；见 docs/hooks.md 的缺口一节）。' +
+      '身份的自动动作挂在这里（队列消息只带 `ticketId` 与 `thread`，没有 PR 号；见 ARCHITECTURE/hooks.md 的缺口一节）。' +
       '这个事件的内建行是结果注入（`injection` 模板）：注入属于 core path，正文可改，注入本身不可取消。',
     when: 'reply 消息出现在 SPV 队列时，由读取方按消息 id 触发一次。',
     repeatable: true,

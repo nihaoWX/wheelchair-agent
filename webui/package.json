@@ -12,7 +12,6 @@
   },
   "files": [
     "lib",
-    "README.md",
     "package.json"
   ],
   "dsh": {

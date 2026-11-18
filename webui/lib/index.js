@@ -15,7 +15,7 @@
  * `src/shared/{home,queue,settings,hooks,hook-events}.js`. Keeping
  * the panel self-contained means a preset replacement (another worktree's install.sh) cannot
  * break this package's import, while still leaving exactly one implementation to maintain (see
- * `webui/README.md`). `settings.js` lives in `lib/shared/` rather than `lib/core/` because the
+ * `ARCHITECTURE/webui/index.md`). `settings.js` lives in `lib/shared/` rather than `lib/core/` because the
  * copied `lib/core/inbox.js` imports `../shared/settings.js`, exactly like `queue.js`; `lib/core/`
  * is for files copied from `src/spv/`.
  *

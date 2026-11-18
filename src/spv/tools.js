@@ -5,7 +5,7 @@
  * 模型的工具表里，由模型决定何时调用。
  *
  * 与 superagent 侧严格分开：本文件不 import `~/opt/dsh-plugins/dsh-superagent/` 的任何东西，只按下文描述的文件布局与它对话。
- * 唯一的接口是 `<queue>/{pending,done,outbox}/` 里的 JSON 文件（见 `src/shared/queue.js` 与 `docs/spv-source.md`）。
+ * 唯一的接口是 `<queue>/{pending,done,outbox}/` 里的 JSON 文件（见 `src/shared/queue.js` 与 `ARCHITECTURE/spv-source.md`）。
  *
  * 三个工具：
  *   spv_dispatch  写 pending/，立刻返回 id/thread/project

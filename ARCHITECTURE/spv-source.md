@@ -41,7 +41,7 @@
 
 ## 3. 为什么任务不走 Assessment
 
-按 `docs/002-authorization.md`，一个 Trigger 成为 **explicit**（直接接单）需要三个条件同时成立：
+按 superagent 仓库里的 `docs/repositories/dsh-superagent-prototype/docs/002-authorization.md`，一个 Trigger 成为 **explicit**（直接接单）需要三个条件同时成立：
 
 | 条件 | 我们的取值 | 含义 |
 |---|---|---|

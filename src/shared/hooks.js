@@ -1,7 +1,7 @@
 /**
  * 插口（hook）引擎：**在项目事件上自动跑一段脚本**，跑完就把结果写进记录，绝不影响 core path。
  *
- * 两条路径，必须分清（`docs/hooks.md` 是完整说明）：
+ * 两条路径，必须分清（`ARCHITECTURE/hooks.md` 是完整说明）：
  *   - **core path**：review 落盘、notice 进 SPV 队列、合并后的 `git pull --ff-only`、队列 rename 式消费——
  *     这些永远发生，不可配置、不可取消。它们的实现分别在 `src/spv/inbox.js`、`src/spv/injector.js` 与
  *     `src/superagent/spv.js`，本文件**不碰**。
@@ -87,7 +87,7 @@ export const HOOK_PANEL_RUN_LIMIT = 5
 /** 面板里失败记录的 stderr 尾部最多显示多少个字符（再长就截断，完整记录仍在 hooks.jsonl）。 */
 export const HOOK_PANEL_STDERR_LIMIT = 600
 
-/** 超时后先 SIGTERM，宽限这么久再 SIGKILL（见 `docs/hooks.md`）。 */
+/** 超时后先 SIGTERM，宽限这么久再 SIGKILL（见 `ARCHITECTURE/hooks.md`）。 */
 export const KILL_GRACE_MS = 500
 
 /** cursor 锁：等待上限、重试间隔、过期时间（与 `src/shared/home.js` 的迁移锁同一套习惯）。 */
@@ -882,7 +882,7 @@ export async function runHooksFor(event, payload = {}, opts = {}) {
  * 插口 spool 目录：`<数据根>/records/hook-events/`。数据根不可用时 `undefined`。
  *
  * 为什么需要它：`ticket.started` 与 `spv.dispatch` 发生在任何服务 tick 之外（worker 启动前的
- * `prepare.sh`、SPV 派活），而执行脚本的 runner 只在服务侧 webui host 里跑（一个读者，见 docs/hooks.md）。
+ * `prepare.sh`、SPV 派活），而执行脚本的 runner 只在服务侧 webui host 里跑（一个读者，见 ARCHITECTURE/hooks.md）。
  * 写一个文件是微秒级、不需要 node/python、也不会阻塞调用方；服务活着就由它在同一轮 drain 里执行，服务
  * 关着就等着。重建执行目录是懒的：`hookSpoolDir()` 只算路径，`writeHookSpoolEvent()` 才 mkdir。
  */
@@ -1100,7 +1100,7 @@ function threadOfMessage(message) {
  *   mtime 派生的 ISO，再按 mtime、id 决出同刻顺序，所以一条没有 `at` 的消息不会排到所有日期之前。
  * - 用 `<root>/records/events-cursor.json` 过滤已经处理过的 id；同一个 id 只会返回一次。
  * - 只映射三种 kind；`ticket.started` / `inbox.*` / `spv.dispatch` 不来自队列，安排给 stage 2 的其它
- *   调用点（见 docs/hooks.md 的「stage 2 放在哪」）。
+ *   调用点（见 ARCHITECTURE/hooks.md 的「stage 2 放在哪」）。
  *
  * 返回 `[{event, eventId, payload, message, file}]`；`payload` 就是脚本会从 stdin 收到的那份。负载里的
  * `file` 是这条消息在磁盘上的路径（`outbox/` 或 `outbox/read/`），脚本可以自己读全文；`text` 在超过

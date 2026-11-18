@@ -70,7 +70,7 @@ superagent 的 sqlite 里，`install.sh` 管不到它，绝对路径会在换 `D
 `install.sh --check` 会读服务进程的 `/proc/<pid>/environ`，确认 `~/.local/bin` 在那个 PATH 里。
 
 `prepare` 负责 clone 项目、按项目类型装受管 `AGENTS.md`、给 `tools/` 项目建私有 GitHub 远端并把工单的
-`origin` 指过去；`research/` 永不配远端。行为与约束见 `docs/delivery-target.md`，可跑证据是
+`origin` 指过去；`research/` 永不配远端。行为与约束见 `ARCHITECTURE/delivery.md`，可跑证据是
 `tests/test-prepare.sh`。
 
 前置：`dsh-tui` 在 `PATH` 上、`node` >= 22、`python3`（服务管理与冷安装探测）。缺了 `install.sh` 会 FAIL
@@ -146,7 +146,7 @@ wheelchair-agent session release --dry-run          # 默认 resume.txt 的会�
 wheelchair-agent session release --session <id>     # 释放卡住的会话租约（TERM → 等待 → KILL；服务持有时拒绝）
 ```
 
-`work gc` 的门禁与记录格式见 `docs/work-gc.md`。
+`work gc` 的门禁与记录格式见 `ARCHITECTURE/work-gc.md`。
 
 ### 重启整套部署
 
@@ -185,7 +185,7 @@ TERM → 等待 → KILL 释放。持有者只有本进程/祖先链时拒绝；
 （`--dry-run` 会标记 `(superagent service; not released)`）——服务不是本命令该停的，跳过它又会留下锁；
 跳过的本进程/祖先在其余持有者释放后仍持有租约时报告 `FAIL` 并退出 1，不谎报 `released`。
 每一步连同命令与退出码写进 `<root>/logs/restart-all.log`（默认
-`~/.wheelchair-agent/logs/restart-all.log`）。详见 `docs/restart.md`。
+`~/.wheelchair-agent/logs/restart-all.log`）。详见 `ARCHITECTURE/restart.md`。
 
 ## 标准工具从哪来
 
@@ -217,3 +217,23 @@ preset 声明里的 include 行不挂载子行，也不报错。
 
 改了 `preset/`、`src/`、`commands/` 或 `bin/` 里的东西，要**先停服务、退出 SPV 会话，再重跑 `install.sh`**
 才会生效：占用时它会拒绝（exit 3）而不是写一半。
+
+---
+
+## 配置现状（superagent profile）
+
+| 项 | 值 |
+|---|---|
+| GitHub Source | `nihaoWX/bioagentforge`，CLI `/home/nihao/.local/bin/gh`，60s 轮询 |
+| spv Source | `<stateDir>/spv/` 文件队列，2s 轮询，健康条目 `spv` |
+| Policy allowed | github=`nihaoWX`；spv=`operator`（写死在 `src/spv/dispatch.js`，不接受参数） |
+| accept mode | `observe`（只影响 inferred 候选；explicit 请求始终直接接单） |
+| 模型路由 | `commandcode` / `deepseek/deepseek-v4-pro`（profile 的 `agent-default-model`） |
+| executor.directory | `/home/nihao/.dsh/state/superagent/work` |
+| executor.maxWorkers | 2 |
+| executor.prepare | `wheelchair-agent prepare`（**命令名，不是绝对路径**；见 `ARCHITECTURE/cli.md`） |
+| 面板 | `http://127.0.0.1:3082/?token=<日志里的 token>` |
+
+`prepare` 项目选择：项目名随任务走（`spv_dispatch` 的 `project` 参数 → Trigger 的 `project` →
+`DSH_SUPERAGENT_SPV_PROJECT`）。`/home/nihao/bioagentforge/.superagent-project` 只作非 spv 任务的兜底；
+两者都没有时 Ticket 会在 prepare 阶段失败（设计如此）。

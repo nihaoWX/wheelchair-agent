@@ -18,6 +18,19 @@ service 侧 runner 统一执行；stage 3 交付面板「插口」一节（§10�
 
 ---
 
+## 0. 三条硬边界（摘自 `ARCHITECTURE.md`）
+
+核心事件（`ticket.started|acknowledged|delivered|attention`、`inbox.approved|issue|merged`、`spv.dispatch`）上可以
+挂**用户脚本**，手感对齐 superagent 的 `executor.prepare`。事件表的唯一实现在 `src/shared/hook-events.js`，
+完整契约在 `ARCHITECTURE/hooks.md`；这里只记三条硬边界：
+
+1. **core path 不可配置、不可取消**：review 落盘、notice 进队列、合并后的 `git pull --ff-only`、队列的 rename 消费
+   永远发生。hook 失败、超时、输出洪水只记账，**不 gate、不包裹、不重试** core path。
+2. **写设置只有一条路**：`wheelchair-agent hook …`（revision 校验，过期即 409 且不落盘）；没有手改
+   `settings.json` 的路径，也没有"取消内建行"的开关——内建行只描述、不执行。
+3. **脚本环境是白名单**：payload 走 stdin 的 JSON + 几个 `WCA_*` 变量；`*TOKEN*` / `*SECRET*` / `GH_*` / `DSH_*`
+   一律不传。
+
 ## 1. 事件表
 
 表在 `src/shared/hook-events.js`（唯一实现）。`wheelchair-agent hook events` 打印它，`hook prompt <event>`

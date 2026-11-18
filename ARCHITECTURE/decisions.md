@@ -89,7 +89,7 @@ worker 环境里的 `DSH_SUPERAGENT_GITHUB_REPOSITORY` 永远是面板那一个�
 
 三条配置绕行路已实测堵死（关 github Source 会停在 `setupPending`；`spv` 声明同名变量只是并排渲染两行；
 编排器 API 锁死在配置仓库）。**已定方向：不与环境变量对抗，改为给 worker 一份它读得到的 `AGENTS.md`，
-说明这个项目该不该推送。** 实现见 `docs/delivery-target.md`。
+说明这个项目该不该推送。** 实现见 `ARCHITECTURE/delivery.md`。
 
 ## UI 主页：独立包 + 区块数组 + 自包含 core（2026-11-14）
 

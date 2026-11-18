@@ -7,7 +7,7 @@
  *
  * 这是收件箱的**唯一**实现。CLI（`wheelchair-agent inbox ...`）与 dsh 的 webui 插件都 import 它：
  * webui 的 host 半身 import 的是 `install.sh` 从本文件复制进 profile 的副本（`lib/core/inbox.js`），
- * 所以面板和轮询器不会各写一份，也不会因为 preset 被别的 worktree 替换而失效（见 `webui/README.md`）。
+ * 所以面板和轮询器不会各写一份，也不会因为 preset 被别的 worktree 替换而失效（见 `ARCHITECTURE/webui/index.md`）。
  *
  * 纯 Node builtins：不 import dsh，不 `process.exit`。
  *

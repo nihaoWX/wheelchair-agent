@@ -208,7 +208,7 @@ require_python3() {
 # and it never enters the preset directory (ARCHITECTURE/layout.md).
 #
 # prepare.sh and the two AGENTS.md templates are installed here because the panel's prepare command runs
-# from a user-level path, not from this development tree (docs/delivery-target.md, constraint 6).
+# from a user-level path, not from this development tree (ARCHITECTURE/delivery.md, constraint 6).
 render_into() {
   local dest=$1 file
   if ! mkdir -p "$dest/src/shared" "$dest/src/spv" "$dest/commands" "$dest/agentsmd-examples"; then
@@ -298,7 +298,7 @@ render_wrapper() {
 # The installed package must be self-contained: another worktree running its own install.sh can
 # replace the shared preset at any time, and a panel that imported the preset's inbox core would
 # then fail to load on the next service restart. The copies below are generated here from this
-# checkout and are never edited by hand, so there is still one implementation (webui/README.md).
+# checkout and are never edited by hand, so there is still one implementation (ARCHITECTURE/webui/index.md).
 render_webui_into() {
   local dest=$1 file src target pair
   if ! mkdir -p "$dest/lib/core" "$dest/lib/shared"; then

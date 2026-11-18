@@ -3,7 +3,7 @@
  * the entry session reads.
  *
  * A task must arrive as an explicit request, so it creates a Ticket without an Assessment. That needs all three facts
- * `docs/002-authorization.md` names:
+ * `docs/repositories/dsh-superagent-prototype/docs/002-authorization.md` names:
  *
  *   human: true               a person wrote the task
  *   addressed: 'mention'      it addresses the agent

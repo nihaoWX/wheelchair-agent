@@ -15,7 +15,7 @@ Records the current work progress, what has been completed, what is in progress,
 Records the definition of this task (types: project-development / research), its overall architecture, and an index of reference materials; it does not record specific implementation details or the development process.
 
 - Progressively updated and refined as the task develops.
-- Must stay concise, below 20kb. `# Definition` and `# Structure` are overview and index — not a dump. When design detail grows, distribute by function/part/logic/sequence to `ARCHITECTURE/*.md` or `ARCHITECTURE/<domain>/*.md` and link from `ARCHITECTURE.md`.
+- Must stay concise, below 10kb. `# Definition` and `# Structure` are overview and index — not a dump. When design detail grows, distribute by function/part/logic/sequence to `ARCHITECTURE/*.md` or `ARCHITECTURE/<domain>/*.md` and link from `ARCHITECTURE.md`.
 - Project-development task: format is `# Definition` + `# Structure`. `# Definition` — the project definition and user expectations. `# Structure` — the file layout of the whole project, the purpose of each part, and an index of reference materials for dependencies (tutorials/API documentation, indexed in `docs/`).
 - Research task: format is `# Definition` + `# Chain`. `# Definition` — the research topic and user expectations. `# Chain` — the full-course record of the research task from its start, in logical/chronological order: each step's topic, result, and the path to detailed results (indexed in `steps/`; steps moved to `steps/TRASH/` are excluded). Unlike the state-snapshot `PROGRESS.md`, it preserves the whole history.
 

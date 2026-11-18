@@ -2,7 +2,7 @@
 /**
  * tests/test-hooks.mjs：插口（hook）引擎的离线证据。
  *
- * 覆盖（对应 `docs/hooks.md` 的每一条承诺）：
+ * 覆盖（对应 `ARCHITECTURE/hooks.md` 的每一条承诺）：
  *   - 事件表：8 个事件、7 个内建行、六个 `builtin:*` id 逐字存在、`builtin:prepare` 是指针、
  *     内建行全部 `cancellable: false`，且没有 `ticket.ended`；
  *   - 执行契约：stdin 是事件负载的 JSON、`WCA_*` 环境变量、`ticket.*` 的 cwd 用 workspace / 其它事件用
