@@ -23,6 +23,11 @@
 **插口（hooks）**：stage 1（`#28`, `27d4463`）、stage 2（`#29`, `2788bbc`）、stage 3 面板「插口」
 （`#30`, main `35be1f5`）都已合并；新 host 需要一次冷安装才带 `hookView` 与第三段。
 
+**Rust 核心**：`crates/wca-core` → `wheelchair-agent-core`（独立进程，JSON over stdin/stdout）。
+首个模块是回收计划（`planWork`），`src/shared/work.js` 只剩调用 + 校验 + 删除路径，**没有 JS 兜底**。
+构建：`bash build/build-core.sh`（需 cargo）；`install.sh` 把它装到 `~/.local/bin`，从不跑 cargo。
+边界与待办见 `ARCHITECTURE/core.md`。
+
 **HARNESS 结构**：构建规则只在 `ARCHITECTURE` 里。`ARCHITECTURE.md`（5.4KB）只留定义 + 分册索引 +
 角色与信息流；分册为 `boundaries` / `cli` / `layout` / `decisions` / `hooks` / `restart` / `spv-source` /
 `work-gc` / `preset` / `delivery` / `webui/{index,settings,hooks,screenshots}`。`docs/` 只剩
@@ -30,6 +35,10 @@
 
 # Completed
 
+- **Rust 核心第一步（`#31`,`54013f0`）**：回收计划搬进 `wheelchair-agent-core`（`work-plan` / `schema`
+  子命令，envelope + 稳定错误码，输入全走 `Result`，畸形 stdin 不 panic）；`build/build-core.sh` 出产物、
+  `install.sh` 拷到 `~/.local/bin` 并用 `cmp` 校验、CI 先 build 再跑 `cargo test`；parity 门是
+  `tests/test-work.mjs` 零改动 + `work gc --dry-run` 输出逐字一致。
 - **HARNESS 整理（第二批次）**：`docs/{hooks,restart,spv-source,work-gc}.md`、`preset/README.md`、
   `webui/README.md` 全部移入 `ARCHITECTURE/`（webui 拆成 `index/settings/hooks/screenshots`）；
   操作者删掉的 `docs/delivery-target.md` 不再保留副本，其中仍然成立的六条约束落进 `ARCHITECTURE/preset.md`；
@@ -75,6 +84,11 @@
 - **dsh-superagent 没有 HARNESS**：dsh-superagent 的 `docs/007-architecture.md`（71KB）在充当 ARCHITECTURE，渐进式披露失守。
   拆分前必须先改 `tests/docs.spec.ts` 里硬编码的 `docs/007-architecture.md` 路径。
 - **两个新压缩设置是 API-only**：dsh-superagent 的 `src/client/eval.tsx` 没有 `compactRatio` / `compactMinIntervalMs` 的输入项。
+- **冷安装现在多一步前置**：`install.sh` 需要 `bash build/build-core.sh` 的产物，所以装的人要有 cargo +
+  crates.io。这与"面向大众一键安装"冲突，发布前必须改成按平台预编译产物（`dsh` 的做法：按平台拆包 +
+  `os`/`cpu` 门禁）。
+- **平台写死**：`src/shared/work.js` 的 `CORE_BINARY` 与 `install.sh` 的 `CORE_ARTIFACT_REL` 都写死
+  `linux-x64`；多平台前要改成按 `process.platform` / `process.arch` 拼名。
 - **"待冷安装"没有自我清除机制**：每次 install 仓库合并都会排一封 notice，即使几分钟后就装了。
 - **HARNESS 里仍有 23 处规则重述**（冷安装契约 4 份、面板必须是真包 4 份、`hooks.md` 与
   `ARCHITECTURE/webui/hooks.md` 互相重述）：移动已完成，去重是下一件事，优先级低于功能；动之前先看是否某处已有更权威的一份。
@@ -82,6 +96,10 @@
   「Releasing a stuck session」之前。
 
 # Next Steps
+
+0. **Rust 迁移的下一张票**：`src/shared/` 的纯逻辑——`queue` → `schema` → `settings` → `hooks`（类型面最大的一块）；
+   然后是 CLI 侧 `dispatch`/`outbox`/`check`/`health`/`cron`/`inbox` 存储；`session`/`restart` 链放最后（它管杀进程，
+   出事最贵）。每张票的 parity 门都是"对应测试文件零改动 + 用户可见输出逐字一致"。
 
 1. 操作者执行一次冷安装（`#29`/`#30` 需要新 host 才生效）。
 2. 重派 `service-detach`（带禁令），并把 `service open` 作为最后一步并入 `/restart-wheelchair-agent`

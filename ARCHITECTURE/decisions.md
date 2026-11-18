@@ -219,3 +219,22 @@ dark 截图），`tests/test-settings.mjs` 的 CSS/轮询/草稿断言，`tests/
 收件箱与设置页共用 **一条**宽度变量 `--wca-content-max: 1200px`（`AGENTS.md` 之外的 960 旧值 × 1.25，操作者口径），
 两页不可能再各走各的。收件箱不再有左侧 104px 日期栏，时间落到每封信自己的元信息行——空列是"太偏右"的根因。
 `fluid` 的可见性靠材质与**挂载即播**的入场动画（不再门控 `data-new`），`minimal` 严格静止；两者布局结构完全相同。
+
+## Rust 核心：独立进程，不是 Node addon（2026-11-18）
+
+**决定**：把能用类型检查守住的一部分逻辑搬进 Rust，产物是**独立可执行文件**
+（`crates/wca-core` → `wheelchair-agent-core`），JS 用 `spawnSync` 走 JSON 契约调用；不用 napi-rs 的 `.node`。
+
+**理由**（按权重）：
+1. 目的只是编译器，不是性能。实测 spawn ≈ 0.7–1.0 ms，而轮询节奏 1–60 秒，进程边界不花钱。
+2. `.node` 里的一次 panic 会让 dsh 服务或 SPV 会话 abort；二进制里只是一条命令失败。降低爆炸半径是这个决定的主因。
+3. 二进制是单文件、不耦合 Node-API/glibc；schema 由 `schemars` 生成、两侧用 `src/shared/schema.js` 校验，
+   比 FFI 值转换更容易独立测试。
+4. loader 事实上两条都允许（它只约束入口是一次 ESM `import()`），所以这条是**取舍**而不是限制。
+
+**配套的硬规则**：搬过去的模块**只有一份实现**——`src/shared/work.js` 在二进制缺失时抛错并打印
+`bash build/build-core.sh`，永不退回 JS。Rust 侧对调用方输入一律 `Result`，`src/` 里不出现
+`unwrap`/`expect`/`panic!`。
+
+**已知未了**：冷安装多了一步前置（要有 cargo），与"面向大众一键安装"冲突，发布前必须改为按平台预编译；
+`CORE_BINARY` 与 `CORE_ARTIFACT_REL` 目前写死 `linux-x64`。两者都记在 `ARCHITECTURE/core.md`。

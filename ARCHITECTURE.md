@@ -39,6 +39,7 @@
 | 票目录回收（`work gc`）与挂载时的自动回收 | `ARCHITECTURE/work-gc.md` |
 | SPV preset 怎么装/起/用、标准工具从哪来、模块解析、superagent profile 配置现状 | `ARCHITECTURE/preset.md` |
 | 交付目标：仓库随项目走、受管 `AGENTS.md` 的六条约束 | `ARCHITECTURE/preset.md` |
+| Rust 核心：边界、JSON 契约、为什么不是 `.node`、分发待办 | `ARCHITECTURE/core.md` |
 | 已定型的结论（每条附证据，**勿重新推导**） | `ARCHITECTURE/decisions.md` |
 | 已踩过的坑（一条一个问题） | `docs/PITFALLS/` |
 | superagent 设计文档（9 篇） | `docs/repositories/dsh-superagent-prototype/docs/` |
@@ -55,6 +56,7 @@ wheelchair-agent/
 ├── preset/                        # 装到 ~/.dsh/.agent-presets/spv/
 ├── commands/                      # prepare.sh / jobctl.py / superagent-service.py（装成独立命令）
 ├── webui/                         # 独立 dsh web client 包 wheelchair-agent-webui（截图在 webui/docs/）
+├── crates/wca-core/                # Rust 核心：wheelchair-agent-core（独立进程，见 ARCHITECTURE/core.md）
 ├── build/ tests/                  # 构建步骤 / 离线证据（CI 逐个跑）
 ├── install.sh                     # 只负责安装（冷安装）
 ├── ARCHITECTURE.md ARCHITECTURE/  # 本文件（定义 + 索引）与分册

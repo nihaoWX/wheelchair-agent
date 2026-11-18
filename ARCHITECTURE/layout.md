@@ -171,6 +171,7 @@ wheelchair-agent/
 ├── build/                        # 构建步骤，不是命令（render-preset.mjs, refusal-notice.mjs）
 ├── tests/                        # 12 套离线证据，清单见 ARCHITECTURE/layout.md（CI 逐个跑）
 ├── install.sh                    # 只负责安装（冷安装，契约见 ARCHITECTURE/layout.md）
+├── crates/wca-core/               # Rust 核心 wheelchair-agent-core（work-plan / schema 子命令）
 ├── ARCHITECTURE.md ARCHITECTURE/  # 定义 + 索引 + 分册（构建规则只允许记在这里）
 └── docs/                         # 只剩 PITFALLS/、setup/、agentsmd-examples/
 ```
