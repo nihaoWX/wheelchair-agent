@@ -1,11 +1,13 @@
 /**
- * A tiny subset of zod: just what `SourceKind.schema` and `SourcePolicyPart.schema` need, which is
- * `parse(value)` and `safeParse(value)`, filling defaults and rejecting what the settings form cannot express.
+ * The tiny validator from this module's previous JavaScript implementation, now evaluated by
+ * `wheelchair-agent-core schema-check`.
  *
- * The plugin does not import zod on purpose. dsh-superagent has its own copy of zod, and a schema built with a second
- * copy would throw a `ZodError` that its HTTP layer does not recognise (`instanceof` fails across copies), turning a
- * refused settings save into a 500. A plain `SchemaError` keeps this package free of that trap.
+ * The exports and their signatures are unchanged: `text`, `integer` and `records` return a validator
+ * function, `object` returns `{ parse, safeParse }`. The wrappers only serialize the validator shape
+ * plus one value; defaults, coercion and **the exact rejection messages** live in Rust. `SchemaError`
+ * stays a JavaScript class so callers keep their `instanceof`/name contract.
  */
+import { coreHint, runCore } from './queue.js'
 
 /** Raised by `parse` when a value does not fit a schema. */
 export class SchemaError extends Error {
@@ -15,81 +17,88 @@ export class SchemaError extends Error {
   }
 }
 
-const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value)
+const SPEC = Symbol('wca-schema-spec')
+
+/** Call the binary for one validator/value pair and turn its rejection into `SchemaError`. */
+function evaluate(spec, value) {
+  let data
+  try {
+    const request = value === undefined ? { validator: spec } : { validator: spec, value }
+    data = runCore(['schema-check'], JSON.stringify(request))
+  } catch (error) {
+    if (error?.code === 'schema_error') throw new SchemaError(error.message)
+    throw error
+  }
+  if (data === null || typeof data !== 'object' || typeof data.defined !== 'boolean') {
+    throw coreHint('returned an invalid schema-check result')
+  }
+  return data.defined ? data.value : undefined
+}
+
+function validator(spec) {
+  const check = value => evaluate(spec, value)
+  Object.defineProperty(check, SPEC, { value: spec })
+  return check
+}
+
+function specOf(reader, where) {
+  if (typeof reader !== 'function' || reader[SPEC] === undefined) {
+    throw new TypeError(`${where} must be a validator from src/shared/schema.js`)
+  }
+  return reader[SPEC]
+}
 
 /** A string field; `fallback` fills a missing or blank value. */
 export function text({ fallback = '', min = 0, max = Infinity } = {}) {
-  return value => {
-    const text = value === undefined || value === null ? '' : String(value).trim()
-    if (!text) {
-      if (fallback !== '') return fallback
-      if (min > 0) throw new SchemaError(`a non-empty string of at least ${min} characters is required`)
-      return ''
-    }
-    if (text.length < min) throw new SchemaError(`must be at least ${min} characters`)
-    if (text.length > max) throw new SchemaError(`must be at most ${max} characters`)
-    return text
-  }
+  const spec = { kind: 'text', fallback, fallbackPresent: true }
+  if (Number.isFinite(min)) spec.min = min
+  if (Number.isFinite(max)) spec.max = max
+  return validator(spec)
 }
 
 /** An integer field, clamped only for type errors; out-of-range values are refused so a typo is not silently fixed. */
 export function integer({ fallback, min = -Infinity, max = Infinity } = {}) {
-  return value => {
-    if (value === undefined || value === null || value === '') {
-      if (fallback === undefined) throw new SchemaError('a number is required')
-      return fallback
-    }
-    const number = typeof value === 'number' ? value : Number(value)
-    if (!Number.isInteger(number)) throw new SchemaError('must be an integer')
-    if (number < min || number > max) throw new SchemaError(`must be between ${min} and ${max}`)
-    return number
+  const spec = { kind: 'integer' }
+  if (fallback !== undefined) {
+    spec.fallback = fallback
+    spec.fallbackPresent = true
   }
+  if (Number.isFinite(min)) spec.min = min
+  if (Number.isFinite(max)) spec.max = max
+  return validator(spec)
 }
 
-/** An array of records, each with one required `id` key and optional extra keys; `fallback` fills a missing array. */
+/** An array of records, each with one required `id` key and optional extra keys. */
 export function records({ fallback = [], optional = false, extra = {} } = {}) {
-  return value => {
-    if (value === undefined || value === null) {
-      if (optional) return undefined
-      if (fallback === undefined) throw new SchemaError('a list is required')
-      return fallback.map(item => ({ ...item }))
-    }
-    if (!Array.isArray(value)) throw new SchemaError('must be a list')
-    return value.map(item => {
-      if (!isObject(item)) throw new SchemaError('every entry must be an object')
-      const id = text({ min: 1, max: 200 })(item.id)
-      const result = { ...item, id }
-      for (const [key, check] of Object.entries(extra)) if (key in result) result[key] = check(result[key])
-      return result
-    })
-  }
+  const spec = { kind: 'records', fallback, optional }
+  const fields = Object.entries(extra).map(([key, reader]) => ({
+    key,
+    validator: specOf(reader, `records extra field ${JSON.stringify(key)}`),
+  }))
+  if (fields.length > 0) spec.extra = fields
+  return validator(spec)
 }
 
 /**
- * Build an object schema from per-key readers; `defaults` supplies the value of a missing or non-object input, and
- * keys not listed in `shape` are dropped rather than refused, so an older configuration never disables the Source.
+ * Build an object schema from per-key readers. Every reader must be one of this module's validators;
+ * the values are serialized and the object itself is validated in Rust.
  */
 export function object(shape) {
-  const parse = value => {
-    const input = isObject(value) ? value : {}
-    const result = {}
-    for (const [key, read] of Object.entries(shape)) {
-      try {
-        result[key] = read(input[key])
-      } catch (error) {
-        if (error instanceof SchemaError) throw new SchemaError(`${key}: ${error.message}`)
-        throw error
-      }
-    }
-    return result
-  }
+  const fields = Object.entries(shape).map(([key, reader]) => ({
+    key,
+    validator: specOf(reader, `object field ${JSON.stringify(key)}`),
+  }))
+  const parse = validator({ kind: 'object', shape: fields })
   return {
     parse,
     safeParse(value) {
       try {
         return { success: true, data: parse(value) }
       } catch (error) {
-        return { success: false, error: { message: error instanceof Error ? error.message : String(error) } }
+        return {
+          success: false,
+          error: { message: error instanceof Error ? error.message : String(error) },
+        }
       }
     },
   }

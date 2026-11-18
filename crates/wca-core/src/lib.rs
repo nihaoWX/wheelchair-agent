@@ -15,6 +15,8 @@
 pub mod git;
 pub mod plan;
 pub mod procscan;
+pub mod queue;
+pub mod schema;
 pub mod time;
 pub mod util;
 
@@ -22,6 +24,7 @@ use std::collections::HashMap;
 
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// One `work-plan` request: the same options the JavaScript `planWork()` takes.
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -46,18 +49,18 @@ pub struct WorkPlanRequest {
 /// The one JSON envelope: `{"ok":true,"data":…}` or `{"ok":false,"code":…,"message":…}`.
 #[derive(Debug, Serialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
-pub struct WorkPlanResponse {
+pub struct Envelope<T> {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub data: Option<plan::Plan>,
+    pub data: Option<T>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
 }
 
-impl WorkPlanResponse {
-    pub fn success(data: plan::Plan) -> Self {
+impl<T> Envelope<T> {
+    pub fn success(data: T) -> Self {
         Self {
             ok: true,
             data: Some(data),
@@ -76,6 +79,9 @@ impl WorkPlanResponse {
     }
 }
 
+/// The `work-plan` response shape.
+pub type WorkPlanResponse = Envelope<plan::Plan>;
+
 /// Build the plan for one request.
 pub fn plan_from_request(request: &WorkPlanRequest) -> Result<plan::Plan, String> {
     let mut options = plan::PlanOptions::new(request.root.clone());
@@ -88,9 +94,17 @@ pub fn plan_from_request(request: &WorkPlanRequest) -> Result<plan::Plan, String
 }
 
 /// The request and response JSON Schemas, as printed by the `schema` subcommand.
-pub fn schema_bundle() -> serde_json::Value {
+pub fn schema_bundle() -> Value {
     serde_json::json!({
         "request": schemars::schema_for!(WorkPlanRequest),
         "response": schemars::schema_for!(WorkPlanResponse),
+        "queue": {
+            "request": schemars::schema_for!(queue::QueueRequest),
+            "response": schemars::schema_for!(Envelope<Value>),
+        },
+        "schemaCheck": {
+            "request": schemars::schema_for!(schema::SchemaCheckRequest),
+            "response": schemars::schema_for!(schema::SchemaCheckResult),
+        },
     })
 }

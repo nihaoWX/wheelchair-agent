@@ -96,3 +96,54 @@ fn an_unknown_subcommand_is_a_usage_envelope() {
     assert_eq!(envelope["ok"], false);
     assert_eq!(envelope["code"], "usage");
 }
+
+#[test]
+fn malformed_stdin_is_clean_for_every_new_subcommand() {
+    for command in ["queue-op", "schema-check"] {
+        let (status, stdout, stderr) = run(&[command], "not json");
+        assert_ne!(status, 0, "{} must exit non-zero", command);
+        assert!(
+            !stderr.contains("panicked"),
+            "{} must not panic: {}",
+            command,
+            stderr
+        );
+        let envelope: serde_json::Value =
+            serde_json::from_str(&stdout).expect("stdout is one JSON envelope");
+        assert_eq!(envelope["ok"], false);
+        assert_eq!(envelope["code"], "invalid_request");
+    }
+}
+
+#[test]
+fn schema_check_reports_the_exact_validation_message() {
+    let request = serde_json::json!({
+        "validator": { "kind": "text", "min": 2 },
+        "value": "a"
+    });
+    let (status, stdout, stderr) = run(&["schema-check"], &request.to_string());
+    assert_eq!(status, 1, "stderr: {}", stderr);
+    let envelope: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout is one JSON envelope");
+    assert_eq!(envelope["ok"], false);
+    assert_eq!(envelope["code"], "schema_error");
+    assert_eq!(envelope["message"], "must be at least 2 characters");
+}
+
+#[test]
+fn queue_layout_round_trips() {
+    let request = serde_json::json!({ "op": "layout", "root": "/tmp/wca-cli-queue//root" });
+    let (status, stdout, stderr) = run(&["queue-op"], &request.to_string());
+    assert_eq!(status, 0, "stderr: {}", stderr);
+    let envelope: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout is one JSON envelope");
+    assert_eq!(envelope["ok"], true);
+    assert_eq!(
+        envelope["data"]["pending"],
+        "/tmp/wca-cli-queue/root/pending"
+    );
+    assert_eq!(
+        envelope["data"]["read"],
+        "/tmp/wca-cli-queue/root/outbox/read"
+    );
+}
