@@ -95,18 +95,178 @@ pub fn first_line(text: &str) -> String {
         .to_string()
 }
 
-/// A Node-style `error.code` string for an I/O error.
+/// A Node-style `error.code` string for an I/O error, or `None` for an unmapped errno.
 ///
-/// The planner reports the code (`ENOENT`, `ENOTDIR`, ...) in the few messages that carry it. The
-/// numbers are the Linux values; this addon is built for linux-x64.
-pub fn error_code(error: &std::io::Error) -> String {
+/// The numbers are the Linux values; this binary is built for linux-x64.
+pub fn errno_name(error: &std::io::Error) -> Option<&'static str> {
     match error.raw_os_error() {
-        Some(1) => "EPERM".to_string(),
-        Some(2) => "ENOENT".to_string(),
-        Some(3) => "ESRCH".to_string(),
-        Some(13) => "EACCES".to_string(),
-        Some(20) => "ENOTDIR".to_string(),
-        _ => error.to_string(),
+        Some(1) => Some("EPERM"),
+        Some(2) => Some("ENOENT"),
+        Some(3) => Some("ESRCH"),
+        Some(12) => Some("ENOMEM"),
+        Some(13) => Some("EACCES"),
+        Some(17) => Some("EEXIST"),
+        Some(18) => Some("EXDEV"),
+        Some(20) => Some("ENOTDIR"),
+        Some(21) => Some("EISDIR"),
+        Some(23) => Some("ENFILE"),
+        Some(24) => Some("EMFILE"),
+        Some(28) => Some("ENOSPC"),
+        Some(30) => Some("EROFS"),
+        _ => None,
+    }
+}
+
+/// The Node-style text for one errno.
+pub fn errno_description(code: &str) -> &'static str {
+    match code {
+        "EPERM" => "operation not permitted",
+        "ENOENT" => "no such file or directory",
+        "ESRCH" => "no such process",
+        "ENOMEM" => "not enough memory",
+        "EACCES" => "permission denied",
+        "EEXIST" => "file already exists",
+        "EXDEV" => "invalid cross-device link",
+        "ENOTDIR" => "not a directory",
+        "EISDIR" => "illegal operation on a directory",
+        "ENFILE" => "too many open files in system",
+        "EMFILE" => "too many open files",
+        "ENOSPC" => "no space left on device",
+        "EROFS" => "read-only file system",
+        _ => "i/o error",
+    }
+}
+
+/// The planner reports the code (`ENOENT`, `ENOTDIR`, ...) in the few messages that carry it.
+pub fn error_code(error: &std::io::Error) -> String {
+    errno_name(error)
+        .map(str::to_string)
+        .unwrap_or_else(|| error.to_string())
+}
+
+/// JavaScript's `String(value)` for the JSON values the queue/schema code passes around.
+pub fn js_string(value: &serde_json::Value) -> String {
+    use serde_json::Value;
+    match value {
+        Value::Null => "null".to_string(),
+        Value::Bool(value) => value.to_string(),
+        Value::Number(value) => {
+            if let Some(integer) = value.as_i64() {
+                integer.to_string()
+            } else if let Some(integer) = value.as_u64() {
+                integer.to_string()
+            } else {
+                value
+                    .as_f64()
+                    .map(js_number)
+                    .unwrap_or_else(|| "NaN".to_string())
+            }
+        }
+        Value::String(value) => value.clone(),
+        Value::Array(values) => values
+            .iter()
+            .map(|item| match item {
+                Value::Null => String::new(),
+                other => js_string(other),
+            })
+            .collect::<Vec<_>>()
+            .join(","),
+        Value::Object(_) => "[object Object]".to_string(),
+    }
+}
+
+/// JavaScript's `Number(value)` for the JSON values `integer()` coerces.
+pub fn js_to_number(value: &serde_json::Value) -> f64 {
+    use serde_json::Value;
+    match value {
+        Value::Null => 0.0,
+        Value::Bool(value) => {
+            if *value {
+                1.0
+            } else {
+                0.0
+            }
+        }
+        Value::Number(value) => value.as_f64().unwrap_or(f64::NAN),
+        Value::String(value) => js_parse_number(value),
+        Value::Array(_) => js_parse_number(&js_string(value)),
+        Value::Object(_) => f64::NAN,
+    }
+}
+
+fn js_parse_number(text: &str) -> f64 {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return 0.0;
+    }
+    for (prefix, radix) in [
+        ("0x", 16),
+        ("0X", 16),
+        ("0b", 2),
+        ("0B", 2),
+        ("0o", 8),
+        ("0O", 8),
+    ] {
+        if let Some(rest) = trimmed.strip_prefix(prefix) {
+            return u64::from_str_radix(rest, radix)
+                .map(|value| value as f64)
+                .unwrap_or(f64::NAN);
+        }
+    }
+    match trimmed {
+        "Infinity" | "+Infinity" => f64::INFINITY,
+        "-Infinity" => f64::NEG_INFINITY,
+        _ => trimmed.parse::<f64>().unwrap_or(f64::NAN),
+    }
+}
+
+/// A JSON number for an integer-valued `f64`, keeping integers as JSON integers.
+pub fn json_number(value: f64) -> serde_json::Value {
+    if value.is_finite()
+        && value.fract() == 0.0
+        && value >= i64::MIN as f64
+        && value <= i64::MAX as f64
+    {
+        serde_json::Value::Number(serde_json::Number::from(value as i64))
+    } else {
+        serde_json::Number::from_f64(value)
+            .map(serde_json::Value::Number)
+            .unwrap_or(serde_json::Value::Null)
+    }
+}
+
+/// JavaScript number-to-string, including the values serde JSON cannot represent directly.
+pub fn js_number(value: f64) -> String {
+    if value.is_nan() {
+        return "NaN".to_string();
+    }
+    if value == f64::INFINITY {
+        return "Infinity".to_string();
+    }
+    if value == f64::NEG_INFINITY {
+        return "-Infinity".to_string();
+    }
+    if value == 0.0 {
+        return "0".to_string();
+    }
+    let magnitude = value.abs();
+    // ECMAScript switches to exponent notation outside [1e-6, 1e21).
+    if magnitude >= 1e21 || magnitude < 1e-6 {
+        let text = format!("{:e}", value);
+        if let Some((mantissa, exponent)) = text.split_once('e') {
+            let exponent: i32 = exponent.parse().unwrap_or(0);
+            return if exponent >= 0 {
+                format!("{}e+{}", mantissa, exponent)
+            } else {
+                format!("{}e{}", mantissa, exponent)
+            };
+        }
+        return text;
+    }
+    if value.fract() == 0.0 && magnitude <= i64::MAX as f64 {
+        format!("{}", value as i64)
+    } else {
+        format!("{}", value)
     }
 }
 
@@ -190,5 +350,14 @@ mod tests {
     fn numbers_render_like_javascript() {
         assert_eq!(number(0.0), "0");
         assert_eq!(number(2.0), "2");
+        assert_eq!(js_number(1e21), "1e+21");
+        assert_eq!(js_number(1.23e21), "1.23e+21");
+        assert_eq!(js_number(1e-7), "1e-7");
+        assert_eq!(js_number(1e-6), "0.000001");
+        assert_eq!(
+            js_number(123_456_789_012_345_680_000.0),
+            "123456789012345680000"
+        );
+        assert_eq!(js_number(-0.0), "0");
     }
 }

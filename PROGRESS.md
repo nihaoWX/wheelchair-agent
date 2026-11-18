@@ -28,9 +28,10 @@
 的工具描述里，由 `tests/test-preset.mjs` 守着。
 
 **Rust 核心**：`crates/wca-core` → `wheelchair-agent-core`（独立进程，JSON over stdin/stdout）。
-首个模块是回收计划（`planWork`），`src/shared/work.js` 只剩调用 + 校验 + 删除路径，**没有 JS 兜底**。
+已搬 `work-plan`（回收计划）与 `queue-op` / `schema-check`（文件队列 + schema validator）；
+`work.js` / `queue.js` / `schema.js` 只剩薄壳（桥接 `runCore` 在 `queue.js`），**没有 JS 兜底**。
 构建：`bash build/build-core.sh`（需 cargo）；`install.sh` 把它装到 `~/.local/bin`，从不跑 cargo。
-边界与待办见 `ARCHITECTURE/core.md`。
+第二张迁移 PR `#33` 未合并，见 In Progress；边界与待办见 `ARCHITECTURE/core.md`。
 
 **HARNESS 结构**：构建规则只在 `ARCHITECTURE` 里。`ARCHITECTURE.md`（5.4KB）只留定义 + 分册索引 +
 角色与信息流；分册为 `boundaries` / `cli` / `layout` / `decisions` / `hooks` / `restart` / `spv-source` /
@@ -78,7 +79,12 @@
 
 # In Progress
 
-（无。冷安装等操作者：`service stop` → 退出 SPV → `bash install.sh` → `service start` → `wheelchair-agent spv`。）
+- **Rust 迁移第二张（`#33`，分支 `agent/rust-core-queue-schema-ed5e95edcc06`）**：`queue.js` / `schema.js`
+  已搬进 `wheelchair-agent-core`（`queue-op` / `schema-check`），`ARCHITECTURE/core.md` 与 `PROGRESS.md`
+  已同步。33 个 cargo tests、`npm test` 全绿、四套 parity 文件零改动；PR 未合并。操作者要求先停并
+  更新 HARNESS：极端数值的 `js_number` 修复与本次 HARNESS 更新已作为独立提交推到同一 PR；推送后以 PR head 和 CI 为准（该修复只有 cargo 覆盖，`npm test` 的最后一次全绿在修复前，操作者叫停后未重跑）。
+
+（另：冷安装等操作者：`service stop` → 退出 SPV → `bash install.sh` → `service start` → `wheelchair-agent spv`。）
 
 # Known Issues
 
@@ -95,7 +101,7 @@
 - **冷安装现在多一步前置**：`install.sh` 需要 `bash build/build-core.sh` 的产物，所以装的人要有 cargo +
   crates.io。这与"面向大众一键安装"冲突，发布前必须改成按平台预编译产物（`dsh` 的做法：按平台拆包 +
   `os`/`cpu` 门禁）。
-- **平台写死**：`src/shared/work.js` 的 `CORE_BINARY` 与 `install.sh` 的 `CORE_ARTIFACT_REL` 都写死
+- **平台写死**：`src/shared/queue.js` 的 `CORE_ARTIFACT` 与 `install.sh` 的 `CORE_ARTIFACT_REL` 都写死
   `linux-x64`；多平台前要改成按 `process.platform` / `process.arch` 拼名。
 - **"待冷安装"没有自我清除机制**：每次 install 仓库合并都会排一封 notice，即使几分钟后就装了。
 - **HARNESS 里仍有 23 处规则重述**（冷安装契约 4 份、面板必须是真包 4 份、`hooks.md` 与
@@ -105,8 +111,8 @@
 
 # Next Steps
 
-0. **Rust 迁移的下一张票**：`src/shared/` 的纯逻辑——`queue` → `schema` → `settings` → `hooks`（类型面最大的一块）；
-   然后是 CLI 侧 `dispatch`/`outbox`/`check`/`health`/`cron`/`inbox` 存储；`session`/`restart` 链放最后（它管杀进程，
+0. **Rust 迁移**：第二张（`queue` + `schema`）在 `#33` 待合并；之后按 `settings` → `hooks`（类型面最大的一块）→
+   CLI 侧 `dispatch`/`outbox`/`check`/`health`/`cron`/`inbox` 存储推进；`session`/`restart` 链放最后（它管杀进程，
    出事最贵）。每张票的 parity 门都是"对应测试文件零改动 + 用户可见输出逐字一致"。
 
 1. 操作者执行一次冷安装（`#29`/`#30` 需要新 host 才生效）。
