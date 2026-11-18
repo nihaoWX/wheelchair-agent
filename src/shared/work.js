@@ -4,7 +4,8 @@
  * dsh-superagent creates one directory per Ticket under its execution root
  * (`settings.executor.directory`, default `<stateDir>/work`). A directory is a *reproducible duplicate* only when three
  * runtime facts hold: nothing has its cwd inside it, the working tree is clean, and every commit is already on a
- * remote. This module owns that gate, the JSONL record written before a delete, and the `work restored` rendering.
+ * remote. The planner that decides this lives in a standalone Rust binary (`crates/wca-core`); this module keeps
+ * the delete path, the open-ticket resolver, the JSONL record and the `work restored` rendering.
  *
  * The module is shared by two programs on purpose (`ARCHITECTURE/layout.md` rule 1):
  *   - the CLI (`bin/wheelchair-agent.mjs` command `work`) is the operator's manual tool;
@@ -16,18 +17,19 @@
  *   overrides), one JSON object per reclaimed directory. The old `<stateDir>/work-reclaimed.jsonl` is
  *   migrated by `src/shared/home.js` and stays readable through its fallback.
  *
- * Every git call is asynchronous (`execFile`, with a timeout) because the mount hook runs this inside the service
- * process: a synchronous spawn would stall the Source's own event loop.
+ * The planner runs as a separate process so a Rust panic or abort cannot take down this Node process; a
+ * `spawnSync` call is bounded by a timeout and an output cap. The delete path below still re-checks cwd holders
+ * asynchronously immediately before each removal.
  */
-import { execFile } from 'node:child_process'
+import { spawnSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
 import { appendFile, lstat, mkdir, readFile, readdir, readlink, realpath, rm, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
-import { promisify } from 'node:util'
+import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { resolveData } from './home.js'
-
-const execFileAsync = promisify(execFile)
+import { SchemaError, object } from './schema.js'
 
 export { RECLAIMED_FILE } from './home.js'
 
@@ -40,23 +42,154 @@ export const KEEP_DAYS_DEFAULT = 0
  */
 export const KEEP_DEFAULT = 0
 
-/** A Ticket directory is `<short name>-<hex>`; `state/` and other residue must not match. */
-const TICKET_DIR = /^[A-Za-z0-9][A-Za-z0-9._-]*-[0-9a-f]{8,64}$/
+/**
+ * The Rust planner binary, built by `bash build/build-core.sh`. A checkout runs `build/artifacts/…` directly;
+ * an installed preset (which does not carry build output) runs the copy `install.sh` puts on PATH as
+ * `wheelchair-agent-core`.
+ *
+ * There is deliberately no JavaScript fallback: a missing or invalid binary is a broken build, and silently
+ * planning with a second implementation would defeat the point of moving the gate into Rust. The error names
+ * the exact fix.
+ */
+const CORE_BINARY = '../../build/artifacts/wheelchair-agent-core-linux-x64'
+const CORE_COMMAND = 'wheelchair-agent-core'
+const CORE_TIMEOUT_MS = 5 * 60_000
+const CORE_MAX_BUFFER = 16 * 1024 * 1024
 
-/** Absolute milliseconds in one day, used by the `--keep-days` window. */
-const DAY_MS = 86_400_000
+function coreBinary() {
+  const fromCheckout = fileURLToPath(new URL(CORE_BINARY, import.meta.url))
+  return existsSync(fromCheckout) ? fromCheckout : CORE_COMMAND
+}
 
-/** Git variables that would make `git -C <clone>` operate on the caller's repository instead of the clone. */
-const GIT_CALLER_ENV = [
-  'GIT_DIR',
-  'GIT_WORK_TREE',
-  'GIT_INDEX_FILE',
-  'GIT_COMMON_DIR',
-  'GIT_OBJECT_DIRECTORY',
-  'GIT_ALTERNATE_OBJECT_DIRECTORIES',
-  'GIT_NAMESPACE',
-  'GIT_PREFIX',
-]
+function coreHint(detail) {
+  return new Error(`the Rust core ${detail}; run "bash build/build-core.sh" to build it`)
+}
+
+const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value)
+
+function requiredText(value, name) {
+  if (typeof value !== 'string' || value === '') throw new SchemaError(`${name} must be a non-empty string`)
+  return value
+}
+
+function finiteNumber(value, name) {
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new SchemaError(`${name} must be a finite number`)
+  return value
+}
+
+function count(value, name) {
+  if (!Number.isInteger(value) || value < 0) throw new SchemaError(`${name} must be a non-negative integer`)
+  return value
+}
+
+function nullableText(value, name) {
+  if (value === null) return null
+  if (typeof value !== 'string') throw new SchemaError(`${name} must be a string or null`)
+  return value
+}
+
+/** The envelope is validated through `schema.js`, the same tiny validator the Source kinds use. */
+const envelopeSchema = object({
+  ok: value => {
+    if (typeof value !== 'boolean') throw new SchemaError('must be a boolean')
+    return value
+  },
+  data: value => value,
+  code: value => (value === undefined ? null : nullableText(value, 'code')),
+  message: value => (value === undefined ? null : nullableText(value, 'message')),
+})
+
+function checkRecord(value) {
+  if (!isObject(value)) throw new SchemaError('record must be an object')
+  count(value.version, 'record.version')
+  requiredText(value.name, 'record.name')
+  requiredText(value.path, 'record.path')
+  requiredText(value.head, 'record.head')
+  nullableText(value.originMain, 'record.originMain')
+  nullableText(value.branch, 'record.branch')
+  nullableText(value.upstream, 'record.upstream')
+  if (typeof value.remote !== 'string') throw new SchemaError('record.remote must be a string')
+  requiredText(value.remoteName, 'record.remoteName')
+  finiteNumber(value.bytes, 'record.bytes')
+  requiredText(value.when, 'record.when')
+  return value
+}
+
+function checkEntry(value, index) {
+  const where = `entries[${index}]`
+  if (!isObject(value)) throw new SchemaError(`${where} must be an object`)
+  requiredText(value.name, `${where}.name`)
+  requiredText(value.path, `${where}.path`)
+  finiteNumber(value.bytes, `${where}.bytes`)
+  if (value.action !== 'reclaim' && value.action !== 'keep' && value.action !== 'unknown') {
+    throw new SchemaError(`${where}.action is not a known action`)
+  }
+  if (value.reason !== undefined && typeof value.reason !== 'string') {
+    throw new SchemaError(`${where}.reason must be a string`)
+  }
+  if (value.mtimeMs !== undefined) finiteNumber(value.mtimeMs, `${where}.mtimeMs`)
+  if (value.record !== undefined) checkRecord(value.record)
+  return value
+}
+
+const planSchema = object({
+  root: value => {
+    if (typeof value !== 'string') throw new SchemaError('must be a string')
+    return value
+  },
+  entries: value => {
+    if (!Array.isArray(value)) throw new SchemaError('must be a list')
+    return value.map((entry, index) => checkEntry(entry, index))
+  },
+  reclaimable: value => count(value, 'must be a non-negative integer'),
+  reclaimableBytes: value => finiteNumber(value, 'must be a finite number'),
+  kept: value => count(value, 'must be a non-negative integer'),
+  unknown: value => count(value, 'must be a non-negative integer'),
+})
+
+/** Validate the planner data through `schema.js` and restore the runtime's display order. */
+function checkPlan(value) {
+  const plan = planSchema.parse(value)
+  // The planner sorts deterministically in Rust; the CLI's output order has always been
+  // `localeCompare`, so restore that here rather than embedding ICU in the binary.
+  plan.entries.sort((left, right) => left.name.localeCompare(right.name))
+  return plan
+}
+
+/** Run one core subcommand and return the validated `data` of a successful envelope. */
+function runCore(args, input) {
+  const result = spawnSync(coreBinary(), args, {
+    input,
+    encoding: 'utf8',
+    timeout: CORE_TIMEOUT_MS,
+    maxBuffer: CORE_MAX_BUFFER,
+  })
+  if (result.error !== undefined) {
+    if (result.error.code === 'ENOENT') throw coreHint('binary was not found')
+    if (result.error.code === 'EACCES') throw coreHint('binary is not executable')
+    if (result.error.code === 'ETIMEDOUT') {
+      throw new Error(`the Rust core timed out after ${CORE_TIMEOUT_MS / 1000} seconds`)
+    }
+    throw new Error(`the Rust core failed to run: ${result.error.message}`)
+  }
+  if (typeof result.stdout !== 'string') throw coreHint('printed no output')
+  let envelope
+  try {
+    envelope = JSON.parse(result.stdout)
+  } catch (error) {
+    throw coreHint(`returned unparseable JSON (${error?.message ?? error})`)
+  }
+  const parsed = envelopeSchema.safeParse(envelope)
+  if (!parsed.success) throw coreHint(`returned an invalid envelope (${parsed.error.message})`)
+  const { ok, code, message } = parsed.data
+  if (!ok) throw new Error(message || `the Rust core failed (${code ?? 'unknown'})`)
+  if (result.status !== 0) throw coreHint(`exited ${result.status} after reporting success`)
+  try {
+    return checkPlan(parsed.data.data)
+  } catch (error) {
+    throw coreHint(`returned an invalid plan (${error instanceof Error ? error.message : error})`)
+  }
+}
 
 /**
  * Work root of the deployment: the configured executor directory, else `$DSH_SUPERAGENT_WORK_DIR`, else
@@ -238,13 +371,6 @@ export async function pruneStaleWorkspaces({ registry, root } = {}) {
 
 // ------------------------------------------------------------------ the gate
 
-/** Environment for a child git that must inspect exactly the clone at `-C`, not the caller's repository. */
-function gitEnv() {
-  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_OPTIONAL_LOCKS: '0' }
-  for (const key of GIT_CALLER_ENV) delete env[key]
-  return env
-}
-
 /** True when the proc mount hides process details (`hidepid=`), where an unreadable pid could hide a live worker. */
 async function hidepidActive(procMounts) {
   try {
@@ -314,153 +440,14 @@ function cwdReason(pids) {
   return `cwd in use by pid ${pids[0]}`
 }
 
-/** Run git in `path` without a terminal, optional locks, or the caller's repository variables. */
-async function git(path, args) {
-  try {
-    const { stdout, stderr } = await execFileAsync('git', ['-C', path, ...args], {
-      encoding: 'utf8',
-      env: gitEnv(),
-      timeout: 60_000,
-      maxBuffer: 4 * 1024 * 1024,
-    })
-    return { ok: true, out: stdout, err: stderr }
-  } catch (error) {
-    if (error?.code === 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER') {
-      return { ok: false, out: error.stdout ?? '', err: 'git output exceeded 4 MiB' }
-    }
-    if (error?.killed) return { ok: false, out: error.stdout ?? '', err: 'timed out after 60s' }
-    return { ok: false, out: error?.stdout ?? '', err: error?.stderr ?? error?.message ?? '' }
-  }
-}
-
-/** One porcelain line count, split into untracked and tracked changes for a readable reason. */
-function dirtyReason(porcelain) {
-  let untracked = 0
-  let modified = 0
-  for (const line of porcelain.split('\n')) {
-    if (line.trim() === '') continue
-    if (line.startsWith('?? ')) untracked += 1
-    else modified += 1
-  }
-  const parts = []
-  if (untracked > 0) parts.push(`${untracked} untracked path${untracked === 1 ? '' : 's'}`)
-  if (modified > 0) parts.push(`${modified} modified path${modified === 1 ? '' : 's'}`)
-  return parts.length > 0 ? parts.join(', ') : 'working tree not clean'
-}
-
-/** The unpushed commit count, or an error reason when the comparison itself cannot run. */
-async function unpublishedReason(path) {
-  const upstream = await git(path, ['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'])
-  if (upstream.ok && upstream.out.trim() !== '') {
-    const count = await git(path, ['rev-list', '--count', `${upstream.out.trim()}..HEAD`])
-    if (!count.ok) return { reason: `cannot compare HEAD with ${upstream.out.trim()}` }
-    const commits = Number(count.out.trim())
-    if (commits > 0) return { reason: `${commits} commit${commits === 1 ? '' : 's'} not pushed` }
-    return { upstream: upstream.out.trim() }
-  }
-  const originMain = await git(path, ['rev-parse', 'origin/main'])
-  if (!originMain.ok) return { reason: 'no upstream and no origin/main to compare' }
-  const count = await git(path, ['rev-list', '--count', 'origin/main..HEAD'])
-  if (!count.ok) return { reason: 'cannot compare HEAD with origin/main' }
-  const commits = Number(count.out.trim())
-  if (commits > 0) return { reason: `${commits} commit${commits === 1 ? '' : 's'} not pushed` }
-  return { upstream: null }
-}
-
-/**
- * The remote a branch actually tracks, so the record names the repository that holds the published commit rather
- * than assuming `origin`. Falls back to `origin`, then to the first configured remote.
- */
-async function trackedRemote(path, branch, names) {
-  if (branch !== null) {
-    const configured = await git(path, ['config', '--get', `branch.${branch}.remote`])
-    const name = configured.ok ? configured.out.trim() : ''
-    if (name !== '' && name !== '.') return name
-  }
-  if (names.includes('origin')) return 'origin'
-  return names[0]
-}
-
-/**
- * Inspect one ticket-shaped directory. `{ ok: true, record }` means the reconstructibility gate passed and the record
- * fields were captured; `{ ok: false, reason }` means it must be kept.
- */
-async function inspectClone(path) {
-  const holders = await cwdHolders(path)
-  if (holders.unavailable) return { ok: false, reason: 'cannot scan /proc to prove nothing is using it' }
-  if (holders.pids.length > 0) return { ok: false, reason: cwdReason(holders.pids) }
-
-  const status = await git(path, ['status', '--porcelain'])
-  if (!status.ok) return { ok: false, reason: `git status failed: ${firstLine(status.err) || 'unknown error'}` }
-  if (status.out.trim() !== '') return { ok: false, reason: dirtyReason(status.out) }
-
-  const remotes = await git(path, ['remote'])
-  if (!remotes.ok) return { ok: false, reason: `git remote failed: ${firstLine(remotes.err) || 'unknown error'}` }
-  const names = remotes.out.split('\n').map(name => name.trim()).filter(Boolean)
-  if (names.length === 0) return { ok: false, reason: 'no remote (the clone is the only copy)' }
-
-  const pushed = await unpublishedReason(path)
-  if (pushed.reason) return { ok: false, reason: pushed.reason }
-
-  const head = await git(path, ['rev-parse', 'HEAD'])
-  const branch = await git(path, ['rev-parse', '--abbrev-ref', 'HEAD'])
-  const originMain = await git(path, ['rev-parse', 'origin/main'])
-  const branchName = branch.ok ? branch.out.trim() : ''
-  const name = branchName === '' || branchName === 'HEAD' ? null : branchName
-  const remoteName = await trackedRemote(path, name, names)
-  const remoteUrl = await git(path, ['remote', 'get-url', remoteName])
-  if (!head.ok || !remoteUrl.ok) {
-    return { ok: false, reason: `cannot read HEAD or the ${remoteName} remote URL` }
-  }
-  return {
-    ok: true,
-    record: {
-      name: basename(path),
-      path,
-      head: head.out.trim(),
-      originMain: originMain.ok ? originMain.out.trim() : null,
-      branch: name,
-      upstream: pushed.upstream,
-      remote: remoteUrl.out.trim(),
-      remoteName,
-    },
-  }
-}
-
-/** First non-empty line of git stderr, for a one-line reason. */
-function firstLine(text) {
-  return String(text ?? '').split('\n').map(line => line.trim()).find(Boolean) ?? ''
-}
-
 // ------------------------------------------------------------------ planning
-
-/** Total size of one entry without following symlinks; an unreadable subtree is reported, not fatal. */
-async function sizeOf(path) {
-  let info
-  try {
-    info = await lstat(path)
-  } catch {
-    return 0
-  }
-  if (!info.isDirectory()) return info.size
-  let total = 0
-  let names
-  try {
-    names = await readdir(path)
-  } catch {
-    return 0
-  }
-  for (const name of names) total += await sizeOf(join(path, name))
-  return total
-}
 
 /**
  * Build the plan: every direct child of `root`, its size, and either `reclaim` or the reason it is kept.
  *
- * Unknown entries (no `.git`, or a name that is not `<name>-<hex>`, or a plain file) are never reclaimed. `--keep`
- * and `--keep-days` only delay an otherwise passing entry; they never override a failed gate. `skipDirectories` maps
- * a directory to the open Ticket that owns it; those are kept for that reason even when the gate passes, which only
- * makes the sweep less aggressive. `blockedReason` (an unreadable open-ticket answer) keeps every passing entry.
+ * The planner is the Rust binary (`crates/wca-core`); there is no JavaScript copy. This wrapper only adapts the
+ * inputs (`skipDirectories` may be a `Map` or an iterable of directory names, exactly as before), runs the
+ * binary, and validates its envelope before returning the mutable plain objects the CLI and delete path expect.
  */
 export async function planWork({
   root,
@@ -470,97 +457,15 @@ export async function planWork({
   skipDirectories = new Map(),
   blockedReason,
 }) {
-  const entries = []
-  let children = []
-  try {
-    children = await readdir(root, { withFileTypes: true })
-  } catch (error) {
-    if (error.code === 'ENOENT') children = []
-    else throw new Error(`cannot read the work root ${root}: ${error.code ?? error.message}`)
-  }
-  children.sort((a, b) => a.name.localeCompare(b.name))
   const pairs = skipDirectories instanceof Map
     ? [...skipDirectories]
     : [...skipDirectories].map(directory => [directory, directory])
-  const skip = new Map(pairs.map(([directory, ticket]) => [resolve(directory), String(ticket)]))
-
-  for (const child of children) {
-    const path = join(root, child.name)
-    try {
-      const bytes = await sizeOf(path)
-      const base = { name: child.name, path, bytes }
-      if (!child.isDirectory()) {
-        entries.push({ ...base, action: 'unknown', reason: 'not a directory' })
-        continue
-      }
-      let hasGit
-      try {
-        await lstat(join(path, '.git'))
-        hasGit = true
-      } catch {
-        hasGit = false
-      }
-      if (!hasGit) {
-        entries.push({ ...base, action: 'unknown', reason: 'not a ticket clone: no .git' })
-        continue
-      }
-      if (!TICKET_DIR.test(child.name)) {
-        entries.push({ ...base, action: 'unknown', reason: 'not a ticket clone: name is not <name>-<hex>' })
-        continue
-      }
-      if (skip.has(resolve(path))) {
-        entries.push({ ...base, action: 'keep', reason: `open ticket ${skip.get(resolve(path))} is using this directory` })
-        continue
-      }
-      const inspected = await inspectClone(path)
-      if (!inspected.ok) {
-        entries.push({ ...base, action: 'keep', reason: inspected.reason })
-        continue
-      }
-      entries.push({
-        ...base,
-        action: 'reclaim',
-        mtimeMs: (await stat(path)).mtimeMs,
-        record: {
-          version: 1,
-          ...inspected.record,
-          bytes,
-          when: new Date(now).toISOString(),
-        },
-      })
-    } catch (error) {
-      entries.push({ name: child.name, path, bytes: 0, action: 'keep', reason: `cannot inspect: ${error.message}` })
-    }
-  }
-
-  // The recency cushions only decide *when* a passing entry is eligible. Sort the passing entries newest first so
-  // `--keep N` is stable regardless of readdir order.
-  const passing = entries.filter(entry => entry.action === 'reclaim')
-  passing.sort((a, b) => b.mtimeMs - a.mtimeMs || a.name.localeCompare(b.name))
-  for (let index = 0; index < passing.length; index += 1) {
-    if (index < keep) passing[index].reason = `among the newest ${keep} directories (--keep)`
-    else if (keepDays > 0 && now - passing[index].mtimeMs < keepDays * DAY_MS) {
-      passing[index].reason = `modified less than ${keepDays} days ago (--keep-days)`
-    }
-    if (passing[index].reason !== undefined) passing[index].action = 'keep'
-  }
-  if (blockedReason !== undefined) {
-    for (const entry of entries) {
-      if (entry.action === 'reclaim') {
-        entry.action = 'keep'
-        entry.reason = blockedReason
-      }
-    }
-  }
-  const reclaimable = entries.filter(entry => entry.action === 'reclaim')
-  return {
-    root,
-    entries,
-    reclaimable: reclaimable.length,
-    reclaimableBytes: reclaimable.reduce((total, entry) => total + entry.bytes, 0),
-    kept: entries.length - reclaimable.length,
-    unknown: entries.filter(entry => entry.action === 'unknown').length,
-  }
+  const skip = Object.fromEntries(
+    pairs.map(([directory, ticket]) => [resolve(directory), String(ticket)]),
+  )
+  const request = { root, keep, keepDays, now, skipDirectories: skip }
+  if (blockedReason !== undefined) request.blockedReason = blockedReason
+  return runCore(['work-plan'], JSON.stringify(request))
 }
 
 // ------------------------------------------------------------------ reclaim

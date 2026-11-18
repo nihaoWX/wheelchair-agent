@@ -30,6 +30,15 @@ jobs:
         with:
           node-version: "24"
 
+      # The planner lives in the standalone Rust binary and `src/shared/work.js` has no JavaScript
+      # fallback, so the binary must exist before any JS check runs. ubuntu-latest ships rustup/cargo.
+      # Built once; the tests below use the artifact from `build/artifacts/`.
+      - name: Build the Rust core binary
+        run: bash build/build-core.sh
+
+      - name: Rust core planner tests
+        run: cargo test --release --workspace
+
       - name: Syntax-check every JS file
         run: npm run check
 
