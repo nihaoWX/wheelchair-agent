@@ -238,12 +238,32 @@ pub fn json_number(value: f64) -> serde_json::Value {
 /// JavaScript number-to-string, including the values serde JSON cannot represent directly.
 pub fn js_number(value: f64) -> String {
     if value.is_nan() {
-        "NaN".to_string()
-    } else if value == f64::INFINITY {
-        "Infinity".to_string()
-    } else if value == f64::NEG_INFINITY {
-        "-Infinity".to_string()
-    } else if value.fract() == 0.0 && value.abs() < 1e21 {
+        return "NaN".to_string();
+    }
+    if value == f64::INFINITY {
+        return "Infinity".to_string();
+    }
+    if value == f64::NEG_INFINITY {
+        return "-Infinity".to_string();
+    }
+    if value == 0.0 {
+        return "0".to_string();
+    }
+    let magnitude = value.abs();
+    // ECMAScript switches to exponent notation outside [1e-6, 1e21).
+    if magnitude >= 1e21 || magnitude < 1e-6 {
+        let text = format!("{:e}", value);
+        if let Some((mantissa, exponent)) = text.split_once('e') {
+            let exponent: i32 = exponent.parse().unwrap_or(0);
+            return if exponent >= 0 {
+                format!("{}e+{}", mantissa, exponent)
+            } else {
+                format!("{}e{}", mantissa, exponent)
+            };
+        }
+        return text;
+    }
+    if value.fract() == 0.0 && magnitude <= i64::MAX as f64 {
         format!("{}", value as i64)
     } else {
         format!("{}", value)
@@ -330,5 +350,14 @@ mod tests {
     fn numbers_render_like_javascript() {
         assert_eq!(number(0.0), "0");
         assert_eq!(number(2.0), "2");
+        assert_eq!(js_number(1e21), "1e+21");
+        assert_eq!(js_number(1.23e21), "1.23e+21");
+        assert_eq!(js_number(1e-7), "1e-7");
+        assert_eq!(js_number(1e-6), "0.000001");
+        assert_eq!(
+            js_number(123_456_789_012_345_680_000.0),
+            "123456789012345680000"
+        );
+        assert_eq!(js_number(-0.0), "0");
     }
 }
