@@ -24,7 +24,10 @@ fn text_defaults_fallbacks_lengths_and_messages() {
     assert_eq!(ok_value(json!({"kind":"text"}), json!("  hi  ")), "hi");
     assert_eq!(ok_value(json!({"kind":"text"}), Value::Null), "");
     assert_eq!(
-        ok_value(json!({"kind":"text","fallbackPresent":true,"fallback":"x"}), json!("   ")),
+        ok_value(
+            json!({"kind":"text","fallbackPresent":true,"fallback":"x"}),
+            json!("   ")
+        ),
         "x"
     );
     assert_eq!(
@@ -55,7 +58,10 @@ fn integer_coerces_like_number_and_uses_the_same_messages() {
     assert_eq!(ok_value(json!({"kind":"integer"}), json!("5")), 5);
     assert_eq!(ok_value(json!({"kind":"integer"}), json!(true)), 1);
     assert_eq!(
-        ok_value(json!({"kind":"integer","fallbackPresent":true,"fallback":2}), Value::Null),
+        ok_value(
+            json!({"kind":"integer","fallbackPresent":true,"fallback":2}),
+            Value::Null
+        ),
         2
     );
     assert_eq!(
