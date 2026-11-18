@@ -109,7 +109,8 @@ SPV 挂的是**普通 dsh 会话的全套工具**再加三个自己的：文件�
 `str_replace_editor`）、`bash`、`subagent` / `subagent_fork`、`todo_write`、`web_search`、`goal`、
 `ask_user_question`、后台作业、skills、plan mode、`/compact`。写文件与跑命令都能用，但**交付**仍然只有一条路：
 改代码并需要 PR 的活走 `spv_dispatch`，派给 worker；`subagent` 用于不落盘、不出 PR 的研究与查询。
-这个分工写在 preset 的 persona 里，不靠少给工具来约束。
+这个分工**只写在 `spv_dispatch` 的工具描述里**，不靠少给工具来约束，也**不写 persona**：SPV 的系统提示词
+与普通 dsh 会话完全一致（操作者 2026-11-18 定案，`tests/test-preset.mjs` 守着这条）。
 
 会话里让 agent 干活即它自己会调两个 spv 工具：
 

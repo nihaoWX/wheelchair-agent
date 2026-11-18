@@ -133,8 +133,12 @@ worker 环境里的 `DSH_SUPERAGENT_GITHUB_REPOSITORY` 永远是面板那一个�
 「本文件刻意不挂 subagent / todo / web / plugin-manager / goal / plan-mode」作废。现在照 dsh-tui 的
 liangshen preset 原样挂全套标准工具行（`tool-fs-search`、`bootstrap-filesystem`、`tool-jobs`、
 `tool-goal`、`planning`、`delegation`（含 `subagent`）、`tool-ask-user`、`tool-todo`、`tool-web`），
-`tool-fs` 不再只读。`subagent` 用于不需要 PR 的调研，要交付 PR 的代码活仍走 `spv_dispatch`——
-这条分工写在 persona 里，不靠少挂工具来实现。
+`tool-fs` 不再只读。`subagent` 用于不需要 PR 的调研，要交付 PR 的代码活仍走 `spv_dispatch`。
+
+**修订（2026-11-18，操作者）**：这条分工原本写在 preset 的 `persona` 里，现在**整段 persona 已删除**——
+SPV 的系统提示词与普通 dsh 会话完全一致，不再注入任何关于 wheelchair-agent / spv 的说明（`AGENTS.md`
+与工具元数据已经交代过）。派单契约全部搬进 `spv_dispatch` 的工具描述；`tests/test-preset.mjs` 断言
+渲染出的 preset 里没有 persona、且该描述含"交付走派单"和"不等不轮询"两条。
 
 **不照抄 liangshen 的 preset 本地插件**：`tool-bootstrap.mjs` / `instruction-hint.mjs` /
 `skill-search.mjs` / `custom-bash.mjs` 是 dsh-tui 包内的本地文件，不是 dsh 包。挂它们要把 **6 个**

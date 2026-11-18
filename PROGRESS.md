@@ -23,6 +23,10 @@
 **插口（hooks）**：stage 1（`#28`, `27d4463`）、stage 2（`#29`, `2788bbc`）、stage 3 面板「插口」
 （`#30`, main `35be1f5`）都已合并；新 host 需要一次冷安装才带 `hookView` 与第三段。
 
+**SPV 系统提示词**：与普通 dsh 会话完全一致——preset 里已无 `persona` 行；派单契约（不自己实现、交付走
+`spv_dispatch`、不等不轮询、复用 thread、插件/面板传 `cordis`、只转述 worker 说的）全在 `spv_dispatch`
+的工具描述里，由 `tests/test-preset.mjs` 守着。
+
 **Rust 核心**：`crates/wca-core` → `wheelchair-agent-core`（独立进程，JSON over stdin/stdout）。
 首个模块是回收计划（`planWork`），`src/shared/work.js` 只剩调用 + 校验 + 删除路径，**没有 JS 兜底**。
 构建：`bash build/build-core.sh`（需 cargo）；`install.sh` 把它装到 `~/.local/bin`，从不跑 cargo。
@@ -35,6 +39,10 @@
 
 # Completed
 
+- **去掉 SPV persona（`#32`,`ac916b4`）**：`preset/agent.cordis.yml` 的 `persona` 行整段删除，SPV 的系统
+  提示词与普通 dsh 会话一致；派单契约（不自己实现、交付走 `spv_dispatch`、不等不轮询、复用 thread、
+  插件/面板传 `cordis`、只转述 worker 说的）搬进 `spv_dispatch` 的工具描述；新增 `tests/test-preset.mjs`
+  当防回归门，并进了 `npm test`。
 - **Rust 核心第一步（`#31`,`54013f0`）**：回收计划搬进 `wheelchair-agent-core`（`work-plan` / `schema`
   子命令，envelope + 稳定错误码，输入全走 `Result`，畸形 stdin 不 panic）；`build/build-core.sh` 出产物、
   `install.sh` 拷到 `~/.local/bin` 并用 `cmp` 校验、CI 先 build 再跑 `cargo test`；parity 门是
