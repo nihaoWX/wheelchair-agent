@@ -2,9 +2,16 @@
 ## Concepts
 - HARNESS: The `*.md` files, `docs/`, and `steps/` mentioned in the "## Implementation" are called HARNESS.
 - Role of HARNESS: Ensure the continuity and stability of agent operations using a set of standardized work procedures.
-- How to create HARNESS: When a complex task requires one and the directory has none, create HARNESS there: minimum `ARCHITECTURE.md` + `PROGRESS.md`, plus `ARCHITECTURE/*.md`/`docs/`/`steps/` as needed.
+- How to create HARNESS: When a complex task requires one and the directory has none, create HARNESS there: minimum `ARCHITECTURE.md` + `PROGRESS.md`, plus `ARCHITECTURE/*.md`/`docs/` as needed (`INSTRUCTIONS.md` created by user).
 
 ## Implementation
+### `INSTRUCTIONS.md`
+Record the user's instructions and allow only the user to edit. If the content of this file conflicts with any content other than `ARCHITECTURE`, `PROGRESS`, etc. of this project, this file shall prevail and the remaining files shall be modified.
+
+- Not appear in the root dicectory of the working diectory.
+- Agent is not allowed to modify.
+- The agent MUST comply with the contents of this file.
+
 ### `PROGRESS.md` 
 Records the current work progress, what has been completed, what is in progress, current issues, and what to do next.
 
@@ -35,27 +42,28 @@ Research-task-specific: stores each step's data, scripts, reports, etc.
 WHEN AGENT READ THIS, YOU ARE WORKER.
 
 ## spv and worker
-- A supervisor(spv) oversees long-term, multi-project, high-level objectives.
-- A Worker focuses on a single project. In practice, a worker acts as an Arranger, delegating tasks to sub-agents (Executors) to break down complex assignments.
-- Different cwd: spv `bioagentforge/`, worker `research/<a task>`.
-- Different `.git`: spv manage `bioagentforge/.git`, worker manage `research/<a task>/.git`. Spv is free to use the `research/<a task>.git` of a worker, but worker cannot use the `bioagentforge/.git` of spv.
-- Different `AGENTS.md`: spv `bioagentforge/AGENTS.md`, worker `research/<a task>/AGENTS.md`. This strategy allows an agent to clearly understand its own identity, as the user specifies the agent's role within the "AGENT ROLE" section of the corresponding `AGENTS.md` file.
-
-## worker acts as Arranger:
-- AVOID performing tasks yourself, such as modifying code or consulting documentation; you may edit only HARNESS files and execute small/single-step tasks directly.
-- Is the primary maintainer of all HARNESS files, each updated at the right time: `PROGRESS.md` whenever the work state changes (must reflect the current state at the end of a session), `ARCHITECTURE.md` as the task develops (keep `# Chain` or `# Structure` current), `docs/PITFALLS/` as soon as a pitfall is encountered.
+- Supervisor (spv) communicate directly with users and perform multiple tasks simultaneously: Discussing with users, Oversees long-term/multi-project/high-level objectives, etc.
+- A Worker focuses on a single project.
+- Supervisor (spv) and Worker represent agent roles, Arranger and Executor denote working styles: In practice, a spv/worker acts as an Arranger, delegating tasks to sub-agents (Executors) to break down complex assignments.
+- Different cwd: spv `bioagentforge/`, worker `research/<a task>` or `tools/<a tool>`.
+- Different `.git`: spv manage `bioagentforge/.git`, worker manage `research/<a task>/.git` or `tools/<a tool>/.git`. Spv is free to use the `.git` of a worker, but worker cannot use the `.git` of spv.
+- Different `AGENTS.md`: spv `bioagentforge/AGENTS.md`, worker `research/<a task>/AGENTS.md` or `tools/<a tool>/AGENTS.md`. This strategy allows an agent to clearly understand its own identity, as the user specifies the agent's role within the "AGENT ROLE" section of the corresponding `AGENTS.md` file.
+ 
+## spv/worker acts as "Arranger" working styles:
+- AVOID performing tasks yourself, such as modifying code or consulting documentation; spv/worker may edit only HARNESS files and execute small/single-step tasks directly.
+- spv/worker is the primary maintainer of all HARNESS files, each updated at the right time: `PROGRESS.md` whenever the work state changes (must reflect the current state at the end of a session), `ARCHITECTURE.md` as the task develops (keep `# Chain` or `# Structure` current), `docs/PITFALLS/` as soon as a pitfall is encountered.
 - When a task may require a large amount of context, actively break down the task and invoke sub-agents. The git environment must be clean before delegating tasks.
 - Complex tasks (multi-step or context-heavy) must first delegate to two Executors in sequence: a Generator and an Evaluator. The Generator produces the work first; the Evaluator then reviews it adversarially (correctness, completeness, risks). Issues found MUST be fixed by the Generator; the cycle repeats until the Evaluator passes. If the Generator fails 3 consecutive rounds, the Arranger takes over: dispatch a new Executor or change strategy.
 - Task planning MUST be grounded in authoritative sources, e.g. dependency API docs, GitHub repositories, official tutorials, and literature.
 
-## worker's subagent acts as Executor:
+## spv's/worker's subagent acts as "Executor" working styles:
 - Executor is usually a sub-agent, responsible for actually carrying out the task.
 - When a task/sub-task may require a large amount of context, actively break down the task/sub-task and invoke sub-agents.
 - Must not modify `PROGRESS.md` and `ARCHITECTURE.md`; within HARNESS may write only to `docs/` and `steps/`.
 - After being delegated a task by the Arranger, must first inspect `ARCHITECTURE.md` and `PROGRESS.md`; consult other information only if information is still missing after reading them.
 - Must keep the git environment clean both before and after completing the task.
 - Before executing, review the necessary authoritative sources to constrain the scope of the TODO list.
-
+ 
 ## GIT
 - Each `research/<a task>/` is local-only - never push it. The worker only needs to submit local commits. 
 - Each `research/<a task>/` instead keeps its own repo to track text files (md, txt, py, R, rs...), never real task data. 
