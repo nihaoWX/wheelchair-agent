@@ -56,15 +56,20 @@ export function defineSpvTools(root, state) {
     {
       name: 'spv_dispatch',
       description:
-        'Hand one task to the background superagent service and return immediately. Use it when work should run ' +
-        'outside this conversation - a code change, a test run, a repository inspection - so you stay responsive ' +
-        'while it runs. The task is a single natural-language instruction; the worker has its own filesystem ' +
-        'access and reports once. The project argument selects which project the worker gets: "tools/<name>" or ' +
-        '"research/<name>". The optional preset selects the dsh agent preset the worker runs; omit it for ' +
-        'superagent\'s default. The call returns as soon as the task is queued: the worker reply arrives later by ' +
-        'itself as a new message on the same conversation thread. Do not wait for it, do not poll, and do not ' +
-        'call a tool to read it. Fails instead of queuing when the service is not running, because a queued task ' +
-        'with no reader looks dispatched but never runs.',
+        'Hand one self-contained task to a background worker and return immediately. Do not do implementation ' +
+        'work yourself: code changes and PR delivery go through this tool, because editing the repository here ' +
+        'leaves no prepare step, no branch, no PR and no review; the worker owns that path.\n\n' +
+        'The project argument is required and selects the clone the worker gets ("tools/<name>" or ' +
+        '"research/<name>"). The worker cannot see this ' +
+        'conversation, so the task must carry everything it needs, including the outcome and how to verify it. ' +
+        'Reuse the thread name for follow-ups on the same line of work. For dsh plugin, dsh web UI or panel ' +
+        'work pass preset "cordis" (creator mode); otherwise omit it.\n\n' +
+        'Do not wait, do not poll, and do not look for a tool that reads the result: there is no timeout and ' +
+        'no such tool. The result arrives later by itself as a new user message on the thread; "reply" means ' +
+        'the worker finished, "notice" needs the operator\'s attention. Fails instead of queuing when the ' +
+        'service is not running.\n\n' +
+        'Report only what the worker actually said: do not claim success on its behalf, and do not quietly ' +
+        'substitute your own attempt when it fails.',
       parameters: {
         type: 'object',
         additionalProperties: false,
@@ -72,7 +77,7 @@ export function defineSpvTools(root, state) {
         properties: {
           project: {
             type: 'string',
-            description: 'Project the worker operates on: "tools/<name>" or "research/<name>".',
+            description: 'Required. Project the worker gets a clone of: "tools/<name>" or "research/<name>".',
           },
           task: {
             type: 'string',

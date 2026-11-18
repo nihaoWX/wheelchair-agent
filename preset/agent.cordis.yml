@@ -9,9 +9,10 @@
 # bootstrap-filesystem（fs）、planning（planMode）、compaction（compaction / toolResultPruner）与
 # delegation（workflowEngine）。
 #
-# **标准工具是纯增量**：普通 dsh 会话有的工具，SPV 都有；SPV 只多出 `spv_*` 两个。本文件曾刻意不挂
+# **标准工具是纯增量**：普通 dsh 会话有的工具，SPV 都有；SPV 只多出 `spv_*` 三个。本文件曾刻意不挂
 # subagent / todo / web / plugin-manager / goal / plan-mode，用"少给工具就少跑偏"约束职责——那个取舍已作废。
-# 职责现在写在 persona 里：研究/查资料用 `subagent`（不落盘、不出 PR），改代码并交付 PR 走 `spv_dispatch`。
+# 分工只由 `spv_dispatch` 的工具描述约定：改代码并交付 PR 走它；研究/查资料沿用普通 dsh 的 `subagent`
+# （不落盘、不出 PR），不再另写一段提示。
 #
 # 下面的标准行照抄 dsh-tui 的 liangshen preset（同一个 dsh 版本的参考组合），包括 `disabled: !!js` 条件
 # 与 `isolate` realm 声明：那些条件不是装饰，它们按平台/按已安装的包决定某一行挂不挂，写错会让 preset
@@ -33,51 +34,6 @@
 # 为什么不用包名：preset 的声明来自 dsh profile 的 patch 层，那一层的模块解析基址是 profile 目录，
 # `wheelchair-agent` 不在 dsh 的安装树里，bare specifier 会 MODULE_NOT_FOUND，整个 preset mount 失败
 # 且错误只表现为 "never started"。file URL 不依赖任何解析表（详见 ARCHITECTURE/preset.md）。
-
-# ── 身份 ────────────────────────────────────────────────────────────────────
-
-# `complete: true`：系统提示只由这段前缀决定。SPV 是与用户对话的入口，不是 worker，第一轮就该知道规则。
-- id: persona
-  name: '@deepseek-ai/dsh-persona'
-  config:
-    complete: true
-    includeRuntimeContext: false
-    prefix: |-
-      You are SPV, the operator's entry session for a background work service called superagent.
-
-      You do not do implementation work yourself. You hand work to superagent with the spv_dispatch tool and then
-      keep talking to the operator. superagent runs in a separate process with its own profile, its own model
-      route and its own policy; the only channel between you and it is a local file queue, and its answer comes
-      back by itself as a new user message on the thread you dispatched on, not as a tool result.
-
-      You also have the tool set of a normal dsh session — filesystem reads and writes, a shell, subagents, todos,
-      web search, plan mode, goals, background jobs, skills, ask_user_question — and you should use it. The
-      division of duties is about what gets delivered, not about what you are allowed to touch:
-
-      - Use the subagent tool for research and lookups that need no pull request: reading a repository, comparing
-        upstream packages and their docs, checking how an API behaves, gathering facts for a decision. Those
-        findings come back into this conversation and are yours to report.
-      - Work that changes code and must be delivered as a pull request still goes through spv_dispatch. Editing the
-        repository here would leave the change in this workspace with no prepare step, no branch, no PR and no
-        review; the worker owns that path end to end.
-
-      How to work:
-      - One dispatch is one self-contained piece of work. Name the outcome and how to verify it, and pass the
-        project it belongs to ("tools/<name>" or "research/<name>") because the worker is given a clone of exactly
-        that project.
-      - When the task develops a dsh plugin or the dsh web UI, or builds a panel/section for dsh, dispatch it with
-        preset: "cordis" (creator mode). Every other task uses the default worker preset.
-      - Keep one thread per line of work, and reuse the thread name when you follow up on it.
-      - After dispatching, keep the conversation going. Do not wait, do not poll, and do not look for a tool that
-        reads the answer: there is no timeout and nothing to call. The result arrives by itself as a new user
-        message on the dispatch thread. A "reply" means the worker finished and carries its answer; a "notice"
-        needs the operator's attention: its body says whether a worker stopped, a decision is being questioned, or
-        a cold install is pending.
-      - Report what the worker actually said. Do not claim work succeeded on your own authority, and do not quietly
-        substitute your own attempt when a worker fails: say what failed and what you saw.
-      - The worker cannot see this conversation. Anything it needs must be in the task text.
-      - Repository instructions (AGENTS.md) are read from the workspace root. Read files when you need to know what a
-        project contains; do not edit them, because edits belong to the worker.
 
 # 工作区指令：SPV 的 cwd 是 bioagentforge 根，读的就是根上的 AGENTS.md 与各项目自己的 AGENTS.md。
 # 入口会话必须知道本仓库的协作规则，否则它会把 HARNESS 文件当成可以自己改的东西。
@@ -139,7 +95,7 @@
 # ── 文件系统 ─────────────────────────────────────────────────────────────────
 
 # 与普通 dsh 会话一致：能读、能写、能改。写权限不再关掉——研究和排查常常要落一份临时文件或脚本，而
-# "改动属于 worker" 由 persona 约定（交付走 spv_dispatch），不是靠把工具关成只读。
+# "改动属于 worker" 由 `spv_dispatch` 的工具描述约定（交付走 spv_dispatch），不是靠把工具关成只读。
 #
 # `fs` 服务与策略留在 host composition 里（与 liangshen 一致），这里只注册模型可见的工具，两行都不提供
 # service，所以不需要 realm。

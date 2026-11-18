@@ -42,6 +42,9 @@ jobs:
       - name: Syntax-check every JS file
         run: npm run check
 
+      - name: SPV preset has no persona; spv_dispatch carries the dispatch contract
+        run: node tests/test-preset.mjs
+
       - name: Panel settings store and backend consumers
         run: node tests/test-settings.mjs
 
