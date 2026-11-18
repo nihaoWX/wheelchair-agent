@@ -21,15 +21,13 @@
  * `spawnSync` call is bounded by a timeout and an output cap. The delete path below still re-checks cwd holders
  * asynchronously immediately before each removal.
  */
-import { spawnSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
 import { appendFile, lstat, mkdir, readFile, readdir, readlink, realpath, rm, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
-import { fileURLToPath } from 'node:url'
 
+import { coreHint, runCore } from './queue.js'
 import { resolveData } from './home.js'
-import { SchemaError, object } from './schema.js'
+import { SchemaError } from './schema.js'
 
 export { RECLAIMED_FILE } from './home.js'
 
@@ -41,29 +39,6 @@ export const KEEP_DAYS_DEFAULT = 0
  * 0 because `work restored` rebuilds a clone from the record in a moment; recency alone buys nothing.
  */
 export const KEEP_DEFAULT = 0
-
-/**
- * The Rust planner binary, built by `bash build/build-core.sh`. A checkout runs `build/artifacts/…` directly;
- * an installed preset (which does not carry build output) runs the copy `install.sh` puts on PATH as
- * `wheelchair-agent-core`.
- *
- * There is deliberately no JavaScript fallback: a missing or invalid binary is a broken build, and silently
- * planning with a second implementation would defeat the point of moving the gate into Rust. The error names
- * the exact fix.
- */
-const CORE_BINARY = '../../build/artifacts/wheelchair-agent-core-linux-x64'
-const CORE_COMMAND = 'wheelchair-agent-core'
-const CORE_TIMEOUT_MS = 5 * 60_000
-const CORE_MAX_BUFFER = 16 * 1024 * 1024
-
-function coreBinary() {
-  const fromCheckout = fileURLToPath(new URL(CORE_BINARY, import.meta.url))
-  return existsSync(fromCheckout) ? fromCheckout : CORE_COMMAND
-}
-
-function coreHint(detail) {
-  return new Error(`the Rust core ${detail}; run "bash build/build-core.sh" to build it`)
-}
 
 const isObject = value => value !== null && typeof value === 'object' && !Array.isArray(value)
 
@@ -87,17 +62,6 @@ function nullableText(value, name) {
   if (typeof value !== 'string') throw new SchemaError(`${name} must be a string or null`)
   return value
 }
-
-/** The envelope is validated through `schema.js`, the same tiny validator the Source kinds use. */
-const envelopeSchema = object({
-  ok: value => {
-    if (typeof value !== 'boolean') throw new SchemaError('must be a boolean')
-    return value
-  },
-  data: value => value,
-  code: value => (value === undefined ? null : nullableText(value, 'code')),
-  message: value => (value === undefined ? null : nullableText(value, 'message')),
-})
 
 function checkRecord(value) {
   if (!isObject(value)) throw new SchemaError('record must be an object')
@@ -132,63 +96,20 @@ function checkEntry(value, index) {
   return value
 }
 
-const planSchema = object({
-  root: value => {
-    if (typeof value !== 'string') throw new SchemaError('must be a string')
-    return value
-  },
-  entries: value => {
-    if (!Array.isArray(value)) throw new SchemaError('must be a list')
-    return value.map((entry, index) => checkEntry(entry, index))
-  },
-  reclaimable: value => count(value, 'must be a non-negative integer'),
-  reclaimableBytes: value => finiteNumber(value, 'must be a finite number'),
-  kept: value => count(value, 'must be a non-negative integer'),
-  unknown: value => count(value, 'must be a non-negative integer'),
-})
-
-/** Validate the planner data through `schema.js` and restore the runtime's display order. */
+/** Validate the planner data and restore the runtime's `localeCompare` display order. */
 function checkPlan(value) {
-  const plan = planSchema.parse(value)
+  if (!isObject(value)) throw new SchemaError('data must be an object')
+  if (typeof value.root !== 'string') throw new SchemaError('data.root must be a string')
+  if (!Array.isArray(value.entries)) throw new SchemaError('data.entries must be a list')
+  const entries = value.entries.map((entry, index) => checkEntry(entry, index))
+  const reclaimable = count(value.reclaimable, 'data.reclaimable')
+  const reclaimableBytes = finiteNumber(value.reclaimableBytes, 'data.reclaimableBytes')
+  const kept = count(value.kept, 'data.kept')
+  const unknown = count(value.unknown, 'data.unknown')
   // The planner sorts deterministically in Rust; the CLI's output order has always been
   // `localeCompare`, so restore that here rather than embedding ICU in the binary.
-  plan.entries.sort((left, right) => left.name.localeCompare(right.name))
-  return plan
-}
-
-/** Run one core subcommand and return the validated `data` of a successful envelope. */
-function runCore(args, input) {
-  const result = spawnSync(coreBinary(), args, {
-    input,
-    encoding: 'utf8',
-    timeout: CORE_TIMEOUT_MS,
-    maxBuffer: CORE_MAX_BUFFER,
-  })
-  if (result.error !== undefined) {
-    if (result.error.code === 'ENOENT') throw coreHint('binary was not found')
-    if (result.error.code === 'EACCES') throw coreHint('binary is not executable')
-    if (result.error.code === 'ETIMEDOUT') {
-      throw new Error(`the Rust core timed out after ${CORE_TIMEOUT_MS / 1000} seconds`)
-    }
-    throw new Error(`the Rust core failed to run: ${result.error.message}`)
-  }
-  if (typeof result.stdout !== 'string') throw coreHint('printed no output')
-  let envelope
-  try {
-    envelope = JSON.parse(result.stdout)
-  } catch (error) {
-    throw coreHint(`returned unparseable JSON (${error?.message ?? error})`)
-  }
-  const parsed = envelopeSchema.safeParse(envelope)
-  if (!parsed.success) throw coreHint(`returned an invalid envelope (${parsed.error.message})`)
-  const { ok, code, message } = parsed.data
-  if (!ok) throw new Error(message || `the Rust core failed (${code ?? 'unknown'})`)
-  if (result.status !== 0) throw coreHint(`exited ${result.status} after reporting success`)
-  try {
-    return checkPlan(parsed.data.data)
-  } catch (error) {
-    throw coreHint(`returned an invalid plan (${error instanceof Error ? error.message : error})`)
-  }
+  entries.sort((left, right) => left.name.localeCompare(right.name))
+  return { root: value.root, entries, reclaimable, reclaimableBytes, kept, unknown }
 }
 
 /**
@@ -465,7 +386,13 @@ export async function planWork({
   )
   const request = { root, keep, keepDays, now, skipDirectories: skip }
   if (blockedReason !== undefined) request.blockedReason = blockedReason
-  return runCore(['work-plan'], JSON.stringify(request))
+  const data = runCore(['work-plan'], JSON.stringify(request))
+  try {
+    return checkPlan(data)
+  } catch (error) {
+    if (error instanceof SchemaError) throw coreHint(`returned an invalid plan (${error.message})`)
+    throw error
+  }
 }
 
 // ------------------------------------------------------------------ reclaim
