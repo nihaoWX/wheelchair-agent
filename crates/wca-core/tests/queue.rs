@@ -56,6 +56,20 @@ fn request(value: Value) -> QueueRequest {
     serde_json::from_value(value).expect("a valid queue request")
 }
 
+/// The process umask, from `/proc/self/status` (Linux; the artifact is linux-x64). Node's
+/// `writeFile(..., { mode: 0o644 })` is masked by it, so the Rust writer must be too.
+fn current_umask() -> u32 {
+    fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix("Umask:"))
+                .and_then(|value| u32::from_str_radix(value.trim(), 8).ok())
+        })
+        .unwrap_or(0o022)
+}
+
 fn set_age(path: &Path, seconds_ago: f64) {
     let target = SystemTime::now() - Duration::from_secs_f64(seconds_ago);
     fs::File::open(path).unwrap().set_modified(target).unwrap();
@@ -177,7 +191,8 @@ fn write_message_is_keyed_by_id_and_uses_the_safe_name() {
     );
     assert_eq!(
         fs::metadata(&file).unwrap().permissions().mode() & 0o777,
-        0o644
+        0o644u32 & !current_umask(),
+        "the requested 0o644 mode is masked by the process umask, exactly like Node's writeFile"
     );
 
     queue::write_message(&dirs, &json!({ "id": "a b/c", "text": "again" })).unwrap();

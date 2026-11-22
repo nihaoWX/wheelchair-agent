@@ -7,7 +7,7 @@
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::os::unix::fs::OpenOptionsExt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use schemars::JsonSchema;
@@ -240,7 +240,6 @@ pub fn write_message(dirs: &QueueDirs, message: &Value) -> Result<(), QueueError
     file.write_all(text.as_bytes())
         .map_err(|error| QueueError::io(&error, &format!("write {}", quote(&temporary))))?;
     drop(file);
-    let _ = fs::set_permissions(&temporary, fs::Permissions::from_mode(0o644));
     let target = util::join(&dirs.outbox, &format!("{}.json", safe));
     fs::rename(&temporary, &target).map_err(|error| {
         QueueError::io(
