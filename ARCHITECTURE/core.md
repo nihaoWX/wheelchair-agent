@@ -21,22 +21,45 @@
 ## 契约
 
 ```
-wheelchair-agent-core work-plan     # stdin: 一个 JSON 请求；stdout: 一个 envelope
-wheelchair-agent-core schema        # 打印请求与响应的 JSON Schema
+wheelchair-agent-core work-plan     # 工单目录的规划与回收判定
+wheelchair-agent-core queue-op      # pending/done/outbox 的全部原语（列目录、读、消费、隔离、写）
+wheelchair-agent-core schema-check  # 求值一个序列化后的校验器
+wheelchair-agent-core schema        # 打印各子命令的请求与响应 JSON Schema
 ```
 
 - envelope：`{"ok":true,"data":…}` 或 `{"ok":false,"code":…,"message":…}`；exit 0 / 非零。
-- 错误码是稳定的字符串：`invalid_request`（含畸形 JSON）、`plan_failed`、`usage`（exit 2）、`schema_failed`。
+- 错误码是稳定的字符串：`invalid_request`（含畸形 JSON）、`plan_failed`、`schema_error`、`usage`（exit 2）、`schema_failed`。
 - 调用方提交的一切都走 `Result`：`crates/wca-core/src` 里**没有** `unwrap` / `expect` / `panic!`。
   畸形 stdin 给干净的 envelope，不给 backtrace——这条由 `crates/wca-core/tests/cli.rs` 断言。
+
+## 已经搬过去的模块
+
+| JS 模块 | 子命令 | parity 门（零改动才是通过） |
+|---|---|---|
+| `src/shared/work.js` | `work-plan` | `tests/test-work.mjs` |
+| `src/shared/queue.js` | `queue-op` | `tests/test-hooks.mjs`、`test-inbox.mjs`、`test-settings.mjs`、`test-home.mjs` |
+| `src/shared/schema.js` | `schema-check` | 同上（四个套件都靠 schema 的错误文案） |
+
+JS 侧只剩调用壳，签名不变：`dirsOf` 仍同步，异步队列helper 仍返回 `undefined`，
+`text`/`integer`/`records` 仍返回校验函数，`object()` 仍返回 `{parse,safeParse}`，`SchemaError` 仍是 JS class
+（`instanceof` 不受影响）。**唯一的进程桥**是 `queue.js` 里的 `runCore`（`spawnSync`，5 分钟超时、16 MiB 上限、
+envelope 解析、缺产物时提示 `bash build/build-core.sh`）——放在 `queue.js` 是因为 `install.sh` 与 webui 夹具只拷
+`queue.js` 这一个文件；`work.js` 与 `schema.js` 复用它。
+
+搬过去之后要记得的三件事（都在 PR #33 里写明了）：
+
+1. `pendingNames` 对同 mtime 的名字按字节序排，旧 JS 是 `localeCompare`——写队列的是十六进制 id，两者顺序一致。
+2. outbox 由 `serde_json` 美化输出，大数可能写成指数形式（`1.2345678901234568e+20`）；解析回来是同一个数。
+3. `object()` / `records({extra})` 现在需要从 `schema.js` 读校验器描述（要序列化给二进制）；当前唯一传自定义
+   reader 的调用方是 `work.js`，它已改为直接校验自己的 envelope。
 
 ## 构建与安装
 
 - `bash build/build-core.sh` → `build/artifacts/wheelchair-agent-core-linux-x64`（strip 过，已在 `.gitignore`）。
 - `install.sh` 把它拷到 `~/.local/bin/wheelchair-agent-core`（与薄壳同目录），`--check` 用 `cmp` 比对
   checkout 与已装副本。**install.sh 从不跑 cargo**：产物缺失就 FAIL 并打印 `bash build/build-core.sh`。
-- `src/shared/work.js` 先找 checkout 里的 `build/artifacts/…`，找不到才用 PATH 上的
-  `wheelchair-agent-core`；两者都没有就抛错，**不退回 JS**。
+- `src/shared/queue.js` 的 `runCore` 先找 checkout 里的 `build/artifacts/…`，找不到才用 PATH 上的
+  `wheelchair-agent-core`；两者都没有就抛错，**不退回 JS**（`work.js` 与 `schema.js` 经它调用）。
 - CI（`.github/workflows/ci.yml`）在 JS 检查之前先 build 一次，再跑 `cargo test --release --workspace`。
 
 ## 未定的两件事
@@ -44,5 +67,5 @@ wheelchair-agent-core schema        # 打印请求与响应的 JSON Schema
 1. **分发**：现在冷安装的前置多了一步"先跑 `build-core.sh`"，也就是装的人要有 cargo 和 crates.io。
    这跟"面向大众、`install.sh` 一键安装"冲突，必须在真发布前解决：按 `os`/`arch` 提交预编译产物
    （`dsh` 自己的做法：按平台拆包 + `os`/`cpu` 门禁），或让 `build-core.sh` 在缺产物时下载对应发布件。
-2. **平台硬编码**：`src/shared/work.js` 的 `CORE_BINARY` 与 `install.sh` 的 `CORE_ARTIFACT_REL` 都写死了
+2. **平台硬编码**：`src/shared/queue.js` 的 `CORE_BINARY` 与 `install.sh` 的 `CORE_ARTIFACT_REL` 都写死了
    `linux-x64`。多平台前要改成按 `process.platform` / `process.arch` 拼名。

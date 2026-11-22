@@ -28,17 +28,24 @@
 的工具描述里，由 `tests/test-preset.mjs` 守着。
 
 **Rust 核心**：`crates/wca-core` → `wheelchair-agent-core`（独立进程，JSON over stdin/stdout）。
-首个模块是回收计划（`planWork`），`src/shared/work.js` 只剩调用 + 校验 + 删除路径，**没有 JS 兜底**。
+已搬三个模块：`work-plan`（工单规划/回收，`src/shared/work.js`）、`queue-op`（队列原语，`src/shared/queue.js`）、
+`schema-check`（校验器求值，`src/shared/schema.js`）；JS 侧只剩调用壳，**没有 JS 兜底**，唯一的进程桥是
+`queue.js` 里的 `runCore`。
 构建：`bash build/build-core.sh`（需 cargo）；`install.sh` 把它装到 `~/.local/bin`，从不跑 cargo。
 边界与待办见 `ARCHITECTURE/core.md`。
 
 **HARNESS 结构**：构建规则只在 `ARCHITECTURE` 里。`ARCHITECTURE.md`（5.4KB）只留定义 + 分册索引 +
 角色与信息流；分册为 `boundaries` / `cli` / `layout` / `decisions` / `hooks` / `restart` / `spv-source` /
 `work-gc` / `preset` / `delivery` / `webui/{index,settings,hooks,screenshots}`。`docs/` 只剩
-`PITFALLS/`、`setup/`、`agentsmd-examples/`。`INSTRUCTIONS.md`（操作者维护、最高权威）已存在但未入 git。
+`PITFALLS/`、`setup/`、`agentsmd-examples/`。`INSTRUCTIONS.md`（操作者维护、最高权威）与 `docs/agentsmd-examples/*.md` 已入 git（`4714fb0`、`b1d3d06`）。
 
 # Completed
 
+- **Rust 核心第二步（`#33`,`5c151a4`）**：`queue`（`queue-op`：目录布局、pending 顺序、读、原子消费 rename、
+  `.bad` 隔离与 EXDEV/EPERM 回退、outbox 写入）与 `schema`（`schema-check`：`object()` 的 `key:` 前缀与
+  `safeParse` 的错误文案逐字保留）搬进同一二进制；`runCore` 收进 `queue.js`（`install.sh` 只拷它一个文件）；
+  `serde_json` 开 `float_roundtrip`（>2^53 的数字与 `JSON.parse` 一致）、outbox 保持 Node 的 umask `0o644`。
+  parity 门：`test-work/hooks/inbox/settings/home` 五个套件**零改动**；`cargo test` 34 passed、`npm test` 246 PASS。
 - **去掉 SPV persona（`#32`,`ac916b4`）**：`preset/agent.cordis.yml` 的 `persona` 行整段删除，SPV 的系统
   提示词与普通 dsh 会话一致；派单契约（不自己实现、交付走 `spv_dispatch`、不等不轮询、复用 thread、
   插件/面板传 `cordis`、只转述 worker 说的）搬进 `spv_dispatch` 的工具描述；新增 `tests/test-preset.mjs`
@@ -91,11 +98,13 @@
   `/proc`、tmux、端口的实时探测。
 - **dsh-superagent 没有 HARNESS**：dsh-superagent 的 `docs/007-architecture.md`（71KB）在充当 ARCHITECTURE，渐进式披露失守。
   拆分前必须先改 `tests/docs.spec.ts` 里硬编码的 `docs/007-architecture.md` 路径。
-- **两个新压缩设置是 API-only**：dsh-superagent 的 `src/client/eval.tsx` 没有 `compactRatio` / `compactMinIntervalMs` 的输入项。
+- **压缩归属正在交割给 billion-context**：`INSTRUCTIONS.md` 的「压缩策略2」要求三处关掉策略1——worker preset、
+  router（orchestrator）preset（`dsh-superagent` 侧，票在跑）与本仓 `preset/agent.cordis.yml`。SPV 会话已在用
+  billion-context（本会话的压缩标记与工具都是它的），worker/router 两个自建 preset **没挂上**（操作者确认）。
 - **冷安装现在多一步前置**：`install.sh` 需要 `bash build/build-core.sh` 的产物，所以装的人要有 cargo +
   crates.io。这与"面向大众一键安装"冲突，发布前必须改成按平台预编译产物（`dsh` 的做法：按平台拆包 +
   `os`/`cpu` 门禁）。
-- **平台写死**：`src/shared/work.js` 的 `CORE_BINARY` 与 `install.sh` 的 `CORE_ARTIFACT_REL` 都写死
+- **平台写死**：`src/shared/queue.js` 的 `CORE_BINARY` 与 `install.sh` 的 `CORE_ARTIFACT_REL` 都写死
   `linux-x64`；多平台前要改成按 `process.platform` / `process.arch` 拼名。
 - **"待冷安装"没有自我清除机制**：每次 install 仓库合并都会排一封 notice，即使几分钟后就装了。
 - **HARNESS 里仍有 23 处规则重述**（冷安装契约 4 份、面板必须是真包 4 份、`hooks.md` 与
@@ -105,7 +114,7 @@
 
 # Next Steps
 
-0. **Rust 迁移的下一张票**：`src/shared/` 的纯逻辑——`queue` → `schema` → `settings` → `hooks`（类型面最大的一块）；
+0. **Rust 迁移的下一张票**：`src/shared/` 剩下的纯逻辑——`settings` → `hooks`（类型面最大的一块）；
    然后是 CLI 侧 `dispatch`/`outbox`/`check`/`health`/`cron`/`inbox` 存储；`session`/`restart` 链放最后（它管杀进程，
    出事最贵）。每张票的 parity 门都是"对应测试文件零改动 + 用户可见输出逐字一致"。
 
