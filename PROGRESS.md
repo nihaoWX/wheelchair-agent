@@ -41,6 +41,10 @@
 
 # Completed
 
+- **压缩策略2（`#34`,`1ae93c0`）**：SPV preset 的 `compaction-basic` 改为 `auto: false`（行保留，作为不部署
+  billion-context 的兜底），`command-compact`（`/compact`）与 `tool-result-pruner` 保留；`tests/test-preset.mjs`
+  新增一条读**渲染后 YAML** 的断言（`auto: false` + 两条旧行仍在 + isolate realm 不变）。`npm test` 247 PASS。
+  配套的 `dsh-superagent` 侧已在前一笔（`#2`,`94e6a77`）关掉 worker/router preset 的自动压缩。
 - **Rust 核心第二步（`#33`,`5c151a4`）**：`queue`（`queue-op`：目录布局、pending 顺序、读、原子消费 rename、
   `.bad` 隔离与 EXDEV/EPERM 回退、outbox 写入）与 `schema`（`schema-check`：`object()` 的 `key:` 前缀与
   `safeParse` 的错误文案逐字保留）搬进同一二进制；`runCore` 收进 `queue.js`（`install.sh` 只拷它一个文件）；
@@ -98,9 +102,11 @@
   `/proc`、tmux、端口的实时探测。
 - **dsh-superagent 没有 HARNESS**：dsh-superagent 的 `docs/007-architecture.md`（71KB）在充当 ARCHITECTURE，渐进式披露失守。
   拆分前必须先改 `tests/docs.spec.ts` 里硬编码的 `docs/007-architecture.md` 路径。
-- **压缩归属正在交割给 billion-context**：`INSTRUCTIONS.md` 的「压缩策略2」要求三处关掉策略1——worker preset、
-  router（orchestrator）preset（`dsh-superagent` 侧，票在跑）与本仓 `preset/agent.cordis.yml`。SPV 会话已在用
-  billion-context（本会话的压缩标记与工具都是它的），worker/router 两个自建 preset **没挂上**（操作者确认）。
+- **worker / router 两个 preset 还没挂 billion-context**：`INSTRUCTIONS.md` 的「压缩策略2」要求 worker、orchestrator、
+  spv 全部交给 billion-context。三处策略1 已关（`dsh-superagent` `#2`、本仓 `#34`），SPV 会话本来就在用
+  billion-context；但 `dsh-superagent-worker` / `dsh-superagent-router` 这两个自建 preset **身上没有 bili 的行**
+  （bili 只往四个内置 preset 注入，操作者也确认 worker 工具表里没有 bili 工具）。挂载要"可选挂"：插件不在
+  就不挂，否则 `MODULE_NOT_FOUND` 或 inject 悬空让 preset 一直 pending。
 - **冷安装现在多一步前置**：`install.sh` 需要 `bash build/build-core.sh` 的产物，所以装的人要有 cargo +
   crates.io。这与"面向大众一键安装"冲突，发布前必须改成按平台预编译产物（`dsh` 的做法：按平台拆包 +
   `os`/`cpu` 门禁）。
