@@ -144,3 +144,18 @@ fn object_drops_unknown_keys_and_prefixes_errors() {
     .unwrap_err();
     assert_eq!(error.1, "count: a number is required");
 }
+
+#[test]
+fn a_large_json_number_rounds_to_the_nearest_double_like_json_parse() {
+    // 123456789012345678901 is not representable exactly; JavaScript's `JSON.parse` returns the
+    // nearest double, whose `String()` is 123456789012345680000. serde_json needs its
+    // `float_roundtrip` feature to agree instead of landing one ULP low.
+    let request: SchemaCheckRequest = serde_json::from_str(
+        r#"{"validator":{"kind":"text"},"value":123456789012345678901}"#,
+    )
+    .expect("a valid schema-check request");
+    assert_eq!(
+        schema::check(&request).expect("valid").value,
+        Some(json!("123456789012345680000"))
+    );
+}
