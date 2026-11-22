@@ -104,7 +104,7 @@ pub fn schema_bundle() -> Value {
         },
         "schemaCheck": {
             "request": schemars::schema_for!(schema::SchemaCheckRequest),
-            "response": schemars::schema_for!(schema::SchemaCheckResult),
+            "response": schemars::schema_for!(Envelope<schema::SchemaCheckResult>),
         },
     })
 }

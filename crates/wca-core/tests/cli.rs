@@ -85,6 +85,14 @@ fn schema_prints_both_shapes() {
     let schema: serde_json::Value = serde_json::from_str(&stdout).expect("schema is JSON");
     assert!(schema["request"]["properties"]["root"].is_object());
     assert!(schema["response"]["properties"]["ok"].is_object());
+    assert!(schema["queue"]["request"]["oneOf"].is_array());
+    assert!(schema["queue"]["response"]["properties"]["ok"].is_object());
+    assert!(schema["schemaCheck"]["request"]["properties"]["validator"].is_object());
+    assert!(schema["schemaCheck"]["response"]["properties"]["ok"].is_object());
+    assert!(
+        schema["schemaCheck"]["response"]["properties"]["data"].is_object(),
+        "the response shape is the envelope the CLI actually prints"
+    );
 }
 
 #[test]
