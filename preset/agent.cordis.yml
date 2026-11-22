@@ -168,14 +168,16 @@
 
 # ── compaction ──────────────────────────────────────────────────────────────
 
-# 没有这一组，长会话会撞上下文上限，而 SPV 恰恰是长期在线的入口会话：每次 attach 都接着上一轮。
+# 没有这一组，`/compact` 与超长工具输出的剪枝都没有了，而 SPV 恰恰是长期在线的入口会话：每次 attach 都接着上一轮。
 #
 # 与 liangshen 同构，两个原因必须照抄：
 #   1. `compaction-basic` 通过 `ctx.get('toolResultPrune')` 读剪枝器，所以剪枝器必须与它同 realm；
 #   2. `tokenMeter` 刻意**不**在这里 —— 它留在 host plane，这里的行解析主机的那一个实例。
 #      放进 realm 会让浏览器读的上下文计量投影随 preset mount/unmount 来去。
 #
-# 用户侧的效果：`/compact` 可用，且达到水位时自动压缩；超长工具输出按 8192 字符截断，留头 4096 / 尾 1024。
+# 压缩归属：自动压缩默认关闭，压缩由 billion-context 负责；两边同时压会重写同一段历史、让已折叠的块作废。
+# 本组保留 `/compact` 手动压缩与工具输出剪枝。没有部署 billion-context 的环境把 `compaction-basic` 的
+# `auto` 打开即可恢复达到水位时的自动压缩——所以这一行不能因为"这里用不上"而删掉。
 - id: compaction
   name: cordis:group
   group: true
@@ -183,8 +185,11 @@
     compaction: true
     toolResultPruner: true
   config:
+    # 兜底行：保留但不自动触发；没有 billion-context 的部署把 `auto` 设为 true。
     - id: compaction-basic
       name: '@deepseek-ai/dsh-compaction-basic'
+      config:
+        auto: false
 
     - id: command-compact
       name: '@deepseek-ai/dsh-command-compact'
