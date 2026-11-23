@@ -11,9 +11,9 @@
  *   - asserts the rendered `agent.cordis.yml` and `preset-default.patch.yml` contain no persona row and no
  *     `dsh-persona` reference — not even in a comment;
  *   - asserts the old persona prose ("You are SPV" / "You do not do implementation work yourself") is gone;
- *   - asserts the rendered `compaction` group keeps its isolate realm and `command-compact` /
- *     `tool-result-pruner`, but mounts `compaction-basic` with `auto: false`: billion-context owns automatic
- *     compression, and the row stays as the fallback for deployments without it;
+ *   - asserts the rendered `compaction` group keeps its isolate realm and mounts the fallback rows
+ *     `compaction-basic` (`auto: false`) and `command-compact`, plus `tool-result-pruner`: a deployment without
+ *     billion-context uses them, while billion-context's runtime gate disables the first two;
  *   - imports the registered `spv_dispatch` description and asserts it carries the delivery rule and the
  *     "no waiting / no polling" rule, so a future edit cannot silently drop them.
  *
@@ -136,8 +136,8 @@ try {
     'rendered preset still contains the old "You do not do implementation work yourself" persona prose',
   )
 
-  // billion-context owns automatic compression; this preset must not also compact on its own watermark.
-  // `command-compact` (manual `/compact`) and the tool-result pruner are unrelated and must stay mounted.
+  // billion-context owns compression; the two compaction rows are the fallback for deployments without it
+  // (bili's runtime gate disables both when active). The tool-result pruner is unaffected and must stay mounted.
   const compaction = readCompactionGroup(rendered)
   assert.deepEqual(
     compaction.isolate,
@@ -150,7 +150,7 @@ try {
     { auto: false },
     'compaction-basic must stay mounted with auto: false',
   )
-  assert.ok(compactEntries.has('command-compact'), 'command-compact (/compact) is missing from the compaction group')
+  assert.ok(compactEntries.has('command-compact'), 'command-compact fallback row is missing from the compaction group')
   assert.ok(compactEntries.has('tool-result-pruner'), 'tool-result-pruner is missing from the compaction group')
 
   // The dispatch contract moved to the tool description and must keep both rules.
@@ -162,7 +162,7 @@ try {
   assert.match(dispatch.description, /do not wait/i, '"do not wait" rule is missing')
   assert.match(dispatch.description, /do not poll/i, '"do not poll" rule is missing')
 
-  process.stdout.write('PASS  the compaction group keeps /compact and the pruner, with auto compaction off\n')
+  process.stdout.write('PASS  the compaction group keeps the fallback rows and the pruner, with auto compaction off\n')
   process.stdout.write('ok: preset has no persona; spv_dispatch carries the dispatch rules\n')
 } finally {
   await rm(out, { recursive: true, force: true }).catch(() => {})
