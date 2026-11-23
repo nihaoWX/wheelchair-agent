@@ -41,6 +41,11 @@
 
 # Completed
 
+- **重启恢复错会话（`#36`,`19e71c4`）**：`/restart-wheelchair-agent` 现在按**发起命令的会话**恢复
+  （命令插件取 `invocation.agent.session.id` → CLI `--session`），`~/.dsh-tui/resume.txt` 降级为兜底；`releaseSession`
+  只对**重启链内**的 holder 发信号（`holderInRestartChain` 走 `/proc` 祖先链），另一个终端占着会话时
+  **不抢占**、有界等待后开新会话并说明。`tests/test-restart.mjs` +182 行（含外来 holder 断言 `kill` 零调用）。
+  **装完才生效**（`cli.js`/`src/spv/**` 随冷安装）。
 - **压缩策略2（`#34`,`1ae93c0`）**：SPV preset 的 `compaction-basic` 改为 `auto: false`（行保留，作为不部署
   billion-context 的兜底），`command-compact`（`/compact`）与 `tool-result-pruner` 保留；`tests/test-preset.mjs`
   新增一条读**渲染后 YAML** 的断言（`auto: false` + 两条旧行仍在 + isolate realm 不变）。`npm test` 247 PASS。

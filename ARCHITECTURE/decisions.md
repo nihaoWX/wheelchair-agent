@@ -242,3 +242,21 @@ dark 截图），`tests/test-settings.mjs` 的 CSS/轮询/草稿断言，`tests/
 
 **已知未了**：冷安装多了一步前置（要有 cargo），与"面向大众一键安装"冲突，发布前必须改为按平台预编译；
 `CORE_BINARY` 与 `CORE_ARTIFACT_REL` 目前写死 `linux-x64`。两者都记在 `ARCHITECTURE/core.md`。
+
+## 重启恢复的目标由"发命令的会话"决定，不由 `resume.txt` 决定（2026-11-24）
+
+**决定**：`/restart-wheelchair-agent` 的恢复目标是**发起命令的那个 Session**（命令插件从
+`invocation.agent.session.id` 取，CLI 以 `--session` 接收）；`~/.dsh-tui/resume.txt` 降级为**兜底**，并且只
+在没有 `--session`、或那个 id 在工作区解析不到时才用。任何 lease holder 只有在**重启链内**才会被发信号。
+
+**理由**：`resume.txt` 是 dsh-tui 的**全局"最后打开"指针**。操作者在 A 终端发命令、B 终端后开时会话，指针
+指向 B —— 重启于是"恢复"了 B 的会话，并且 `releaseSession` 把 B 终端持有该会话租约的进程 SIGTERM/SIGKILL
+掉。这是实打实的两个 bug 叠加（`#36`/`19e71c4`），不是配置问题。拿"谁发命令"当唯一可信来源，就不再依赖
+任何跨终端的全局状态。
+
+**取舍**：真遇到"同一会话被另一个终端占着"时**开新会话并说明被占用**，不抢占。抢的收益是省一次手动 `/resume`，
+代价是结束别人的终端；我们选省掉那个代价。显式的 `session release` 行为不变（它不传 chain，仍释放所有
+非服务 holder）。
+
+**守住它的测试**：`tests/test-restart.mjs` 的 `testForeignHolderIsNotKilled`（外来 holder → `kill` 一次都没
+被调用，dry run 里出现在 `other:` 行而非 kill 集合）与 `--session` 优先于 `resume.txt` 的用例。

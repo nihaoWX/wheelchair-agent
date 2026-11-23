@@ -64,13 +64,20 @@ by stopping both holders first:
    TUI was not relaunched and names the fix (`fix the service and run "wheelchair-agent spv"`); the
    command exits 1.
 6. **Bring the TUI back.** The default is the terminal that launched `wheelchair-agent spv` (see “Same
-   terminal: the narrator”); it resumes the conversation named by `~/.dsh-tui/resume.txt`. **Every launch
+   terminal: the narrator”); it resumes the conversation **this command was typed in** — the invoking
+   Session's id reaches the CLI as `--session`, and only when that id is unavailable does it fall back to
+   `~/.dsh-tui/resume.txt` (see “Resuming the SPV conversation”). **Every launch
    that uses `--resume` waits for the session lease first** — the in-place relaunch does it in the CLI loop
    before starting the launcher, and the tmux fallback's first `spv --resume <id>` launch does the same in
    the CLI it starts. The wait is bounded by `WHEELCHAIR_RESTART_LEASE_MS` (default 15000ms), prints
    `restart: waiting for pid <pid> to release the session…`, and on timeout drops `--resume`, prints
    `restart: the previous session is still mounted by pid <pid>; starting a fresh session`, and starts
-   fresh. An ordinary launch without a resume id never waits. After steps 1-4
+   fresh. A holder **outside the restart chain** — another terminal's TUI — is never signalled:
+   `releaseSession` filters holders through `holderInRestartChain` (`/proc` ancestry against the chain pids),
+   waits the same bounded window, and then prints
+   `restart: session <id> is occupied by another terminal (pid <pid>); not preempted; this launch is a new
+   session` and starts fresh. Only an explicit `session release` (which passes no chain) still releases every
+   non-service holder. An ordinary launch without a resume id never waits. After steps 1-4
    the orchestrator waits up to `WHEELCHAIR_RESTART_CLAIM_MS` (default 5000ms) for that terminal to claim
    the restart. When the claim arrives it records
    `step 5/5: skipped; the terminal claimed the restart and relaunches the TUI here` and stops; it does
@@ -82,7 +89,7 @@ by stopping both holders first:
    its own `PATH` (it may have been started from another shell) and a checkout CLI's `spv` command would run
    the checkout's unrendered `preset/spv-launcher.sh` template instead of the installed launcher. The
    invoking CLI is only a fallback when the preset has no `cli.js`. The fallback launch carries
-   `--resume <id>` when `~/.dsh-tui/resume.txt` holds a usable id **and the lease is free**; when the
+   `--resume <id>` when the restart resolved a session id **and the lease is free**; when the
    earlier wait failed (the marker's `leaseBlockedPid`, or a holder still present at this point) it launches
    without `--resume` and logs `note: the tmux fallback starts without --resume`; when resume.txt itself is
    unusable it logs
@@ -176,19 +183,33 @@ The narrator:
 
 ### Resuming the SPV conversation
 
-The relaunch must not drop the operator into a fresh conversation. Both the same-terminal loop and the tmux
-fallback take the session id from **one source**, `~/.dsh-tui/resume.txt` (`os.homedir()`, so `HOME` points
-the tests at a sandbox): the file is trimmed and must be a UUID
-(`/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i`). Nothing lists session directories
-or invents an id.
+The relaunch must not drop the operator into a fresh conversation — and it must resume **the conversation the
+command was typed in**, not whichever conversation a TUI opened most recently. The same-terminal loop and the
+tmux fallback therefore take the session id from **two sources, in this order**:
+
+1. **`--session <id>`**, passed by the command plugin from `invocation.agent.session.id` (`CommandInvocation`
+   carries `agent`; `agent.session.id` is the invoking Session). It is accepted only when `resolveSession`
+   finds that id's directory under the workspace `cwd`; otherwise the CLI prints
+   `note: the invoking session <id> has no directory under <sessionsRoot>; using …` and falls through.
+2. **`~/.dsh-tui/resume.txt`** (`os.homedir()`, so `HOME` points the tests at a sandbox), the file trimmed and
+   validated as a UUID (`/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i`). It is a
+   **global last-opened pointer**: it names whichever conversation any terminal opened last, so it is only a
+   fallback — reading it as the primary source is exactly what made the restart resume another terminal's
+   conversation and signal that terminal's process. When it is used, the CLI logs
+   `note: no invoking session id was passed to restart-all; using <source> instead` or the
+   `has no directory` note above. Nothing lists session directories or invents an id.
+
+The dry run prints the decision: `session: <id> (<dir>)` and `resume: --resume <id> (invoking session)` or
+`(…/~/.dsh-tui/resume.txt fallback)`; a lease holder outside the chain is listed separately as
+`other: <pids> (another terminal; not signalled)` and never enters the kill set.
 
 - The operator's own first launch keeps their args untouched. A relaunch we own **strips** `--resume`,
   `--resume=<id>`, `-c` and `--continue` first: an old explicit id can reopen the wrong conversation, and a
   bare `-c` with no usable resume.txt makes dsh-tui exit 1 (with no retry, because that launch did not add
   the flag itself).
-- A usable file makes the relaunch `wheelchair-agent spv --resume <id>`; the tmux fallback becomes
-  `node <preset>/cli.js spv --resume <id>`. If the file is missing or unusable the relaunch drops the stale
-  operator flag, prints one note and starts fresh.
+- A resolved id makes the relaunch `wheelchair-agent spv --resume <id>`; the tmux fallback becomes
+  `node <preset>/cli.js spv --resume <id>`. When neither source yields a usable id the relaunch drops the
+  stale operator flag, prints one note and starts fresh.
 - Missing (`no ~/.dsh-tui/resume.txt`), unreadable (`~/.dsh-tui/resume.txt is unreadable`) or invalid
   (`~/.dsh-tui/resume.txt does not contain a session id`) prints exactly one
   `restart: cannot resume the previous SPV session (<detail>); starting a fresh one.` line before the fresh
