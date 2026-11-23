@@ -10,7 +10,9 @@
  * `node:child_process` so the plugin has no dsh dependency and no duplicate implementation.
  *
  * Only `--force` is accepted. `--force` interrupts running workers and queued tickets instead of refusing;
- * the CLI prints exactly what it is interrupting before it proceeds.
+ * the CLI prints exactly what it is interrupting before it proceeds. The handler passes the invoking
+ * Session's id (`invocation.agent.session.id`) as `--session`, so the restart targets the conversation this
+ * command was typed in; `~/.dsh-tui/resume.txt` is only the fallback when that id is unavailable.
  */
 import { spawnSync } from 'node:child_process'
 
@@ -28,12 +30,12 @@ Restart everything this deployment runs: the superagent service, a cold install 
 TUI session. This command only arms a detached orchestrator and returns; this SPV session ends here.
 
 The terminal that launched "wheelchair-agent spv" stays open across the restart: it prints every step and
-brings the TUI back in that same terminal, resumed into the same SPV conversation (the session id comes from
-~/.dsh-tui/resume.txt; if that file is missing or does not hold a usable id, it says so and starts a fresh
-session). Before resuming, it waits for the old TUI's kernel session lease (the open session.lock /
-session.v4.jsonl.zstd descriptors) to be released; if that does not happen in the bounded window it starts a
-fresh session and says so instead of replaying the resume into dsh-tui's "mounted by another TUI terminal"
-error. If that terminal is gone (closed, or the CLI died with it), the fallback is tmux session "dsh-spv"
+brings the TUI back in that same terminal, resumed into the same SPV conversation. The target is the session
+this command runs in (its id is passed to the CLI as --session); ~/.dsh-tui/resume.txt is only a fallback when
+that id is unavailable, and the command says when it falls back. Before resuming, it waits for the old TUI's
+kernel session lease (the open session.lock / session.v4.jsonl.zstd descriptors) to be released. A lease held
+by another terminal is never preempted: after the bounded wait the relaunch starts a new session and says so.
+If that terminal is gone (closed, or the CLI died with it), the fallback is tmux session "dsh-spv"
 (attach with: tmux attach -t =dsh-spv), resumed the same way. Every step is appended to
 <root>/logs/restart-all.log (default ~/.wheelchair-agent/logs/restart-all.log), which is the record
 to read if the TUI does not come back.
@@ -49,8 +51,9 @@ Arguments:
             interrupting before anything is stopped. At most once.
 
 The detached orchestrator stops the service, stops this SPV session's process chain (SIGTERM, then SIGKILL
-after a bounded wait), runs install.sh cold and starts the service again. It does not relaunch the TUI itself
-unless no terminal claims the restart. A failed install or a service that does not start leaves the service
+after a bounded wait), runs install.sh cold and starts the service again. It only signals processes in that
+chain: a session held by another terminal is left alone. It does not relaunch the TUI itself unless no
+terminal claims the restart. A failed install or a service that does not start leaves the service
 stopped and does not relaunch a TUI into a broken deployment. Every step is appended to
 <root>/logs/restart-all.log (default ~/.wheelchair-agent/logs/restart-all.log) with its command and exit code.
 
@@ -80,7 +83,15 @@ function makeHandler(config = {}) {
       if (force) return errorResult(USAGE)
       force = true
     }
-    const args = ['restart-all', '--detach', ...(force ? ['--force'] : [])]
+    const sessionId = typeof invocation?.agent?.session?.id === 'string'
+      ? invocation.agent.session.id.trim()
+      : ''
+    const args = [
+      'restart-all',
+      '--detach',
+      ...(sessionId !== '' ? ['--session', sessionId] : []),
+      ...(force ? ['--force'] : []),
+    ]
     let result
     try {
       result = spawnSync(executable, args, {
