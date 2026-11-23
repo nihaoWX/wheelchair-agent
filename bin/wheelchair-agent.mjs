@@ -174,6 +174,7 @@ options:
   --json    print one JSON object for scripting`
 
 const RESTART_USAGE = `usage: wheelchair-agent restart-all [--dry-run] [--force] [--no-install] [--detach]
+                                    [--session <id>]
 
 Restart everything this deployment runs: the superagent service, a cold install of the preset, and the SPV TUI
 session. The cold-install guard refuses while the service or a live SPV session holds the install targets, so
@@ -187,15 +188,20 @@ options:
   --no-install  skip install.sh and only restart the service and the TUI
   --detach      arm a detached orchestrator and return; this is what /restart-wheelchair-agent uses, and the
                 SPV session you run it from is about to end
+  --session <id>
+                the SPV session to bring back (the command handler passes the invoking session id); when it
+                is absent or has no directory, the id in ~/.dsh-tui/resume.txt is used and the fallback is
+                logged
   --run         internal: run the orchestration in this process (used by --detach)
   --help        this text
 
 --detach appends every step to <root>/logs/restart-all.log (default
 ~/.wheelchair-agent/logs/restart-all.log). The terminal that ran "wheelchair-agent spv" stays open across the
 restart: it tails that log, prints each step, and starts the TUI again there, resumed into the same SPV
-conversation from ~/.dsh-tui/resume.txt (a missing or unusable id prints one note and starts a fresh
-session). If that terminal is gone, the orchestrator falls back to relaunching the TUI in tmux session
-"dsh-spv", resuming the same way.
+conversation: --session when it was passed, otherwise the id in ~/.dsh-tui/resume.txt (each fallback prints
+one note; a missing or unusable id starts a fresh session). A session lease held by another terminal is not
+preempted: after the bounded wait the launch starts a new session and says so. If that terminal is gone, the
+orchestrator falls back to relaunching the TUI in tmux session "dsh-spv", resuming the same way.
 `
 
 const SESSION_USAGE = `usage: wheelchair-agent session release [--session <id>] [--dry-run]
@@ -703,14 +709,15 @@ async function commandWork(argv) {
 }
 
 /**
- * `restart-all`：解析布尔开关后交给 `src/spv/restart.js`（服务停止 → SPV 链停止 → 冷安装 → 服务启动 →
+ * `restart-all`：解析开关后交给 `src/spv/restart.js`（服务停止 → SPV 链停止 → 冷安装 → 服务启动 →
  * 由 `spv` 终端叙述并重开 TUI；tmux 只在终端消失时兜底）。
  *
- * 布尔项自己解析（`options()` 只处理带值选项）；任何未知项都在读服务/扫 `/proc` 之前报用法错误。退出码由
- * 实现返回，这里只写 `process.exitCode`，不结束进程。
+ * `--session <id>` 是恢复目标（命令处理器传入调用会话的 id）；缺省时才回退到 `~/.dsh-tui/resume.txt`，
+ * 并在日志里说明。任何未知项都在读服务/扫 `/proc` 之前报用法错误。退出码由实现返回，这里只写
+ * `process.exitCode`，不结束进程。
  */
 async function commandRestartAll(argv) {
-  const parsed = { dryRun: false, force: false, noInstall: false, detach: false, run: false }
+  const parsed = { dryRun: false, force: false, noInstall: false, detach: false, run: false, session: undefined }
   const booleans = {
     '--dry-run': 'dryRun',
     '--force': 'force',
@@ -718,13 +725,24 @@ async function commandRestartAll(argv) {
     '--detach': 'detach',
     '--run': 'run',
   }
-  for (const word of argv) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const word = argv[index]
     if (word === '--help' || word === '-h') {
       process.stdout.write(`${RESTART_USAGE}\n`)
       return
     }
+    if (word === '--session') {
+      const value = argv[index + 1]
+      if (value === undefined || value.startsWith('--')) throw new UsageError('--session needs a value')
+      if (value.trim() === '') throw new UsageError('--session needs a non-empty session id')
+      if (parsed.session !== undefined) throw new UsageError('--session was already given')
+      parsed.session = value.trim()
+      index += 1
+      continue
+    }
     const name = booleans[word]
     if (name === undefined) throw new UsageError(`unknown option ${JSON.stringify(word)} for "restart-all"`)
+    if (parsed[name]) throw new UsageError(`${word} was already given`)
     parsed[name] = true
   }
   // --run is the detached child's mode. Combining them would spawn a child that immediately arms another.

@@ -52,6 +52,8 @@ import {
 } from './restart-ux.js'
 import {
   DEFAULT_LEASE_MS,
+  holderInRestartChain,
+  occupiedSessionNotice,
   resolveSession,
   sessionHolders,
   sessionsRoot,
@@ -532,10 +534,12 @@ export function planLines({
   sessionId,
   sessionDir,
   holders = [],
+  foreign = [],
   leaseMs = DEFAULT_LEASE_MS,
 } = {}) {
   const pids = chain.map(pidOf).filter(pid => Number.isInteger(pid) && pid > 0)
   const holderPids = holders.map(pidOf).filter(pid => Number.isInteger(pid) && pid > 0)
+  const foreignPids = foreign.map(pidOf).filter(pid => Number.isInteger(pid) && pid > 0)
   const servicePids = (service.pids ?? []).map(pidOf).filter(pid => Number.isInteger(pid) && pid > 0)
   const agent = service.agent ?? ['wheelchair-agent']
   const launch = service.launch ?? [...agent, 'spv']
@@ -564,6 +568,9 @@ export function planLines({
     `  holders:   ${holderPids.length > 0 ? holderPids.join(' ') : '(none)'}` +
       (holderPids.length > 0 ? ' (fd holders of session.lock / session.v4.jsonl.zstd)' : ''),
   )
+  if (foreignPids.length > 0) {
+    lines.push(`  other:     ${foreignPids.join(' ')} (another terminal; not signalled)`)
+  }
   lines.push(`  checkout:  ${checkout ?? '(not resolved)'}`)
   lines.push(`  state dir: ${stateDir ?? resolveStateDir()}`)
   lines.push(`  log:       ${logFile ?? dataPaths({ stateDir }).restartLog.current}`)
@@ -581,9 +588,12 @@ export function planLines({
     `  5. wait for the "wheelchair-agent spv" terminal to claim the relaunch; if it does not, relaunch the ` +
       `TUI in tmux session ${tmuxSession} (cwd ${cwd}), resumed into the same SPV conversation:`,
   )
+  const resumeSource = resume?.source === 'session'
+    ? 'invoking session'
+    : '~/.dsh-tui/resume.txt fallback'
   lines.push(
     resume?.ok
-      ? `       resume: --resume ${resume.id} (~/.dsh-tui/resume.txt)`
+      ? `       resume: --resume ${resume.id} (${resumeSource})`
       : `       resume: --resume unavailable (${resumeDetail(resume)}); the fallback starts a fresh session`,
   )
   if (resume?.ok) {
@@ -777,12 +787,33 @@ async function preflight(context, options, { detached = false } = {}) {
   chain.sort((left, right) => left - right)
   const servicePids = table.filter(entry => servesProfile(entry.argv, profile)).map(entry => entry.pid)
 
-  // The session whose lease the relaunch needs: the id is the one source, `~/.dsh-tui/resume.txt`; the
-  // directory is that id in this workspace, or the same id under another project directory.
-  const resume = resolveResume()
-  const session = resume.ok
-    ? resolveSession({ env, cwd: context.cwd ?? process.cwd(), id: resume.id })
-    : undefined
+  // The session whose lease the relaunch needs. The invoking Session is authoritative when the command
+  // handler could pass it; `~/.dsh-tui/resume.txt` is dsh-tui's global last-opened pointer, so it is only a
+  // fallback, and every fallback says why it was used.
+  const requested = typeof options.session === 'string' ? options.session.trim() : ''
+  const sessionCwd = context.cwd ?? process.cwd()
+  let resume
+  let session
+  if (requested !== '') {
+    session = resolveSession({ env, cwd: sessionCwd, id: requested })
+    if (session !== undefined) {
+      resume = { ok: true, id: session.id, source: 'session' }
+    } else {
+      resume = resolveResume()
+      lines.push(
+        `note: the invoking session ${requested} has no directory under ${sessionsRoot({ env })}; using ` +
+          `${resume.ok ? `~/.dsh-tui/resume.txt (${resume.id})` : `the fallback (${resumeDetail(resume)})`} instead`,
+      )
+      session = resume.ok ? resolveSession({ env, cwd: sessionCwd, id: resume.id }) : undefined
+    }
+  } else {
+    resume = resolveResume()
+    lines.push(
+      `note: no invoking session id was passed to restart-all; using ` +
+        `${resume.ok ? `~/.dsh-tui/resume.txt (${resume.id})` : `the fallback (${resumeDetail(resume)})`} instead`,
+    )
+    session = resume.ok ? resolveSession({ env, cwd: sessionCwd, id: resume.id }) : undefined
+  }
   if (resume.ok && session === undefined) {
     lines.push(
       `note: the session ${resume.id} named by ~/.dsh-tui/resume.txt has no directory under ` +
@@ -792,11 +823,24 @@ async function preflight(context, options, { detached = false } = {}) {
   const holders = session === undefined
     ? []
     : sessionHolders({ sessionDir: session.dir, procRoot })
-  if (holders.length > 0) {
+  // A holder is only ours when it is in the chain being restarted. A holder from another terminal is never
+  // signalled: it may release the lease itself, and on timeout the relaunch starts a new session.
+  const chainPids = chain
+  const ours = holders.filter(holder => holderInRestartChain({ pid: holder.pid, chain: chainPids, procRoot }))
+  const foreign = holders.filter(holder => !holderInRestartChain({ pid: holder.pid, chain: chainPids, procRoot }))
+  if (ours.length > 0) {
     lines.push(
-      `note: pid ${holders.map(holder => holder.pid).join(' ')} ` +
-        `${holders.length === 1 ? 'holds' : 'hold'} the session ${session.id} lease; ` +
-        `${holders.length === 1 ? 'it is' : 'they are'} added to the kill set`,
+      `note: pid ${ours.map(holder => holder.pid).join(' ')} ` +
+        `${ours.length === 1 ? 'holds' : 'hold'} the session ${session.id} lease; ` +
+        `${ours.length === 1 ? 'it is' : 'they are'} added to the kill set`,
+    )
+  }
+  if (foreign.length > 0) {
+    lines.push(
+      `note: pid ${foreign.map(holder => holder.pid).join(' ')} ` +
+        `${foreign.length === 1 ? 'holds' : 'hold'} the session ${session.id} lease but ` +
+        `${foreign.length === 1 ? 'is' : 'are'} not part of this restart chain (another terminal); ` +
+        'not preempted',
     )
   }
 
@@ -852,7 +896,7 @@ async function preflight(context, options, { detached = false } = {}) {
 
   const targets = killTargets({
     chain,
-    holders: holders.map(holder => holder.pid),
+    holders: ours.map(holder => holder.pid),
     selfPid: process.pid,
     ancestors,
     servicePids,
@@ -897,6 +941,8 @@ async function preflight(context, options, { detached = false } = {}) {
     chain,
     targets,
     holders,
+    ours,
+    foreign,
     session,
     sessionId: session?.id,
     sessionDir: session?.dir,
@@ -1141,9 +1187,7 @@ async function orchestrate(context, options, mode) {
     if (!lease.ok) {
       leaseBlockedPid = lease.holder?.pid
       if (leaseBlockedPid !== undefined) {
-        record(
-          `restart: the previous session is still mounted by pid ${leaseBlockedPid}; starting a fresh session`,
-        )
+        record(occupiedSessionNotice({ sessionId: pre.sessionId, pid: leaseBlockedPid }))
         try {
           const marker = readArmed(stateDir)
           if (marker !== undefined) writeArmed(stateDir, { ...marker, leaseBlockedPid })
@@ -1243,11 +1287,11 @@ async function orchestrate(context, options, mode) {
       : `note: no terminal claim within ${claimMs}ms; taking the tmux fallback`,
   )
 
-  // The TUI is dead by now, but `~/.dsh-tui/resume.txt` persists: the fallback also comes back into the
-  // same conversation. If the file is gone or unusable, log one note and start a fresh session. When the
-  // lease is still held (or the marker says the wait already failed), a resume would race the old holder and
-  // land in the safe-mode prompt, so the fallback starts fresh and says so instead.
-  const resume = resolveResume()
+  // The TUI is dead by now, and preflight already chose the target: the invoking session when it was passed,
+  // otherwise `~/.dsh-tui/resume.txt`. If that target is unusable, log one note and start a fresh session.
+  // When the lease is still held (or the marker says the wait already failed), a resume would race the old
+  // holder and land in the safe-mode prompt, so the fallback starts fresh and says so instead.
+  const resume = pre.resume
   if (!resume.ok) {
     record(
       `note: cannot resume the previous SPV session (${resumeDetail(resume)}); the tmux fallback starts a ` +
@@ -1261,7 +1305,7 @@ async function orchestrate(context, options, mode) {
       process.pid,
     )
     if (blockedPid !== undefined) {
-      record(`restart: the previous session is still mounted by pid ${blockedPid}; starting a fresh session`)
+      record(occupiedSessionNotice({ sessionId: pre.sessionId, pid: blockedPid }))
     }
   }
   const launch = resume.ok && blockedPid === undefined ? [...pre.launch, '--resume', resume.id] : pre.launch
@@ -1434,6 +1478,7 @@ export async function armDetached(context, options = {}) {
   const args = [
     'restart-all',
     '--run',
+    ...(pre.sessionId !== undefined ? ['--session', pre.sessionId] : []),
     ...(options.force ? ['--force'] : []),
     ...(options.noInstall ? ['--no-install'] : []),
   ]
@@ -1488,7 +1533,7 @@ export async function armDetached(context, options = {}) {
     // Best effort: the narrator then treats the run as pid-less and only the completion line ends it.
   }
   const installStep = options.noInstall ? 'skipped (--no-install)' : `bash ${join(pre.checkout, 'install.sh')}`
-  const resume = resolveResume()
+  const resume = pre.resume
   // A session started before this narrator existed has no supervising `wheelchair-agent spv`: its first
   // restart necessarily comes back in tmux. The marker is set by the launcher environment of a new CLI.
   const supervised = String(env.WHEELCHAIR_AGENT_SUPERVISED ?? '') === '1'
@@ -1508,16 +1553,17 @@ export async function armDetached(context, options = {}) {
         'back in that same terminal and resumes the same SPV conversation',
       `  resume:       ${
         resume.ok
-          ? `--resume ${resume.id} (~/.dsh-tui/resume.txt)`
+          ? `--resume ${resume.id} (${resume.source === 'session' ? 'invoking session' : '~/.dsh-tui/resume.txt fallback'})`
           : `unavailable (${resumeDetail(resume)}); the TUI starts a fresh session`
       }`,
       `  session:      ${
         pre.sessionDir === undefined
           ? 'no session directory resolved, so no lease holders were added to the kill set'
-          : `${pre.sessionDir} (fd holders: ${pre.holders.map(holder => holder.pid).join(' ') || 'none'})`
+          : `${pre.sessionDir} (our holders: ${pre.ours.map(holder => holder.pid).join(' ') || 'none'}; ` +
+            `other terminals: ${pre.foreign.map(holder => holder.pid).join(' ') || 'none'})`
       }`,
-      `  lease:        waits up to ${pre.leaseMs}ms for the old session to be released; if it is not, the ` +
-        'relaunch starts without --resume and says so',
+      `  lease:        waits up to ${pre.leaseMs}ms for the old session to be released; if another ` +
+        'terminal still holds it, the relaunch starts without --resume, says so and never kills it',
       `  fallback:     tmux session ${TMUX_SESSION} (only if that terminal is gone; attach with: ` +
         `tmux attach -t =${TMUX_SESSION})`,
       `  log:          ${logFile}`,
@@ -1563,10 +1609,11 @@ export async function runRestart(context, options = {}) {
             }).restartLog.current,
           tmuxSession: TMUX_SESSION,
           noInstall: Boolean(options.noInstall),
-          resume: resolveResume(),
+          resume: pre.resume,
           sessionId: pre.sessionId,
           sessionDir: pre.sessionDir,
-          holders: pre.holders,
+          holders: pre.ours,
+          foreign: pre.foreign,
           leaseMs: pre.leaseMs,
         }),
       )

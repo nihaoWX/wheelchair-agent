@@ -328,6 +328,39 @@ export function sessionHolders({
   return holders.sort((left, right) => left.pid - right.pid)
 }
 
+/**
+ * Whether `pid` is part of the restart chain that owns a session.
+ *
+ * A process belongs to the chain when it is one of the chain pids itself or a descendant of one. The
+ * session's dsh process usually does not carry the preset `--patch` argv, so it is found through its
+ * ancestry: the CLI that launched `wheelchair-agent spv` is in the chain and dsh is below it. A process
+ * owned by another terminal has a different lineage and is therefore foreign.
+ */
+export function holderInRestartChain({ pid, chain = [], procRoot = process.env.WHEELCHAIR_PROC_ROOT || '/proc' } = {}) {
+  const target = Number(pid)
+  if (!Number.isInteger(target) || target <= 0) return false
+  const chainPids = new Set(chain.map(Number).filter(value => Number.isInteger(value) && value > 0))
+  if (chainPids.has(target)) return true
+  const seen = new Set([target])
+  let current = target
+  while (Number.isInteger(current) && current > 1) {
+    const parent = ppidOf(procRoot, current)
+    if (!Number.isInteger(parent) || parent <= 1) return false
+    if (chainPids.has(parent)) return true
+    if (seen.has(parent)) return false
+    seen.add(parent)
+    current = parent
+  }
+  return false
+}
+
+/** The one operator-facing line for a lease that a foreign/other terminal still holds. */
+export function occupiedSessionNotice({ sessionId, pid } = {}) {
+  const id = typeof sessionId === 'string' && sessionId !== '' ? sessionId : 'the previous session'
+  return `restart: session ${id} is occupied by another terminal (pid ${pid ?? 'unknown'}); ` +
+    'not preempted; this launch is a new session'
+}
+
 /** Parse a non-negative millisecond value from the environment, or fall back to `fallback`. */
 export function envMs(env, name, fallback) {
   const value = Number.parseInt(String(env?.[name] ?? ''), 10)
@@ -392,10 +425,16 @@ export async function waitForLeaseFree({
  * lease held. Otherwise self/ancestors are skipped with one note and only the other holders are signalled.
  * A holder that survives SIGKILL is a failure too.
  *
+ * `chain` is the restart target's process chain. When it is given, only holders inside that chain are
+ * signalled: a holder owned by another terminal is foreign and is never preempted. The bounded wait still
+ * runs for it (it may release the lease itself); on timeout the result is `{released:false, failed:false,
+ * blocked:true, holder}` and the caller starts a fresh session. Without `chain`, the explicit
+ * `session release` behaviour is unchanged: every non-service holder is released.
+ *
  * The protocol is testable without real processes: `kill`, `isAlive`, `sleep` and `scan` (the current
  * holder list) can be injected. `say` receives every operator-facing line.
  *
- * @returns `{released, failed, holder}`.
+ * @returns `{released, failed, holder, blocked?}`.
  */
 export async function releaseSession({
   sessionDir,
@@ -403,6 +442,7 @@ export async function releaseSession({
   selfPid = process.pid,
   ancestors = [],
   servicePids = [],
+  chain,
   kill = (pid, signal) => process.kill(pid, signal),
   isAlive = pid => pidAlive(pid),
   sleep: sleepFor = sleep,
@@ -433,6 +473,21 @@ export async function releaseSession({
   if (other.length === 0) {
     say('FAIL: the only holder(s) are this process or its ancestor chain; refusing to kill them')
     return { released: false, failed: true, holder: undefined }
+  }
+  // With a target chain, a holder outside it belongs to another terminal. Never signal it; wait for it to
+  // release the lease itself, then report a blocked (not failed) release so the caller starts fresh.
+  const foreign = chain === undefined
+    ? []
+    : other.filter(holder => !holderInRestartChain({ pid: holder.pid, chain, procRoot }))
+  const owned = chain === undefined
+    ? other
+    : other.filter(holder => holderInRestartChain({ pid: holder.pid, chain, procRoot }))
+  if (foreign.length > 0) {
+    const pids = foreign.map(holder => Number(holder.pid)).join(' ')
+    say(
+      `note: pid ${pids} holds the session but is not part of this restart chain (another terminal); ` +
+        'not signalling it',
+    )
   }
   if (own.length > 0) {
     const pids = own.map(holder => Number(holder.pid)).join(' ')
@@ -474,17 +529,27 @@ export async function releaseSession({
     return still
   }
 
-  let still = allUnskipped()
+  let still = owned
   signal(still.map(holder => Number(holder.pid)), 'SIGTERM')
   still = await waitLockFree()
   if (still.length > 0) {
-    signal(still.map(holder => Number(holder.pid)), 'SIGKILL')
-    still = await waitLockFree()
+    const ownedStill = still.filter(holder =>
+      owned.some(entry => Number(entry.pid) === Number(holder.pid)))
+    if (ownedStill.length > 0) {
+      signal(ownedStill.map(holder => Number(holder.pid)), 'SIGKILL')
+      still = await waitLockFree()
+    }
   }
   if (still.length > 0) {
-    const pid = Number(still[0].pid)
+    const holder = still[0]
+    if (chain !== undefined && foreign.some(entry => Number(entry.pid) === Number(holder.pid))) {
+      const notice = occupiedSessionNotice({ sessionId: decodeSegment(basename(sessionDir ?? '')), pid: holder.pid })
+      say(notice)
+      return { released: false, failed: false, blocked: true, holder, foreign }
+    }
+    const pid = Number(holder.pid)
     say(`FAIL: pid ${pid} still holds the session lease after SIGTERM and SIGKILL`)
-    return { released: false, failed: true, holder: still[0] }
+    return { released: false, failed: true, holder }
   }
   const ownStill = own.filter(holder =>
     holder.holds !== 'log' && current().some(other => other.pid === Number(holder.pid)))

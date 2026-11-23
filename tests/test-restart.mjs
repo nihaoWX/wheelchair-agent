@@ -438,8 +438,8 @@ async function addFd(box, pid, fd, target) {
 }
 
 /** A fake live holder: argv, a non-zombie stat and one descriptor aimed at `target`. */
-async function addFakeHolder(box, { pid, target, argv = ['sleep', '300'], state = 'S', check = true }) {
-  await addProc(box, pid, argv, { check })
+async function addFakeHolder(box, { pid, target, argv = ['sleep', '300'], state = 'S', check = true, ppid = 1 }) {
+  await addProc(box, pid, argv, { check, ppid })
   await addStat(box, pid, state)
   await addFd(box, pid, 3, target)
 }
@@ -467,13 +467,14 @@ function markerJson({
   noInstall = 'false',
   pid = '$FAKE_MARKER_PID',
   leaseBlockedPid = 'null',
+  sessionId = 'null',
 } = {}) {
   return [
     'cat > "$DSH_SUPERAGENT_STATE_DIR/restart-armed.json" <<JSON',
     `{"pid": ${pid}, "armedPid": $$, "startedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)", "log": "$log", ` +
       `"logOffset": $offset, "checkout": ${checkout}, "tmux": "dsh-spv", ` +
       `"service": "http://127.0.0.1:3082", "force": false, "noInstall": ${noInstall}, ` +
-      `"leaseBlockedPid": ${leaseBlockedPid}}`,
+      `"sessionId": ${sessionId}, "leaseBlockedPid": ${leaseBlockedPid}}`,
     'JSON',
   ].join('\n')
 }
@@ -858,14 +859,28 @@ async function testCommandModule() {
   assert.equal(registration.input.hint, '[--force]')
   assert.equal(typeof registration.handler, 'function')
 
-  const forced = registration.handler({ rawInput: ' --force ' })
+  const session = '10b21e9f-7e77-40f3-9d1e-d2ee931f6ff6'
+  const forced = registration.handler({
+    rawInput: ' --force ',
+    agent: { session: { id: session } },
+  })
   assert.equal(forced.kind, 'success')
   assert.match(forced.text, /dsh-spv/)
-  assert.equal((await readFile(argsFile, 'utf8')).trim(), 'restart-all --detach --force')
+  assert.equal(
+    (await readFile(argsFile, 'utf8')).trim(),
+    `restart-all --detach --session ${session} --force`,
+    'the invoking session is passed as --session, before --force',
+  )
 
   await writeFile(argsFile, '', 'utf8')
-  const plain = registration.handler({ rawInput: '' })
+  const plain = registration.handler({ rawInput: '', agent: { session: { id: session } } })
   assert.equal(plain.kind, 'success')
+  assert.equal((await readFile(argsFile, 'utf8')).trim(), `restart-all --detach --session ${session}`)
+
+  // No agent session id (older dsh, or a direct unit call): the CLI keeps its resume.txt fallback.
+  await writeFile(argsFile, '', 'utf8')
+  const fallback = registration.handler({ rawInput: '' })
+  assert.equal(fallback.kind, 'success')
   assert.equal((await readFile(argsFile, 'utf8')).trim(), 'restart-all --detach')
 
   const unknown = registration.handler({ rawInput: '--nope' })
@@ -1622,6 +1637,95 @@ async function testDryRunIgnoresArmedOverrides() {
   })
 }
 
+/**
+ * The restart target is the invoking session, not `~/.dsh-tui/resume.txt` (dsh-tui's global last-opened
+ * pointer). A missing --session and an id with no directory both fall back with one honest note.
+ */
+async function testRestartTargetPrefersInvokingSession() {
+  await withServer({ running: 0, queued: 0 }, async ({ url }) => {
+    const invoking = '10b21e9f-7e77-40f3-9d1e-d2ee931f6ff6'
+    const opened = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+    const missing = 'ffffffff-1111-2222-3333-444444444444'
+    const box = await makeBox()
+    box.url = url
+    const invokingDir = await writeSessionDir(box, invoking)
+    const openedDir = await writeSessionDir(box, opened)
+    // Another terminal opened `opened` last, so dsh-tui's pointer names it.
+    await writeResume(box, `${opened}\n`)
+
+    const chosen = await cli(box, ['restart-all', '--dry-run', '--session', invoking])
+    assert.equal(chosen.status, 0, output(chosen))
+    const chosenText = output(chosen)
+    assert.match(chosenText, new RegExp(`session:\\s+${invoking}`))
+    assert.ok(chosenText.includes(`(${invokingDir})`), `the invoking session directory is used:\n${chosenText}`)
+    assert.match(chosenText, new RegExp(`resume: --resume ${invoking} \\(invoking session\\)`))
+    assert.doesNotMatch(chosenText, /no invoking session id was passed/)
+    assert.doesNotMatch(chosenText, /has no directory under/)
+
+    const fallback = await cli(box, ['restart-all', '--dry-run'])
+    assert.equal(fallback.status, 0, output(fallback))
+    const fallbackText = output(fallback)
+    assert.match(fallbackText, new RegExp(`session:\\s+${opened}`))
+    assert.ok(fallbackText.includes(`(${openedDir})`), `the resume.txt session is the fallback:\n${fallbackText}`)
+    assert.match(fallbackText, new RegExp(`resume: --resume ${opened} \\(~/.dsh-tui/resume.txt fallback\\)`))
+    assert.match(
+      fallbackText,
+      new RegExp(`note: no invoking session id was passed to restart-all; using ~/.dsh-tui/resume.txt \\(${opened}\\) instead`),
+    )
+
+    const unresolvable = await cli(box, ['restart-all', '--dry-run', '--session', missing])
+    assert.equal(unresolvable.status, 0, output(unresolvable))
+    const unresolvableText = output(unresolvable)
+    assert.match(unresolvableText, new RegExp(`session:\\s+${opened}`), 'the fallback still runs')
+    assert.match(
+      unresolvableText,
+      new RegExp(`note: the invoking session ${missing} has no directory under .*; using ~/.dsh-tui/resume.txt \\(${opened}\\) instead`),
+    )
+    assert.match(unresolvableText, new RegExp(`resume: --resume ${opened} \\(~/.dsh-tui/resume.txt fallback\\)`))
+    assert.doesNotMatch(unresolvableText, /^FAIL:/m, 'an unresolvable --session does not crash the restart')
+  })
+}
+
+/** The armed marker's session id is the relaunch target; resume.txt only fills in when the marker has none. */
+async function testSpvRelaunchUsesMarkerSession() {
+  const box = await makeSandbox()
+  const invoking = '10b21e9f-7e77-40f3-9d1e-d2ee931f6ff6'
+  const opened = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee'
+  await writeResume(box, `${opened}\n`)
+  await writeSessionDir(box, invoking)
+  await writeSessionDir(box, opened)
+  const launcher = await writeLauncher(
+    box,
+    `
+printf 'call:%s\\n' "$*" >> "$FAKE_CALLS"
+if [ -f "$FAKE_RELAUNCHED" ]; then exit 0; fi
+log="$WHEELCHAIR_AGENT_HOME/logs/restart-all.log"
+mkdir -p "$WHEELCHAIR_AGENT_HOME/logs"
+: > "$log"
+offset=$(wc -c < "$log")
+${markerJson({ sessionId: `"${invoking}"` })}
+printf '[2026-11-15T00:00:01.000Z] restart complete (exit 0)\\n' >> "$log"
+: > "$FAKE_RELAUNCHED"
+exit 0
+`,
+  )
+  const result = await cli(box, ['spv'], {
+    env: {
+      WHEELCHAIR_AGENT_LAUNCHER: launcher,
+      FAKE_MARKER_PID: String(process.pid),
+      FAKE_CHECKOUT: box.checkout,
+      FAKE_RELAUNCHED: join(box.base, 'marker-relaunched'),
+      WHEELCHAIR_RESTART_NARRATE_MS: '3000',
+    },
+  })
+  assert.equal(result.status, 0, output(result))
+  assert.deepEqual(
+    await calls(box),
+    ['call:', `call:--resume ${invoking}`],
+    'the relaunch resumes the session the operator restarted from, not the last one opened elsewhere',
+  )
+}
+
 /** The same-terminal relaunch resumes the conversation named by ~/.dsh-tui/resume.txt. */
 async function testSpvRelaunchResumesSession() {
   const box = await makeSandbox()
@@ -2271,44 +2375,59 @@ async function testSessionReleaseRefusesSelf() {
   assert.doesNotMatch(output(result), /sent SIGTERM/, 'the refusal signals nothing')
 }
 
-/** The kill set now includes a current fd holder and still excludes the caller, ancestors and the service. */
-async function testKillSetIncludesHolder() {
-  assert.deepEqual(
-    killTargets({
-      chain: [900_001],
-      holders: [900_002],
-      selfPid: 900_003,
-      ancestors: [900_004],
-      servicePids: [900_005],
-    }),
-    [900_001, 900_002],
-    'a holder is added to the kill set; self, ancestor and service stay excluded',
+/** A lease holder from another terminal is foreign: it is named, waited for, never signalled, and not resumed. */
+async function testForeignHolderIsNotKilled() {
+  const box = await makeSandbox()
+  const uuid = '10b21e9f-7e77-40f3-9d1e-d2ee931f6ff6'
+  const dir = await writeSessionDir(box, uuid)
+  const foreign = freePids(1, 911_000)[0]
+  await addFakeHolder(box, { pid: foreign, target: join(dir, 'session.lock'), ppid: 1 })
+  const killed = []
+  const lines = []
+  const result = await releaseSession({
+    sessionDir: dir,
+    holders: [{ pid: foreign, holds: 'lock' }],
+    chain: [900_000],
+    selfPid: 900_100,
+    kill: (pid, signal) => killed.push(`${signal}:${pid}`),
+    isAlive: () => true,
+    scan: () => [{ pid: foreign, holds: 'lock' }],
+    timeoutMs: 30,
+    pollMs: 5,
+    say: line => lines.push(line),
+    procRoot: box.proc,
+  })
+  assert.deepEqual(killed, [], 'a holder outside the restart chain is never signalled')
+  assert.equal(result.released, false)
+  assert.equal(result.failed, false, 'a foreign holder is not a failure; the caller starts fresh')
+  assert.equal(result.blocked, true)
+  const said = lines.join('\n')
+  assert.match(said, /not part of this restart chain \(another terminal\); not signalling it/)
+  assert.match(
+    said,
+    new RegExp(`session ${uuid} is occupied by another terminal \\(pid ${foreign}\\); not preempted`),
   )
 
   await withServer({ running: 0, queued: 0 }, async ({ url }) => {
-    const uuid = '10b21e9f-7e77-40f3-9d1e-d2ee931f6ff6'
-    const box = await makeBox()
-    box.url = url
-    await writeResume(box, `${uuid}\n`)
-    const dir = await writeSessionDir(box, uuid)
-    const holder = freePids(1, 911_000)[0]
-    await addFakeHolder(box, { pid: holder, target: join(dir, 'session.lock') })
-    const result = await cli(box, ['restart-all', '--dry-run'])
-    assert.equal(result.status, 0, output(result))
-    const text = output(result)
+    const dry = await makeBox()
+    dry.url = url
+    await writeResume(dry, `${uuid}\n`)
+    const dryDir = await writeSessionDir(dry, uuid)
+    const other = freePids(1, 911_100)[0]
+    await addFakeHolder(dry, { pid: other, target: join(dryDir, 'session.lock'), ppid: 1 })
+    const plan = await cli(dry, ['restart-all', '--dry-run'])
+    assert.equal(plan.status, 0, output(plan))
+    const text = output(plan)
     assert.match(text, new RegExp(`session:\\s+${uuid}`))
-    assert.ok(text.includes(`(${dir})`), `the restart resolves this session directory:\n${text}`)
+    assert.ok(text.includes(`(${dryDir})`), `the restart resolves this session directory:\n${text}`)
     const pidsLine = text.split('\n').find(line => line.trimStart().startsWith('spv pids:'))
-    assert.ok(pidsLine.includes(String(holder)), `the kill set names the fd holder:\n${text}`)
-    const holdersLine = text.split('\n').find(line => line.trimStart().startsWith('holders:'))
-    assert.ok(holdersLine.includes(String(holder)), `the plan names the holder:\n${text}`)
-    assert.deepEqual(await calls(box), [], 'a dry run still runs nothing')
+    assert.ok(!pidsLine.includes(String(other)), `the foreign holder is not in the kill set:\n${text}`)
+    assert.match(text, new RegExp(`other:\\s+${other} \\(another terminal; not signalled\\)`))
+    assert.deepEqual(await calls(dry), [], 'a dry run still runs nothing')
 
-    // `session release` resolves the same id/cwd through the same `resolveSession`, so the directory it
-    // names must be the one the restart plan names.
-    const listed = await cli(box, ['session', 'release', '--session', uuid, '--dry-run'])
+    const listed = await cli(dry, ['session', 'release', '--session', uuid, '--dry-run'])
     assert.equal(listed.status, 0, output(listed))
-    assert.ok(output(listed).includes(`dir: ${dir}`), `session release names the same directory:\n${output(listed)}`)
+    assert.ok(output(listed).includes(`dir: ${dryDir}`), `session release names the same directory:\n${output(listed)}`)
   })
 }
 
@@ -2327,6 +2446,8 @@ async function testRestartWaitsForLease() {
         target: join(dir, 'session.lock'),
         argv: ['node', '/opt/dsh/bin.js', '--profile', 'dsh-tui'],
         check: false,
+        // The target TUI is a descendant of the CLI in the restart chain; only then is it ours to signal.
+        ppid: box.chainPids[0],
       })
       let sawWaitLine = false
       const timer = setInterval(() => {
@@ -2399,11 +2520,18 @@ async function testRestartFreshFallback() {
       'the wait is announced once, not once per phase',
     )
     assert.equal(
-      (log.match(/the previous session is still mounted by pid/g) ?? []).length,
+      (log.match(/not preempted; this launch is a new session/g) ?? []).length,
       1,
       'the fresh-session line is printed once',
     )
-    assert.match(log, new RegExp(`restart: the previous session is still mounted by pid ${holder}; starting a fresh session`))
+    assert.match(
+      log,
+      new RegExp(
+        `restart: session ${uuid} is occupied by another terminal \\(pid ${holder}\\); ` +
+          'not preempted; this launch is a new session',
+      ),
+    )
+    assert.doesNotMatch(log, new RegExp(`sent SIGTERM to pid ${holder}`), 'the foreign holder is not signalled')
     const launch = (await calls(box)).find(line => line.startsWith('tmux new-session'))
     assert.ok(launch !== undefined, 'the fallback still brings a TUI back')
     assert.ok(!launch.includes('--resume'), `the fallback must not race the old holder:\n${launch}`)
@@ -2501,7 +2629,10 @@ exit 0
   assert.match(text, new RegExp(`restart: waiting for pid ${holder} to release the session…`))
   assert.match(
     text,
-    new RegExp(`restart: the previous session is still mounted by pid ${holder}; starting a fresh session`),
+    new RegExp(
+      `restart: session ${uuid} is occupied by another terminal \\(pid ${holder}\\); ` +
+        'not preempted; this launch is a new session',
+    ),
   )
   assert.deepEqual(await calls(box), ['call:'], 'the resumed launch is replaced by a fresh one before spawning')
 
@@ -2603,7 +2734,7 @@ async function testArmedChainOmitsArmTimeHolders() {
     await writeResume(box, `${uuid}\n`)
     const dir = await writeSessionDir(box, uuid)
     const holder = freePids(1, 914_100)[0]
-    await addFakeHolder(box, { pid: holder, target: join(dir, 'session.lock') })
+    await addFakeHolder(box, { pid: holder, target: join(dir, 'session.lock'), ppid: box.chainPids[0] })
     const result = await cli(box, ['restart-all', '--run'], {
       env: {
         WHEELCHAIR_RESTART_CHAIN: box.chainPids.join(' '),
@@ -2626,7 +2757,7 @@ async function testArmedChainOmitsArmTimeHolders() {
     await writeResume(gone, `${uuid}\n`)
     const goneDir = await writeSessionDir(gone, uuid)
     const straggler = freePids(1, 914_300)[0]
-    await addFakeHolder(gone, { pid: straggler, target: join(goneDir, 'session.lock') })
+    await addFakeHolder(gone, { pid: straggler, target: join(goneDir, 'session.lock'), ppid: gone.chainPids[0] })
     await rm(join(gone.proc, String(straggler), 'fd', '3'), { force: true })
     const goneResult = await cli(gone, ['restart-all', '--run'], {
       env: {
@@ -2744,7 +2875,11 @@ exit 0
   assert.equal(result.status, 0, output(result))
   assert.match(
     output(result),
-    new RegExp(`^restart: the previous session is still mounted by pid ${holder}; starting a fresh session$`, 'm'),
+    new RegExp(
+      `^restart: session ${uuid} is occupied by another terminal \\(pid ${holder}\\); ` +
+        'not preempted; this launch is a new session$',
+      'm',
+    ),
     'the tmux-side CLI explains the fresh launch',
   )
   assert.doesNotMatch(output(result), /waiting for pid/, 'the stale-but-real hint prevents a second wait')
@@ -2857,7 +2992,9 @@ try {
   await test('a claimed run needs no tmux', testClaimedRunWithoutTmux)
   await test('an unclaimed run without tmux fails with a logged reason', testUnclaimedRunWithoutTmuxFails)
   await test('a dry run ignores the armed chain/patch overrides and scans /proc', testDryRunIgnoresArmedOverrides)
+  await test('the restart target is the invoking session, and resume.txt is a logged fallback', testRestartTargetPrefersInvokingSession)
   await test('the same-terminal relaunch resumes the recorded SPV session', testSpvRelaunchResumesSession)
+  await test('the armed marker session wins over resume.txt for the relaunch', testSpvRelaunchUsesMarkerSession)
   await test('a missing resume file prints one note and starts a fresh session', testSpvCannotResumeStartsFresh)
   await test('the relaunch drops stale operator session flags', testSpvRelaunchDropsStaleOperatorFlags)
   await test('a rejected resume is retried once without the flag', testSpvResumeRefusedRetriesFresh)
@@ -2871,9 +3008,9 @@ try {
   await test('session release defaults to resume.txt, then the newest workspace session', testSessionReleaseDefaultPrefersResume)
   await test('releaseSession signals TERM, waits, then KILL, and refuses self/ancestors', testReleaseSessionProtocol)
   await test('session release refuses when only this process/ancestors hold it', testSessionReleaseRefusesSelf)
-  await test('the kill set includes an fd holder and excludes self/ancestor/service', testKillSetIncludesHolder)
+  await test('a foreign lease holder is never killed and forces a fresh session', testForeignHolderIsNotKilled)
   await test('a restart waits for the lease and then resumes the session', testRestartWaitsForLease)
-  await test('an un-releasable lease starts a fresh session, once and bounded', testRestartFreshFallback)
+  await test('an un-releasable foreign lease starts a fresh session, once and bounded', testRestartFreshFallback)
   await test('a stale dsh-spv is closed before the kill; failures only warn', testStaleTmuxClosed)
   await test('spv --resume waits for the lease and drops the resume on timeout', testSpvLeaseWaitBeforeResume)
   await test('a marker leaseBlockedPid relaunches fresh without waiting again', testSpvBlockedMarkerRelaunchFresh)
