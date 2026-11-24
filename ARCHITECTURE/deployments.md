@@ -64,6 +64,15 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
   `kind: "review"` 的队列消息进那份部署的队列，由它的注入器注入 orchestrator → 工单。stage 3 之前，
   单部署行为不变。
 
+### 两个被接受的限制（stage 2 定）
+
+- **面板标签所有部署一致**：webui 面板标题是固定常量，没有 host/title 配置。每份部署在自己的端口上，
+  收件箱数据根本来全局，所以标签重名不会认错对象。想区分时给 webui 加 title 配置即可，属于以后的事。
+- **`queueDir` 恒等于 `<stateDir>/spv`**：实例里 `wheelchair-spv` 的 `queueDir` 跟随实例 settings/stateDir，
+  overlay 改不了它。所以注册表条目必须满足这条恒等式，否则会出现"派单写进 A、部署读 B"的静默坏掉。
+  `deployment add` 不一致即报错并给出正确值，手改注册表造成的不一致条目在读取时即报错，
+  `deployment migrate` 与 `install.sh --project` 写出的条目必须合法。
+
 ## 分阶段与验收
 
 | 阶段 | 交付 | 验收 |
