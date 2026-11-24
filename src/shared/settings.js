@@ -95,6 +95,11 @@ export const KEY_SPECS = {
     env: 'SPV_INSTALL_REPO',
     label: { zh: '合并即冷安装的仓库', en: 'Install-target repository' },
   },
+  'merge.autoMerge': {
+    type: 'boolean',
+    default: false,
+    label: { zh: '交付后自动合并工单 PR', en: 'Auto-merge a ticket PR after delivery' },
+  },
   'injection.intervalMs': {
     type: 'integer',
     default: 1000,
