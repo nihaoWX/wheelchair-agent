@@ -532,7 +532,8 @@ async function testSaveMergeAndStaleRevision() {
   const stored = await readJson(settingsPath(box))
   assert.equal(stored.version, SETTINGS_VERSION)
   assert.equal(stored.revision, 1)
-  assert.deepEqual(stored.values, { 'inbox.intervalSeconds': 30 })
+  assert.deepEqual(stored.values, { ...EXPECTED_DEFAULTS, 'inbox.intervalSeconds': 30 }, 'the file always carries every key')
+  assert.ok(!stored.filled.includes('inbox.intervalSeconds'), 'the saved key is a user override, not a filled default')
   assert.deepEqual(stored.templates, {}, 'default templates are not written to the file')
   const names = await readdir(box.root)
   assert.ok(!names.some(name => name.startsWith(`${SETTINGS_FILE}.tmp-`)), 'the atomic write leaves no temporary file')
@@ -1183,9 +1184,15 @@ async function testHostSettingsRoute() {
     assert.ok(routes.some(item => item.path === '/wheelchair-inbox/items'), 'the inbox routes stay registered')
     assert.ok(effects.some(item => item.label.includes('inbox poller')), 'the host still registers the inbox poller')
 
-    // The host mount ships the empty-but-valid settings file; a stale/rejected PUT must not touch it.
+    // The host mount ships the self-contained defaults; a stale/rejected PUT must not touch it.
     const mounted = await readFile(settingsPath(box), 'utf8')
-    assert.deepEqual(JSON.parse(mounted), { version: SETTINGS_VERSION, revision: 0, values: {}, templates: {} })
+    assert.deepEqual(JSON.parse(mounted), {
+      version: SETTINGS_VERSION,
+      revision: 0,
+      values: EXPECTED_DEFAULTS,
+      templates: {},
+      filled: Object.keys(KEY_SPECS),
+    })
     const get = await call(route.handler)
     assert.equal(get.status, 200)
     assert.equal(get.headers['cache-control'], 'no-store')
@@ -2179,7 +2186,12 @@ async function testStyleSetting() {
   assert.equal(resolveSettings({ home: box.root, stateDir: box.state, env: {} }).revision, 1, 'a refused value writes nothing')
 
   const persisted = JSON.parse(await readFile(settingsPath(box), 'utf8'))
-  assert.deepEqual(persisted.values, { 'webui.style': 'minimal' }, 'the style key round-trips through the store file')
+  assert.deepEqual(
+    persisted.values,
+    { ...EXPECTED_DEFAULTS, 'webui.style': 'minimal' },
+    'the style key round-trips and every other key is materialized at its default',
+  )
+  assert.ok(!persisted.filled.includes('webui.style'), 'a user-chosen value is not recorded as filled')
 
   const handler = createSettingsHandler({ home: box.root, stateDir: box.state, env: {} })
   const put = await call(handler, { method: 'PUT', body: { revision: 1, values: { 'webui.style': 'fluid' } } })
@@ -2195,29 +2207,44 @@ async function testStyleSetting() {
   assert.equal(reset.effective['webui.style'], 'fluid', 'reset falls back to the fluid default')
 }
 
-/** Install/first run ships the empty-but-valid settings file; it never overwrites or pins defaults. */
+/** Install/first run materializes every default once; later reads only fill keys a file is missing. */
 async function testEnsureSettingsFile() {
   const box = await sandbox()
   const first = ensureSettingsFile({ home: box.root, stateDir: box.state, env: {} })
   assert.equal(first.created, true, 'a missing file is created')
   assert.deepEqual(
     JSON.parse(await readFile(first.file, 'utf8')),
-    { version: SETTINGS_VERSION, revision: 0, values: {}, templates: {} },
-    'the file is empty-but-valid, with no resolved defaults written into it',
+    {
+      version: SETTINGS_VERSION,
+      revision: 0,
+      values: EXPECTED_DEFAULTS,
+      templates: {},
+      filled: Object.keys(KEY_SPECS),
+    },
+    'the file ships every KEY_SPECS default, marked as filled rather than user-chosen',
   )
   const snapshot = resolveSettings({ home: box.root, stateDir: box.state, env: {} })
   assert.equal(snapshot.fileState, 'ok')
   assert.equal(snapshot.revision, 0)
-  assert.deepEqual(snapshot.effective, EXPECTED_DEFAULTS, 'empty values still yield the built-in defaults')
+  assert.deepEqual(snapshot.effective, EXPECTED_DEFAULTS, 'the materialized values still yield the built-in defaults')
+  assert.deepEqual(snapshot.values, {}, 'filled defaults are not explicit user overrides')
+  assert.ok(snapshot.rows.every(row => row.source === 'default'))
 
   await writeJson(settingsPath(box), { version: 1, revision: 7, values: { 'webui.style': 'minimal' }, templates: {} })
   const before = await readFile(settingsPath(box), 'utf8')
   const second = ensureSettingsFile({ home: box.root, stateDir: box.state, env: {} })
   assert.equal(second.created, false, 'an existing file is not replaced')
-  assert.equal(await readFile(settingsPath(box), 'utf8'), before)
-  assert.equal(resolveSettings({ home: box.root, stateDir: box.state, env: {} }).effective['webui.style'], 'minimal')
+  assert.equal(await readFile(settingsPath(box), 'utf8'), before, 'ensureSettingsFile leaves an existing file byte-identical')
+  const backfilled = resolveSettings({ home: box.root, stateDir: box.state, env: {} })
+  assert.equal(backfilled.effective['webui.style'], 'minimal')
+  const after = JSON.parse(await readFile(settingsPath(box), 'utf8'))
+  assert.equal(after.revision, 7, 'filling missing keys does not bump revision')
+  assert.equal(after.values['webui.style'], 'minimal', 'an existing value is untouched')
+  assert.deepEqual(after.values, { ...EXPECTED_DEFAULTS, 'webui.style': 'minimal' }, 'only the missing keys are filled')
+  assert.ok(!after.filled.includes('webui.style'), 'the existing key stays a user override')
+  assert.equal(after.filled.length, Object.keys(KEY_SPECS).length - 1, 'the filled keys are recorded')
 
-  // A legacy file is migrated first; the shipped empty file cannot shadow real old values.
+  // A legacy file is migrated first; the shipped defaults cannot shadow real old values.
   const legacyBox = await sandbox()
   await writeJson(join(legacyBox.state, 'panel-settings.json'), { version: 1, revision: 3, values: { 'webui.style': 'minimal' } })
   const migrated = ensureSettingsFile({ home: legacyBox.root, stateDir: legacyBox.state, env: {} })
