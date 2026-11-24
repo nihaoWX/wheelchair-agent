@@ -5,8 +5,8 @@
 # fake `dsh-tui` satisfies the prerequisite, and a fake probe replaces the /proc scan. The fake probe is
 # the seam install.sh documents (`SPV_INSTALL_PROBE`): it prints the same key=value lines as
 # `commands/superagent-service.py probe`, so the test states "the service/SPV session is running" as a
-# fixture instead of depending on what happens to run on the machine. No real service, preset or dsh is
-# touched.
+# fixture instead of depending on what happens to run on the machine. No real service or dsh is
+# touched; case 17 briefly edits the checkout's source preset and restores it (also on INT/TERM).
 #
 # What it proves:
 #   - a refusal exits 3, explains what is in use, and creates nothing under any install target (a virgin
@@ -44,6 +44,8 @@ cleanup() {
   if [ "$KEEP" = 1 ]; then printf '\nsandbox kept at %s\n' "$SB"; else rm -rf "$SB"; fi
 }
 trap cleanup EXIT
+on_signal() { cleanup; trap - EXIT; exit 130; }
+trap on_signal INT TERM
 
 # ---------------------------------------------------------------- fixtures
 

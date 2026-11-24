@@ -148,6 +148,26 @@ try {
     assert.equal(normalizeYaml('section: >+2\n  one\n'), 'section: >+2\n  one\n')
   })
 
+  await check('normalizeYaml: a + chomping header keeps trailing blank lines', async () => {
+    assert.equal(normalizeYaml('section: |+\n  one\n'), 'section: |+\n  one\n')
+    assert.equal(normalizeYaml('section: |+\n  one\n\n'), 'section: |+\n  one\n\n')
+    assert.notEqual(normalizeYaml('section: |+\n  one\n'), normalizeYaml('section: |+\n  one\n\n'))
+    // A trailing comment after the block is not content, so it must not change the digest.
+    assert.equal(normalizeYaml('section: |+\n  one\n'), normalizeYaml('section: |+\n  one\n# note\n'))
+  })
+
+  await check('normalizeYaml: a tag or anchor before a quoted scalar does not swallow its #', async () => {
+    assert.equal(
+      normalizeYaml("k: !!str 'a # b' # old\n"),
+      normalizeYaml("k: !!str 'a # b' # new\n"),
+    )
+    assert.match(normalizeYaml("k: !!str 'a # b' # old\n"), /k: !!str 'a # b'\n/)
+    assert.equal(
+      normalizeYaml('k: &a "x # y" # old\n'),
+      normalizeYaml('k: &a "x # y" # new\n'),
+    )
+  })
+
   await check('normalizeYaml: a paragraph break in the real preset changes the digest', async () => {
     const base = await readFile(PRESET_YML, 'utf8')
     const changed = base.replace(/(You are in plan mode\.[^\n]*\n)/, '$1\n')

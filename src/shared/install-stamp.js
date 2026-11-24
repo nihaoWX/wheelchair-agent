@@ -83,16 +83,25 @@ function previousNonSpace(line, index) {
   return ''
 }
 
+/** The run of non-space characters before `index` (skipping spaces), or '' at line start. */
+function previousToken(line, index) {
+  let end = index - 1
+  while (end >= 0 && (line[end] === ' ' || line[end] === '\t')) end -= 1
+  let start = end
+  while (start >= 0 && line[start] !== ' ' && line[start] !== '\t') start -= 1
+  return line.slice(start + 1, end + 1)
+}
+
 /**
  * Does a quote at `index` open a quoted scalar, or is it plain content?
  *
- * YAML opens a quoted scalar only at the start of a node: after `:`, `-`, `[`, `{`, `,`, `?`, or at
- * line start. An apostrophe inside a plain scalar (`note: it's fine`) is content, so a `#` after it
- * still begins a comment.
+ * YAML opens a quoted scalar only at the start of a node: after `:`, `-`, `[`, `{`, `,`, `?`, after a
+ * tag/anchor/alias token (`!!str 'a'`, `&a "b"`), or at line start. An apostrophe inside a plain
+ * scalar (`note: it's fine`) is content, so a `#` after it still begins a comment.
  */
 function quoteStartsScalar(line, index) {
   const previous = previousNonSpace(line, index)
-  return (
+  if (
     previous === '' ||
     previous === ':' ||
     previous === '-' ||
@@ -100,7 +109,10 @@ function quoteStartsScalar(line, index) {
     previous === '{' ||
     previous === ',' ||
     previous === '?'
-  )
+  ) {
+    return true
+  }
+  return /^[!&*]/.test(previousToken(line, index))
 }
 
 /**
@@ -152,12 +164,13 @@ function stripYamlComment(line) {
 }
 
 /**
- * The indentation of a block-scalar header (`key: |`, `- >-`, `disabled: !!js >-`, `key: |2-`), else null.
+ * A block-scalar header (`key: |`, `- >-`, `disabled: !!js >-`, `key: |2-`, `key: |+`), or null.
  *
- * The indicator must be the value of a key or a sequence item (optionally behind a tag or anchor
- * token), and may carry a chomping (`-`/`+`) and/or indentation (`1`-`9`) indicator.
+ * Returns the header's indentation and whether chomping keeps trailing blank lines (`+`). The
+ * indicator must be the value of a key or a sequence item (optionally behind a tag or anchor token),
+ * and may carry a chomping (`-`/`+`) and/or indentation (`1`-`9`) indicator.
  */
-function blockScalarHeaderIndent(content) {
+function blockScalarHeader(content) {
   const trimmed = content.replace(/[ \t]+$/, '')
   const match = /[|>](?:[-+][1-9]?|[1-9][-+]?)?(?:[ \t]+#.*)?$/.exec(trimmed)
   if (match === null) return null
@@ -167,7 +180,7 @@ function blockScalarHeaderIndent(content) {
   const token = prefix.split(/[ \t]+/).pop()
   const valueStart = prefix.endsWith(':') || token === '-' || token === '?' || /^[!&*]/.test(token)
   if (!valueStart) return null
-  return /^[ \t]*/.exec(content)[0].length
+  return { indent: /^[ \t]*/.exec(content)[0].length, keep: match[0].includes('+') }
 }
 
 /**
@@ -177,7 +190,8 @@ function blockScalarHeaderIndent(content) {
  *   - comments are stripped (outside quotes; `#` at line start or after whitespace);
  *   - blank / whitespace-only lines are dropped outside block scalars;
  *   - inside a block scalar, blank lines followed by more block content are kept (paragraph breaks),
- *     while blank lines after its last content line are dropped (they are not scalar content);
+ *     and a `+` header keeps trailing blanks too; otherwise blank lines after the last content line
+ *     are dropped (they are not scalar content);
  *   - trailing whitespace is stripped outside block scalars;
  *   - a block scalar's content lines (indentation greater than the header's) are kept verbatim;
  *   - indentation, quotes and key order are otherwise preserved as-is.
@@ -190,35 +204,44 @@ export function normalizeYaml(text) {
     .replace(/^\uFEFF/, '')
     .replace(/\r\n?/g, '\n')
   const lines = source.split('\n')
+  // The final empty element is the file's trailing newline, not a blank content line; dropping it lets
+  // the "keep" chomping indicator count trailing blank lines exactly.
+  if (lines.length > 1 && lines[lines.length - 1] === '') lines.pop()
   const kept = []
-  let blockIndent = null
+  let block = null
   let blockBlanks = []
+  const keepBlanks = () => {
+    if (blockBlanks.length === 0) return
+    kept.push(...blockBlanks)
+    blockBlanks = []
+  }
   for (const line of lines) {
     const trimmed = line.trim()
     const indent = /^[ \t]*/.exec(line)[0].length
-    if (blockIndent !== null) {
-      // Blank lines are buffered: inside a block scalar they are content (the prompt's paragraph
-      // breaks), but after its last content line they are not, so they are only flushed when a
-      // deeper-indented content line follows.
+    if (block !== null) {
+      // Blank lines are buffered: they are only flushed when the block has more content, or when the
+      // block uses `|+`/`>+` and therefore keeps trailing blanks.
       if (trimmed === '') {
         blockBlanks.push('')
         continue
       }
-      if (indent > blockIndent) {
+      if (indent > block.indent) {
         kept.push(...blockBlanks, line)
         blockBlanks = []
         continue
       }
-      blockIndent = null
+      if (block.keep) keepBlanks()
+      block = null
       blockBlanks = []
     }
     if (trimmed === '') continue
     const content = stripYamlComment(line).replace(/[ \t]+$/, '')
     if (content.trim() === '') continue
     kept.push(content)
-    const headerIndent = blockScalarHeaderIndent(content)
-    if (headerIndent !== null) blockIndent = headerIndent
+    const header = blockScalarHeader(content)
+    if (header !== null) block = header
   }
+  if (block !== null && block.keep) keepBlanks()
   if (kept.length === 0) return ''
   return `${kept.join('\n')}\n`
 }
