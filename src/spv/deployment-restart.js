@@ -1,9 +1,10 @@
 /**
  * Project-scoped restart for one deployment (`wheelchair-agent restart-all --project <p>`).
  *
- * The global `restart-all` (without `--project`) keeps its old behavior: stop every service, cold-install
- * the shared preset, start the service, and let the SPV terminal bring the TUI back. A single deployment is
- * different in three ways:
+ * `--all` is the machine-wide round: every registered instance is stopped, the SPV chain is replaced, the
+ * shared preset is installed once (always with an explicit `--project`), every instance is started, and the
+ * SPV terminal brings the TUI back (`runAllRestart` in `restart.js`). A single deployment is different in
+ * three ways:
  *
  *   - only its own `dsh` instance is stopped and started. The instance is identified by the same runtime
  *     facts the service manager uses: `--profile <profile>` plus the instance's `--patch <overlay>` file.

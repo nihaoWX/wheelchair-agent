@@ -181,19 +181,23 @@ options:
   --json    print one JSON object for scripting`
 
 const RESTART_USAGE = `usage: wheelchair-agent restart-all [--dry-run] [--force] [--no-install] [--detach]
-                                    [--session <id>] [--project <p>]
+                                    [--session <id>] [--project <p>|--all]
 
-Restart everything this deployment runs: the superagent service, a cold install of the preset, and the SPV TUI
-session. The cold-install guard refuses while the service or a live SPV session holds the install targets, so
-the order is fixed: guard -> service stop -> stop the SPV chain -> install.sh cold -> service start -> the
-terminal that ran "wheelchair-agent spv" brings the TUI back in that same terminal. tmux session "dsh-spv" is
-only the fallback for a terminal that is gone.
+Restart one deployment or the whole machine, then bring the SPV TUI back in the terminal that ran
+"wheelchair-agent spv" (tmux session "dsh-spv" is only the fallback for a terminal that is gone).
 
 With --project only that deployment is restarted: its own instance (profile plus --patch overlay) is stopped
 and started, install.sh is skipped (the preset, webui, CLI and core are installed once for every deployment),
 and the session it resumes is that deployment's own: --session when given, otherwise the record under its
 stateDir. The global ~/.dsh-tui/resume.txt is never read here, because it belongs to whichever deployment
 wrote it last and would resume another deployment's conversation.
+
+With --all every registered deployment is stopped, the SPV session chain is stopped and its lease waited for,
+install.sh runs once, every deployment is started, and the TUI is resumed. The install runs with an explicit
+project: --project when given, otherwise the deployment whose checkout this command runs from when its
+normalized GitHub origin (or the registered checkout path) identifies exactly one; otherwise the command
+refuses before stopping anything and asks for --project. --project may be combined with --all to say which
+checkout installs; it does not narrow the restart.
 
 options:
   --dry-run     print the plan and change nothing (no log, no command, no signal)
@@ -206,8 +210,9 @@ options:
                 is absent or has no directory, the id in ~/.dsh-tui/resume.txt is used and the fallback is
                 logged
   --project <p>
-                restart only the deployment registered for project <p>; without it every deployment is
-                restarted exactly as before
+                restart only the deployment registered for project <p>; with --all, only select the
+                deployment whose checkout runs install.sh (every deployment is still restarted)
+  --all         restart every registered deployment: stop all instances, install once, start all
   --run         internal: run the orchestration in this process (used by --detach)
   --help        this text
 
@@ -1001,7 +1006,6 @@ async function commandRestartAll(argv) {
   }
   // --run is the detached child's mode. Combining them would spawn a child that immediately arms another.
   if (parsed.detach && parsed.run) throw new UsageError('--detach and --run cannot be combined')
-  if (parsed.project !== undefined && parsed.all) throw new UsageError('--project and --all cannot be combined')
   if (parsed.project === undefined && !parsed.all) {
     throw new UsageError(
       'restart-all needs --project <p> or --all: a bare restart of the whole machine is gone with the single ' +
@@ -1019,17 +1023,17 @@ async function commandRestartAll(argv) {
     cwd: process.cwd(),
     cliPath: fileURLToPath(import.meta.url),
   }
-  if (parsed.project !== undefined) {
-    const { armProjectRestart, runProjectRestart } = await load('src', 'spv', 'deployment-restart.js')
-    if (parsed.detach && !parsed.run && !parsed.dryRun) {
-      process.exitCode = armProjectRestart(context, parsed)
-      return
-    }
-    process.exitCode = await runProjectRestart(context, parsed)
+  if (parsed.all) {
+    const { runRestart } = await load('src', 'spv', 'restart.js')
+    process.exitCode = await runRestart(context, parsed)
     return
   }
-  const { runRestart } = await load('src', 'spv', 'restart.js')
-  process.exitCode = await runRestart(context, parsed)
+  const { armProjectRestart, runProjectRestart } = await load('src', 'spv', 'deployment-restart.js')
+  if (parsed.detach && !parsed.run && !parsed.dryRun) {
+    process.exitCode = armProjectRestart(context, parsed)
+    return
+  }
+  process.exitCode = await runProjectRestart(context, parsed)
 }
 
 /**

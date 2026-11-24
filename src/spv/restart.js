@@ -1,5 +1,6 @@
 /**
- * `restart-all` orchestration: one command that restarts everything this deployment runs.
+ * `restart-all` orchestration: one command that restarts one deployment (`--project`) or every registered
+ * deployment (`--all`), and brings the SPV TUI back.
  *
  * The order is not a preference, it is what the cold-install guard accepts (install.sh, PR #14):
  *
@@ -9,6 +10,9 @@
  * install.sh refuses with exit 3 while the service or a live SPV session holds the install targets, and a
  * half-installed deployment that still answers is worse than a stopped one. So the service and the session
  * must be gone before the install starts; if the install fails, the service is deliberately left stopped.
+ *
+ * `--project` skips the install (one shared preset serves every deployment); `--all` stops every registry
+ * instance, installs once with an explicit project, and starts every instance again.
  *
  * The command usually runs *inside* the SPV session it has to replace, so the slash command arms a detached
  * `--run` child (`armDetached`); that child survives the session's death and performs the steps. The detached
@@ -38,6 +42,11 @@ import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
 import { RESTART_LOG_FILE, dataPaths, resolveData } from '../shared/home.js'
+import {
+  listDeployments,
+  missingDeploymentError,
+  missingRegistryError,
+} from '../shared/deployments.js'
 
 import {
   claimExists,
@@ -50,6 +59,7 @@ import {
   resumeDetail,
   writeArmed,
 } from './restart-ux.js'
+import { githubRemote, projectForRepo } from './ownership.js'
 import {
   DEFAULT_LEASE_MS,
   holderInRestartChain,
@@ -1398,6 +1408,7 @@ export async function runOrchestrator(context, options = {}) {
   } catch {
     // Best effort: the completion line is still the primary signal.
   }
+  if (options.all) return runAllRestart(context, options)
   return orchestrate(context, options, 'detached')
 }
 
@@ -1478,7 +1489,10 @@ export async function armDetached(context, options = {}) {
   const args = [
     'restart-all',
     '--run',
-    '--all',
+    ...(options.all ? ['--all'] : []),
+    ...(options.all && typeof options.project === 'string' && options.project !== ''
+      ? ['--project', options.project]
+      : []),
     ...(pre.sessionId !== undefined ? ['--session', pre.sessionId] : []),
     ...(options.force ? ['--force'] : []),
     ...(options.noInstall ? ['--no-install'] : []),
@@ -1583,6 +1597,449 @@ export async function armDetached(context, options = {}) {
   return 0
 }
 
+/** The default projects root, the same one `bin/wheelchair-agent.mjs` and `prepare.sh` use. */
+function projectsRootOf(env) {
+  const configured = String(env.SPV_PROJECTS_ROOT ?? '').trim()
+  return configured !== '' ? resolve(configured) : join(homedir(), 'bioagentforge')
+}
+
+/** The checkout's GitHub origin, normalized, or undefined when it is not a GitHub remote. */
+function checkoutRepo(dir, env) {
+  const result = runArgv(['git', '-C', dir, 'config', '--get', 'remote.origin.url'], {
+    env,
+    cwd: dir,
+    timeout: 20_000,
+  })
+  if (exitCodeOf(result) !== 0) return undefined
+  return githubRemote(String(result.stdout ?? '').trim())
+}
+
+/**
+ * The deployment whose checkout installs once during `restart-all --all`.
+ *
+ * The checkout the command runs from decides: a normalized GitHub origin that maps to one registered
+ * project wins, then the registered checkout path itself. If neither identifies exactly one deployment the
+ * caller must pass `--project`; `--all` never runs install.sh without one.
+ */
+export function resolveAllInstallProject(context, entries, env = context.env ?? process.env) {
+  const checkout = resolveCheckout({
+    env,
+    root: context.root,
+    presetDir: context.presetDir,
+    cwd: context.cwd,
+    installed: context.installed,
+  })
+  if (context.allProject !== undefined && context.allProject !== '') {
+    return { project: context.allProject, checkout: checkout ?? null }
+  }
+  if (checkout === undefined) return { project: null, checkout: null }
+  const here = realPath(checkout)
+  const repo = checkoutRepo(checkout, env)
+  if (repo !== undefined) {
+    const project = projectForRepo(repo, { projectsRoot: projectsRootOf(env), deployments: entries })
+    if (project !== null && project !== undefined && entries.some(entry => entry.project === project)) {
+      return { project, checkout }
+    }
+  }
+  let match
+  for (const entry of entries) {
+    if (realPath(join(projectsRootOf(env), entry.project)) === here) match = entry.project
+  }
+  return { project: match ?? null, checkout }
+}
+
+/** The dry-run plan for `restart-all --all`: every registered deployment, one install, no side effects. */
+export function allPlanLines({ entries, installProject, checkout, logFile, pre, noInstall = false }) {
+  const servicePids = (pre?.servicePids ?? []).map(pidOf).filter(pid => Number.isInteger(pid) && pid > 0)
+  const chainPids = (pre?.targets ?? []).map(pidOf).filter(pid => Number.isInteger(pid) && pid > 0)
+  const resume = pre?.resume
+  const session = pre?.session
+  const lines = ['restart-all --all plan (dry run; nothing is changed)']
+  lines.push(`  deployments: ${entries.map(entry => entry.project).join(', ')}`)
+  lines.push(
+    `  service:   ${pre?.serviceUrl ?? DEFAULT_URL}${
+      servicePids.length > 0 ? ` (pid ${servicePids.join(', ')})` : ' (no process found)'
+    }`,
+  )
+  const load = pre?.load
+  lines.push(
+    `  load:      ${load?.running ?? 0} running, ${load?.queued ?? 0} queued` +
+      (load && load.reachable === false
+        ? ' (service unreachable)'
+        : load && load.readable === false
+          ? ' (load unreadable; the amount of work is unknown)'
+          : ''),
+  )
+  lines.push(`  spv pids:  ${chainPids.length > 0 ? chainPids.join(' ') : '(none identified)'}`)
+  lines.push(
+    `  session:   ${
+      session?.id !== undefined
+        ? `${session.id} (${session.dir ?? '(dir not found)'})`
+        : resume?.ok
+          ? `(directory not found for ${resume.id})`
+          : '(not resolved; the TUI starts fresh)'
+    }`,
+  )
+  lines.push(`  checkout:  ${checkout ?? '(not resolved)'}`)
+  const holderPids = (pre?.holders ?? []).map(pidOf).filter(pid => Number.isInteger(pid) && pid > 0)
+  const foreignPids = (pre?.foreign ?? []).map(pidOf).filter(pid => Number.isInteger(pid) && pid > 0)
+  lines.push(`  holders:   ${holderPids.length > 0 ? holderPids.join(' ') : '(none)'}`)
+  if (foreignPids.length > 0) lines.push(`  other:     ${foreignPids.join(' ')} (another terminal; not signalled)`)
+  lines.push(
+    `  install:   ${
+      noInstall || installProject === '(skipped)'
+        ? 'skipped (--no-install); every deployment is stopped and started back'
+        : 'once, from this checkout; every deployment is stopped before it and started after it'
+    }`,
+  )
+  lines.push(`  log:       ${logFile ?? '(not resolved)'}`)
+  lines.push(`  tmux:      ${TMUX_SESSION}`)
+  lines.push('steps:')
+  for (const entry of entries) lines.push(`  1. stop:  wheelchair-agent service stop --project ${entry.project}`)
+  lines.push(
+    `  2. close a stale tmux session ${TMUX_SESSION} when present; SIGTERM ` +
+      `${chainPids.length > 0 ? chainPids.join(' ') : '(none)'}; wait for the pids to exit, SIGKILL survivors, ` +
+      'then wait for the session lease',
+  )
+  lines.push(
+    noInstall || installProject === '(skipped)'
+      ? '  3. skipped (--no-install)'
+      : `  3. bash ${join(checkout ?? '<checkout>', 'install.sh')} --project ${installProject}`,
+  )
+  for (const entry of entries) lines.push(`  4. start: wheelchair-agent service start --project ${entry.project}`)
+  const launch = pre?.launch ?? ['wheelchair-agent', 'spv']
+  const launchArgv = resume?.ok ? [...launch, '--resume', resume.id] : launch
+  lines.push(
+    `  5. wait for the "wheelchair-agent spv" terminal to claim the relaunch; if it does not, relaunch the TUI ` +
+      `in tmux session ${TMUX_SESSION} (tmux new-session -d -s ${TMUX_SESSION}) with ${display(launchArgv)}`,
+  )
+  const resumeSource = resume?.source === 'session'
+    ? 'invoking session'
+    : resume?.source === 'armed'
+      ? 'armed marker'
+      : '~/.dsh-tui/resume.txt fallback'
+  lines.push(
+    resume?.ok
+      ? `  resume:    --resume ${resume.id} (${resumeSource})`
+      : '  resume:    --resume unavailable (no ~/.dsh-tui/resume.txt); the fallback starts a fresh session',
+  )
+  return lines
+}
+
+/** Fail before anything is stopped when `--all` cannot name the deployment whose checkout installs. */
+function allInstallFailure(entries, checkout, registryFile) {
+  const lines = []
+  if (checkout === undefined || checkout === null) {
+    lines.push('FAIL: cannot find the wheelchair-agent checkout that holds install.sh; nothing was stopped.')
+    lines.push(
+      'fix: run restart-all from the checkout, set WHEELCHAIR_AGENT_CHECKOUT, or pass --project <p> to choose ' +
+        'the deployment whose checkout installs.',
+    )
+  } else {
+    lines.push(
+      `FAIL: cannot tell which deployment this checkout installs: ${checkout} does not uniquely match a ` +
+        'registered deployment, and restart-all --all never runs install.sh without a project.',
+    )
+    lines.push(
+      'fix: pass --project <p> to choose the deployment whose checkout installs, or run the command from that ' +
+        `deployment's checkout. Registered deployments: ${entries.map(entry => entry.project).join(', ')}.`,
+    )
+    if (registryFile !== undefined) lines.push(`registry: ${registryFile}`)
+  }
+  return lines
+}
+
+/**
+ * `restart-all --all`: one machine-wide round — stop every registered instance, stop the SPV session and
+ * wait for its lease, install once (with the deployment whose checkout installs), start every instance,
+ * then resume the TUI. It never falls back to the deleted single-deployment install/start commands.
+ */
+export async function runAllRestart(context, options = {}) {
+  const env = context.env ?? process.env
+  const stateDir = context.stateDir || resolveStateDir({ env })
+  const logFile = context.logFile || resolveRestartLog({ env, home: context.home, stateDir })
+  const stepEnv = childEnvironment(env)
+  const registry = listDeployments({ env, home: context.home, stateDir })
+  const entries = registry.deployments
+  if (!registry.exists) {
+    process.stdout.write(`${missingRegistryError(registry.file).message}\n`)
+    return 1
+  }
+  if (entries.length === 0) {
+    process.stdout.write(
+      `FAIL: no deployment is registered in ${registry.file}; --all has nothing to restart. ` +
+        'Run "wheelchair-agent deployment migrate" (or "deployment add <project>") first.\n',
+    )
+    return 1
+  }
+  if (options.project !== undefined && !entries.some(entry => entry.project === options.project)) {
+    process.stdout.write(`${missingDeploymentError(options.project, registry.file, true).message}\n`)
+    return 1
+  }
+  const picked = options.noInstall
+    ? { project: options.project ?? '(skipped)', checkout: null }
+    : resolveAllInstallProject({ ...context, allProject: options.project }, entries, env)
+  const installProject = picked.project
+  if (
+    !options.noInstall &&
+    (installProject === null || picked.checkout === null || !entries.some(entry => entry.project === installProject))
+  ) {
+    process.stdout.write(`${allInstallFailure(entries, picked.checkout, registry.file).join('\n')}\n`)
+    return 1
+  }
+
+  const pre = await preflight({ ...context, stateDir }, { ...options, noInstall: true }, { detached: false })
+  if (!pre.ok) {
+    if (!options.dryRun) {
+      try {
+        appendLog(logFile, [...pre.lines, `restart-all --all: preflight failed, nothing was stopped (exit ${pre.code})`])
+      } catch {
+        // The printed lines are the primary diagnosis.
+      }
+    }
+    process.stdout.write(`${pre.lines.join('\n')}\n`)
+    return pre.code
+  }
+
+  if (options.dryRun) {
+    const lines = allPlanLines({
+      entries,
+      installProject,
+      checkout: picked.checkout,
+      logFile:
+        context.logFile || dataPaths({ env, home: context.home, stateDir }).restartLog.current,
+      pre,
+      noInstall: options.noInstall === true,
+    })
+    process.stdout.write(`${pre.lines.join('\n')}\n${lines.join('\n')}\n`)
+    return 0
+  }
+
+  const startLine =
+    `restart-all --all: pid ${process.pid}, mode ${options.run ? 'detached' : 'foreground'}, ` +
+    `force=${options.force ? 'yes' : 'no'}, install=${options.noInstall ? 'skipped (--no-install)' : 'yes'}, ` +
+    `projects ${entries.map(entry => entry.project).join(' ')}, chain ${pre.targets.join(' ') || '(none)'}, ` +
+    `service ${pre.servicePids.join(' ') || '(none)'}`
+  try {
+    appendLog(logFile, [...pre.lines, startLine])
+  } catch (error) {
+    process.stdout.write(`FAIL: cannot write the restart log ${logFile}: ${error.message}\n`)
+    process.stdout.write('fix: make the state directory writable, then rerun; nothing was stopped.\n')
+    return 1
+  }
+  for (const line of pre.lines) process.stdout.write(`${line}\n`)
+  const record = line => {
+    process.stdout.write(`${line}\n`)
+    try {
+      appendLog(logFile, [line])
+    } catch (error) {
+      process.stdout.write(`FAIL: cannot append to the restart log ${logFile}: ${error.message}\n`)
+    }
+  }
+
+  const total = 5
+
+  // 1. Stop every registered instance. A partial stop is recoverable: the remaining instances are still
+  // running and the session/install steps are not started.
+  for (const entry of entries) {
+    const stop = runArgv([...pre.agent, 'service', 'stop', '--project', entry.project], {
+      env: stepEnv,
+      cwd: pre.cwd,
+      timeout: 330_000,
+    })
+    record(`step 1/${total}: ${stop.command} -> exit ${exitText(stop)}`)
+    if (exitCodeOf(stop) !== 0) {
+      record(
+        `restart-all --all aborted: ${entry.project} did not stop; the SPV session and the install were left ` +
+          'alone (exit 1)',
+      )
+      return 1
+    }
+  }
+
+  // 2. Close the stale tmux fallback, stop the exact `/proc`-identified SPV chain and wait for its lease.
+  closeStaleTmux({ pre, env, stepEnv, record })
+  const targets = pre.targets
+  const term = signalPids(targets, 'SIGTERM')
+  if (term.errors.length > 0) record(`note: SIGTERM errors: ${term.errors.join('; ')}`)
+  let survivors = await waitGone(targets, pre.termMs)
+  record(`step 2/${total}: SIGTERM ${targets.join(' ')} -> sent ${term.sent.length}, survivors ${survivors.length}`)
+  if (survivors.length > 0) {
+    const kill = signalPids(survivors, 'SIGKILL')
+    if (kill.errors.length > 0) record(`note: SIGKILL errors: ${kill.errors.join('; ')}`)
+    survivors = await waitGone(survivors, pre.killMs)
+    record(`step 2/${total}: SIGKILL ${targets.join(' ')} -> sent ${kill.sent.length}, survivors ${survivors.length}`)
+  }
+  if (survivors.length > 0) {
+    record(
+      `FAIL: pids ${survivors.join(' ')} survived SIGKILL; install.sh would refuse, so it was not run. ` +
+        'Every deployment is left stopped (exit 1)',
+    )
+    return 1
+  }
+  let leaseBlockedPid
+  if (pre.sessionDir !== undefined) {
+    const lease = await waitForLeaseFree({
+      sessionDir: pre.sessionDir,
+      procRoot: pre.procRoot,
+      timeoutMs: pre.leaseMs,
+      selfPid: process.pid,
+      say: line => record(line),
+    })
+    if (!lease.ok) {
+      leaseBlockedPid = lease.holder?.pid
+      if (leaseBlockedPid !== undefined) {
+        record(occupiedSessionNotice({ sessionId: pre.sessionId, pid: leaseBlockedPid }))
+        try {
+          const marker = readArmed(stateDir)
+          if (marker !== undefined) writeArmed(stateDir, { ...marker, leaseBlockedPid })
+        } catch {
+          // The launch below already drops --resume; the marker is only the other process's hint.
+        }
+      }
+    }
+  }
+
+  // 3. Install once, naming the deployment whose checkout installs. There is no bare install.sh anymore.
+  if (options.noInstall) {
+    record(`step 3/${total}: install.sh skipped (--no-install)`)
+  } else {
+    const install = runArgv(['bash', join(picked.checkout, 'install.sh'), '--project', installProject], {
+      env: stepEnv,
+      cwd: picked.checkout,
+      timeout: 600_000,
+    })
+    record(`step 3/${total}: ${install.command} -> exit ${exitText(install)}`)
+    if (exitCodeOf(install) !== 0) {
+      const detail = `${install.stdout ?? ''}${install.stderr ?? ''}`
+        .split('\n')
+        .filter(line => line.trim() !== '')
+        .slice(-20)
+      for (const line of detail) record(`install output: ${line}`)
+      if (install.error === undefined && install.status === 3) {
+        record('install.sh refused with exit 3 because a holder is still alive; nothing was installed; every deployment stays stopped')
+      }
+      record('install failed; every deployment is left stopped; not starting any of them back (exit 1)')
+      record(
+        `fix: recover by hand: bash ${join(picked.checkout, 'install.sh')} --project ${installProject} && ` +
+          `wheelchair-agent service start --project ${installProject}`,
+      )
+      record('     every deployment was stopped: also run "wheelchair-agent service start --all" for the rest.')
+      return 1
+    }
+  }
+
+  // 4. Start every registered instance back; a failure ends the restart and says which one failed.
+  for (const entry of entries) {
+    const start = runArgv([...pre.agent, 'service', 'start', '--project', entry.project], {
+      env: stepEnv,
+      cwd: pre.cwd,
+      timeout: 180_000,
+    })
+    record(`step 4/${total}: ${start.command} -> exit ${exitText(start)}`)
+    if (exitCodeOf(start) !== 0) {
+      record(
+        `FAIL: the superagent service did not start for ${entry.project}; the TUI was not relaunched. Run ` +
+          `"wheelchair-agent service start --project ${entry.project}" (and --all only after every start works).`,
+      )
+      record('restart failed (exit 1)')
+      return 1
+    }
+  }
+
+  // 5. The terminal that launched `wheelchair-agent spv` claims and narrates; tmux is the fallback.
+  const claimMs = envMs(env, 'WHEELCHAIR_RESTART_CLAIM_MS', DEFAULT_CLAIM_MS)
+  const claimDeadline = Date.now() + claimMs
+  let claimed = false
+  let staleClaim = false
+  for (;;) {
+    if (claimExists(stateDir)) {
+      if (claimHeldByLiveTerminal(stateDir)) claimed = true
+      else staleClaim = true
+      break
+    }
+    if (Date.now() >= claimDeadline) break
+    await sleep(POLL_MS)
+  }
+  if (claimed) {
+    record(`step 5/${total}: skipped; the terminal claimed the restart and relaunches the TUI here`)
+    record('restart complete (exit 0)')
+    return 0
+  }
+  if (pre.tmux !== true) {
+    record('FAIL: tmux is not on PATH; the fallback TUI was not started')
+    record('restart failed (exit 1)')
+    return 1
+  }
+  try {
+    markFallback(stateDir, { pid: process.pid, at: new Date().toISOString(), tmux: TMUX_SESSION })
+  } catch {
+    // The tmux launch is what matters.
+  }
+  record(
+    staleClaim
+      ? 'note: the terminal that claimed the restart is gone; taking the tmux fallback'
+      : `note: no terminal claim within ${claimMs}ms; taking the tmux fallback`,
+  )
+  const resume = pre.resume
+  if (!resume.ok) {
+    record(
+      `note: cannot resume the previous SPV session (${resumeDetail(resume)}); the tmux fallback starts a ` +
+        'fresh SPV session',
+    )
+  }
+  let blockedPid = leaseBlockedPid
+  if (blockedPid === undefined && pre.sessionDir !== undefined) {
+    blockedPid = leaseBlockedBy(
+      sessionHolders({ sessionDir: pre.sessionDir, procRoot: pre.procRoot }),
+      process.pid,
+    )
+    if (blockedPid !== undefined) {
+      record(occupiedSessionNotice({ sessionId: pre.sessionId, pid: blockedPid }))
+    }
+  }
+  const launch = resume.ok && blockedPid === undefined ? [...pre.launch, '--resume', resume.id] : pre.launch
+  if (resume.ok && blockedPid !== undefined) record('note: the tmux fallback starts without --resume')
+  const hasSession = runArgv(['tmux', 'has-session', '-t', `=${TMUX_SESSION}`], {
+    env: stepEnv,
+    cwd: pre.cwd,
+    timeout: 30_000,
+  })
+  const relaunch = hasSession.status === 0
+    ? ['tmux', 'new-window', '-t', `=${TMUX_SESSION}:`, '-n', 'spv', '-c', pre.cwd, ...launch]
+    : ['tmux', 'new-session', '-d', '-s', TMUX_SESSION, '-n', 'spv', '-c', pre.cwd, ...launch]
+  const tui = runArgv(relaunch, { env: stepEnv, cwd: pre.cwd, timeout: 30_000 })
+  record(`step 5/${total}: ${tui.command} -> exit ${exitText(tui)}`)
+  let tuiFailed = exitCodeOf(tui) !== 0
+  if (tuiFailed) {
+    record(`FAIL: could not relaunch the TUI in tmux session ${TMUX_SESSION}; start it by hand with "wheelchair-agent spv"`)
+  } else {
+    const deadline = Date.now() + 2000
+    let present = false
+    while (Date.now() < deadline) {
+      const check = runArgv(['tmux', 'has-session', '-t', `=${TMUX_SESSION}`], {
+        env: stepEnv,
+        cwd: pre.cwd,
+        timeout: 30_000,
+      })
+      if (check.status === 0) {
+        present = true
+        break
+      }
+      await sleep(POLL_MS)
+    }
+    if (present) record(`note: tmux session ${TMUX_SESSION} is present after the relaunch`)
+    if (!present) {
+      tuiFailed = true
+      record(`FAIL: tmux session ${TMUX_SESSION} is not present 2s after the relaunch; the TUI did not come back`)
+    }
+  }
+  const code = tuiFailed ? 1 : 0
+  if (code === 0) record('restart complete (exit 0)')
+  else record(`restart failed (exit ${code}); the log above says which step failed`)
+  return code
+}
+
 /**
  * Entry point used by `bin/wheelchair-agent.mjs`.
  *
@@ -1590,6 +2047,11 @@ export async function armDetached(context, options = {}) {
  * executes the steps, `--detach` arms the child, and the default runs the steps in this process.
  */
 export async function runRestart(context, options = {}) {
+  if (options.all) {
+    if (options.run && !options.dryRun) return runOrchestrator(context, options)
+    if (options.dryRun || !options.detach) return runAllRestart(context, options)
+    return armDetached(context, options)
+  }
   if (options.dryRun) {
     const pre = await preflight(context, options, { detached: Boolean(options.detach) })
     const lines = [...pre.lines]

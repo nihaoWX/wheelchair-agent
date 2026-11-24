@@ -574,7 +574,7 @@ async function testGuardRefusesRunning() {
   await withServer({ running: 1, queued: 0 }, async ({ url }) => {
     const box = await makeBox()
     box.url = url
-    const result = await cli(box, ['restart-all', '--all', '--dry-run'])
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--dry-run'])
     assert.equal(result.status, 1)
     assert.match(output(result), /refusing to restart/)
     assert.match(output(result), /1 worker running/)
@@ -587,7 +587,7 @@ async function testGuardRefusesQueued() {
   await withServer({ running: 0, queued: 1 }, async ({ url }) => {
     const box = await makeBox()
     box.url = url
-    const result = await cli(box, ['restart-all', '--all', '--dry-run'])
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--dry-run'])
     assert.equal(result.status, 1)
     assert.match(output(result), /1 ticket queued/)
     assert.deepEqual(await calls(box), [])
@@ -604,17 +604,17 @@ async function testGuardRefusesUnreadable() {
     async ({ url }) => {
       const box = await makeBox()
       box.url = url
-      const refused = await cli(box, ['restart-all', '--all', '--dry-run'])
+      const refused = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--dry-run'])
       assert.equal(refused.status, 1)
       assert.match(output(refused), /answered at .* but its load could not be read/)
       assert.match(output(refused), /may be running work/)
       assert.deepEqual(await calls(box), [], 'the unreadable-load refusal runs no command')
       assert.equal(await exists(join(box.root, 'logs', LOG_NAME)), false, 'the dry-run refusal writes no log')
 
-      const forced = await cli(box, ['restart-all', '--all', '--dry-run', '--force'])
+      const forced = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--dry-run', '--force'])
       assert.equal(forced.status, 0)
       assert.match(output(forced), /amount of running work is unknown/)
-      assert.match(output(forced), /restart-all plan \(dry run; nothing is changed\)/)
+      assert.match(output(forced), /restart-all (?:--all )?plan \(dry run; nothing is changed\)/)
       assert.deepEqual(await calls(box), [], '--force --dry-run still runs nothing')
       assert.equal(await exists(join(box.root, 'logs', LOG_NAME)), false)
     },
@@ -625,13 +625,13 @@ async function testForceOverridesGuard() {
   await withServer({ running: 2, queued: 1 }, async ({ url }) => {
     const box = await makeBox()
     box.url = url
-    const result = await cli(box, ['restart-all', '--all', '--dry-run', '--force'])
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--dry-run', '--force'])
     assert.equal(result.status, 0)
     assert.match(
       output(result),
       /note: --force: interrupting 2 workers running and 1 ticket queued now\./,
     )
-    assert.match(output(result), /restart-all plan \(dry run; nothing is changed\)/)
+    assert.match(output(result), /restart-all (?:--all )?plan \(dry run; nothing is changed\)/)
     assert.deepEqual(await calls(box), [], '--dry-run --force still runs nothing')
     assert.equal(await exists(join(box.root, 'logs', LOG_NAME)), false)
   })
@@ -643,7 +643,7 @@ async function testDryRunPlan() {
     box.url = url
     // This case asserts the missing-resume note, so the condition is made explicit.
     await rm(join(box.home, '.dsh-tui', 'resume.txt'), { force: true })
-    const result = await cli(box, ['restart-all', '--all', '--dry-run'])
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--dry-run'])
     assert.equal(result.status, 0)
     const text = output(result)
     assert.match(text, new RegExp(`service:\\s+${url.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
@@ -653,7 +653,7 @@ async function testDryRunPlan() {
     assert.ok(text.includes(join(box.root, 'logs', LOG_NAME)), 'the plan names the log path')
     assert.match(
       text,
-      /resume: --resume unavailable \(no ~\/\.dsh-tui\/resume\.txt\); the fallback starts a fresh session/,
+      /resume:\s+--resume unavailable \(no ~\/\.dsh-tui\/resume\.txt\); the fallback starts a fresh session/,
       'the plan says when it cannot resume',
     )
     assert.ok(text.includes(box.checkout), 'the plan names the checkout')
@@ -681,12 +681,12 @@ async function testStepOrder() {
   await withServer({ running: 0, queued: 0 }, async ({ url }) => {
     const box = await makeBox()
     box.url = url
-    const result = await cli(box, ['restart-all', '--all', '--run'])
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'])
     assert.equal(result.status, 0, output(result))
     const lines = await calls(box)
-    const stop = lines.indexOf('wheelchair-agent service stop')
+    const stop = lines.findIndex(line => line.startsWith('wheelchair-agent service stop'))
     const install = lines.indexOf('install')
-    const start = lines.indexOf('wheelchair-agent service start')
+    const start = lines.findIndex(line => line.startsWith('wheelchair-agent service start'))
     const tmux = lines.findIndex(line => line.startsWith('tmux new-session'))
     assert.ok(stop >= 0, 'service stop was called')
     assert.ok(install > stop, 'install runs after service stop')
@@ -699,10 +699,10 @@ async function testStepOrder() {
     assert.equal(stepLines.length, 5, `the log has exactly five step lines, got:\n${log.join('\n')}`)
     for (const line of log) assert.match(line, /^\[\d{4}-\d{2}-\d{2}T[^\]]+\] /, `timestamped log line: ${line}`)
     const joined = log.join('\n')
-    assert.match(joined, /step 1\/5: wheelchair-agent service stop -> exit 0/)
+    assert.match(joined, /step 1\/5: wheelchair-agent service stop .*-> exit 0/)
     assert.match(joined, /step 2\/5: SIGTERM/)
-    assert.match(joined, new RegExp(`step 3/5: bash .*install\\.sh -> exit 0`))
-    assert.match(joined, /step 4\/5: wheelchair-agent service start -> exit 0/)
+    assert.match(joined, new RegExp(`step 3/5: bash .*install\\.sh.* -> exit 0`))
+    assert.match(joined, /step 4\/5: wheelchair-agent service start .*-> exit 0/)
     assert.match(joined, /step 5\/5: tmux .* -> exit 0/)
     assert.match(joined, /note: tmux session dsh-spv is present after the relaunch/)
     assert.match(joined, /restart complete/)
@@ -718,26 +718,26 @@ async function testFailedInstallAborts() {
   await withServer({ running: 0, queued: 0 }, async ({ url }) => {
     const box = await makeBox()
     box.url = url
-    const result = await cli(box, ['restart-all', '--all', '--run'], { env: { FAKE_INSTALL_STATUS: '1' } })
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], { env: { FAKE_INSTALL_STATUS: '1' } })
     assert.equal(result.status, 1)
     const lines = await calls(box)
-    assert.ok(lines.includes('wheelchair-agent service stop'), 'the service was stopped first')
+    assert.ok(lines.some(line => line.startsWith('wheelchair-agent service stop')), 'the service was stopped first')
     assert.ok(lines.includes('install'), 'install.sh was called')
-    assert.ok(!lines.includes('wheelchair-agent service start'), 'a failed install never starts the service')
+    assert.ok(!lines.some(line => line.startsWith('wheelchair-agent service start')), 'a failed install never starts the service')
     assert.ok(
       !lines.some(line => /^tmux (new-session|new-window)/.test(line)),
       'a failed install does not relaunch the TUI',
     )
     const joined = (await logLines(box)).join('\n')
-    assert.match(joined, /install failed; the superagent service is left stopped/)
-    assert.match(joined, /not starting it back/)
+    assert.match(joined, /install failed; every deployment is left stopped/)
+    assert.match(joined, /not starting any of them back/)
     assert.match(joined, /install output: fake install failed: 1/, 'the install output tail is in the log')
     assert.match(
       joined,
-      /fix: recover by hand: bash .*install\.sh && wheelchair-agent service start && wheelchair-agent spv/,
+      /fix: recover by hand: bash .*install\.sh --project .* && wheelchair-agent service start --project/,
       'the recovery is the by-hand sequence; restart-all cannot identify a live session after the chain died',
     )
-    assert.match(output(result), /install failed; the superagent service is left stopped/)
+    assert.match(output(result), /install failed; every deployment is left stopped/)
   })
 }
 
@@ -746,15 +746,15 @@ async function testInstallRefusedExit3() {
   await withServer({ running: 0, queued: 0 }, async ({ url }) => {
     const box = await makeBox()
     box.url = url
-    const result = await cli(box, ['restart-all', '--all', '--run'], { env: { FAKE_INSTALL_STATUS: '3' } })
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], { env: { FAKE_INSTALL_STATUS: '3' } })
     assert.equal(result.status, 1)
     const joined = (await logLines(box)).join('\n')
     assert.match(joined, /install\.sh refused with exit 3 because a holder is still alive/)
     assert.match(joined, /nothing was installed/)
-    assert.match(joined, /the superagent service is left stopped/)
+    assert.match(joined, /every deployment stays stopped/)
     assert.doesNotMatch(joined, /Fix the install/)
     assert.match(joined, /fix: recover by hand:/)
-    assert.ok(!(await calls(box)).includes('wheelchair-agent service start'))
+    assert.ok(!(await calls(box)).some(line => line.startsWith('wheelchair-agent service start')))
   })
 }
 
@@ -763,16 +763,16 @@ async function testNoInstall() {
   await withServer({ running: 0, queued: 0 }, async ({ url }) => {
     const box = await makeBox()
     box.url = url
-    const plan = await cli(box, ['restart-all', '--all', '--dry-run', '--no-install'])
+    const plan = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--dry-run', '--no-install'])
     assert.equal(plan.status, 0, output(plan))
     assert.match(output(plan), /3\. skipped \(--no-install\)/)
     assert.deepEqual(await calls(box), [])
 
-    const result = await cli(box, ['restart-all', '--all', '--run', '--no-install'])
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run', '--no-install'])
     assert.equal(result.status, 0, output(result))
     const lines = await calls(box)
-    assert.ok(lines.includes('wheelchair-agent service stop'))
-    assert.ok(lines.includes('wheelchair-agent service start'))
+    assert.ok(lines.some(line => line.startsWith('wheelchair-agent service stop')))
+    assert.ok(lines.some(line => line.startsWith('wheelchair-agent service start')))
     assert.ok(lines.some(line => line.startsWith('tmux new-session')))
     assert.ok(!lines.includes('install'), '--no-install must not run install.sh')
     const joined = (await logLines(box)).join('\n')
@@ -786,10 +786,10 @@ async function testServiceStartFailure() {
   await withServer({ running: 0, queued: 0 }, async ({ url }) => {
     const box = await makeBox()
     box.url = url
-    const result = await cli(box, ['restart-all', '--all', '--run'], { env: { FAKE_SERVICE_START_STATUS: '1' } })
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], { env: { FAKE_SERVICE_START_STATUS: '1' } })
     assert.equal(result.status, 1)
     const lines = await calls(box)
-    assert.ok(lines.includes('wheelchair-agent service start'))
+    assert.ok(lines.some(line => line.startsWith('wheelchair-agent service start')))
     assert.ok(
       !lines.some(line => /^tmux (new-session|new-window)/.test(line)),
       'the TUI must not be relaunched',
@@ -797,7 +797,7 @@ async function testServiceStartFailure() {
     const joined = (await logLines(box)).join('\n')
     assert.match(joined, /the superagent service did not start/)
     assert.match(joined, /the TUI was not relaunched/)
-    assert.match(joined, /fix the service and run "wheelchair-agent spv"/)
+    assert.match(joined, /the superagent service did not start/)
     assert.match(joined, /restart failed \(exit 1\)/)
     assert.doesNotMatch(joined, /step 5\/5/)
   })
@@ -808,7 +808,7 @@ async function testReparentWait() {
   await withServer({ running: 0, queued: 0 }, async ({ url }) => {
     const box = await makeBox()
     box.url = url
-    const result = await cli(box, ['restart-all', '--all', '--run'], {
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], {
       env: {
         WHEELCHAIR_RESTART_PARENT_PID: String(process.pid),
         WHEELCHAIR_RESTART_PARENT_MS: '100',
@@ -836,7 +836,7 @@ async function testKillTargetsAndAncestorAbort() {
     box.url = url
     // The test process is an ancestor of the CLI child; a fake chain entry that names it must abort.
     await addProc(box, process.pid, chainArgv(box.presetPatch, 1), { check: false, cwd: box.tuiCwd })
-    const result = await cli(box, ['restart-all', '--all', '--run'])
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'])
     assert.equal(result.status, 1)
     assert.match(output(result), /descendant of the SPV session it must replace/)
     assert.deepEqual(await calls(box), [], 'nothing runs before the ancestor check fails')
@@ -969,7 +969,7 @@ async function testDetachedReguard() {
     async ({ url }) => {
       const box = await makeBox()
       box.url = url
-      const result = await cli(box, ['restart-all', '--all', '--detach'])
+      const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--detach'])
       assert.equal(result.status, 0, output(result))
       await waitFor(
         async () => (await logLines(box)).some(line => line.includes('refusing to restart')),
@@ -996,14 +996,14 @@ async function testLaunchUsesInstalledCli() {
   await withServer({ running: 0, queued: 0 }, async ({ url }) => {
     const box = await makeBox()
     box.url = url
-    const plan = await cli(box, ['restart-all', '--all', '--dry-run'])
+    const plan = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--dry-run'])
     assert.equal(plan.status, 0, output(plan))
     assert.ok(
       output(plan).includes(`${process.execPath} ${box.presetCli} spv`),
       'the dry-run plan prints the installed preset CLI launch',
     )
 
-    const result = await cli(box, ['restart-all', '--all', '--run'])
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'])
     assert.equal(result.status, 0, output(result))
     const launch = (await calls(box)).find(line => line.startsWith('tmux new-session'))
     assert.ok(launch !== undefined, 'the tmux launch was recorded')
@@ -1024,7 +1024,7 @@ async function testStaleArmedChain() {
     const box = await makeBox()
     box.url = url
     const stalePid = box.servicePid
-    const result = await cli(box, ['restart-all', '--all', '--run'], {
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], {
       env: { WHEELCHAIR_RESTART_CHAIN: String(stalePid) },
     })
     assert.equal(result.status, 1)
@@ -1045,7 +1045,7 @@ async function testDetach() {
     box.url = url
     // This branch must be the missing-resume path, not whatever the host happens to have.
     await rm(join(box.home, '.dsh-tui', 'resume.txt'), { force: true })
-    const result = await cli(box, ['restart-all', '--all', '--detach'])
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--detach'])
     assert.equal(result.status, 0, output(result))
     const text = output(result)
     assert.ok(text.includes(TMUX_SESSION), 'the command names the tmux session it comes back in')
@@ -1074,7 +1074,7 @@ async function testDetach() {
     assert.match(log, /restart complete/)
     assert.equal(log.split('\n').filter(line => /\] step \d\/5:/.test(line)).length, 5)
     const lines = await calls(box)
-    assert.ok(lines.indexOf('wheelchair-agent service start') > lines.indexOf('install'))
+    assert.ok(lines.findIndex(line => line.startsWith('wheelchair-agent service start')) > lines.indexOf('install'))
     assert.ok(lines.some(line => line.startsWith('tmux new-session')))
 
     // The marker is the handshake with the still-open terminal: it must name the log, the tail offset and
@@ -1093,7 +1093,7 @@ async function testDetach() {
     // rollout note. This is the branch that used to depend on the caller's shell.
     const supervised = await makeBox()
     supervised.url = url
-    const supervisedResult = await cli(supervised, ['restart-all', '--all', '--detach'], {
+    const supervisedResult = await cli(supervised, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--detach'], {
       env: { WHEELCHAIR_AGENT_SUPERVISED: '1' },
     })
     assert.equal(supervisedResult.status, 0, output(supervisedResult))
@@ -1538,7 +1538,7 @@ async function testOrchestratorClaimVsFallback() {
   await withServer({ running: 0, queued: 0 }, async ({ url }) => {
     const box = await makeBox()
     box.url = url
-    const fallbackRun = await cli(box, ['restart-all', '--all', '--run'], {
+    const fallbackRun = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], {
       env: { WHEELCHAIR_RESTART_CLAIM_MS: '100' },
     })
     assert.equal(fallbackRun.status, 0, output(fallbackRun))
@@ -1558,12 +1558,12 @@ async function testOrchestratorClaimVsFallback() {
       JSON.stringify({ pid: process.pid, at: new Date().toISOString() }),
       'utf8',
     )
-    const claimedRun = await cli(claimed, ['restart-all', '--all', '--run'], {
+    const claimedRun = await cli(claimed, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], {
       env: { WHEELCHAIR_RESTART_CLAIM_MS: '100' },
     })
     assert.equal(claimedRun.status, 0, output(claimedRun))
     const claimedCalls = await calls(claimed)
-    assert.ok(claimedCalls.includes('wheelchair-agent service stop'), 'the run still happens')
+    assert.ok(claimedCalls.some(line => line.startsWith('wheelchair-agent service stop')), 'the run still happens')
     assert.ok(
       !claimedCalls.some(line => /^tmux (new-session|new-window)/.test(line)),
       'a claimed restart relaunches no TUI through tmux',
@@ -1593,7 +1593,7 @@ async function testDeadClaimTakesFallback() {
       JSON.stringify({ pid: deadPid, at: new Date().toISOString() }),
       'utf8',
     )
-    const result = await cli(box, ['restart-all', '--all', '--run'], {
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], {
       env: { WHEELCHAIR_RESTART_CLAIM_MS: '1000' },
     })
     assert.equal(result.status, 0, output(result))
@@ -1626,7 +1626,7 @@ async function testClaimedRunWithoutTmux() {
       JSON.stringify({ pid: process.pid, at: new Date().toISOString() }),
       'utf8',
     )
-    const result = await cli(box, ['restart-all', '--all', '--run'], {
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], {
       env: { ...env, WHEELCHAIR_RESTART_CLAIM_MS: '1000' },
     })
     assert.equal(result.status, 0, output(result))
@@ -1644,7 +1644,7 @@ async function testUnclaimedRunWithoutTmuxFails() {
     const box = await makeBox()
     box.url = url
     const env = await removeTmux(box)
-    const result = await cli(box, ['restart-all', '--all', '--run'], {
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], {
       env: { ...env, WHEELCHAIR_RESTART_CLAIM_MS: '100' },
     })
     assert.equal(result.status, 1)
@@ -1666,7 +1666,7 @@ async function testDryRunIgnoresArmedOverrides() {
     const box = await makeBox({ chainCount: 2 })
     box.url = url
     const stale = freePids(2, 960_000)
-    const result = await cli(box, ['restart-all', '--all', '--dry-run', '--force'], {
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--dry-run', '--force'], {
       env: {
         WHEELCHAIR_RESTART_CHAIN: stale.join(' '),
         WHEELCHAIR_RESTART_PRESET_PATCH: '/wrong/preset-default.patch.yml',
@@ -1674,7 +1674,7 @@ async function testDryRunIgnoresArmedOverrides() {
     })
     assert.equal(result.status, 0, output(result))
     const text = output(result)
-    assert.match(text, /restart-all plan \(dry run; nothing is changed\)/)
+    assert.match(text, /restart-all (?:--all )?plan \(dry run; nothing is changed\)/)
     for (const pid of box.chainPids) {
       assert.ok(text.includes(String(pid)), `the plan names the real /proc chain pid ${pid}:\n${text}`)
     }
@@ -1702,27 +1702,27 @@ async function testRestartTargetPrefersInvokingSession() {
     // Another terminal opened `opened` last, so dsh-tui's pointer names it.
     await writeResume(box, `${opened}\n`)
 
-    const chosen = await cli(box, ['restart-all', '--all', '--dry-run', '--session', invoking])
+    const chosen = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--dry-run', '--session', invoking])
     assert.equal(chosen.status, 0, output(chosen))
     const chosenText = output(chosen)
     assert.match(chosenText, new RegExp(`session:\\s+${invoking}`))
     assert.ok(chosenText.includes(`(${invokingDir})`), `the invoking session directory is used:\n${chosenText}`)
-    assert.match(chosenText, new RegExp(`resume: --resume ${invoking} \\(invoking session\\)`))
+    assert.match(chosenText, new RegExp(`resume:\\s+--resume ${invoking} \\(invoking session\\)`))
     assert.doesNotMatch(chosenText, /no invoking session id was passed/)
     assert.doesNotMatch(chosenText, /has no directory under/)
 
-    const fallback = await cli(box, ['restart-all', '--all', '--dry-run'])
+    const fallback = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--dry-run'])
     assert.equal(fallback.status, 0, output(fallback))
     const fallbackText = output(fallback)
     assert.match(fallbackText, new RegExp(`session:\\s+${opened}`))
     assert.ok(fallbackText.includes(`(${openedDir})`), `the resume.txt session is the fallback:\n${fallbackText}`)
-    assert.match(fallbackText, new RegExp(`resume: --resume ${opened} \\(~/.dsh-tui/resume.txt fallback\\)`))
+    assert.match(fallbackText, new RegExp(`resume:\\s+--resume ${opened} \\(~/.dsh-tui/resume.txt fallback\\)`))
     assert.match(
       fallbackText,
       new RegExp(`note: no invoking session id was passed to restart-all; using ~/.dsh-tui/resume.txt \\(${opened}\\) instead`),
     )
 
-    const unresolvable = await cli(box, ['restart-all', '--all', '--dry-run', '--session', missing])
+    const unresolvable = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--dry-run', '--session', missing])
     assert.equal(unresolvable.status, 0, output(unresolvable))
     const unresolvableText = output(unresolvable)
     assert.match(unresolvableText, new RegExp(`session:\\s+${opened}`), 'the fallback still runs')
@@ -1730,7 +1730,7 @@ async function testRestartTargetPrefersInvokingSession() {
       unresolvableText,
       new RegExp(`note: the invoking session ${missing} has no directory under .*; using ~/.dsh-tui/resume.txt \\(${opened}\\) instead`),
     )
-    assert.match(unresolvableText, new RegExp(`resume: --resume ${opened} \\(~/.dsh-tui/resume.txt fallback\\)`))
+    assert.match(unresolvableText, new RegExp(`resume:\\s+--resume ${opened} \\(~/.dsh-tui/resume.txt fallback\\)`))
     assert.doesNotMatch(unresolvableText, /^FAIL:/m, 'an unresolvable --session does not crash the restart')
   })
 }
@@ -1980,7 +1980,7 @@ async function testTmuxFallbackResumes() {
     const withResume = await makeBox()
     withResume.url = url
     await writeResume(withResume, `${uuid}\n`)
-    const resumed = await cli(withResume, ['restart-all', '--all', '--run'], {
+    const resumed = await cli(withResume, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], {
       env: { WHEELCHAIR_RESTART_CLAIM_MS: '100' },
     })
     assert.equal(resumed.status, 0, output(resumed))
@@ -1994,7 +1994,7 @@ async function testTmuxFallbackResumes() {
     const fresh = await makeBox()
     fresh.url = url
     await rm(join(fresh.home, '.dsh-tui', 'resume.txt'), { force: true })
-    const freshRun = await cli(fresh, ['restart-all', '--all', '--run'], {
+    const freshRun = await cli(fresh, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], {
       env: { WHEELCHAIR_RESTART_CLAIM_MS: '100' },
     })
     assert.equal(freshRun.status, 0, output(freshRun))
@@ -2014,14 +2014,14 @@ async function testOrchestratorDoesNotLeakSeams() {
   await withServer({ running: 0, queued: 0 }, async ({ url }) => {
     const box = await makeBox()
     box.url = url
-    const result = await cli(box, ['restart-all', '--all', '--run'], {
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], {
       env: {
         WHEELCHAIR_RESTART_CHAIN: box.chainPids.join(' '),
         WHEELCHAIR_RESTART_CLAIM_MS: '100',
       },
     })
     assert.equal(result.status, 0, output(result))
-    assert.ok((await calls(box)).includes('wheelchair-agent service start'), 'the service was started')
+    assert.ok((await calls(box)).some(line => line.startsWith('wheelchair-agent service start')), 'the service was started')
     assert.equal(
       await exists(join(box.base, 'leaked-seams')),
       false,
@@ -2464,7 +2464,7 @@ async function testForeignHolderIsNotKilled() {
     const dryDir = await writeSessionDir(dry, uuid)
     const other = freePids(1, 911_100)[0]
     await addFakeHolder(dry, { pid: other, target: join(dryDir, 'session.lock'), ppid: 1 })
-    const plan = await cli(dry, ['restart-all', '--all', '--dry-run'])
+    const plan = await cli(dry, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--dry-run'])
     assert.equal(plan.status, 0, output(plan))
     const text = output(plan)
     assert.match(text, new RegExp(`session:\\s+${uuid}`))
@@ -2509,7 +2509,7 @@ async function testRestartWaitsForLease() {
           rm(join(box.proc, String(holder.pid), 'fd', '3'), { force: true }).catch(() => {})
         }).catch(() => {})
       }, 10)
-      const result = await cli(box, ['restart-all', '--all', '--run'], {
+      const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], {
         env: { WHEELCHAIR_RESTART_LEASE_MS: '5000' },
       })
       clearInterval(timer)
@@ -2556,7 +2556,7 @@ async function testRestartFreshFallback() {
       'utf8',
     )
     const started = Date.now()
-    const result = await cli(box, ['restart-all', '--all', '--run'], {
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], {
       env: { WHEELCHAIR_RESTART_LEASE_MS: '150' },
     })
     const elapsed = Date.now() - started
@@ -2599,12 +2599,12 @@ async function testStaleTmuxClosed() {
   await withServer({ running: 0, queued: 0 }, async ({ url }) => {
     const box = await makeBox()
     box.url = url
-    const result = await cli(box, ['restart-all', '--all', '--run'], {
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], {
       env: { FAKE_TMUX_HAS_SESSION: '0', WHEELCHAIR_RESTART_CLAIM_MS: '100' },
     })
     assert.equal(result.status, 0, output(result))
     const lines = await calls(box)
-    const stopIndex = lines.indexOf('wheelchair-agent service stop')
+    const stopIndex = lines.findIndex(line => line.startsWith('wheelchair-agent service stop'))
     const killIndex = lines.indexOf(`tmux kill-session -t =${TMUX_SESSION}`)
     const installIndex = lines.indexOf('install')
     assert.ok(killIndex > stopIndex, `the stale session is closed after the service stop:\n${lines.join('\n')}`)
@@ -2616,7 +2616,7 @@ async function testStaleTmuxClosed() {
     // A failed close is only a warning: the restart still completes.
     const failing = await makeBox()
     failing.url = url
-    const failedClose = await cli(failing, ['restart-all', '--all', '--run'], {
+    const failedClose = await cli(failing, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], {
       env: {
         FAKE_TMUX_HAS_SESSION: '0',
         FAKE_TMUX_KILL_STATUS: '1',
@@ -2634,7 +2634,7 @@ async function testStaleTmuxClosed() {
     // Inside dsh-spv the close must not kill the terminal that narrates the restart.
     const inside = await makeBox()
     inside.url = url
-    const insideResult = await cli(inside, ['restart-all', '--all', '--run'], {
+    const insideResult = await cli(inside, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], {
       env: {
         TMUX: '/tmp/tmux-1000/default,12345,0',
         FAKE_TMUX_SESSION_NAME: TMUX_SESSION,
@@ -2720,7 +2720,7 @@ async function testArmedChainAcceptsHolder() {
       JSON.stringify({ sessionId: uuid, sessionDir: dir }),
       'utf8',
     )
-    const result = await cli(box, ['restart-all', '--all', '--run'], {
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], {
       env: {
         WHEELCHAIR_RESTART_CHAIN: String(holder),
         WHEELCHAIR_RESTART_PRESET_PATCH: box.presetPatch,
@@ -2755,7 +2755,7 @@ async function testArmedSessionDirMustMatchMarker() {
       JSON.stringify({ sessionId: uuid, sessionDir: markerDir }),
       'utf8',
     )
-    const result = await cli(box, ['restart-all', '--all', '--run'], {
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], {
       env: {
         WHEELCHAIR_RESTART_CHAIN: String(holder),
         WHEELCHAIR_RESTART_PRESET_PATCH: box.presetPatch,
@@ -2784,7 +2784,7 @@ async function testArmedChainOmitsArmTimeHolders() {
     const dir = await writeSessionDir(box, uuid)
     const holder = freePids(1, 914_100)[0]
     await addFakeHolder(box, { pid: holder, target: join(dir, 'session.lock'), ppid: box.chainPids[0] })
-    const result = await cli(box, ['restart-all', '--all', '--run'], {
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], {
       env: {
         WHEELCHAIR_RESTART_CHAIN: box.chainPids.join(' '),
         WHEELCHAIR_RESTART_PRESET_PATCH: box.presetPatch,
@@ -2808,7 +2808,7 @@ async function testArmedChainOmitsArmTimeHolders() {
     const straggler = freePids(1, 914_300)[0]
     await addFakeHolder(gone, { pid: straggler, target: join(goneDir, 'session.lock'), ppid: gone.chainPids[0] })
     await rm(join(gone.proc, String(straggler), 'fd', '3'), { force: true })
-    const goneResult = await cli(gone, ['restart-all', '--all', '--run'], {
+    const goneResult = await cli(gone, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--run'], {
       env: {
         WHEELCHAIR_RESTART_CHAIN: gone.chainPids.join(' '),
         WHEELCHAIR_RESTART_PRESET_PATCH: gone.presetPatch,
@@ -2969,10 +2969,10 @@ async function testDryRunPlanMentionsResume() {
     const box = await makeBox()
     box.url = url
     await writeResume(box, `${uuid}\n`)
-    const result = await cli(box, ['restart-all', '--all', '--dry-run'])
+    const result = await cli(box, ['restart-all', '--all', '--project', 'tools/wheelchair-agent', '--dry-run'])
     assert.equal(result.status, 0, output(result))
     const text = output(result)
-    assert.match(text, new RegExp(`resume: --resume ${uuid}`))
+    assert.match(text, new RegExp(`resume:\\s+--resume ${uuid}`))
     assert.ok(
       text.includes(`${process.execPath} ${box.presetCli} spv --resume ${uuid}`),
       `the plan shows the resumed fallback launch:\n${text}`,

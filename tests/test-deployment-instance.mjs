@@ -49,12 +49,29 @@ function pass(message) {
 async function sandbox() {
   const base = await mkdtemp(join(tmpdir(), 'wheelchair-agent-instance-test-'))
   SANDBOXES.push(base)
+  const dsh = join(base, 'dsh')
+  // A fake /proc keeps the restart preflight entirely inside the sandbox: one dsh session carries the
+  // sandbox preset patch, so the guard can name a chain instead of scanning the operator's real processes.
+  const proc = join(base, 'proc')
+  const chainPid = 424242
+  await mkdir(join(proc, String(chainPid)), { recursive: true })
+  await writeFile(
+    join(proc, String(chainPid), 'cmdline'),
+    ['node', join(dsh, 'dsh'), '--patch', join(dsh, '.agent-presets', 'spv', 'preset-default.patch.yml')].join('\0') + '\0',
+  )
+  await writeFile(join(proc, String(chainPid), 'status'), 'Name:\tdsh\nPPid:\t1\n')
+  // A second profile process stands in for the service, so the chain pid is not mistaken for it.
+  const servicePid = 424243
+  await mkdir(join(proc, String(servicePid)), { recursive: true })
+  await writeFile(join(proc, String(servicePid), 'cmdline'), ['node', join(dsh, 'dsh'), '--profile', 'superagent'].join('\0') + '\0')
+  await writeFile(join(proc, String(servicePid), 'status'), 'Name:\tdsh\nPPid:\t1\n')
   return {
     base,
     home: join(base, 'home'),
-    dsh: join(base, 'dsh'),
+    dsh,
     data: join(base, 'data'),
-    state: join(base, 'dsh', 'state', 'superagent'),
+    state: join(dsh, 'state', 'superagent'),
+    proc,
   }
 }
 
@@ -73,6 +90,10 @@ function envFor(box, extra = {}) {
     DSH_HOME: box.dsh,
     WHEELCHAIR_AGENT_HOME: box.data,
     DSH_SUPERAGENT_STATE_DIR: box.state,
+    WHEELCHAIR_PROC_ROOT: box.proc,
+    // Never probe the operator's real service: an unreachable loopback URL makes the
+    // read-only preflight see "nothing known" instead of live load.
+    DSH_SUPERAGENT_URL: 'http://127.0.0.1:9',
     ...extra,
   }
 }
@@ -297,6 +318,32 @@ async function testRestartProjectDryRunAndErrors() {
   pass('restart-all --project plans only that instance, skips install, and names the missing deployment')
 }
 
+async function testRestartAllDryRun() {
+  const box = await sandbox()
+  assert.equal(cli(box, ['deployment', 'add', 'tools/alpha']).status, 0)
+  assert.equal(cli(box, ['deployment', 'add', 'tools/beta']).status, 0)
+
+  const plan = cli(box, ['restart-all', '--all', '--dry-run', '--project', 'tools/alpha'])
+  assert.equal(plan.status, 0, plan.stderr)
+  assert.match(plan.stdout, /restart-all --all plan \(dry run; nothing is changed\)/)
+  assert.match(plan.stdout, /deployments: tools\/alpha, tools\/beta/)
+  for (const project of ['tools/alpha', 'tools/beta']) {
+    assert.match(plan.stdout, new RegExp(`stop:  wheelchair-agent service stop --project ${project}`))
+    assert.match(plan.stdout, new RegExp(`start: wheelchair-agent service start --project ${project}`))
+  }
+  assert.match(plan.stdout, /3\. bash .*install\.sh --project tools\/alpha/)
+  // The deleted single-deployment path must not reappear: every install/stop/start names a project.
+  assert.doesNotMatch(plan.stdout, /install\.sh\s*$/m)
+  assert.doesNotMatch(plan.stdout, /service (?:stop|start)\s*$/m)
+
+  const unknownCheckout = cli(box, ['restart-all', '--all', '--dry-run'])
+  assert.equal(unknownCheckout.status, 1)
+  assert.match(unknownCheckout.stdout, /cannot tell which deployment this checkout installs/)
+  assert.match(unknownCheckout.stdout, /--project <p>/)
+  assert.match(unknownCheckout.stdout, /Registered deployments: tools\/alpha, tools\/beta/)
+  pass('restart-all --all plans one install plus every project stop/start, and refuses without a project')
+}
+
 async function fakeProcEntry(root, pid, argv, ppid = 1) {
   const dir = join(root, String(pid))
   await mkdir(dir, { recursive: true })
@@ -352,7 +399,27 @@ async function testRestartCommandPassesProject() {
   }
   const bad = handler({ rawInput: '--project', agent: { session: { id: 'session-1' } } })
   assert.equal(bad.kind, 'error')
-  pass('/restart-wheelchair-agent passes --project through and still rejects malformed arguments')
+
+  // --all is the machine-wide entry point: the handler still names its own deployment as the install checkout.
+  assert.equal(cli(box, ['deployment', 'add', 'tools/alpha']).status, 0)
+  const saved = process.env.SPV_QUEUE_DIR
+  const savedHome = process.env.WHEELCHAIR_AGENT_HOME
+  process.env.WHEELCHAIR_AGENT_HOME = box.data
+  process.env.SPV_QUEUE_DIR = join(box.state, 'alpha', 'spv')
+  await mkdir(join(box.state, 'alpha', 'spv'), { recursive: true })
+  try {
+    const all = handler({ rawInput: '--all', agent: { session: { id: 'session-1' } } })
+    assert.equal(all.kind, 'success', all.text)
+    for (const expected of ['restart-all', '--detach', '--all', '--session', 'session-1', '--project', 'tools/alpha']) {
+      assert.match(all.text, new RegExp(`(^|\\n)${expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\n|$)`))
+    }
+  } finally {
+    if (saved === undefined) delete process.env.SPV_QUEUE_DIR
+    else process.env.SPV_QUEUE_DIR = saved
+    if (savedHome === undefined) delete process.env.WHEELCHAIR_AGENT_HOME
+    else process.env.WHEELCHAIR_AGENT_HOME = savedHome
+  }
+  pass('/restart-wheelchair-agent passes --project/--all through and still rejects malformed arguments')
 }
 
 try {
@@ -365,6 +432,7 @@ try {
   await testInstanceSelectorIsExact()
   await testProjectSessionPriority()
   await testRestartProjectDryRunAndErrors()
+  await testRestartAllDryRun()
   await testServiceStatusListsDeployments()
   await testRestartCommandPassesProject()
   process.stdout.write(`ok (${passed} passed)\n`)
