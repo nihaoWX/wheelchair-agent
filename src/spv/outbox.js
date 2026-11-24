@@ -1,7 +1,8 @@
 /**
  * 读 `<queue>/outbox/`：superagent 的 `spv` Channel 把回信一条一个 `.json` 写在这里。
  *
- * 只关心两种 kind：`reply`（含工单结果）与 `notice`。`acknowledgement` 不算结果，它是"接单了"，交给 `spv_status` 展示即可。
+ * 关心三种 kind：`reply`（含工单结果）、`notice`，以及别的部署转来的 `review`。`acknowledgement` 不算结果，
+ * 它是"接单了"，交给 `spv_status` 展示即可。
  *
  * 这里**没有**阻塞读取器：结果由 `src/spv/injector.js` 在后台消费并注入会话，本文件只提供读/消费的原语。
  * 消费标记沿用本包既有约定：`rename(outbox/x.json → outbox/read/x.json)` 是原子的"已读"，而 `consumeMessage`
@@ -11,7 +12,7 @@ import { mkdir, readFile, readdir, rename, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 
 /** 算作"结果"的消息种类。 */
-export const RESULT_KINDS = new Set(['reply', 'notice'])
+export const RESULT_KINDS = new Set(['reply', 'notice', 'review'])
 
 /** outbox 里尚未消费的消息文件，最旧的在前；临时文件与子目录跳过。 */
 async function messageFiles(dirs) {

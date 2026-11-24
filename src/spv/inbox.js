@@ -20,7 +20,7 @@
  * 不再派 worker 任务。
  */
 import { execFile, execFileSync } from 'node:child_process'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, readdirSync } from 'node:fs'
 import { chmod, mkdir, open, readFile, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
@@ -28,6 +28,7 @@ import { join } from 'node:path'
 import { promisify } from 'node:util'
 
 import { checkThread } from './dispatch.js'
+import { ownDeployment, projectForRepo } from './ownership.js'
 import { resolveRoot } from './paths.js'
 import { HOME_DIR_NAME, INBOX_DIR, INBOX_ENV, resolveData } from '../shared/home.js'
 import { INSTALL_STAMP_FILE, compareFingerprints, readStamp } from '../shared/install-stamp.js'
@@ -36,6 +37,9 @@ import { dirsOf, writeMessage } from '../shared/queue.js'
 import { KEY_SPECS, defaultSettings, renderTemplate, resolveSettings } from '../shared/settings.js'
 
 const execFileAsync = promisify(execFile)
+
+/** Review messages forwarded to another deployment use this kind; the injector treats it as a result. */
+const FORWARD_REVIEW_KIND = 'review'
 
 /** 未指定时收件箱根目录的默认值（只是文档/诊断用；真正的解析在 `resolveInboxRoot()`）。 */
 export const INBOX_ROOT_DEFAULT = join(homedir(), HOME_DIR_NAME, INBOX_DIR)
@@ -318,6 +322,96 @@ function repoName(repo) {
 }
 
 /**
+ * The deployment that owns an item's repo, when that is a different deployment than this one.
+ *
+ * `null` means "keep the old path": no registry, this process cannot identify its own queue, the repo is
+ * not under any registered project, or the repo is this deployment's own. The local checkout decides the
+ * project; the repo-name leaf is the documented fallback for a project whose checkout is absent.
+ */
+function forwardTarget(item) {
+  if (kindOf(item) !== 'pr' || typeof item.repo !== 'string') return null
+  const own = ownDeployment()
+  if (own.entry === null || own.registry === null) return null
+  const project = projectForRepo(item.repo, {
+    projectsRoot: defaultProjectsRoot(),
+    deployments: own.registry.deployments,
+  })
+  if (project === null || project === own.entry.project) return null
+  return { project, from: own.entry.project, queueDir: own.registry.deployments.find(d => d.project === project)?.queueDir }
+}
+
+/** The body the owning deployment's injector shows when a review was forwarded from another deployment. */
+function forwardedReviewText({ from, project, item, verdict, comment, reviewedAt }) {
+  return [
+    `This review result was forwarded from another deployment (这是另一份部署转来的审查结论).`,
+    `kind: review`,
+    `from deployment: ${from}`,
+    `deployment: ${project}`,
+    `repo: ${item.repo}`,
+    `PR: #${item.pr} ${item.url ?? ''}`.trimEnd(),
+    `verdict: ${verdict}`,
+    `reviewedAt: ${reviewedAt}`,
+    '',
+    `comment:`,
+    comment === '' ? '(no comment)' : comment,
+  ].join('\n')
+}
+
+/** Stable id: a retry of the same verdict and comment overwrites one queue file, never stacks two. */
+function forwardedReviewId(item, verdict, comment) {
+  const digest = createHash('sha256').update(`${item.id}\u0000${verdict}\u0000${comment}`).digest('hex').slice(0, 16)
+  return `review-${item.id}-${digest}`
+}
+
+/** Write the review into the owning deployment's pending queue; returns the message id. */
+async function forwardReview({ target, item, verdict, comment, reviewedAt }) {
+  const id = forwardedReviewId(item, verdict, comment)
+  // `$SPV_QUEUE_DIR` is this instance's runtime override, not the target's queue: when it is set,
+  // resolveRoot({ project }) would still return it. Read the target's registered queue instead.
+  const queue = String(process.env.SPV_QUEUE_DIR ?? '').trim() === ''
+    ? resolveRoot({}, { project: target.project })
+    : target.queueDir
+  const pending = join(queue, 'pending')
+  await mkdir(pending, { recursive: true })
+  const file = join(pending, `${id}.json`)
+  const temporary = `${file}.tmp.${process.pid}`
+  await writeFile(temporary, `${JSON.stringify({
+    id,
+    source: 'spv',
+    thread: checkThread(`inbox-${item.pr}`),
+    kind: FORWARD_REVIEW_KIND,
+    text: forwardedReviewText({ ...target, item, verdict, comment, reviewedAt }),
+    at: reviewedAt,
+    project: target.project,
+    actor: 'operator',
+    repo: item.repo,
+    number: item.pr,
+    url: item.url ?? '',
+    verdict,
+    comment,
+    reviewedAt,
+  }, null, 2)}\n`, { mode: 0o644 })
+  await rename(temporary, file)
+  return id
+}
+
+/** Forward, or turn a queue failure into the same actionable error for both verdicts. */
+async function forwardOrFail({ target, item, verdict, comment, reviewedAt }) {
+  try {
+    return await forwardReview({ target, item, verdict, comment, reviewedAt })
+  } catch (error) {
+    const failure = new Error(
+      `the review was saved on "${item.id}", but could not be forwarded to the deployment that owns ` +
+        `${item.repo}: ${messageOf(error)}. fix: check that the queue at ` +
+        `${target.queueDir} exists and retry; the saved review is not lost.`,
+    )
+    failure.code = 'INBOX_DISPATCH'
+    failure.item = item
+    throw failure
+  }
+}
+
+/**
  * 一条「有问题」评论变成发给 SPV 的 notice 正文：repo、PR 号、标题、URL、kind、评论原文。
  *
  * 正文把事实全带上，SPV 不需要回读收件箱；最后一句要求 SPV 先结合上下文处理，不再声称派给 worker。
@@ -447,6 +541,8 @@ export async function appendReview(root, { id, kind, text } = {}) {
       const reviewIndex = review.length
       item.review = [...review, { at, kind: 'approve', text: comment }]
       await writeItem(root, item)
+      const target = forwardTarget(item)
+      if (target !== null) await forwardOrFail({ target, item, verdict: 'approve', comment, reviewedAt: at })
       fireHook(
         'inbox.approved',
         {
@@ -459,6 +555,38 @@ export async function appendReview(root, { id, kind, text } = {}) {
           at,
         },
         `inbox.approved:${item.id}:${reviewIndex}`,
+      )
+      return { item, task: null }
+    }
+
+    // A PR owned by another deployment: forward the verdict into that deployment's queue instead of
+    // notifying this one. The owning side injects it as a result, so the review lands on the right ticket.
+    const target = forwardTarget(item)
+    if (target !== null) {
+      const last = review[review.length - 1]
+      const lastKind = String(last?.kind ?? '').trim().toLowerCase()
+      const repeated = last !== undefined && lastKind !== 'approve' && String(last?.text ?? '') === comment
+      const reviewIndex = repeated ? review.length - 1 : review.length
+      if (!repeated) {
+        item.review = [...review, { at: new Date().toISOString(), kind: 'issue', text: comment }]
+        await writeItem(root, item)
+      }
+      const reviewedAt = new Date().toISOString()
+      const messageId = await forwardOrFail({ target, item, verdict: 'issue', comment, reviewedAt })
+      fireHook(
+        'inbox.issue',
+        {
+          itemId: item.id,
+          kind: kindOf(item),
+          pr: item.pr,
+          repo: item.repo,
+          reviewIndex,
+          comment,
+          messageId,
+          thread: checkThread(`inbox-${item.pr}`),
+          at: reviewedAt,
+        },
+        `inbox.issue:${item.id}:${reviewIndex}`,
       )
       return { item, task: null }
     }
@@ -1030,7 +1158,18 @@ export async function pollOnce({ root = resolveInboxRoot(), projectsRoot = defau
   // 每轮读一次：面板把 `merge.installRepo` 改掉后，下一次轮询就用新值，不需要重启服务。
   const settings = readPanelSettings()
   const counts = { created: 0, updated: 0, failed: 0, merged: 0 }
+  const own = ownDeployment()
+  const deployments = own.registry?.deployments ?? []
+  // The registry is the only project list. When this process cannot identify its own queue, keep the old
+  // scan-every-project behavior instead of silently owning nothing; the one line says why.
+  if (own.entry === null) log(`ownership: ${own.reason}; polling every project as before`)
   for (const { name, repo } of discoverRepos(projectsRoot)) {
+    const project = projectForRepo(repo, { projectsRoot, deployments })
+    if (own.entry !== null && project !== null && project !== own.entry.project) {
+      log(`skipping ${repo}: owned by deployment ${project}`)
+      continue
+    }
+    const localPath = join(projectsRoot, project === null ? join('tools', name) : project)
     let pullRequests
     try {
       const { stdout } = await execFileAsync(
@@ -1074,7 +1213,6 @@ export async function pollOnce({ root = resolveInboxRoot(), projectsRoot = defau
           const observedTransition = existing !== undefined && !wasMerged && String(next.state).toUpperCase() === 'MERGED'
           const retrying = Boolean(existing?.mergeObservedAt) && String(next.state).toUpperCase() === 'MERGED'
           if (existing !== undefined && !existing.mergeHandledAt && (observedTransition || retrying)) {
-            const localPath = join(projectsRoot, 'tools', name)
             const merge = await handleMergedPull({
               item: next,
               repo,
