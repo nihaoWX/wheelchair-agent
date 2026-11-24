@@ -53,6 +53,12 @@
   实例匹配抽成纯函数 `selectInstanceProcesses()`（profile + `--patch` 双条件）；`service status` 在多份部署时
   追加 `deployments:` 段。我手验纯函数：a.yml → 只有 a 那一个 pid、旧无 patch 服务 → 只有旧 pid、
   `dsh plugin` 与别的 profile 都不命中；`npm test` 373 PASS/0 FAIL。stage 2 到此完成，剩下的是操作者起第二个实例。
+- **Rust 核心第三步（`#47`,`a7147ff`）**：`settings` 的数据模型搬进 `wheelchair-agent-core`（新 `settings`
+  子命令：键表/默认值、`filled` 只补一次、合并优先级、校验、`revision` 语义），`src/shared/settings.js` 只剩
+  文件与 HTTP 面 + `runCore(['settings'], …)`；`webui/lib/*` 未动。门：`tests/test-settings.mjs` 零改动、
+  `npm test` 377 PASS/0 FAIL、`cargo test` 46 passed。我另做了逐字对比：`defaultValues()`、缺键
+  `settings.json` 的解析结果、写回字节、stale-revision 与非法值的错误文案，改动前后 **IDENTICAL**。
+  注意：装之前要先 `bash build/build-core.sh`（`install.sh` 从不跑 cargo）。
 - **一仓一部署 stage 3（`#46`,`e32b0e6`）**：收件箱 watcher 只轮询本实例注册表条目对应的项目（归属靠
   `queueDir` 对上运行实例、`src/spv/ownership.js`，读不到注册表就退回旧的全量行为并记一行降级），别家项目
   的 PR 不再被重复 `pull`/发通知；审查别家 PR 的结果以 `kind: "review"` 消息转发到**拥有它的**部署队列

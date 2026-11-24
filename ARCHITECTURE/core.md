@@ -24,13 +24,16 @@
 wheelchair-agent-core work-plan     # 工单目录的规划与回收判定
 wheelchair-agent-core queue-op      # pending/done/outbox 的全部原语（列目录、读、消费、隔离、写）
 wheelchair-agent-core schema-check  # 求值一个序列化后的校验器
+wheelchair-agent-core settings      # 设置的键表/默认值/合并/校验/保存（`filled` 只补一次）
 wheelchair-agent-core schema        # 打印各子命令的请求与响应 JSON Schema
 ```
 
 - envelope：`{"ok":true,"data":…}` 或 `{"ok":false,"code":…,"message":…}`；exit 0 / 非零。
-- 错误码是稳定的字符串：`invalid_request`（含畸形 JSON）、`plan_failed`、`schema_error`、`usage`（exit 2）、`schema_failed`。
-- 调用方提交的一切都走 `Result`：`crates/wca-core/src` 里**没有** `unwrap` / `expect` / `panic!`。
-  畸形 stdin 给干净的 envelope，不给 backtrace——这条由 `crates/wca-core/tests/cli.rs` 断言。
+- 错误码是稳定的字符串：`invalid_request`（含畸形 JSON）、`plan_failed`、`schema_error`、`usage`（exit 2）、
+  `schema_failed`、`SETTINGS_INVALID`（非法值）、`SETTINGS_CONFLICT`（缺/过期 revision）。
+- 调用方提交的一切都走 `Result`：`crates/wca-core/src` 的**非测试代码**里没有 `unwrap` / `expect` / `panic!`
+  （只有 `#[cfg(test)] mod tests` 里用作断言）。畸形 stdin 给干净的 envelope，不给 backtrace——这条由
+  `crates/wca-core/tests/cli.rs` 断言。
 
 ## 已经搬过去的模块
 
@@ -39,12 +42,19 @@ wheelchair-agent-core schema        # 打印各子命令的请求与响应 JSON 
 | `src/shared/work.js` | `work-plan` | `tests/test-work.mjs` |
 | `src/shared/queue.js` | `queue-op` | `tests/test-hooks.mjs`、`test-inbox.mjs`、`test-settings.mjs`、`test-home.mjs` |
 | `src/shared/schema.js` | `schema-check` | 同上（四个套件都靠 schema 的错误文案） |
+| `src/shared/settings.js` | `settings` | `tests/test-settings.mjs`（含错误文案与 `filled` 只补一次）+ 面板/注入器读设置的路径 |
 
 JS 侧只剩调用壳，签名不变：`dirsOf` 仍同步，异步队列helper 仍返回 `undefined`，
 `text`/`integer`/`records` 仍返回校验函数，`object()` 仍返回 `{parse,safeParse}`，`SchemaError` 仍是 JS class
 （`instanceof` 不受影响）。**唯一的进程桥**是 `queue.js` 里的 `runCore`（`spawnSync`，5 分钟超时、16 MiB 上限、
 envelope 解析、缺产物时提示 `bash build/build-core.sh`）——放在 `queue.js` 是因为 `install.sh` 与 webui 夹具只拷
 `queue.js` 这一个文件；`work.js` 与 `schema.js` 复用它。
+
+`settings.js` 搬过去时（`#47`）保留了文件与 HTTP 面（`createSettingsHandler` 仍是 JS：路由、413/415、409 这些是
+webui 的事），只把**数据模型**交给二进制：键表与默认值、`filled`、合并优先级、校验、`revision` 语义。Node 侧
+`settingsOp = request => runCore(['settings'], JSON.stringify(request))` 是唯一入口。判据是我自己跑的对比：
+`defaultValues()`、`resolveSettings()` 对一份缺键 `settings.json` 的结果、写回后的文件字节、以及 stale-revision
+与非法值的错误文案，改动前后**逐字相同**。
 
 搬过去之后要记得的三件事（都在 PR #33 里写明了）：
 
