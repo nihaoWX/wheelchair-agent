@@ -6,7 +6,8 @@
 # the seam install.sh documents (`SPV_INSTALL_PROBE`): it prints the same key=value lines as
 # `commands/superagent-service.py probe`, so the test states "the service/SPV session is running" as a
 # fixture instead of depending on what happens to run on the machine. No real service or dsh is
-# touched; case 17 briefly edits the checkout's source preset and restores it (also on INT/TERM).
+# touched; case 17 briefly edits the checkout's source preset and restores it (also on INT/TERM);
+# case 18 installs with --project, which records a deployment in the sandbox registry.
 #
 # What it proves:
 #   - a refusal exits 3, explains what is in use, and creates nothing under any install target (a virgin
@@ -425,6 +426,65 @@ cp "$SRC_BACKUP" "$SRC_CORDIS"
 rm -f "$SRC_BACKUP"
 run_install --check
 check '(17) --check is clean again after restoring the source' "$?" 0
+
+# (18) --project records the successful install as that project's deployment, through the installed CLI
+# and the real registry writer. A rerun is idempotent, a plain install (no --project) leaves the registry
+# alone, --check stays read-only, and a malformed project is rejected before any work.
+DEPLOYMENTS="$SB/home/.wheelchair-agent/deployments.json"
+registry_value() {
+  node -e 'const fs=require("fs"); const d=JSON.parse(fs.readFileSync(process.argv[1],"utf8")).deployments; const e=d.find(x=>x.project===process.argv[2])||{}; process.stdout.write(String(e[process.argv[3]] ?? ""))' \
+    "$DEPLOYMENTS" "$1" "$2" 2>/dev/null
+}
+registry_top() {
+  node -e 'const fs=require("fs"); const v=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); const d=v.deployments; process.stdout.write(String(process.argv[2]==="version" ? v.version : d.length))' \
+    "$DEPLOYMENTS" "$1" 2>/dev/null
+}
+set_state
+rm -f "$DEPLOYMENTS"
+run_install --project tools/demo
+check '(18) the --project install exits 0' "$?" 0
+check '(18) the install wrote the deployment registry' "$([ -f "$DEPLOYMENTS" ] && echo yes || echo no)" yes
+check '(18) the registry has version 1' "$(registry_top version)" 1
+check '(18) the registry holds exactly one deployment' "$(registry_top count)" 1
+check '(18) the entry names the project' "$(registry_value tools/demo project)" tools/demo
+check '(18) the entry uses the sandbox state directory' "$(registry_value tools/demo stateDir)" "$SB/dsh/state/superagent"
+check '(18) the entry uses the sandbox queue' "$(registry_value tools/demo queueDir)" "$SB/queue"
+check '(18) the entry records the service port' "$(registry_value tools/demo port)" 3082
+check '(18) the entry records the profile' "$(registry_value tools/demo profile)" superagent
+stamp_sha=$(node -e 'const fs=require("fs"); try { process.stdout.write(String(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).commit ?? "")) } catch {}' "$STAMP" 2>/dev/null)
+check '(18) the entry records the commit from installed.json' "$(registry_value tools/demo installedSha)" "$stamp_sha"
+check '(18) installed.json really carries the checkout commit' "$stamp_sha" "$(git -C "$REPO" rev-parse HEAD)"
+check '(18) the install reports what it registered' \
+  "$(grep -c "^OK: deployment registry: tools/demo -> $SB/queue$" "$SB/stdout")" 1
+cp "$DEPLOYMENTS" "$SB/registry-18.json"
+
+run_install --project tools/demo
+check '(18) the rerun exits 0' "$?" 0
+check '(18) the rerun leaves the registry byte-identical' "$(cmp -s "$DEPLOYMENTS" "$SB/registry-18.json" && echo same || echo different)" same
+check '(18) the rerun says the entry is unchanged' \
+  "$(grep -c 'already registered with these values; nothing changed' "$SB/stdout")" 1
+
+run_install
+check '(18) a plain install without --project exits 0' "$?" 0
+check '(18) a plain install leaves the registry byte-identical' "$(cmp -s "$DEPLOYMENTS" "$SB/registry-18.json" && echo same || echo different)" same
+
+run_install --check --project tools/beta
+check '(18) --check --project exits 0' "$?" 0
+check '(18) --check --project writes nothing' "$(cmp -s "$DEPLOYMENTS" "$SB/registry-18.json" && echo same || echo different)" same
+check '(18) --check --project says it is read-only' \
+  "$(grep -c '^note: --check is read-only: the deployment entry for tools/beta is written by a real install, nothing was written now$' "$SB/stdout")" 1
+check '(18) --check did not register the project' "$(registry_value tools/beta project)" ''
+
+run_install --project notaproject
+check '(18) a malformed project is a usage error' "$?" 2
+check '(18) the usage error names the expected shape' \
+  "$(grep -c '^FAIL: --project must be "tools/<name>" or "research/<name>", got notaproject$' "$SB/stderr")" 1
+check '(18) the rejected install left the registry byte-identical' \
+  "$(cmp -s "$DEPLOYMENTS" "$SB/registry-18.json" && echo same || echo different)" same
+run_install --project tools/
+check '(18) an empty project name is a usage error' "$?" 2
+check '(18) the empty-name error changed the registry' \
+  "$(cmp -s "$DEPLOYMENTS" "$SB/registry-18.json" && echo same || echo different)" same
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
