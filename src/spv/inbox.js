@@ -30,6 +30,7 @@ import { promisify } from 'node:util'
 import { checkThread } from './dispatch.js'
 import { resolveRoot } from './paths.js'
 import { HOME_DIR_NAME, INBOX_DIR, INBOX_ENV, resolveData } from '../shared/home.js'
+import { INSTALL_STAMP_FILE, compareFingerprints, readStamp } from '../shared/install-stamp.js'
 import { runHooksFor } from '../shared/hooks.js'
 import { dirsOf, writeMessage } from '../shared/queue.js'
 import { KEY_SPECS, defaultSettings, renderTemplate, resolveSettings } from '../shared/settings.js'
@@ -675,12 +676,83 @@ function isInstallTargetRepo(name, repo, settings) {
   return name === expected || name === expectedName || repo === expected || repoName(repo) === expectedName
 }
 
-/** The one notice an install-repo merge queues: facts, the pending cold install, and the exact commands. */
-function mergeNoticeText({ item, repo, localPath, pulledSha }) {
-  return [
+/** One human-readable clause per changed component, file names capped at three. */
+function describeInstallChanges(pending) {
+  const parts = []
+  if (pending?.versionMismatch) {
+    parts.push('the installed fingerprint format (reinstall once to refresh it)')
+  }
+  for (const change of pending?.changes ?? []) {
+    const names = [...change.changed, ...change.added, ...change.removed]
+    const sample = names.slice(0, 3).join(', ')
+    const more = names.length > 3 ? `, +${names.length - 3} more` : ''
+    const noun = change.count === 1 ? 'file' : 'files'
+    parts.push(`${change.component} (${change.count} ${noun}: ${sample}${more})`)
+  }
+  return parts.join('; ')
+}
+
+/**
+ * Is the running install stale relative to this checkout?
+ *
+ * The stamp records the component digests the last successful install placed. `install.sh --fingerprint`
+ * renders what this checkout would place now (in a temporary directory, read-only) and the shared
+ * fingerprint normalizes YAML comments, so a comment-only merge compares `same`.
+ *
+ * Never throws: a missing stamp, a spawn failure, a non-zero exit or unparsable output all degrade to
+ * the old unconditional notice (`no-stamp` / `unknown`) rather than breaking the merge flow.
+ */
+export async function detectInstallPending({ localPath, dataRoot } = {}) {
+  const stampFile = join(dataRoot ?? resolveData().root, INSTALL_STAMP_FILE)
+  const stamp = await readStamp(stampFile)
+  if (!stamp) return { kind: 'no-stamp' }
+  const args = [join(localPath, 'install.sh'), '--fingerprint']
+  const presetDir = stamp.targets?.presetDir
+  if (typeof presetDir === 'string' && presetDir !== '') args.push('--preset-dir', presetDir)
+  try {
+    const { stdout } = await execFileAsync('bash', args, {
+      encoding: 'utf8',
+      timeout: 60_000,
+      maxBuffer: 16 * 1024 * 1024,
+      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+    })
+    const current = JSON.parse(stdout)
+    if (
+      current === null ||
+      typeof current !== 'object' ||
+      typeof current.version !== 'number' ||
+      current.components === null ||
+      typeof current.components !== 'object'
+    ) {
+      throw new Error('install.sh --fingerprint printed an invalid fingerprint')
+    }
+    const comparison = compareFingerprints(stamp, current)
+    if (comparison.same) return { kind: 'same' }
+    return { kind: 'stale', changes: comparison.changes, versionMismatch: comparison.versionMismatch }
+  } catch (error) {
+    return { kind: 'unknown', reason: commandFailure(error) }
+  }
+}
+
+/**
+ * The one notice an install-repo merge queues: facts, the pending cold install, and the exact commands.
+ *
+ * `same` means the installed copy already matches this checkout (comment-only merge): the caller must not
+ * write anything, so this returns null. A stale install adds one line naming the components that differ;
+ * `no-stamp` / `unknown` keep the historical unconditional text, so a machine that has never installed
+ * with a stamp still warns.
+ */
+function mergeNoticeText({ item, repo, localPath, pulledSha, pending }) {
+  if (pending?.kind === 'same') return null
+  const lines = [
     `PR #${item.pr} merged in ${repo}.`,
     `The local clone at ${localPath} moved to ${pulledSha}.`,
     'A cold install is now pending: the running service cannot install itself.',
+  ]
+  if (pending?.kind === 'stale') {
+    lines.push(`The installed copy differs from this checkout in: ${describeInstallChanges(pending)}.`)
+  }
+  lines.push(
     '',
     'Stop the install holders, install from that checkout, then start again:',
     '  wheelchair-agent service stop',
@@ -688,7 +760,8 @@ function mergeNoticeText({ item, repo, localPath, pulledSha }) {
     `  cd ${shellQuote(localPath)} && bash install.sh`,
     '  wheelchair-agent service start',
     '  wheelchair-agent spv',
-  ].join('\n')
+  )
+  return lines.join('\n')
 }
 
 /**
@@ -740,17 +813,31 @@ async function handleMergedPull({ item, repo, name, localPath, existing, observe
   let noticeError
   if (isInstallTargetRepo(name, repo, settings) && !noticeAt) {
     try {
-      await writeMessage(dirsOf(resolveRoot()), {
-        id: `inbox-merge-${item.id}`,
-        source: 'spv',
-        thread: 'main',
-        kind: 'notice',
-        text: mergeNoticeText({ item, repo, localPath, pulledSha }),
-        at: new Date().toISOString(),
-        address: { thread: 'main' },
-      })
-      noticeAt = new Date().toISOString()
-      log(`queued cold-install notice for ${item.id}`)
+      // Detection is best-effort: any failure becomes `unknown`, whose notice is the historical
+      // unconditional one, so a broken fingerprint can never suppress a real cold-install warning.
+      let pending
+      try {
+        pending = await detectInstallPending({ localPath })
+      } catch (error) {
+        pending = { kind: 'unknown', reason: commandFailure(error) }
+      }
+      if (pending.kind === 'same') {
+        // Comment-only merges land here: the installed copy is semantically identical, so nothing is
+        // written and noticeAt stays unset (the merge itself is still handled).
+        log(`installed copy is up to date for ${item.id}; no cold-install notice queued`)
+      } else {
+        await writeMessage(dirsOf(resolveRoot()), {
+          id: `inbox-merge-${item.id}`,
+          source: 'spv',
+          thread: 'main',
+          kind: 'notice',
+          text: mergeNoticeText({ item, repo, localPath, pulledSha, pending }),
+          at: new Date().toISOString(),
+          address: { thread: 'main' },
+        })
+        noticeAt = new Date().toISOString()
+        log(`queued cold-install notice for ${item.id}`)
+      }
     } catch (error) {
       noticeError = commandFailure(error)
       log(`warning: ${item.id}: could not queue the cold-install notice: ${noticeError}`)

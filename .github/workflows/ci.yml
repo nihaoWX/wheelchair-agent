@@ -75,6 +75,9 @@ jobs:
       - name: prepare.sh sandbox test
         run: sh tests/test-prepare.sh
 
+      - name: Install stamp fingerprint
+        run: node tests/test-install-stamp.mjs
+
       - name: install.sh cold-install sandbox test
         run: sh tests/test-install.sh
 

@@ -57,9 +57,13 @@
 #   - a missing prerequisite is a loud FAIL with the command that obtains it, never a silent workaround;
 #   - copies, never symlinks; a whitelist, never the whole tree;
 #   - atomic replacement through a staging directory, and idempotent (same content => "OK: up to date");
-#   - --check is read-only, reports item by item, and exits 2 with a "fix:" line when anything is off.
+#   - --check is read-only, reports item by item, and exits 2 with a "fix:" line when anything is off;
+#   - --check compares the *fingerprint* (src/shared/install-stamp.js), not bytes, so a comment-only
+#     merge is not stale. The same fingerprint is recorded in $DATA_ROOT/installed.json and read by the
+#     cold-install notice, so all three agree on what "the installed copy" is.
 #
-# Usage: bash install.sh [--check]
+# Usage: bash install.sh [--check] [--preset-dir ABS]
+#        bash install.sh --fingerprint [--preset-dir ABS]
 #        bash install.sh --help
 set -uo pipefail
 
@@ -91,12 +95,35 @@ CORE_ARTIFACT=$SELF_DIR/$CORE_ARTIFACT_REL
 CORE_BIN=$BIN_DIR/wheelchair-agent-core
 
 CHECK=0
-for arg in "$@"; do
+FINGERPRINT=0
+PRESET_DIR_OVERRIDE=''
+while [ "$#" -gt 0 ]; do
+  arg=$1
   case $arg in
     --check) CHECK=1 ;;
+    # Internal: print the payload fingerprint as JSON on stdout for src/spv/inbox.js. Read-only.
+    --fingerprint) FINGERPRINT=1 ;;
+    --preset-dir)
+      shift
+      if [ "$#" -eq 0 ]; then
+        printf 'FAIL: --preset-dir needs a value\n' >&2
+        printf 'fix: pass an absolute path, e.g. --preset-dir /home/you/.dsh/.agent-presets/spv\n' >&2
+        exit 2
+      fi
+      PRESET_DIR_OVERRIDE=$1 ;;
+    --preset-dir=*)
+      PRESET_DIR_OVERRIDE=${arg#--preset-dir=}
+      if [ -z "$PRESET_DIR_OVERRIDE" ]; then
+        printf 'FAIL: --preset-dir needs a value\n' >&2
+        printf 'fix: pass an absolute path, e.g. --preset-dir /home/you/.dsh/.agent-presets/spv\n' >&2
+        exit 2
+      fi ;;
     -h|--help)
-      printf 'usage: bash install.sh [--check]\n'
-      printf '  --check   read-only self-check; exit 2 when anything is not installed as expected\n'
+      printf 'usage: bash install.sh [--check] [--preset-dir ABS]\n'
+      printf '       bash install.sh --fingerprint [--preset-dir ABS]\n'
+      printf '  --check        read-only self-check; exit 2 when anything is not installed as expected\n'
+      printf '  --fingerprint  internal, read-only: print the install fingerprint as JSON on stdout\n'
+      printf '  --preset-dir   compare against (or fingerprint for) this preset directory instead of the default\n'
       printf 'exit 0 installed or checks pass; 1 install failed; 2 check failed or bad argument;\n'
       printf '     3 refused because the install targets are in use (cold installs only)\n'
       exit 0 ;;
@@ -105,7 +132,28 @@ for arg in "$@"; do
       printf 'fix: run "bash install.sh" with no arguments, or "bash install.sh --check"\n' >&2
       exit 2 ;;
   esac
+  shift
 done
+
+if [ -n "$PRESET_DIR_OVERRIDE" ]; then
+  if [ "$CHECK" -eq 0 ] && [ "$FINGERPRINT" -eq 0 ]; then
+    printf 'FAIL: --preset-dir is only valid with --check or --fingerprint\n' >&2
+    printf 'fix: add --check to inspect that preset, or drop --preset-dir to install\n' >&2
+    exit 2
+  fi
+  case $PRESET_DIR_OVERRIDE in
+    /*) ;;
+    *)
+      printf 'FAIL: --preset-dir must be an absolute path, got %s\n' "$PRESET_DIR_OVERRIDE" >&2
+      printf 'fix: pass an absolute path, e.g. --preset-dir /home/you/.dsh/.agent-presets/spv\n' >&2
+      exit 2 ;;
+  esac
+  # The rendered preset bakes these URLs in, so they must follow the directory being compared.
+  PRESET_DIR=$PRESET_DIR_OVERRIDE
+  TARGET_PLUGIN_URL="file://$PRESET_DIR/src/spv/tools.js"
+  TARGET_CRON_URL="file://$PRESET_DIR/src/spv/cron-plugin.js"
+  TARGET_RESTART_URL="file://$PRESET_DIR/src/spv/restart-command.js"
+fi
 
 PROBLEMS=0
 ok()   { printf 'OK: %s\n' "$1"; }
@@ -249,7 +297,7 @@ render_into() {
     fix "check that $SELF_DIR/bin/wheelchair-agent.mjs exists and is readable, then rerun this script"
     return 1
   fi
-  for file in shared/home.js shared/hook-events.js shared/hooks.js shared/queue.js shared/schema.js shared/settings.js shared/work.js spv/check.js spv/cron-plugin.js spv/cron.js spv/dispatch.js spv/health.js spv/hook.js spv/inbox.js spv/injector.js spv/outbox.js spv/paths.js spv/restart-command.js spv/restart-ux.js spv/restart.js spv/session.js spv/tools.js; do
+  for file in shared/home.js shared/hook-events.js shared/hooks.js shared/install-stamp.js shared/queue.js shared/schema.js shared/settings.js shared/work.js spv/check.js spv/cron-plugin.js spv/cron.js spv/dispatch.js spv/health.js spv/hook.js spv/inbox.js spv/injector.js spv/outbox.js spv/paths.js spv/restart-command.js spv/restart-ux.js spv/restart.js spv/session.js spv/tools.js; do
     if ! cp "$SELF_DIR/src/$file" "$dest/src/$file"; then
       fail "cannot copy src/$file from this checkout"
       fix "check that $SELF_DIR/src/$file exists and is readable, then rerun this script"
@@ -341,7 +389,7 @@ render_webui_into() {
   done
   # `settings.js` lives in `lib/shared/` (not `lib/core/`) for the same reason `queue.js` does: the copied
   # `lib/core/inbox.js` imports `../shared/settings.js`, and `lib/core/` is for the src/spv files.
-  for pair in "spv/inbox.js:lib/core/inbox.js" "spv/dispatch.js:lib/core/dispatch.js" "spv/hook-runner.js:lib/core/hook-runner.js" "spv/paths.js:lib/core/paths.js" "shared/home.js:lib/shared/home.js" "shared/hook-events.js:lib/shared/hook-events.js" "shared/hooks.js:lib/shared/hooks.js" "shared/queue.js:lib/shared/queue.js" "shared/settings.js:lib/shared/settings.js"; do
+  for pair in "spv/inbox.js:lib/core/inbox.js" "spv/dispatch.js:lib/core/dispatch.js" "spv/hook-runner.js:lib/core/hook-runner.js" "spv/paths.js:lib/core/paths.js" "shared/home.js:lib/shared/home.js" "shared/hook-events.js:lib/shared/hook-events.js" "shared/hooks.js:lib/shared/hooks.js" "shared/install-stamp.js:lib/shared/install-stamp.js" "shared/queue.js:lib/shared/queue.js" "shared/settings.js:lib/shared/settings.js"; do
     src=${pair%%:*}
     target=${pair##*:}
     if ! cp "$SELF_DIR/src/$src" "$dest/$target"; then
@@ -350,6 +398,45 @@ render_webui_into() {
       return 1
     fi
   done
+  return 0
+}
+
+# Render the whole install payload into $1: the preset, the webui package and the four bin entries.
+#
+# Every consumer goes through this one function: --fingerprint, --check and the stamp written after an
+# install. `install_bin` stages each entry and then moves it, so the bin names here are the compatibility
+# names an install really places (not the staged dot file names).
+render_payload_into() {
+  local root=$1
+  if ! render_into "$root/preset"; then
+    return 1
+  fi
+  if ! render_webui_into "$root/webui"; then
+    return 1
+  fi
+  if ! mkdir -p "$root/bin"; then
+    fail "cannot create the staging directory $root/bin"
+    fix 'check that the temporary directory is writable, then rerun this script'
+    return 1
+  fi
+  if ! render_cli "$root/bin/wheelchair-agent"; then
+    fail 'cannot render the CLI into the install payload'
+    fix "check that $SELF_DIR/preset/wheelchair-agent.sh exists and is readable, then rerun this script"
+    return 1
+  fi
+  if ! render_launcher "$root/bin/spv"; then
+    fail 'cannot render the SPV launcher into the install payload'
+    fix "check that $SELF_DIR/preset/spv-launcher.sh exists and is readable, then rerun this script"
+    return 1
+  fi
+  if ! render_service_wrapper "$root/bin/superagent-service"; then
+    fail 'cannot render the service manager wrapper into the install payload'
+    return 1
+  fi
+  if ! render_jobctl_wrapper "$root/bin/jobctl"; then
+    fail 'cannot render the jobctl wrapper into the install payload'
+    return 1
+  fi
   return 0
 }
 
@@ -370,15 +457,20 @@ check_preset() {
     rm -rf "$staged"
     return
   fi
-  if diff -r "$staged" "$PRESET_DIR" >/dev/null 2>&1; then
+  local staged_digest installed_digest
+  staged_digest=$(node "$SELF_DIR/src/shared/install-stamp.js" component preset "$staged" 2>/dev/null)
+  installed_digest=$(node "$SELF_DIR/src/shared/install-stamp.js" component preset "$PRESET_DIR" 2>/dev/null)
+  # The fingerprint normalizes YAML comments, so a comment-only source change is not "stale". `diff -r`
+  # is only the human-readable detail, never the verdict.
+  if [ -n "$staged_digest" ] && [ "$staged_digest" = "$installed_digest" ]; then
     ok "preset matches its sources ($PRESET_DIR)"
   else
     fail "the installed preset at $PRESET_DIR differs from this checkout"
-    diff -r "$staged" "$PRESET_DIR" 2>&1 | sed -n '1,8p' | sed 's/^/     /'
+    diff -r "$staged" "$PRESET_DIR" 2>&1 | sed -n '1,10p' | sed 's/^/     /'
     fix 'run: bash tools/wheelchair-agent/install.sh'
   fi
   actual=$(find "$PRESET_DIR" -type f | sed "s|^$PRESET_DIR/||" | sort | tr '\n' ' ')
-  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/home.js src/shared/hook-events.js src/shared/hooks.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/work.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/dispatch.js src/spv/health.js src/spv/hook.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/paths.js src/spv/restart-command.js src/spv/restart-ux.js src/spv/restart.js src/spv/session.js src/spv/tools.js "
+  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/home.js src/shared/hook-events.js src/shared/hooks.js src/shared/install-stamp.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/work.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/dispatch.js src/spv/health.js src/spv/hook.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/paths.js src/spv/restart-command.js src/spv/restart-ux.js src/spv/restart.js src/spv/session.js src/spv/tools.js "
   local missing extras
   missing=$(comm -23 <(printf '%s' "$expected" | tr ' ' '\n' | sort) <(printf '%s' "$actual" | tr ' ' '\n' | sort) | tr '\n' ' ')
   extras=$(comm -13 <(printf '%s' "$expected" | tr ' ' '\n' | sort) <(printf '%s' "$actual" | tr ' ' '\n' | sort) | tr '\n' ' ')
@@ -488,7 +580,10 @@ check_webui() {
     rm -rf "$staged"
     return
   fi
-  if diff -r "$staged" "$WEBUI_TARGET" >/dev/null 2>&1; then
+  local staged_digest installed_digest
+  staged_digest=$(node "$SELF_DIR/src/shared/install-stamp.js" component webui "$staged" 2>/dev/null)
+  installed_digest=$(node "$SELF_DIR/src/shared/install-stamp.js" component webui "$WEBUI_TARGET" 2>/dev/null)
+  if [ -n "$staged_digest" ] && [ "$staged_digest" = "$installed_digest" ]; then
     ok "webui package matches its sources ($WEBUI_TARGET)"
   else
     fail "the installed webui package at $WEBUI_TARGET differs from this checkout"
@@ -575,12 +670,41 @@ check_core_binary() {
     fix "run: chmod 0755 $CORE_BIN"
     return
   fi
-  if cmp -s "$CORE_ARTIFACT" "$CORE_BIN"; then
+  local artifact_digest installed_digest
+  # The fixed component file name is the basename on both sides, so the artifact and the installed copy
+  # compare without caring where they live.
+  artifact_digest=$(node "$SELF_DIR/src/shared/install-stamp.js" component core "$CORE_ARTIFACT" 2>/dev/null)
+  installed_digest=$(node "$SELF_DIR/src/shared/install-stamp.js" component core "$CORE_BIN" 2>/dev/null)
+  if [ -n "$artifact_digest" ] && [ "$artifact_digest" = "$installed_digest" ]; then
     ok "core binary matches this checkout ($CORE_BIN)"
   else
     fail "the Rust core binary at $CORE_BIN differs from this checkout"
     fix 'run: bash tools/wheelchair-agent/install.sh'
   fi
+}
+
+# The install stamp: the component digests this machine actually installed, written after a successful
+# install and compared by --check and by the cold-install notice. It is not a checksum of the checkout:
+# a comment-only merge keeps the preset digest identical, so nothing goes stale.
+check_install_stamp() {
+  local stamp=$DATA_ROOT/installed.json out status
+  if [ ! -f "$stamp" ]; then
+    note 'no install stamp yet; the next successful install writes one, and cold-install notices stay unconditional until then'
+    return
+  fi
+  out=$(node "$SELF_DIR/src/shared/install-stamp.js" verify \
+    --stamp "$stamp" --preset "$PRESET_DIR" --webui "$WEBUI_TARGET" --bin "$BIN_DIR" --core "$CORE_BIN" 2>&1)
+  status=$?
+  case $status in
+    0) ok 'install stamp matches the installed files' ;;
+    1) fail "the install stamp at $stamp does not match the installed files"
+       fix 'rerun: bash install.sh from this checkout' ;;
+    3) fail "the install stamp at $stamp is unreadable"
+       fix "delete $stamp, then rerun: bash install.sh" ;;
+    4) note 'no install stamp yet; the next successful install writes one, and cold-install notices stay unconditional until then' ;;
+    *) fail "the install stamp at $stamp could not be verified: $out"
+       fix "delete $stamp, then rerun: bash install.sh" ;;
+  esac
 }
 
 # The first running superagent service PID, or empty.
@@ -759,6 +883,38 @@ ensure_settings_file() {
   return 1
 }
 
+# Record what this install placed, so `--check` and the cold-install notice can compare semantics instead
+# of bytes. The payload is rendered once more through the same functions an install uses: the stamp must
+# describe the installed files, never a reconstruction that happens to look similar.
+#
+# A missing `git` is not a failure: the commit is informational, and `|| true` keeps the empty string.
+write_install_stamp() {
+  local root stamp=$DATA_ROOT/installed.json commit
+  root=$(mktemp -d) || {
+    fail 'could not create a staging directory for the install stamp'
+    fix 'check that $TMPDIR (or /tmp) is writable, then rerun this script'
+    return 1
+  }
+  if ! render_payload_into "$root" >/dev/null 2>&1; then
+    rm -rf "$root"
+    [ "$PROBLEMS" -gt 0 ] || fail 'the preset payload could not be rendered for the install stamp'
+    return 1
+  fi
+  commit=$(git -C "$SELF_DIR" rev-parse HEAD 2>/dev/null || true)
+  if ! node "$SELF_DIR/src/shared/install-stamp.js" write \
+      --stamp "$stamp" \
+      --preset "$root/preset" --webui "$root/webui" --bin "$root/bin" --core "$CORE_ARTIFACT" \
+      --preset-dir "$PRESET_DIR" --commit "$commit" >/dev/null 2>&1; then
+    rm -rf "$root"
+    fail "could not write the install stamp at $stamp"
+    fix "check that $DATA_ROOT is writable, then rerun: bash install.sh"
+    return 1
+  fi
+  rm -rf "$root"
+  ok "install stamp: $stamp"
+  return 0
+}
+
 install_preset() {
   local staged backup
   staged=$(mktemp -d) || { fail 'could not create a staging directory'; return 1; }
@@ -900,6 +1056,38 @@ ensure_webui_loader() {
   ok "added the webui loader row to $patch"
 }
 
+# --------------------------------------------------------------- fingerprint mode
+
+# Internal, read-only: the fingerprint of exactly what an install would place. `src/spv/inbox.js` runs
+# this after a merge to decide whether the cold-install notice is worth queueing. Nothing but the JSON
+# may reach stdout: every render message is redirected to stderr, and no probe, data root or stamp is
+# touched.
+if [ "$FINGERPRINT" -eq 1 ]; then
+  if ! require_node >&2; then
+    printf '\n%d problem(s) blocked the fingerprint.\n' "$PROBLEMS" >&2
+    exit 1
+  fi
+  fingerprint_root=$(mktemp -d) || {
+    printf 'FAIL: could not create a temporary directory for the fingerprint\n' >&2
+    exit 1
+  }
+  trap 'rm -rf "$fingerprint_root"' EXIT
+  if ! render_payload_into "$fingerprint_root" >&2; then
+    printf '\n%d problem(s) blocked the fingerprint.\n' "$PROBLEMS" >&2
+    exit 1
+  fi
+  if [ "$PROBLEMS" -gt 0 ]; then
+    printf '\n%d problem(s) blocked the fingerprint.\n' "$PROBLEMS" >&2
+    exit 1
+  fi
+  node "$SELF_DIR/src/shared/install-stamp.js" fingerprint \
+    --preset "$fingerprint_root/preset" \
+    --webui "$fingerprint_root/webui" \
+    --bin "$fingerprint_root/bin" \
+    --core "$CORE_ARTIFACT"
+  exit $?
+fi
+
 # --------------------------------------------------------------------------- main
 
 if [ "$CHECK" -eq 1 ]; then
@@ -930,6 +1118,7 @@ if [ "$CHECK" -eq 1 ]; then
   check_service
   check_jobctl
   check_core_binary
+  check_install_stamp
   check_service_path
   if [ "$PROBLEMS" -gt 0 ]; then
     printf '\n%d check(s) failed.\n' "$PROBLEMS"
@@ -983,6 +1172,11 @@ install_bin "$CORE_BIN" render_core_binary
 install_bin "$LAUNCHER" render_launcher
 install_bin "$SERVICE" render_service_wrapper
 install_bin "$JOBCTL" render_jobctl_wrapper
+
+# The stamp is the last install step: it may only describe a run in which everything else succeeded.
+if [ "$PROBLEMS" -eq 0 ]; then
+  write_install_stamp
+fi
 
 if [ "$PROBLEMS" -gt 0 ]; then
   printf '\n%d step(s) failed.\n' "$PROBLEMS"

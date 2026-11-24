@@ -245,6 +245,7 @@ async function loadHostApply(box) {
     ['src/shared/home.js', 'lib/shared/home.js'],
     ['src/shared/hook-events.js', 'lib/shared/hook-events.js'],
     ['src/shared/hooks.js', 'lib/shared/hooks.js'],
+    ['src/shared/install-stamp.js', 'lib/shared/install-stamp.js'],
     ['src/shared/queue.js', 'lib/shared/queue.js'],
     ['src/shared/settings.js', 'lib/shared/settings.js'],
     ['webui/lib/index.js', 'lib/index.js'],

@@ -317,5 +317,83 @@ check '(11) the repairing cold install exits 0' "$?" 0
 run_install --check
 check '(11) --check is clean after the repair' "$?" 0
 
+# (12) A fresh install records the stamp; --check and --fingerprint are read-only and the stamp's
+# components describe the files that were actually installed.
+set_state
+rm -rf "$SB/home/.wheelchair-agent"
+run_install
+check '(12) the fresh install exits 0' "$?" 0
+STAMP=$SB/home/.wheelchair-agent/installed.json
+PRESET_DIR_TEST=$SB/dsh/.agent-presets/spv
+check '(12) the install wrote the stamp' "$([ -f "$STAMP" ] && echo yes || echo no)" yes
+check '(12) the stamp is mode 0644' "$(stat -c '%a' "$STAMP" 2>/dev/null)" 644
+check '(12) the stamp has version 1, four components and the sandbox preset dir' \
+  "$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const names=["preset","webui","bin","core"]; const okc=names.every(n=>s.components[n]&&typeof s.components[n].digest==="string"&&s.components[n].files&&typeof s.components[n].files==="object"); process.stdout.write(s.version===1&&okc&&s.targets&&s.targets.presetDir===process.argv[2]?"yes":"no")' "$STAMP" "$PRESET_DIR_TEST" 2>/dev/null)" yes
+before=$(install_snapshot)
+run_install --check
+check '(12) --check exits 0 after a fresh install' "$?" 0
+check '(12) --check reports the stamp matches' \
+  "$(grep -c '^OK: install stamp matches the installed files$' "$SB/stdout")" 1
+check '(12) --check changed nothing, stamp included' "$(install_snapshot)" "$before"
+run_install --fingerprint
+check '(12) --fingerprint exits 0' "$?" 0
+check '(12) --fingerprint printed parseable JSON' \
+  "$(node -e 'const v=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(v.version===1&&v.components&&v.components.preset?"yes":"no")' "$SB/stdout" 2>/dev/null)" yes
+check '(12) --fingerprint changed nothing, stamp included' "$(install_snapshot)" "$before"
+
+# (13) Two fingerprint runs are identical, and the shell's fingerprint equals the stamp's components:
+# install.sh and the stamp share one implementation.
+run_install --fingerprint
+cp "$SB/stdout" "$SB/fingerprint-1.json"
+run_install --fingerprint
+cp "$SB/stdout" "$SB/fingerprint-2.json"
+check '(13) two --fingerprint runs print identical JSON' \
+  "$(cmp -s "$SB/fingerprint-1.json" "$SB/fingerprint-2.json" && echo same || echo different)" same
+check '(13) the fingerprint components equal the stamp components' \
+  "$(node -e 'const fs=require("fs"); const {isDeepStrictEqual}=require("node:util"); const fp=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); const st=JSON.parse(fs.readFileSync(process.argv[2],"utf8")); process.stdout.write(isDeepStrictEqual(fp.components,st.components)?"yes":"no")' "$SB/fingerprint-1.json" "$STAMP" 2>/dev/null)" yes
+
+# (14) A comment-only edit of the installed YAML is not stale; a real key is. Neither --check run writes.
+printf '\n# a comment-only change\n' >> "$PRESET_DIR_TEST/agent.cordis.yml"
+before=$(install_snapshot)
+run_install --check
+check '(14) --check exits 0 on a comment-only preset edit' "$?" 0
+check '(14) --check says the preset still matches' \
+  "$(grep -c '^OK: preset matches its sources' "$SB/stdout")" 1
+check '(14) --check does not call the preset stale' \
+  "$(grep -c 'the installed preset at .* differs from this checkout' "$SB/stdout")" 0
+check '(14) the comment-only --check changed nothing' "$(install_snapshot)" "$before"
+printf 'extra: 1\n' >> "$PRESET_DIR_TEST/agent.cordis.yml"
+before=$(install_snapshot)
+run_install --check
+check '(14) --check exits 2 on a real preset edit' "$?" 2
+check '(14) --check reports the preset differs' \
+  "$(grep -c 'the installed preset at .* differs from this checkout' "$SB/stdout")" 1
+check '(14) the stale --check changed nothing' "$(install_snapshot)" "$before"
+
+# (15) A machine that predates the stamp passes --check with a note; the next install writes one again.
+run_install
+check '(15) the repairing install exits 0' "$?" 0
+rm -f "$STAMP"
+before=$(install_snapshot)
+run_install --check
+check '(15) --check without a stamp exits 0' "$?" 0
+check '(15) --check notes that no stamp exists yet' \
+  "$(grep -c '^note: no install stamp yet' "$SB/stdout")" 1
+check '(15) --check without a stamp changed nothing' "$(install_snapshot)" "$before"
+run_install
+check '(15) the reinstall exits 0' "$?" 0
+check '(15) the reinstall wrote the stamp again' "$([ -f "$STAMP" ] && echo yes || echo no)" yes
+
+# (16) A corrupt stamp is a loud --check failure, not a silent "no stamp".
+printf 'garbage\n' > "$STAMP"
+run_install --check
+check '(16) --check exits 2 on an unreadable stamp' "$?" 2
+check '(16) --check says the stamp is unreadable' \
+  "$(grep -c "the install stamp at .* is unreadable" "$SB/stdout")" 1
+run_install
+check '(16) the repairing install exits 0' "$?" 0
+run_install --check
+check '(16) --check is clean after rewriting the stamp' "$?" 0
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
