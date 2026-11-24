@@ -173,8 +173,8 @@ check '(2) the data root and its subdirectories were created' \
   "$([ -d "$SB/home/.wheelchair-agent/logs" ] && [ -d "$SB/home/.wheelchair-agent/records" ] && [ -d "$SB/home/.wheelchair-agent/inbox" ] && echo yes || echo no)" yes
 check '(2) install created the settings file' \
   "$([ -f "$SB/home/.wheelchair-agent/settings.json" ] && echo yes || echo no)" yes
-check '(2) the shipped settings file is empty-but-valid' \
-  "$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); process.stdout.write(s.version===1&&s.revision===0&&Object.keys(s.values).length===0&&Object.keys(s.templates).length===0?"yes":"no")' "$SB/home/.wheelchair-agent/settings.json" 2>/dev/null)" yes
+check '(2) the shipped settings file carries every default' \
+  "$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const v=s.values||{}; process.stdout.write(s.version===1&&s.revision===0&&Object.keys(v).length===8&&v["webui.style"]==="fluid"&&v["inbox.intervalSeconds"]===60&&v["work.sweepOnMount"]===true&&Object.keys(s.templates).length===0&&Array.isArray(s.filled)&&s.filled.length===8?"yes":"no")' "$SB/home/.wheelchair-agent/settings.json" 2>/dev/null)" yes
 check '(2) the shipped settings file reads back the built-in defaults' \
   "$(WHEELCHAIR_AGENT_HOME="$SB/home/.wheelchair-agent" DSH_SUPERAGENT_STATE_DIR="$SB/dsh/state/superagent" node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { resolveSettings } = await import(pathToFileURL(process.argv[1]).href); const s = resolveSettings(); process.stdout.write(s.fileState === "ok" && s.effective["webui.style"] === "fluid" && s.effective["inbox.intervalSeconds"] === 60 ? "yes" : "no")' "$REPO/src/shared/settings.js" 2>/dev/null)" yes
 check '(2) the shipped settings file is mode 0644' \
