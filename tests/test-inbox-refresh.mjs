@@ -6,6 +6,8 @@
  *   - `startInboxWatcher()` 不用人手就轮询并刷新 item，`stop()` 后不再轮询；
  *   - 一个 MERGED PR 只做一次 `git pull --ff-only`、只写一条冷安装 notice；重复轮询与“重启”
  *     （再起一个 watcher）都不再做第二次；
+ *   - 冷安装 notice 的依据是安装戳：戳与 `install.sh --fingerprint` 一致时不写、noticeAt 不设；
+ *     戳过期时 notice 点名组件与文件；无戳或检测失败时保持旧的无条件 notice；
  *   - 拉取失败（脏工作区）把原因写进 item、保留脏文件、后续轮询重试；清理树后可完成并写 notice；
  *   - notice 写入失败保留已拉到的 sha，后续只重试 notice、不重复 pull；
  *   - 一个 gh 仓库失败只记 warning，其他仓库继续刷新；
@@ -37,6 +39,7 @@ import {
   resolveInboxIntervalSeconds,
   startInboxWatcher,
 } from '../src/spv/inbox.js'
+import { INSTALL_STAMP_FILE } from '../src/shared/install-stamp.js'
 import { KEY_SPECS, resolveSettings, saveSettings } from '../src/shared/settings.js'
 
 const REAL_GIT = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
@@ -460,6 +463,194 @@ async function testMergeNonInstallRepoNoNotice() {
   await watcher.done
 }
 
+/**
+ * (b2) The cold-install notice is quiet when the install stamp proves the installed copy is current.
+ *
+ * The clone gets a tiny executable `install.sh` stub that records its argv and prints a canned
+ * fingerprint JSON, so these cases prove the contract instead of re-running the real renderer:
+ *   - matching stamp   -> no notice, noticeAt unset, argv carries --preset-dir <stamp.targets.presetDir>;
+ *   - stale stamp      -> one notice naming the differing component, its file count/name, and the commands;
+ *   - no stamp         -> the old unconditional notice;
+ *   - unusable helper  -> the old unconditional notice (invalid JSON, and a missing install.sh);
+ *   - no presetDir     -> detection still runs, without a --preset-dir argument.
+ */
+
+/** A canned `install.sh --fingerprint` payload: four components, one preset file map. */
+function fingerprintPayload(presetFiles) {
+  const component = files => ({ digest: `sha256:${Object.keys(files).sort().join('|')}`, files })
+  return {
+    version: 1,
+    components: {
+      preset: component(presetFiles),
+      webui: component({ 'lib/index.js': 'sha256:webui' }),
+      bin: component({ 'wheelchair-agent': 'sha256:bin' }),
+      core: component({ 'wheelchair-agent-core': 'sha256:core' }),
+    },
+  }
+}
+
+/** A stamp with the given components (must match the shape the module writes). */
+function stampPayload(components, presetDir = '/opt/wheelchair-agent-preset') {
+  const stamp = { version: 1, commit: 'a'.repeat(40), installedAt: '2026-01-01T00:00:00.000Z', components }
+  if (presetDir !== null) stamp.targets = { presetDir }
+  return stamp
+}
+
+/**
+ * Merge one PR in the install repository while the watcher runs. `fingerprint` is the stub's stdout (an
+ * object or a raw string); `stamp` is written under $WHEELCHAIR_AGENT_HOME when provided;
+ * `installScript: false` leaves the clone without install.sh. Returns the item, the outbox names and the
+ * stub's recorded argv.
+ */
+async function mergeInstallRepo(box, clone, { number, mergedSha, fingerprint, stamp, installScript = true }) {
+  const argvLog = join(box.base, 'install-argv.log')
+  const fingerprintFile = join(box.base, 'fingerprint.json')
+  if (installScript) {
+    await writeFile(
+      join(clone.local, 'install.sh'),
+      `#!/bin/sh\nprintf '%s\\n' "$*" >> ${shellQuote(argvLog)}\ncat ${shellQuote(fingerprintFile)}\n`,
+      { mode: 0o755 },
+    )
+  }
+  if (fingerprint !== undefined) {
+    await writeFile(fingerprintFile, typeof fingerprint === 'string' ? fingerprint : JSON.stringify(fingerprint), 'utf8')
+  }
+  if (stamp) await writeJson(join(box.root, INSTALL_STAMP_FILE), stamp)
+
+  const id = `acme-wheelchair-agent-${number}`
+  await writeJson(box.ghJson, prPayload({ number, repo: 'acme/wheelchair-agent', state: 'OPEN' }))
+  const watcher = startInboxWatcher({
+    root: box.inbox,
+    projectsRoot: box.projects,
+    intervalSeconds: 0.02,
+    gh: box.gh,
+    log: () => {},
+    unref: true,
+  })
+  try {
+    await waitFor(async () => (await readItem(box.inbox, id))?.state === 'OPEN', `the open item ${id}`)
+    await writeJson(box.ghJson, prPayload({
+      number,
+      repo: 'acme/wheelchair-agent',
+      state: 'MERGED',
+      mergedAt: '2026-11-15T00:00:00.000Z',
+      mergeCommit: mergedSha,
+    }))
+    // pulledSha is recorded by the same handleMergedPull() call that decides on the notice.
+    await waitFor(async () => (await readItem(box.inbox, id))?.pulledSha === mergedSha, `the pulled item ${id}`)
+  } finally {
+    watcher.stop()
+  }
+  await watcher.done
+  return {
+    item: await readItem(box.inbox, id),
+    names: await outboxNames(box),
+    argv: await readFile(argvLog, 'utf8').catch(() => ''),
+  }
+}
+
+async function readOnlyNotice(box, names) {
+  assert.equal(names.length, 1, 'exactly one notice is queued')
+  return JSON.parse(await readFile(join(box.queue, 'outbox', names[0]), 'utf8'))
+}
+
+async function testInstallStampMatches() {
+  const box = await sandbox()
+  const clone = await makeClone(box, 'wheelchair-agent')
+  const mergedSha = await pushChange(clone.seed)
+  const fingerprint = fingerprintPayload({ 'agent.cordis.yml': 'sha256:aaa' })
+  const { item, names, argv } = await mergeInstallRepo(box, clone, {
+    number: 21,
+    mergedSha,
+    fingerprint,
+    stamp: stampPayload(fingerprint.components, '/opt/preset'),
+  })
+  assert.deepEqual(names, [], 'a matching stamp queues no cold-install notice')
+  assert.equal(item.noticeAt, undefined, 'noticeAt is unset when the install is up to date')
+  assert.ok(item.mergeHandledAt, 'the merge is still marked handled')
+  assert.ok(argv.includes('--fingerprint'), 'the stub install.sh was asked for a fingerprint')
+  assert.ok(argv.includes('--preset-dir /opt/preset'), 'the stamp preset dir is forwarded')
+}
+
+async function testInstallStampStale() {
+  const box = await sandbox()
+  const clone = await makeClone(box, 'wheelchair-agent')
+  const mergedSha = await pushChange(clone.seed)
+  // Installed preset names agent.cordis.yml with another digest; the checkout also gained extra.yml.
+  const fingerprint = fingerprintPayload({ 'agent.cordis.yml': 'sha256:new', 'extra.yml': 'sha256:extra' })
+  const stamp = stampPayload(fingerprintPayload({ 'agent.cordis.yml': 'sha256:old' }).components)
+  const { item, names } = await mergeInstallRepo(box, clone, { number: 22, mergedSha, fingerprint, stamp })
+  const notice = await readOnlyNotice(box, names)
+  assert.ok(item.noticeAt, 'a stale install marks the notice as sent')
+  assert.ok(notice.text.includes('PR #22 merged in acme/wheelchair-agent'))
+  assert.ok(notice.text.includes('A cold install is now pending'))
+  assert.ok(notice.text.includes('The installed copy differs from this checkout in:'))
+  assert.ok(notice.text.includes('preset (2 files:'), 'the line names the component and count')
+  assert.ok(notice.text.includes('agent.cordis.yml'), 'the line names a differing file')
+  assert.ok(!notice.text.includes('webui ('), 'unchanged components are not listed')
+  assert.ok(notice.text.includes('wheelchair-agent service stop'), 'the commands are unchanged')
+  assert.ok(notice.text.includes('bash install.sh'), 'the install command is unchanged')
+  assert.ok(notice.text.includes('wheelchair-agent service start'), 'the start command is unchanged')
+}
+
+async function testInstallStampMissing() {
+  const box = await sandbox()
+  const clone = await makeClone(box, 'wheelchair-agent')
+  const mergedSha = await pushChange(clone.seed)
+  const { names } = await mergeInstallRepo(box, clone, {
+    number: 23,
+    mergedSha,
+    fingerprint: fingerprintPayload({ 'agent.cordis.yml': 'sha256:aaa' }),
+  })
+  const notice = await readOnlyNotice(box, names)
+  assert.ok(notice.text.includes('A cold install is now pending: the running service cannot install itself.'))
+  assert.ok(!notice.text.includes('The installed copy differs'), 'without a stamp the old text is unchanged')
+}
+
+async function testInstallStampDetectionFailure() {
+  const invalid = await sandbox()
+  const invalidClone = await makeClone(invalid, 'wheelchair-agent')
+  const invalidSha = await pushChange(invalidClone.seed)
+  const invalidResult = await mergeInstallRepo(invalid, invalidClone, {
+    number: 24,
+    mergedSha: invalidSha,
+    fingerprint: 'not json at all',
+    stamp: stampPayload(fingerprintPayload({ 'agent.cordis.yml': 'sha256:old' }).components),
+  })
+  const invalidNotice = await readOnlyNotice(invalid, invalidResult.names)
+  assert.ok(invalidNotice.text.includes('A cold install is now pending'), 'invalid fingerprint output falls back to the old notice')
+  assert.ok(!invalidNotice.text.includes('The installed copy differs'))
+
+  const missing = await sandbox()
+  const missingClone = await makeClone(missing, 'wheelchair-agent')
+  const missingSha = await pushChange(missingClone.seed)
+  const missingResult = await mergeInstallRepo(missing, missingClone, {
+    number: 25,
+    mergedSha: missingSha,
+    fingerprint: fingerprintPayload({ 'agent.cordis.yml': 'sha256:aaa' }),
+    stamp: stampPayload(fingerprintPayload({ 'agent.cordis.yml': 'sha256:aaa' }).components),
+    installScript: false,
+  })
+  const missingNotice = await readOnlyNotice(missing, missingResult.names)
+  assert.ok(missingNotice.text.includes('A cold install is now pending'), 'a missing install.sh falls back to the old notice')
+  assert.equal(missingResult.argv, '')
+}
+
+async function testInstallStampWithoutPresetDir() {
+  const box = await sandbox()
+  const clone = await makeClone(box, 'wheelchair-agent')
+  const mergedSha = await pushChange(clone.seed)
+  const fingerprint = fingerprintPayload({ 'agent.cordis.yml': 'sha256:aaa' })
+  const { names, argv } = await mergeInstallRepo(box, clone, {
+    number: 26,
+    mergedSha,
+    fingerprint,
+    stamp: stampPayload(fingerprint.components, null),
+  })
+  assert.deepEqual(names, [], 'a matching stamp without targets is still quiet')
+  assert.equal(argv.trim(), '--fingerprint', 'no --preset-dir is invented when the stamp has none')
+}
+
 /** (c) A dirty tree records the pull failure; a later clean tree retries and finishes with one notice. */
 async function testPullFailureRecovers() {
   const box = await sandbox()
@@ -670,6 +861,7 @@ async function loadHostApply(box) {
     ['src/shared/home.js', 'lib/shared/home.js'],
     ['src/shared/hook-events.js', 'lib/shared/hook-events.js'],
     ['src/shared/hooks.js', 'lib/shared/hooks.js'],
+    ['src/shared/install-stamp.js', 'lib/shared/install-stamp.js'],
     ['src/shared/queue.js', 'lib/shared/queue.js'],
     ['src/shared/settings.js', 'lib/shared/settings.js'],
     ['webui/lib/index.js', 'lib/index.js'],
@@ -905,6 +1097,11 @@ try {
   await testWatcherRefreshes()
   await testMergePullAndNotice()
   await testPreexistingMergedNotHandled()
+  await testInstallStampMatches()
+  await testInstallStampStale()
+  await testInstallStampMissing()
+  await testInstallStampDetectionFailure()
+  await testInstallStampWithoutPresetDir()
   await testMergeNonInstallRepoNoNotice()
   await testPullFailureRecovers()
   await testNoticeFailureRetries()
