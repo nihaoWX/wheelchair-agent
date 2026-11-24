@@ -51,6 +51,9 @@ jobs:
       - name: "Hook engine: event table, settings, records and cursor"
         run: node tests/test-hooks.mjs
 
+      - name: "SPV cron: tick event and brief injection order"
+        run: node tests/test-cron.mjs
+
       - name: SPV result injector header
         run: node tests/test-injector.mjs
 

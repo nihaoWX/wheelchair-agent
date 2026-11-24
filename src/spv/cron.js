@@ -17,6 +17,8 @@
 
 /** The command name, without the leading slash. */
 export const NAME = 'spv-cron'
+/** Hook occurrence fired on every timer tick; the prefix is what triggers it (the cron timer). */
+export const HOOK_EVENT = 'cron.spv_cron'
 /** How often the check fires when the operator names no interval. */
 const DEFAULT_MINUTES = 60
 /** Bounds on `--every`, in minutes: below 5 this is polling noise, above a day it is not a check. */
@@ -138,6 +140,43 @@ export function describeState(state) {
   return `spv-cron: on, every ${state.minutes} minutes${since}`
 }
 
+/** The session id a hook row can use to tell sessions apart; absent on agents that expose no session. */
+function sessionIdOf(agent) {
+  const id = agent?.session?.id
+  return typeof id === 'string' && id.trim() !== '' ? id.trim() : undefined
+}
+
+/**
+ * One check: build the brief, inject it, then fire the hook event.
+ *
+ * Extracted from the timer so tests can drive it without waiting an hour. `inject` is the core path and
+ * runs first; the hook is best-effort afterwards, inside its own try/catch, so a broken hook can never
+ * suppress or delay the brief. `injected` records that the brief really was handed to the session
+ * (the current behaviour injects on `quiet` ticks too, hence the separate `verdict`).
+ */
+export function runOnce({ agent, ledgerPath, readFileSync, isActive, inject, fireHook, minutes, now = Date.now() }) {
+  if (!agent) return undefined
+  const brief = buildBrief({ ledgerPath, readFileSync, isActive, now })
+  const at = new Date(now).toISOString()
+  inject(agent, brief.text)
+  const sessionId = sessionIdOf(agent)
+  const payload = {
+    ...(sessionId === undefined ? {} : { sessionId }),
+    minutes,
+    at,
+    injected: true,
+    verdict: brief.verdict,
+  }
+  if (typeof fireHook === 'function') {
+    try {
+      fireHook(HOOK_EVENT, payload)
+    } catch {
+      // Hook 只是附带的副作用：任何失败都不能影响已经完成的注入或下一次轮询。
+    }
+  }
+  return { brief, at, payload }
+}
+
 /**
  * Register `/spv-cron` against the receiving agent.
  *
@@ -153,6 +192,7 @@ export function apply(ctx, config = {}) {
   const ledgerPath = config.ledgerPath
   const isActive = config.isActive
   const inject = config.inject
+  const fireHook = config.fireHook
   if (typeof ledgerPath !== 'string' || !ledgerPath) throw new Error('spv-cron needs ledgerPath')
   if (typeof isActive !== 'function') throw new Error('spv-cron needs isActive(unit)')
   if (typeof inject !== 'function') throw new Error('spv-cron needs inject(agent, text)')
@@ -168,10 +208,18 @@ export function apply(ctx, config = {}) {
   const run = () => {
     const agent = state.agent
     if (!agent) return
-    const brief = buildBrief({ ledgerPath, readFileSync, isActive, now: Date.now() })
-    state.lastRun = new Date().toISOString()
-    state.lastVerdict = brief.verdict
-    inject(agent, brief.text)
+    const executed = runOnce({
+      agent,
+      ledgerPath,
+      readFileSync,
+      isActive,
+      inject,
+      fireHook,
+      minutes: state.minutes,
+      now: Date.now(),
+    })
+    state.lastRun = executed.at
+    state.lastVerdict = executed.brief.verdict
   }
 
   // One timer per plugin instance, owned by the plugin's fiber: the disposer returned here runs

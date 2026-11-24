@@ -1194,7 +1194,7 @@ async function testHostSettingsRoute() {
     assert.equal(intervalRow.value, 0.02, 'the legacy fractional plugin config is accepted')
     assert.equal(get.body.templates.injection.active, 'default')
     assert.ok(get.body.hookView, 'the snapshot carries the stage-3 hook view')
-    assert.equal(get.body.hookView.events.length, 8, 'the view renders all eight events')
+    assert.equal(get.body.hookView.events.length, 9, 'the view renders all nine events')
     assert.equal(get.body.hookView.events[0].id, 'ticket.started', 'events keep the table order')
     assert.equal(typeof get.body.hookView.events[0].prompt, 'string', 'each event carries its generated prompt')
 

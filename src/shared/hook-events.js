@@ -287,6 +287,32 @@ export const EVENTS = [
       at: SAMPLE_AT,
     },
   },
+  {
+    id: 'cron.spv_cron',
+    title: 'SPV 轮询到点',
+    explanation:
+      '`/spv-cron` 的定时器到点，给会话注入一次简报（`quiet` 是例行提醒，`attention` 才是有 job 需要处理）。' +
+      '前缀 `cron` 是触发者：不是某个工单，而是定时轮询。这个事件没有内建行，全部是操作者自己的脚本。',
+    when: '每次轮询到点、简报注入之后。',
+    repeatable: true,
+    repeatNote: '每次到点一次；`at` 不同，所以不会互相去重。',
+    cancellable: true,
+    payload: fields({
+      sessionId: '收到简报的会话 id（取得到时才有）。',
+      minutes: '当前轮询间隔（分钟）。',
+      at: '本次到点时间（ISO 8601）。',
+      injected: '这次是否真的注入了简报；拿到会话时是 true。',
+      verdict: '简报结论：`quiet` 为例行提醒，`attention` 为有需要处理的 job。',
+    }),
+    builtin: [],
+    sample: {
+      sessionId: 'sess-0123abcd',
+      minutes: 60,
+      at: SAMPLE_AT,
+      injected: true,
+      verdict: 'quiet',
+    },
+  },
 ]
 
 /**

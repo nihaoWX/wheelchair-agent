@@ -200,7 +200,7 @@ async function testTableView() {
   assert.equal(model.timeoutCap, 300000)
   assert.deepEqual(model.items, [])
   assert.deepEqual(model.labels, {})
-  assert.equal(model.events.length, 8, 'the table has the eight contract events')
+  assert.equal(model.events.length, 9, 'the table has the nine contract events')
   assert.deepEqual(
     model.events.map(entry => entry.id),
     [
@@ -212,6 +212,7 @@ async function testTableView() {
       'inbox.issue',
       'inbox.merged',
       'spv.dispatch',
+      'cron.spv_cron',
     ],
   )
   assert.ok(!model.events.some(entry => entry.id === 'ticket.ended'), 'there is deliberately no ticket.ended')
@@ -226,6 +227,7 @@ async function testTableView() {
     'inbox.issue': { cancellable: false, rows: ['builtin:prIssue', 'builtin:spvObjection'] },
     'inbox.merged': { cancellable: false, rows: ['builtin:mergePull', 'builtin:coldInstallNotice'] },
     'spv.dispatch': { cancellable: true, rows: [] },
+    'cron.spv_cron': { cancellable: true, rows: [] },
   }
   for (const [eventId, expected] of Object.entries(contract)) {
     const entry = model.events.find(candidate => candidate.id === eventId)
