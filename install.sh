@@ -1019,8 +1019,9 @@ write_install_stamp() {
 }
 
 # Record this install as the deployment of --project. Only a successful install calls this: `--check` and
-# `--fingerprint` never write the registry or an instance overlay, and dropping --project keeps the previous
-# "one global queue" behavior byte-for-byte.
+# `--fingerprint` never write the registry or an instance overlay. Since #48 the registry is the only source,
+# so an install without --project (and without a unique match against the registry) is refused outright:
+# there is no "install the one deployment" fallback left.
 #
 # The registry format lives in src/shared/deployments.js; this function only feeds it the values this
 # install just used, through the installed CLI (the same writer a human would call). `tools/wheelchair-agent`
