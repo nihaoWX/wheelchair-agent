@@ -40,7 +40,7 @@ service 侧 runner 统一执行；stage 3 交付面板「插口」一节（§10�
 |---|---|---|---|---|
 | `ticket.started` | prepare 成功结束之后（脚本可能在 worker 启动后才跑） | 能（工单复活后会重新启动） | `builtin:prepare` | 否 |
 | `ticket.acknowledged` | 队列里出现 `kind: "acknowledgement"` | 能 | — | —（没有内建行） |
-| `ticket.delivered` | 队列里出现 `kind: "reply"` | 能 | `builtin:injection` | 否 |
+| `ticket.delivered` | 队列里出现 `kind: "reply"` | 能 | `builtin:injection`、`builtin:archiveSession` | 否 |
 | `ticket.attention` | 队列里出现 `kind: "notice"` | 能 | `builtin:injection` | 否 |
 | `inbox.approved` | 操作者在收件箱点「通过」 | 能（同一 item 可再次审查） | `builtin:reviewRecord` | 否 |
 | `inbox.issue` | 操作者标「有问题」并写评论 | 能 | `builtin:prIssue`、`builtin:spvObjection` | 否 |
@@ -85,9 +85,32 @@ core path 本身。
 | `builtin:reviewRecord` | `inbox.approved` | 把「通过」追加到 item | 否 | — |
 | `builtin:mergePull` | `inbox.merged` | 合并后 `git pull --ff-only` | 否 | — |
 | `builtin:coldInstallNotice` | `inbox.merged` | 安装目标仓库合并后的冷安装提醒 | 否 | — |
+| `builtin:archiveSession` | `ticket.delivered` | 交付后归档 worker 会话（`worker-<ticketId>`） | 否 | — |
 
 「文本可改」的三行走**已有模板 id**（`src/shared/settings.js` 的 `TEMPLATE_SPECS`），不新增文本；改模板就
 是改面板「设置」里的那几个模板。`rename` 只改显示标签，不改行为。
+
+### `builtin:archiveSession` 跑在 runner 里，不在 items 循环里
+
+内容（dsh 归档是什么、日志留在原地、可取消、下次唤醒前 superagent 会 `revive()`、为什么"移走会话目录"
+不是归档）见 `docs/dsh/session-archive.md`。这里是**执行位置**的契约：
+
+- `src/shared/hooks.js` 的 `runHooksFor()` 在 `items.length === 0` 时认领 occurrence 后**提前返回**。delivered
+  通常没有自定义行，所以效果不能挂在那个循环里，否则会被跳过。runner（`src/spv/hook-runner.js`）在每次
+  `runHooksFor()` 之后按 `builtinRowsFor(event)` 调用 `effects[rowId]`，**只在 occurrence 真的被认领时**
+  （`skipped === 'paused' | 'cursor'` 跳过，`skipped === 'empty'` 照跑）。
+- 效果是**服务侧实现**，由 `webui/lib/index.js` 用 `ctx.get('workspaceRegistry')` / `ctx.get('jobs')`
+  注入（懒取 + 最多 5s 等待，且只有第一次 delivered 花这个等待）；没有这两个服务时降级成一行 warning，
+  不归档、不失败。纯 Node 的 `src/spv/archive-effect.js` 不 import dsh，测试用假实现。
+- `stopActivity: false`：归档从不杀 turn / subagent / job。会话还有 `running` / `stopping` 的 job 时**整个跳过**
+  ——job 结束后的唤醒不走 `revive()`，归档落下会把那次唤醒拒成 `blocked`；这种会话留给 `ticket.ended` 的
+  归档（那条路径先杀 job）。
+- turn 尚未结束时 `archiveSession` 抛 `WorkspaceActiveSessionError` → 效果返回 `{ retry: true }`，runner 在后续
+  drain 里最多重试 `EFFECT_MAX_RETRIES = 3` 次；单次效果有 `EFFECT_TIMEOUT_MS = 15_000` 上限（超时不重试、
+  只记 warning），因为效果跑在串行 drain 里，一个永不 settle 的调用会让所有 hook 脚本停摆。
+  会话从未创建（`WorkspaceUnknownSessionError`）→ 静默，不 warning。
+- 效果**永不抛**：任何失败只走 `wheelchair-hooks: warning: …` 日志，绝不影响用户脚本与下一条事件。
+
 
 ---
 
@@ -275,7 +298,8 @@ runner 的行为：
 - 启动时**先 drain 一次**（服务停着期间累积的 spool/队列事件不会等一个完整间隔），之后按
   `hooks.intervalSeconds` 的 setTimeout 链调度；默认 15 秒，`0` 暂停（每秒回来看设置，改回正数不用重启），
   非法值 warning 后回退 15 秒；每轮重新读设置，所以面板改间隔不需要重启；
-- 同一轮先 spool、再队列，串行执行；单条失败只记 `warning:`，不影响下一条、不影响下一轮；
+- 同一轮先重试上一轮没做完的内建效果，再 spool、再队列，串行执行；单条失败只记 `warning:`，不影响下一条、
+  不影响下一轮；
 - `stop()` 清定时器；`unref` 让 host 的定时器不阻止进程退出。
 
 ### spool 契约（`ticket.started` / `spv.dispatch`）
@@ -384,8 +408,9 @@ worker 报告时自动合并 PR 的 hook，现在拿不到要合并哪一个。s
 | `src/shared/hooks.js` | 模型、执行、记录、cursor、队列原语、spool 原语、提示词生成 |
 | `src/shared/settings.js` | `hooks` 子块的校验、合并、落盘、HTTP 面（含 `intervalSeconds`） |
 | `src/spv/hook.js` | `wheelchair-agent hook ...` 的命令逻辑 |
-| `src/spv/hook-runner.js` | service 侧唯一 runner：drain spool + 队列，按 `hooks.intervalSeconds` 调度 |
-| `webui/lib/index.js` | 在 host 里挂 runner（与 `startInboxWatcher` 同一层，`ctx.effect` 停止）；给 settings 快照挂只读的 `hookView` |
+| `src/spv/hook-runner.js` | service 侧唯一 runner：drain spool + 队列，按 `hooks.intervalSeconds` 调度；执行注入进来的内建效果（含重试与超时） |
+| `src/spv/archive-effect.js` | 内建效果 `builtin:archiveSession`：交付后归档 `worker-<ticketId>`（纯 Node，服务由 host 注入） |
+| `webui/lib/index.js` | 在 host 里挂 runner（与 `startInboxWatcher` 同一层，`ctx.effect` 停止）；注入 `effects`（`builtin:archiveSession` 用懒取的 `workspaceRegistry` / `jobs`）；给 settings 快照挂只读的 `hookView` |
 | `webui/lib/client.js` | 第三个功能段「插口」：事件/行/最近 5 次执行的只读视图；内建行改名走同一个 revision PUT |
 | `src/spv/inbox.js` | review / notice / merge 的 core path，之后 fire `inbox.*` |
 | `src/spv/dispatch.js` | 任务落进 `pending/` 后写 `spv.dispatch` spool |

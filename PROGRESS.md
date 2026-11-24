@@ -22,6 +22,8 @@
 
 **插口（hooks）**：stage 1（`#28`, `27d4463`）、stage 2（`#29`, `2788bbc`）、stage 3 面板「插口」
 （`#30`, main `35be1f5`）都已合并；新 host 需要一次冷安装才带 `hookView` 与第三段。
+`#40`（`dcc9dc4`）加了第一个**服务侧内建效果** `builtin:archiveSession`：`ticket.delivered` 之后归档
+`worker-<ticketId>`（有 running/stopping job 跳过，失败只 warning），同样要冷安装才生效。
 
 **SPV 系统提示词**：与普通 dsh 会话完全一致——preset 里已无 `persona` 行；派单契约（不自己实现、交付走
 `spv_dispatch`、不等不轮询、复用 thread、插件/面板传 `cordis`、只转述 worker 说的）全在 `spv_dispatch`

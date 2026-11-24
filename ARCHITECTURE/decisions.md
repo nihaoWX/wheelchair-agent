@@ -260,3 +260,27 @@ dark 截图），`tests/test-settings.mjs` 的 CSS/轮询/草稿断言，`tests/
 
 **守住它的测试**：`tests/test-restart.mjs` 的 `testForeignHolderIsNotKilled`（外来 holder → `kill` 一次都没
 被调用，dry run 里出现在 `other:` 行而非 kill 集合）与 `--session` 优先于 `resume.txt` 的用例。
+
+## 交付后归档 worker 会话挂在 `ticket.delivered` 的内建效果上（2026-11-24）
+
+**决定**：把 `worker-<ticketId>` 从默认侧栏归档，做成 hook 的**服务侧内建效果** `builtin:archiveSession`
+（`src/spv/archive-effect.js`，由 `src/spv/hook-runner.js` 的 `effects` 注入调用），执行
+`workspaceRegistry.archiveSession(id, { stopActivity: false })`。不新增 `ticket.ended` 事件，不改 superagent。
+
+**理由**：superagent 自己只在 `ticket.ended` 归档（`src/app/sessions.ts:218-225`），而工单可以长时间停在
+delivered，默认侧栏就一直列着已交付的 worker 会话；缺口恰好是 delivered→ended 这段。dsh 的归档只是往
+registry-global 集合里加一个 id（日志原地保留、可取消、下次唤醒前 `revive()` 取消），是安全的软隐藏。
+"移走会话目录"的方案已否决：`--resume` 会硬失败，superagent 的 master 会话会被 `src/app/runtime.ts:218`
+的 `ensure(masterId)` 静默重建成空日志，运行中移动还会让写端继续往旧 inode 追加。
+
+**为什么不在 `runHooksFor()` 的 items 循环里**：delivered 通常没有自定义行，`src/shared/hooks.js` 在
+`items.length === 0` 时认领 occurrence 后提前返回，效果会被整个跳掉。所以效果由 runner 在脚本跑完后按
+`builtinRowsFor(event)` 执行，且只在 occurrence 真的被认领时执行。
+
+**取舍**：有 running/stopping job 的会话**完全跳过**——job 结束后的唤醒不走 `revive()`，归档落下会把那次唤醒
+拒成 `blocked`，这种会话留给 `ticket.ended` 的归档（那条先杀 job）。turn 尚未结束（`WorkspaceActiveSessionError`）
+→ `{ retry: true }`，后续 drain 最多重试 3 次；单次效果 15s 上限（效果跑在串行 drain 里，永不 settle 的调用会
+让所有 hook 脚本停摆），超时不重试。会话从未创建（`WorkspaceUnknownSessionError`）→ 静默。
+
+**守住它的测试**：`tests/test-hooks.mjs` 的 `builtin:archiveSession` 用例组——turn 中途重试、job 跳过、
+未知会话静默、超时与放弃、`stopActivity: false`、同一 occurrence 不重复归档。
