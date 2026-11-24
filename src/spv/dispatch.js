@@ -12,6 +12,7 @@ import { mkdir, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { writeHookSpoolEvent } from '../shared/hooks.js'
+import { PROJECT_PATTERN } from '../shared/deployments.js'
 
 /**
  * 本工具写的任务固定携带的身份，以及它**不**作为参数接受的原因。
@@ -23,8 +24,6 @@ import { writeHookSpoolEvent } from '../shared/hooks.js'
  */
 export const ACTOR = 'operator'
 
-/** superagent executor 能 clone 并交给 worker 的项目。 */
-const PROJECT_PATTERN = /^(?:tools|research)\/[A-Za-z0-9][A-Za-z0-9._-]*$/
 /** 队列线程名：短、可作文件名、可作 `spv:<id>` Thread key。 */
 const THREAD_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
 /** dsh agent preset id 的形状（`standard` / `minimal` / `ptc` / `cordis` 都是小写字母、数字与连字符）。 */

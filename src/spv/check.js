@@ -34,6 +34,7 @@ export const PRESET_FILES = [
   'agentsmd-examples/research-task-agentsmd.md',
   'commands/jobctl.py',
   'commands/superagent-service.py',
+  'src/shared/deployments.js',
   'src/shared/home.js',
   'src/shared/queue.js',
   'src/shared/schema.js',

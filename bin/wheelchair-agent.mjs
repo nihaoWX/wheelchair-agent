@@ -58,6 +58,9 @@ commands:
   dispatch --project <p> --task <t> [--thread <n>] [--preset <id>]
                                write one task into the queue and return
   status [--thread <n>]        show the queue without waiting
+  deployment <list|add|remove|migrate>
+                               show or edit the project -> deployment registry; dispatch uses it to
+                               pick the queue of the project's own deployment
   inbox                        print where the review inbox lives (the dsh Web UI panel)
   inbox add --title <text> --body <markdown|@file> [--thread <name>]
                                push one SPV decision letter into the inbox and print its id
@@ -433,8 +436,9 @@ async function commandDispatch(argv) {
   const { probe, serviceDown } = await load('src', 'spv', 'health.js')
   const { missingQueue, resolveRoot } = await load('src', 'spv', 'paths.js')
   const { dirsOf } = await load('src', 'shared', 'queue.js')
-  const root = resolveRoot()
   const project = checkProject(parsed.project)
+  // 项目决定部署，部署决定队列：没有注册条目时 resolveRoot 报错并给出 "deployment add"，不会回退到别人的队列。
+  const root = resolveRoot({}, { project })
   const task = checkTask(parsed.task)
   const thread = checkThread(parsed.thread)
   const preset = checkPreset(parsed.preset)
@@ -446,6 +450,17 @@ async function commandDispatch(argv) {
     process.stdout.write(`dispatched ${record.id} on thread "${record.thread}" for project ${record.project}\n`)
   } catch (error) {
     if (error.code === 'ENOENT') throw missingQueue(root)
+    throw error
+  }
+}
+
+/** `deployment`：维护项目 → 部署的注册表；参数错误按 CLI 约定转成 exit 2。 */
+async function commandDeployment(argv) {
+  const { runDeploymentCommand } = await load('src', 'spv', 'deployment.js')
+  try {
+    await runDeploymentCommand(argv)
+  } catch (error) {
+    if (error?.code === 'DEPLOYMENT_USAGE') throw new UsageError(error.message)
     throw error
   }
 }
@@ -1097,6 +1112,9 @@ try {
       break
     case 'status':
       await commandStatus(rest)
+      break
+    case 'deployment':
+      await commandDeployment(rest)
       break
     case 'inbox':
       await commandInbox(rest)

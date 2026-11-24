@@ -43,13 +43,16 @@ function preview(text, limit) {
 }
 
 /**
- * 三个工具的定义。`root` 由挂载时解析：`queueDir` 设置 > `$SPV_QUEUE_DIR` > `<stateDir>/spv`。
+ * 三个工具的定义。`root` 由挂载时解析：`queueDir` 设置 > `$SPV_QUEUE_DIR` > 注册表中项目 > `<stateDir>/spv`。
+ * 挂载时不知道这次会话会派给哪个项目，所以 `spv_dispatch` 在调用时用 `config` 再解析一次（与挂载时同一组
+ * 覆盖规则，只是多了 `project`）；status 与注入器仍读挂载时的目录。
+ *
  * 队列目录不存在不在挂载时报错——那时 superagent 可能只是还没启动，报错会挡住整个会话；改由每次调用报。
  *
  * `state` 是插件实例的共享状态：`spv_dispatch` 从 `exec.agent` 记下这个会话的 agent，注入器用
  * `getAgent()` 读它。会话没派过活之前是 undefined，注入器此时不会消费任何消息。
  */
-export function defineSpvTools(root, state) {
+export function defineSpvTools(root, state, config = {}) {
   const dirs = dirsOf(root)
 
   return [
@@ -59,8 +62,10 @@ export function defineSpvTools(root, state) {
         'Hand one self-contained task to a background worker and return immediately. Do not do implementation ' +
         'work yourself: code changes and PR delivery go through this tool, because editing the repository here ' +
         'leaves no prepare step, no branch, no PR and no review; the worker owns that path.\n\n' +
-        'The project argument is required and selects the clone the worker gets ("tools/<name>" or ' +
-        '"research/<name>"). The worker cannot see this ' +
+        'The project argument is required and selects both the clone the worker gets ("tools/<name>" or ' +
+        '"research/<name>") and the deployment that reads the task: it is written into that project\'s own ' +
+        'queue. A project with no registered deployment fails with the exact "wheelchair-agent deployment ' +
+        'add" command that creates one; deployments are never created automatically. The worker cannot see this ' +
         'conversation, so the task must carry everything it needs, including the outcome and how to verify it. ' +
         'Reuse the thread name for follow-ups on the same line of work. For dsh plugin, dsh web UI or panel ' +
         'work pass preset "cordis" (creator mode); otherwise omit it.\n\n' +
@@ -116,15 +121,17 @@ export function defineSpvTools(root, state) {
         const task = checkTask(args.task)
         const thread = checkThread(args.thread)
         const preset = checkPreset(args.preset)
+        // 先路由再探活：项目的部署决定任务进哪条队列，没有条目时不必也不该去碰服务。
+        const targetRoot = resolveRoot(config, { project })
         const health = await probe()
         if (!health.alive) throw serviceDown(health)
         try {
-          const record = await submitTask(dirs, { project, task, thread, preset })
+          const record = await submitTask(dirsOf(targetRoot), { project, task, thread, preset })
           // 记下会话的 agent：后台注入器靠它决定把结果投给谁。第一次派活之前没有会话可投。
           if (exec?.agent) state.agent = exec.agent
           return { id: record.id, thread: record.thread, project: record.project }
         } catch (error) {
-          if (error.code === 'ENOENT') throw missingQueue(root)
+          if (error.code === 'ENOENT') throw missingQueue(targetRoot)
           throw error
         }
       },
@@ -282,13 +289,14 @@ export function defineSpvTools(root, state) {
 /**
  * 注册三个工具，并让插件自己持有结果注入器。
  *
- * 队列根只解析一次：三个工具与注入器必须看同一个目录。注入器挂在 `ctx.effect` 上，返回的 stop 函数交给
- * 插件 fiber，所以会话关闭时定时器随之清掉，不会在进程里空转；它本身没有超时，插件挂着就一直等。
+ * 队列根解析一次供 status 与注入器使用；派活时 `spv_dispatch` 再按项目解析（见 `defineSpvTools`）。
+ * 注入器挂在 `ctx.effect` 上，返回的 stop 函数交给插件 fiber，所以会话关闭时定时器随之清掉，不会在进程里
+ * 空转；它本身没有超时，插件挂着就一直等。
  */
 export function apply(ctx, config = {}) {
   const root = resolveRoot(config)
   const state = { agent: undefined }
-  for (const tool of defineSpvTools(root, state)) ctx.tools.register(tool)
+  for (const tool of defineSpvTools(root, state, config)) ctx.tools.register(tool)
   ctx.effect(
     () =>
       startResultInjector({
