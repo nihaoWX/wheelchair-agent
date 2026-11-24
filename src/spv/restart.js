@@ -1478,6 +1478,7 @@ export async function armDetached(context, options = {}) {
   const args = [
     'restart-all',
     '--run',
+    '--all',
     ...(pre.sessionId !== undefined ? ['--session', pre.sessionId] : []),
     ...(options.force ? ['--force'] : []),
     ...(options.noInstall ? ['--no-install'] : []),

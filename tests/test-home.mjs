@@ -316,7 +316,7 @@ async function testOverridesWin() {
   try {
     delete process.env.SPV_QUEUE_DIR
     process.env.DSH_SUPERAGENT_STATE_DIR = box.state
-    assert.equal(resolveRoot(), join(box.state, 'spv'))
+    assert.throws(() => resolveRoot(), /cannot tell which deployment this process belongs to/)
   } finally {
     if (savedQueue === undefined) delete process.env.SPV_QUEUE_DIR
     else process.env.SPV_QUEUE_DIR = savedQueue
@@ -355,7 +355,9 @@ async function testWhere() {
   assert.equal(payload.migrationPending, false)
   assert.equal(payload.presetDir, join(box.home, '.dsh', '.agent-presets', 'spv'))
   assert.equal(payload.webuiPackage, join(box.home, '.dsh', 'profiles', 'superagent', 'node_modules', 'wheelchair-agent-webui'))
-  assert.equal(payload.queue.path, join(box.state, 'spv'))
+  // 没有部署注册表就没有队列可报：where 仍要成功，并把原因放在 queue.error 里。
+  assert.equal(payload.queue.path, null)
+  assert.match(payload.queue.error, /cannot tell which deployment this process belongs to/)
   assert.equal(payload.workRoot.path, join(box.state, 'work'))
   assert.equal(payload.data.settings, join(box.root, SETTINGS_FILE))
   assert.equal(payload.data.inbox, join(box.root, 'inbox'))

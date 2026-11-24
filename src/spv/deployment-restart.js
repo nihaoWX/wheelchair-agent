@@ -179,7 +179,7 @@ export function armProjectRestart(context, options = {}) {
   }
   const entry = registry.deployments.find(item => item.project === options.project)
   if (entry === undefined) {
-    const error = missingDeploymentError(options.project, registry.file)
+    const error = missingDeploymentError(options.project, registry.file, registry.exists)
     process.stdout.write(`FAIL: ${error.message}\n`)
     return 1
   }
@@ -248,7 +248,7 @@ export async function runProjectRestart(context, options = {}) {
   const out = context.out ?? process.stdout
   const registry = listDeployments({ env })
   const entry = registry.deployments.find(item => item.project === options.project)
-  if (entry === undefined) throw missingDeploymentError(options.project, registry.file)
+  if (entry === undefined) throw missingDeploymentError(options.project, registry.file, registry.exists)
   if (entry.port === null) {
     throw new Error(
       `deployment ${JSON.stringify(entry.project)} has no port, so there is no instance to restart: run ` +
@@ -294,6 +294,8 @@ export async function runProjectRestart(context, options = {}) {
     '--profile', entry.profile,
     '--patch', instance,
     '--session', `wca-${slug}`,
+    '--state-dir', entry.stateDir,
+    '--queue-dir', entry.queueDir,
     '--log', log,
     '--url', url,
     '--port', String(entry.port),

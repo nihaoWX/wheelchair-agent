@@ -254,7 +254,7 @@ await test('spv_status groups by deployment and --project filters to one', async
   const status = statusTool()
   const all = await status.execute({})
   assert.ok(Array.isArray(all.deployments), 'grouped output has a deployments array')
-  assert.deepEqual(all.deployments.map(item => item.project), ['tools/alpha', 'tools/beta', 'tools/gamma', null])
+  assert.deepEqual(all.deployments.map(item => item.project), ['tools/alpha', 'tools/beta', 'tools/gamma'])
   const alphaGroup = all.deployments.find(item => item.project === 'tools/alpha')
   const betaGroup = all.deployments.find(item => item.project === 'tools/beta')
   const gammaGroup = all.deployments.find(item => item.project === 'tools/gamma')
@@ -263,7 +263,6 @@ await test('spv_status groups by deployment and --project filters to one', async
   assert.equal(betaGroup.unread, 1)
   assert.equal(gammaGroup.pending, 0)
   assert.equal(gammaGroup.unread, 0)
-  assert.ok(all.deployments.some(item => item.project === null), 'the legacy queue is reported too')
   const text = status.output.render({}, all)[0].text
   assert.match(text, /tools\/alpha \(.*\): 1 waiting, 0 unread/)
   assert.match(text, /tools\/gamma \(.*\): 0 waiting, 0 unread/)
@@ -278,7 +277,7 @@ await test('spv_status groups by deployment and --project filters to one', async
   await assert.rejects(() => status.execute({ project: 'tools/nope' }), /deployment add tools\/nope/)
 })
 
-await test('without a registry spv_status is the same single-queue report as before', async () => {
+await test('without a registry spv_status reports the missing registry instead of a queue', async () => {
   await rm(join(box.data, 'deployments.json'), { force: true })
   const legacy = await ensureQueue(box.state)
   await rm(join(legacy.outbox, 'read'), { recursive: true, force: true })
@@ -298,18 +297,18 @@ await test('without a registry spv_status is the same single-queue report as bef
 
   const status = statusTool()
   const value = await status.execute({})
-  assert.equal('deployments' in value, false, 'no grouped field when the registry does not exist')
-  assert.equal(value.pending.length, 1)
-  assert.equal(value.unread.length, 1)
-  assert.equal(
-    status.output.render({}, value)[0].text,
-    [
-      'waiting for pickup: 1',
-      '  legacy-task main tools/legacy: legacy task',
-      'unread messages: 1',
-      '  legacy-reply [reply] main: legacy reply',
-    ].join('\n'),
-  )
+  assert.equal(value.pending.length, 0)
+  assert.equal(value.unread.length, 0)
+  assert.deepEqual(value.deployments, [])
+  assert.match(value.problem, /no deployment registry exists/,
+    'a missing registry is reported as a problem, not treated as a queue')
+  const text = status.output.render({}, value)[0].text
+  assert.match(text, /^problem: .*no deployment registry at /)
+  assert.match(text, /\(instance: no deployment registry exists\)/)
+  assert.match(text, /no deployments: none/)
+  // The old single queue is no longer a deployment, so the task and reply above are not reported.
+  assert.doesNotMatch(text, /legacy-task/)
+  assert.doesNotMatch(text, /legacy-reply/)
 })
 
 for (const key of ENV_KEYS) {

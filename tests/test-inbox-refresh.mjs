@@ -159,7 +159,7 @@ async function sandbox() {
     tools: join(base, 'projects', 'tools'),
     remotes: join(base, 'remotes'),
     inbox: join(base, 'inbox'),
-    queue: join(base, 'queue'),
+    queue: join(base, 'state', 'spv'),
     state: join(base, 'state'),
     root: join(base, 'data'),
     ghJson: join(base, 'gh.json'),
@@ -193,6 +193,22 @@ async function sandbox() {
   return box
 }
 
+
+/** Make `tools/<name>` the deployment this process reads, so the watcher polls that repository only. */
+async function ownProject(box, name) {
+  await mkdir(box.queue, { recursive: true })
+  await writeJson(join(box.root, 'deployments.json'), {
+    version: 1,
+    deployments: [{
+      project: `tools/${name}`,
+      profile: 'superagent',
+      stateDir: box.state,
+      queueDir: box.queue,
+      port: 3082,
+      installedSha: null,
+    }],
+  })
+}
 /** A tools/ repo with .git and a GitHub origin; enough for discoverRepos(). */
 async function makeRepo(box, name, origin = `https://github.com/acme/${name}.git`) {
   const dir = join(box.tools, name)
@@ -267,6 +283,7 @@ function prPayload({ number, repo, state = 'OPEN', title = 'PR', mergedAt = '', 
 async function testWatcherRefreshes() {
   const box = await sandbox()
   await makeRepo(box, 'demo')
+  await ownProject(box, 'demo')
   // research/ must never be a candidate even with a GitHub-looking origin.
   const research = join(box.base, 'projects', 'research', 'task')
   await mkdir(research, { recursive: true })
@@ -307,6 +324,7 @@ async function testMergePullAndNotice() {
   const box = await sandbox()
   const mergedMarker = installMergedHook(box, join(box.base, 'merged-hook.json'))
   const clone = await makeClone(box, 'wheelchair-agent')
+  await ownProject(box, 'wheelchair-agent')
   const mergedSha = await pushChange(clone.seed)
   const open = prPayload({ number: 7, repo: 'acme/wheelchair-agent', state: 'OPEN' })
   await writeJson(box.ghJson, open)
@@ -402,6 +420,7 @@ async function testMergePullAndNotice() {
 async function testPreexistingMergedNotHandled() {
   const box = await sandbox()
   await makeRepo(box, 'wheelchair-agent')
+  await ownProject(box, 'wheelchair-agent')
   await writeJson(box.ghJson, prPayload({
     number: 8,
     repo: 'acme/wheelchair-agent',
@@ -435,6 +454,7 @@ async function testPreexistingMergedNotHandled() {
 async function testMergeNonInstallRepoNoNotice() {
   const box = await sandbox()
   const clone = await makeClone(box, 'demo')
+  await ownProject(box, 'demo')
   const mergedSha = await pushChange(clone.seed)
   await writeJson(box.ghJson, prPayload({ number: 4, repo: 'acme/demo', state: 'OPEN' }))
   const watcher = startInboxWatcher({
@@ -557,6 +577,7 @@ async function readOnlyNotice(box, names) {
 async function testInstallStampMatches() {
   const box = await sandbox()
   const clone = await makeClone(box, 'wheelchair-agent')
+  await ownProject(box, 'wheelchair-agent')
   const mergedSha = await pushChange(clone.seed)
   const fingerprint = fingerprintPayload({ 'agent.cordis.yml': 'sha256:aaa' })
   const { item, names, argv } = await mergeInstallRepo(box, clone, {
@@ -575,6 +596,7 @@ async function testInstallStampMatches() {
 async function testInstallStampStale() {
   const box = await sandbox()
   const clone = await makeClone(box, 'wheelchair-agent')
+  await ownProject(box, 'wheelchair-agent')
   const mergedSha = await pushChange(clone.seed)
   // Installed preset names agent.cordis.yml with another digest; the checkout also gained extra.yml.
   const fingerprint = fingerprintPayload({ 'agent.cordis.yml': 'sha256:new', 'extra.yml': 'sha256:extra' })
@@ -596,6 +618,7 @@ async function testInstallStampStale() {
 async function testInstallStampMissing() {
   const box = await sandbox()
   const clone = await makeClone(box, 'wheelchair-agent')
+  await ownProject(box, 'wheelchair-agent')
   const mergedSha = await pushChange(clone.seed)
   const { names } = await mergeInstallRepo(box, clone, {
     number: 23,
@@ -610,6 +633,7 @@ async function testInstallStampMissing() {
 async function testInstallStampDetectionFailure() {
   const invalid = await sandbox()
   const invalidClone = await makeClone(invalid, 'wheelchair-agent')
+  await ownProject(invalid, 'wheelchair-agent')
   const invalidSha = await pushChange(invalidClone.seed)
   const invalidResult = await mergeInstallRepo(invalid, invalidClone, {
     number: 24,
@@ -623,6 +647,7 @@ async function testInstallStampDetectionFailure() {
 
   const missing = await sandbox()
   const missingClone = await makeClone(missing, 'wheelchair-agent')
+  await ownProject(missing, 'wheelchair-agent')
   const missingSha = await pushChange(missingClone.seed)
   const missingResult = await mergeInstallRepo(missing, missingClone, {
     number: 25,
@@ -639,6 +664,7 @@ async function testInstallStampDetectionFailure() {
 async function testInstallStampWithoutPresetDir() {
   const box = await sandbox()
   const clone = await makeClone(box, 'wheelchair-agent')
+  await ownProject(box, 'wheelchair-agent')
   const mergedSha = await pushChange(clone.seed)
   const fingerprint = fingerprintPayload({ 'agent.cordis.yml': 'sha256:aaa' })
   const { names, argv } = await mergeInstallRepo(box, clone, {
@@ -655,6 +681,7 @@ async function testInstallStampWithoutPresetDir() {
 async function testPullFailureRecovers() {
   const box = await sandbox()
   const clone = await makeClone(box, 'wheelchair-agent')
+  await ownProject(box, 'wheelchair-agent')
   const mergedSha = await pushChange(clone.seed, 'remote change\n')
   await writeFile(join(clone.local, 'file.txt'), 'dirty local\n', 'utf8')
   await writeJson(box.ghJson, prPayload({ number: 3, repo: 'acme/wheelchair-agent', state: 'OPEN' }))
@@ -730,9 +757,26 @@ async function testNoticeFailureRetries() {
   const box = await sandbox()
   const mergedMarker = installMergedHook(box, join(box.base, 'merged-hook.json'))
   const clone = await makeClone(box, 'wheelchair-agent')
+  await ownProject(box, 'wheelchair-agent')
   const mergedSha = await pushChange(clone.seed)
-  const badQueue = join(box.base, 'queue-is-a-file')
+  // Keep the instance identifiable while its own queue is broken: the registry points at this queue, so the
+  // outbox write fails for the reason the case is about, not because ownership was lost.
+  const badRoot = join(box.base, 'bad-deployment')
+  const badQueue = join(badRoot, 'spv')
+  await mkdir(badRoot, { recursive: true })
   await writeFile(badQueue, 'not a directory', 'utf8')
+  await writeJson(join(box.root, 'deployments.json'), {
+    version: 1,
+    deployments: [{
+      project: 'tools/wheelchair-agent',
+      profile: 'superagent',
+      stateDir: badRoot,
+      queueDir: badQueue,
+      port: 3082,
+      installedSha: null,
+    }],
+  })
+  box.queue = badQueue
   process.env.SPV_QUEUE_DIR = badQueue
   await writeJson(box.ghJson, prPayload({ number: 5, repo: 'acme/wheelchair-agent', state: 'OPEN' }))
 
@@ -760,8 +804,9 @@ async function testNoticeFailureRetries() {
     assert.equal(failed.mergeHandledAt, undefined, 'a failed notice is not marked handled')
     await assert.rejects(() => readFile(mergedMarker), 'a failed cold-install notice fires no inbox.merged hook')
 
-    // Fix the queue: the next poll must retry the notice without pulling the already-updated clone again.
-    process.env.SPV_QUEUE_DIR = box.queue
+    // Fix the queue in place: the next poll must retry the notice without pulling the already-updated clone.
+    await rm(badQueue, { force: true })
+    await mkdir(badQueue, { recursive: true })
     const firstPull = await pullCount(box)
     await waitFor(async () => (await outboxNames(box)).length === 1, 'the notice retry')
     await waitFor(
@@ -819,11 +864,12 @@ async function testReviewStatusAndPrState() {
   assert.equal(stateOf({}), '')
 }
 
-/** (d2) One failing gh repo is a warning; the healthy repo still refreshes on later polls. */
+/** (d2) A repo owned by no deployment is skipped without calling gh; the owned repo still refreshes. */
 async function testOneRepoFailureDoesNotStopLoop() {
   const box = await sandbox()
   await makeRepo(box, 'bad')
   await makeRepo(box, 'good')
+  await ownProject(box, 'good')
   process.env.FAKE_GH_FAIL_REPO = 'acme/bad'
   await writeJson(box.ghJson, prPayload({ number: 1, repo: 'acme/good', title: 'good one' }))
   const logs = []
@@ -837,7 +883,7 @@ async function testOneRepoFailureDoesNotStopLoop() {
   })
   try {
     await waitFor(async () => (await readItem(box.inbox, 'acme-good-1'))?.title === 'good one', 'the healthy repo item')
-    assert.ok(logs.some(line => line.includes('warning: acme/bad')), 'the failing repo is logged and skipped')
+    assert.ok(logs.some(line => line.includes('skipping acme/bad: not owned by any registered deployment')), 'the unowned repo is logged and skipped')
     assert.equal(await readItem(box.inbox, 'acme-bad-1'), undefined, 'the failing repo writes no item')
     await writeJson(box.ghJson, prPayload({ number: 1, repo: 'acme/good', title: 'good two' }))
     await waitFor(async () => (await readItem(box.inbox, 'acme-good-1'))?.title === 'good two', 'the loop to continue after a repo failure')
@@ -908,6 +954,7 @@ async function routeCall(route, { method = 'GET', url = route.path, contentType 
 async function testHostStartsPoller() {
   const box = await sandbox()
   await makeRepo(box, 'demo')
+  await ownProject(box, 'demo')
   process.env.SPV_INBOX_DIR = box.inbox
   process.env.SPV_PROJECTS_ROOT = box.projects
   const apply = await loadHostApply(box)

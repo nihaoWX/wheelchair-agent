@@ -356,15 +356,39 @@ export function removeDeployment(project, options = {}) {
 }
 
 /**
- * 某个项目没有部署时的错误：指名下一步命令，而不是自动创建。
- * 只有注册表存在（已进入分部署模式）时才可能走到这里；文件不存在时调用方回退旧行为。
+ * 注册表不存在时的错误：这是升级前的旧安装，引导到 `deployment migrate`（认领）或 `deployment add`。
+ * CLI 的 `service`/`spv`/`restart-all` 在需要注册表但文件还不存在时直接抛它，不打印栈。
  */
-export function missingDeploymentError(project, file) {
+export function missingRegistryError(file) {
+  return new Error(
+    `no deployment registry at ${file}: this machine has no registered deployment yet, and the registry is the ` +
+      'only source of truth for which deployment reads a project. Adopt the existing installation with ' +
+      '"wheelchair-agent deployment migrate", or create one explicitly with ' +
+      '"wheelchair-agent deployment add <project>", then start it with ' +
+      '"wheelchair-agent service start --project <project>".',
+  )
+}
+
+/**
+ * 某个项目没有部署时的错误：指名下一步命令，而不是自动创建。
+ *
+ * `registryExists` 为 false 时说明文件本身还不存在（旧安装）：这时先给 `deployment migrate`，因为它是把
+ * 现有安装认领进注册表的唯一入口；否则给 `deployment add`。两种情形都不回退旧规则、不自动创建部署。
+ */
+export function missingDeploymentError(project, file, registryExists = true) {
+  const where = registryExists
+    ? `${file} has no entry for it`
+    : `there is no deployment registry at ${file}`
+  const next = registryExists
+    ? `Create the deployment explicitly with "wheelchair-agent deployment add ${project}" ` +
+      '(it needs a profile, a state directory and a port, so it is never created automatically), ' +
+      'start that deployment, then dispatch again.'
+    : 'If this machine predates the registry, adopt the existing installation with ' +
+      '"wheelchair-agent deployment migrate"; otherwise create a deployment explicitly with ' +
+      `"wheelchair-agent deployment add ${project}" and start it.`
   return new Error(
     `no deployment for project ${JSON.stringify(project)}: a task is written into its project's own deployment ` +
-      `queue, and ${file} has no entry for it. Create the deployment explicitly with ` +
-      `"wheelchair-agent deployment add ${project}" (it needs a profile, a state directory and a port, so it is ` +
-      'never created automatically), start that deployment, then dispatch again.',
+      `queue, and ${where}. ${next}`,
   )
 }
 

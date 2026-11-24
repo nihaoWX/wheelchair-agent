@@ -10,13 +10,16 @@
  * `node:child_process` so the plugin has no dsh dependency and no duplicate implementation.
  *
  * `--force` interrupts running workers and queued tickets instead of refusing; the CLI prints exactly what it
- * is interrupting before it proceeds. `--project <p>` restarts only that deployment's instance, skips the
- * shared install and resumes that deployment's own session; without it the command restarts every
- * deployment as before. The handler passes the invoking Session's id (`invocation.agent.session.id`) as
+ * is interrupting before it proceeds. The target is the deployment this session belongs to (resolved from the
+ * instance's SPV_QUEUE_DIR through the registry); `--project <p>` overrides it for a copied command. If neither
+ * identifies a deployment, the command refuses instead of falling back to a machine-wide restart. The handler
+ * passes the invoking Session's id (`invocation.agent.session.id`) as
  * `--session`, so the restart targets the conversation this command was typed in; the global
  * `~/.dsh-tui/resume.txt` is only the fallback when that id is unavailable.
  */
 import { spawnSync } from 'node:child_process'
+
+import { ownDeployment } from './ownership.js'
 
 /** Plugin name used by the preset's plugin row. */
 export const name = 'spv-restart-command'
@@ -28,9 +31,11 @@ export const COMMAND = 'restart-wheelchair-agent'
 /** Usage text: the argument grammar, the safety statement and where the log lands. */
 export const USAGE = `Usage: /restart-wheelchair-agent [--force] [--project <p>]
 
-Restart a deployment: without --project the legacy restart of everything (service, cold install of the
-preset, SPV TUI); with --project only that deployment's instance, its own session, and no install. This
-command only arms a detached orchestrator and returns; this SPV session ends here.
+Restart this session's deployment: its instance is stopped and started, install.sh is skipped, and its own
+session is resumed. --project <p> restarts another registered deployment instead; without it the target is
+resolved from this instance's SPV_QUEUE_DIR. There is no machine-wide restart here: when no deployment can be
+identified the command refuses and lists what to do. This command only arms a detached orchestrator and
+returns; this SPV session ends here.
 
 The terminal that launched "wheelchair-agent spv" stays open across the restart: it prints every step and
 brings the TUI back in that same terminal, resumed into the same SPV conversation. The target is the session
@@ -53,9 +58,9 @@ Arguments:
   --force   interrupt running workers and queued tickets instead of refusing. The command prints what it is
             interrupting before anything is stopped. At most once.
   --project <p>
-            restart only the deployment registered for project <p>: its instance is stopped and started, the
-            shared install is skipped, and the deployment's own session is resumed. Without it every
-            deployment is restarted.
+            restart the deployment registered for project <p> instead of this session's deployment. The
+            instance is stopped and started, the shared install is skipped, and that deployment's own session
+            is resumed.
 
 The detached orchestrator stops the service, stops this SPV session's process chain (SIGTERM, then SIGKILL
 after a bounded wait), runs install.sh cold and starts the service again. It only signals processes in that
@@ -103,6 +108,18 @@ function makeHandler(config = {}) {
         continue
       }
       return errorResult(USAGE)
+    }
+    if (project === undefined) {
+      const own = ownDeployment()
+      if (own.entry === null) {
+        return errorResult(
+          `cannot restart: this session does not belong to a registered deployment (${own.reason}). ` +
+            'Run "wheelchair-agent deployment list" and pass --project <p>, or start this deployment with ' +
+            '"wheelchair-agent service start --project <p>" so it can identify itself. A machine-wide restart ' +
+            'is no longer the fallback.',
+        )
+      }
+      project = own.entry.project
     }
     const sessionId = typeof invocation?.agent?.session?.id === 'string'
       ? invocation.agent.session.id.trim()
@@ -152,7 +169,7 @@ function makeHandler(config = {}) {
 export function apply(ctx, config = {}) {
   ctx.commands.register({
     name: COMMAND,
-    description: 'Restart the deployment and bring the SPV TUI back in this terminal; without --project it restarts all deployments',
+    description: 'Restart this deployment and bring the SPV TUI back in this terminal',
     input: { hint: '[--force]' },
     handler: makeHandler(config),
   })

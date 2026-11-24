@@ -30,7 +30,7 @@ import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { chmod, copyFile, mkdir, mkdtemp, readFile, readdir, rename, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 import {
@@ -90,7 +90,7 @@ async function sandbox() {
     home: join(base, 'home'),
     root: join(base, 'home', '.wheelchair-agent'),
     state: join(base, 'state'),
-    queue: join(base, 'queue'),
+    queue: join(base, 'state', 'spv'),
     inbox: join(base, 'inbox'),
     projects: join(base, 'projects'),
     remotes: join(base, 'remotes'),
@@ -1813,6 +1813,16 @@ async function testPollerDynamicInterval() {
     // pollOnce() reads the settings for merge.installRepo; keep that read out of the operator's state dir.
     process.env.WHEELCHAIR_AGENT_HOME = join(ISOLATED_STATE, 'data')
     process.env.DSH_SUPERAGENT_STATE_DIR = ISOLATED_STATE
+    // The watcher now polls only when it can identify its own registered deployment (own queue + registry).
+    process.env.SPV_QUEUE_DIR = join(ISOLATED_STATE, 'spv')
+    await mkdir(join(process.env.WHEELCHAIR_AGENT_HOME), { recursive: true })
+    await writeJson(join(process.env.WHEELCHAIR_AGENT_HOME, 'deployments.json'), {
+      version: 1,
+      deployments: [{
+        project: 'tools/demo', profile: 'superagent', stateDir: ISOLATED_STATE,
+        queueDir: join(ISOLATED_STATE, 'spv'), port: 3082, installedSha: null,
+      }],
+    })
     const watcher = startInboxWatcher({
       root: box.inbox,
       projectsRoot: box.projects,
@@ -1891,6 +1901,19 @@ async function testMergeRepoFromSettings() {
     process.env.DSH_SUPERAGENT_STATE_DIR = box.state
     process.env.SPV_QUEUE_DIR = box.queue
     process.env.SPV_INSTALL_REPO = 'someone/else'
+    // The watcher only polls the deployment it can identify: register this sandbox queue as tools/demo's.
+    await mkdir(box.root, { recursive: true })
+    await writeJson(join(box.root, 'deployments.json'), {
+      version: 1,
+      deployments: [{
+        project: 'tools/demo',
+        profile: 'superagent',
+        stateDir: box.state,
+        queueDir: box.queue,
+        port: 3082,
+        installedSha: null,
+      }],
+    })
     const watcher = startInboxWatcher({
       root: box.inbox,
       projectsRoot: box.projects,

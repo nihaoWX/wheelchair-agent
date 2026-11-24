@@ -6,7 +6,7 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync, chmodSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -151,7 +151,7 @@ async function testOwnProjectOnly() {
   }
 }
 
-async function testNoRegistryIsLegacy() {
+async function testNoRegistryPollsNothing() {
   const box = makeBox()
   const restore = withEnv(box)
   try {
@@ -161,12 +161,16 @@ async function testNoRegistryIsLegacy() {
       'acme/alpha': [pull(1, 'alpha one')],
       'acme/beta': [pull(2, 'beta two')],
     })
+    mkdirSync(box.inbox, { recursive: true })
     const logs = []
     await pollOnce({ root: box.inbox, projectsRoot: box.projects, gh, log: line => logs.push(line) })
-    const items = readdirSync(box.inbox).filter(name => name.endsWith('.json')).sort()
-    assert.deepEqual(items, ['acme-alpha-1.json', 'acme-beta-2.json'], 'everything is polled without a registry')
-    assert.ok(logs.some(line => /polling every project as before/.test(line)), 'the degradation is stated once')
-    ok('no registry keeps the old scan-every-project behavior and says so')
+    assert.deepEqual(readdirSync(box.inbox).filter(name => name.endsWith('.json')), [], 'nothing is polled')
+    assert.ok(!existsSync(box.ghLog), 'gh was never called')
+    assert.ok(
+      logs.some(line => /ownership: no deployment registry exists; polling nothing until this instance can be identified/.test(line)),
+      `the reason is stated once per poll, got ${JSON.stringify(logs)}`,
+    )
+    ok('without a registry the watcher polls nothing and states why')
   } finally {
     restore()
     rmSync(box.base, { recursive: true, force: true })
@@ -255,7 +259,7 @@ async function testOwnReviewStaysLocal() {
 
 async function main() {
   await testOwnProjectOnly()
-  await testNoRegistryIsLegacy()
+  await testNoRegistryPollsNothing()
   await testReviewForwarding()
   await testOwnReviewStaysLocal()
   console.log(`ok (${PASS.length} passed)`)
