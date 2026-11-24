@@ -47,6 +47,14 @@
 
 # Completed
 
+- **一仓一部署 stage 2 第一片（`#44`,`a83f2b5`）**：每部署一份实例 overlay
+  `<data root>/deployments/<slug>.yml`（端口 + `dsh-superagent` 的 stateDir + `wheelchair-spv` 的 queueDir），
+  `deployment add`/`install.sh --project` 共用 `renderInstance()`；`writeInstance()` 只在文件不存在时创建。
+  `service … --project <p>` 按注册表找实例文件、端口、会话（`wca-<slug>`）与日志，只动那一份；不带 `--project`
+  时逐字沿用旧行为。`commands/superagent-service.py` 的进程匹配从 profile 细化到「profile + `--patch` 文件」。
+  我自己验：`dsh --profile superagent --patch <实例文件> --dump-config` 真的把 `port: 3099`（516 行）、
+  `stateDir`（1283 行）、`queueDir`（1484 行）套进去了；`deployment add` 幂等、`--queue-dir` 不一致
+  `exit 2`、手改注册表 `exit 1`；`npm test` 368 PASS/0 FAIL。
 - **一仓一部署 stage 1 收尾（`#43`,`07c9b24`）**：注入器改用 `resolveRoots()` 每轮解析**所有**部署队列
   （显式 `queueDir`/`$SPV_QUEUE_DIR` 仍然独占一根），去重身份是「队列根 + 文件名 + thread」、每根各自取基线，
   新 `deployment add` 的部署在运行期被接上且不重放积压；`spv_status` 按部署分组（`project` 参数只看一份），

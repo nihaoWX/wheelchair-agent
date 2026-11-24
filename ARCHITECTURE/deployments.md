@@ -78,8 +78,26 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
 | 阶段 | 交付 | 验收 |
 |---|---|---|
 | 1（已完成，`#42`/`#43`） | 注册表 + `deployment add|list|remove|migrate` + `dispatch`/`spv_dispatch` 走注册表 + 注入器/`spv_status` 聚合所有注册部署 + 安装契约记 project | 两份注册表条目下 `dispatch` 各写各的队列、两边的回信都回到同一个 spv 会话且不重复；没有条目时报错文案指明下一步；`npm test` 全绿；单部署行为逐字不变 |
-| 2（下一步） | 每部署 `install.sh` / systemd 单元 / 端口 / `service --project` / 重启作用域 | 两个部署同时运行、各自面板可达、互不干扰；`/restart-wheelchair-agent` 仍能 resume 原会话 |
+| 2（进行中，第一片 `#44` 已合） | 每部署实例 overlay（`<data root>/deployments/<slug>.yml`：端口 + stateDir + queueDir）+ `service … --project`（按注册表找实例、端口、会话、日志）+ `install.sh --project` 按项目分配 stateDir/端口 | 两个部署同时运行、各自面板可达、互不干扰；`/restart-wheelchair-agent` 仍能 resume 原会话 |
 | 3 | watcher 按项目归属 + `kind: review` 路由 | 任一面板审一封属于别的部署的信，注入落到正确部署的工单 |
+
+### stage 2 第一片落地（`#44`）
+
+- 实例 overlay 由 `src/shared/deployments.js` 的 `renderInstance()` 生成，`deployment add` 与
+  `install.sh --project` 共用同一份模板；`writeInstance()` **只在文件不存在时创建**，已存在的文件不动
+  （可能被操作者按主机情况改过），注册表变了但文件没重写时会提示"删掉再 add"。
+- `deploymentSlug(project)`：取叶子名、小写、非 `[a-z0-9._-]` 换 `-`；它同时是实例文件名、tmux 会话名
+  （`wca-<slug>`）与日志名（`~/.dsh/.artifacts/wca-<slug>.log`）。
+- 端口：`allocatePort()` 从 3082 起取注册表里第一个未占用的号；**只看注册表，不探内核**——所以旧单部署
+  仍在 3082 上跑时先做 `deployment migrate`（把 `tools/wheelchair-agent` 记成 3082），新部署自然从 3083 起。
+  真冲突由 `service start` 报错，不自动改。
+- `service … --project <p>`：查注册表 → 找实例文件 → 用该部署的 `--profile/--patch/--session/--log/--url/--port`
+  调 `commands/superagent-service.py`；没有端口、没有实例文件都给出"下一步跑什么"的报错。不带 `--project`
+  时逐字沿用旧行为，只在状态成功且注册表里多于一份时多打一句提示。
+- `commands/superagent-service.py` 的进程匹配从"profile"细化到"profile + `--patch` 文件"（`serves(argv,
+  profile, patch)`，`patch=None` = 旧的无 `--patch` 服务，`ANY_PATCH` = 该 profile 的所有实例，安装探针用）：
+  同一个 profile 下多实例靠 patch 文件区分；监听端口上的进程也要 argv 对得上才算，避免"实例占了 3082 就
+  被当成旧服务还在跑"。
 
 ## 不做的事
 
