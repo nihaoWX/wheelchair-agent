@@ -70,9 +70,8 @@ commands:
   work gc [--dry-run] [--keep <n>] [--keep-days <d>]
                                reclaim ticket clones that are clean, unused and fully pushed
   work restored <ticket>       print the commands that rebuild a reclaimed ticket clone
-  restart-all [--dry-run] [--force] [--no-install] [--detach] [--project <p>]
-                               restart the superagent service, cold-install the preset and bring the SPV TUI back;
-                               with --project only that deployment's instance and session
+  restart-all [--dry-run] [--force] [--no-install] [--detach]
+                               restart the superagent service, cold-install the preset and bring the SPV TUI back
   session release [--session <id>] [--dry-run]
                                release the kernel session lease held by a stuck TUI/dsh process
   hook <events|list|add|enable|disable|rm|rename|test|log|prompt>
@@ -179,19 +178,13 @@ options:
   --json    print one JSON object for scripting`
 
 const RESTART_USAGE = `usage: wheelchair-agent restart-all [--dry-run] [--force] [--no-install] [--detach]
-                                    [--session <id>] [--project <p>]
+                                    [--session <id>]
 
 Restart everything this deployment runs: the superagent service, a cold install of the preset, and the SPV TUI
 session. The cold-install guard refuses while the service or a live SPV session holds the install targets, so
 the order is fixed: guard -> service stop -> stop the SPV chain -> install.sh cold -> service start -> the
 terminal that ran "wheelchair-agent spv" brings the TUI back in that same terminal. tmux session "dsh-spv" is
 only the fallback for a terminal that is gone.
-
-With --project only that deployment is restarted: its own instance (profile plus --patch overlay) is stopped
-and started, install.sh is skipped (the preset, webui, CLI and core are installed once for every deployment),
-and the session it resumes is that deployment's own: --session when given, otherwise the record under its
-stateDir. The global ~/.dsh-tui/resume.txt is never read here, because it belongs to whichever deployment
-wrote it last and would resume another deployment's conversation.
 
 options:
   --dry-run     print the plan and change nothing (no log, no command, no signal)
@@ -203,9 +196,6 @@ options:
                 the SPV session to bring back (the command handler passes the invoking session id); when it
                 is absent or has no directory, the id in ~/.dsh-tui/resume.txt is used and the fallback is
                 logged
-  --project <p>
-                restart only the deployment registered for project <p>; without it every deployment is
-                restarted exactly as before
   --run         internal: run the orchestration in this process (used by --detach)
   --help        this text
 
@@ -474,49 +464,6 @@ function runServiceManager(args) {
 }
 
 /**
- * The extra `service status` block for a registry with several deployments.
- *
- * The legacy lines (profile/url/pids/runtime) are printed exactly as before; this only appends one line per
- * registered deployment after them, so an operator can see every instance without asking each project. A
- * deployment counts as running only when its overlay is loaded by a live process, using the same
- * profile+patch selector a project-scoped restart uses. The legacy service may itself be registered as
- * `tools/wheelchair-agent`; when it is the process already described above, its line is skipped rather than
- * reported twice.
- */
-async function deploymentStatusBlock(rest) {
-  if (rest[0] !== 'status') return
-  let registry
-  try {
-    const { listDeployments } = await load('src', 'shared', 'deployments.js')
-    registry = listDeployments({})
-  } catch {
-    return // a broken registry is reported by deployment/check, not by hiding the service state
-  }
-  if (!registry.exists || registry.deployments.length <= 1) return
-  const { instancePath } = await load('src', 'shared', 'deployments.js')
-  const { readProcTable, servesProfile } = await load('src', 'spv', 'restart.js')
-  const { hasPatchArg, selectInstanceProcesses } = await load('src', 'spv', 'deployment-restart.js')
-  const table = readProcTable()
-  const legacyDeep = deployments => {
-    const legacy = table.filter(({ argv }) =>
-      servesProfile(argv, deployments.profile) && !hasPatchArg(argv))
-    return legacy.length > 0
-  }
-  const lines = []
-  for (const entry of registry.deployments) {
-    const patch = instancePath(entry.project, {})
-    const running = selectInstanceProcesses(table, { profile: entry.profile, patch })
-    if (running.length === 0 && entry.project === 'tools/wheelchair-agent' && legacyDeep(entry)) continue
-    const port = entry.port === null ? '-' : String(entry.port)
-    const pid = running.length === 0 ? '-' : String(running[0].pid)
-    lines.push(`  ${entry.project}  port ${port}  ${running.length === 0 ? 'stopped' : 'running'}  ${pid}`)
-  }
-  if (lines.length === 0) return
-  process.stdout.write(`\ndeployments:\n${lines.join('\n')}\n`)
-  process.stdout.write('note:   use --project <p> to target one deployment; the service lines above describe the legacy service\n')
-}
-
-/**
  * `service`：不带 --project 时行为与以前逐字相同（旧的单部署服务），只在有多个部署时追加一句提示；
  * 带 --project 时按注册表找到该部署的实例 overlay、端口、会话与日志，只动那一个。
  */
@@ -536,7 +483,6 @@ async function commandService(argv) {
         `note: ${registry.deployments.length} deployments are registered; add --project <p> to target one\n`,
       )
     }
-    await deploymentStatusBlock(rest)
     process.exit(status)
   }
   const deployments = await load('src', 'shared', 'deployments.js')
@@ -881,10 +827,7 @@ async function commandWork(argv) {
  * `process.exitCode`，不结束进程。
  */
 async function commandRestartAll(argv) {
-  const parsed = {
-    dryRun: false, force: false, noInstall: false, detach: false, run: false,
-    session: undefined, project: undefined,
-  }
+  const parsed = { dryRun: false, force: false, noInstall: false, detach: false, run: false, session: undefined }
   const booleans = {
     '--dry-run': 'dryRun',
     '--force': 'force',
@@ -907,20 +850,6 @@ async function commandRestartAll(argv) {
       index += 1
       continue
     }
-    if (word === '--project' || word.startsWith('--project=')) {
-      let value
-      if (word === '--project') {
-        value = argv[index + 1]
-        if (value === undefined || value.startsWith('-')) throw new UsageError('--project needs a project name, e.g. tools/<name>')
-        index += 1
-      } else {
-        value = word.slice('--project='.length)
-        if (value === '') throw new UsageError('--project needs a project name, e.g. tools/<name>')
-      }
-      if (parsed.project !== undefined) throw new UsageError('--project was already given')
-      parsed.project = value
-      continue
-    }
     const name = booleans[word]
     if (name === undefined) throw new UsageError(`unknown option ${JSON.stringify(word)} for "restart-all"`)
     if (parsed[name]) throw new UsageError(`${word} was already given`)
@@ -928,7 +857,8 @@ async function commandRestartAll(argv) {
   }
   // --run is the detached child's mode. Combining them would spawn a child that immediately arms another.
   if (parsed.detach && parsed.run) throw new UsageError('--detach and --run cannot be combined')
-  const context = {
+  const { runRestart } = await load('src', 'spv', 'restart.js')
+  const code = await runRestart({
     root: ROOT,
     installed: INSTALLED,
     presetDir: PRESET_DIR,
@@ -937,18 +867,8 @@ async function commandRestartAll(argv) {
     env: process.env,
     cwd: process.cwd(),
     cliPath: fileURLToPath(import.meta.url),
-  }
-  if (parsed.project !== undefined) {
-    const { armProjectRestart, runProjectRestart } = await load('src', 'spv', 'deployment-restart.js')
-    if (parsed.detach && !parsed.run && !parsed.dryRun) {
-      process.exitCode = armProjectRestart(context, parsed)
-      return
-    }
-    process.exitCode = await runProjectRestart(context, parsed)
-    return
-  }
-  const { runRestart } = await load('src', 'spv', 'restart.js')
-  process.exitCode = await runRestart(context, parsed)
+  }, parsed)
+  process.exitCode = code
 }
 
 /**

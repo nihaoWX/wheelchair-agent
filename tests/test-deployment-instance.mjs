@@ -14,7 +14,7 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -27,15 +27,6 @@ import {
   renderInstance,
   writeInstance,
 } from '../src/shared/deployments.js'
-import {
-  SESSION_RECORD,
-  readSessionRecord,
-  resolveProjectSession,
-  selectInstanceProcesses,
-  sessionRecordPath,
-} from '../src/spv/deployment-restart.js'
-import { encodeSegment, projectKey } from '../src/spv/session.js'
-import { apply as applyRestartCommand, USAGE as RESTART_COMMAND_USAGE } from '../src/spv/restart-command.js'
 
 const CLI = fileURLToPath(new URL('../bin/wheelchair-agent.mjs', import.meta.url))
 const SANDBOXES = []
@@ -227,134 +218,6 @@ async function testServiceProjectSelector() {
   pass('service --project names the missing deployment/port instead of starting anything')
 }
 
-async function testInstanceSelectorIsExact() {
-  const box = await sandbox()
-  const alpha = instancePath('tools/alpha', { env: envFor(box) })
-  const beta = instancePath('tools/beta', { env: envFor(box) })
-  const table = [
-    { pid: 100, argv: ['dsh', '--profile', 'superagent', '--patch', alpha] },
-    { pid: 200, argv: ['dsh', '--profile=superagent', `--patch=${beta}`] },
-    { pid: 300, argv: ['dsh', '--profile', 'superagent'] },
-    { pid: 400, argv: ['dsh', 'plugin', 'add', '@deepseek-ai/dsh-superagent', '--profile', 'superagent', '--patch', alpha] },
-    { pid: 500, argv: ['dsh', '--profile', 'research', '--patch', alpha] },
-  ]
-  assert.deepEqual(selectInstanceProcesses(table, { profile: 'superagent', patch: alpha }).map(item => item.pid), [100])
-  assert.deepEqual(selectInstanceProcesses(table, { profile: 'superagent', patch: beta }).map(item => item.pid), [200])
-  assert.deepEqual(selectInstanceProcesses(table, { profile: 'superagent', patch: null }).map(item => item.pid), [300])
-  assert.deepEqual(selectInstanceProcesses(table, { profile: 'superagent', patch: '/nonexistent.yml' }), [])
-  pass('the instance selector matches profile and overlay exactly; legacy, plugin and other profiles do not match')
-}
-
-async function testProjectSessionPriority() {
-  const box = await sandbox()
-  const env = envFor(box)
-  const stateDir = box.state
-  const recorded = 'recorded-session'
-  const dir = join(box.dsh, 'sessions', projectKey(stateDir), encodeSegment(recorded))
-  await mkdir(dir, { recursive: true })
-  await mkdir(stateDir, { recursive: true })
-  await writeFile(sessionRecordPath(stateDir), `${JSON.stringify({ version: 1, project: 'tools/alpha', sessionId: recorded })}\n`)
-
-  const fromCommand = resolveProjectSession({ env, stateDir, session: 'command-session' })
-  assert.equal(fromCommand.source, 'command')
-  assert.equal(fromCommand.id, 'command-session')
-
-  const fromRecord = resolveProjectSession({ env, stateDir })
-  assert.equal(fromRecord.source, 'record')
-  assert.equal(fromRecord.id, recorded)
-  assert.equal(fromRecord.dir, dir)
-
-  // The global resume pointer must never be a fallback, even when it names a session.
-  await rm(sessionRecordPath(stateDir), { force: true })
-  await mkdir(join(box.home, '.dsh-tui'), { recursive: true })
-  await writeFile(join(box.home, '.dsh-tui', 'resume.txt'), 'global-sentinel\n')
-  assert.equal(resolveProjectSession({ env, stateDir }), null)
-  assert.equal(await readFile(join(box.home, '.dsh-tui', 'resume.txt'), 'utf8'), 'global-sentinel\n')
-  assert.equal(readSessionRecord(stateDir), null)
-  assert.equal(SESSION_RECORD, 'deployment-session.json')
-  pass('a project restart uses --session first, then its own stateDir record, and never the global resume.txt')
-}
-
-async function testRestartProjectDryRunAndErrors() {
-  const box = await sandbox()
-  const added = cli(box, ['deployment', 'add', 'tools/alpha'])
-  assert.equal(added.status, 0, added.stderr)
-
-  const plan = cli(box, ['restart-all', '--project', 'tools/alpha', '--dry-run'])
-  assert.equal(plan.status, 0, plan.stderr)
-  assert.match(plan.stdout, /restart-all --project tools\/alpha plan \(dry run; nothing is changed\)/)
-  assert.match(plan.stdout, /install:\s+skipped/)
-  assert.match(plan.stdout, /other deployments untouched/)
-  assert.match(plan.stdout, /none recorded/)
-
-  const unknown = cli(box, ['restart-all', '--project', 'tools/nope', '--dry-run'])
-  assert.equal(unknown.status, 1)
-  assert.match(unknown.stderr, /wheelchair-agent deployment add tools\/nope/)
-
-  const missingValue = cli(box, ['restart-all', '--project'])
-  assert.equal(missingValue.status, 2)
-  assert.match(missingValue.stderr, /--project needs a project name/)
-  pass('restart-all --project plans only that instance, skips install, and names the missing deployment')
-}
-
-async function fakeProcEntry(root, pid, argv, ppid = 1) {
-  const dir = join(root, String(pid))
-  await mkdir(dir, { recursive: true })
-  await writeFile(join(dir, 'cmdline'), `${argv.join('\0')}\0`)
-  await writeFile(join(dir, 'status'), `Name:\tfake\nPPid:\t${ppid}\n`)
-}
-
-async function testServiceStatusListsDeployments() {
-  const box = await sandbox()
-  assert.equal(cli(box, ['deployment', 'add', 'tools/alpha']).status, 0)
-  assert.equal(cli(box, ['deployment', 'add', 'tools/beta']).status, 0)
-  const alpha = instancePath('tools/alpha', { env: envFor(box) })
-  const beta = instancePath('tools/beta', { env: envFor(box) })
-  const procRoot = join(box.base, 'proc')
-  await fakeProcEntry(procRoot, 100, ['dsh', '--profile', 'superagent', '--patch', alpha])
-  await fakeProcEntry(procRoot, 300, ['dsh', '--profile', 'superagent'])
-
-  const status = cli(box, ['service', 'status'], { WHEELCHAIR_PROC_ROOT: procRoot })
-  assert.match(status.stdout, /profile: superagent/)
-  assert.match(status.stdout, /^deployments:$/m)
-  assert.match(status.stdout, /^  tools\/alpha  port 3082  running  100$/m)
-  assert.match(status.stdout, /^  tools\/beta  port 3083  stopped  -$/m)
-  assert.match(status.stdout, /note:.*--project <p>/)
-  const alphaIndex = status.stdout.indexOf('  tools/alpha  port')
-  const betaIndex = status.stdout.indexOf('  tools/beta  port')
-  assert.ok(alphaIndex > 0 && betaIndex > alphaIndex, 'the deployment lines follow the old lines, ordered by project')
-
-  const single = cli(box, ['service', 'status', '--project', 'tools/beta'], { WHEELCHAIR_PROC_ROOT: procRoot })
-  assert.doesNotMatch(single.stdout, /^deployments:$/m)
-
-  // The legacy service is a registry entry too: when it is already the process described by the old lines,
-  // it is not reported a second time.
-  assert.equal(cli(box, ['deployment', 'add', 'tools/wheelchair-agent']).status, 0)
-  const legacyStatus = cli(box, ['service', 'status'], { WHEELCHAIR_PROC_ROOT: procRoot })
-  assert.doesNotMatch(legacyStatus.stdout, /^  tools\/wheelchair-agent  port/m)
-  assert.match(legacyStatus.stdout, /^  tools\/alpha  port 3082  running  100$/m)
-  pass('service status keeps the legacy lines and adds one line per deployment, without duplicating the legacy service')
-}
-
-async function testRestartCommandPassesProject() {
-  const box = await sandbox()
-  const fake = join(box.base, 'fake-wheelchair-agent')
-  await writeFile(fake, '#!/bin/sh\nprintf "%s\\n" "$@"\n')
-  await chmod(fake, 0o755)
-  let handler
-  const ctx = { commands: { register: registration => { handler = registration.handler } } }
-  applyRestartCommand(ctx, { executable: fake })
-  assert.match(RESTART_COMMAND_USAGE, /--project <p>/)
-  const ok = handler({ rawInput: '--project tools/alpha', agent: { session: { id: 'session-1' } } })
-  assert.equal(ok.kind, 'success', ok.text)
-  for (const expected of ['restart-all', '--detach', '--session', 'session-1', '--project', 'tools/alpha']) {
-    assert.match(ok.text, new RegExp(`(^|\\n)${expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\n|$)`))
-  }
-  const bad = handler({ rawInput: '--project', agent: { session: { id: 'session-1' } } })
-  assert.equal(bad.kind, 'error')
-  pass('/restart-wheelchair-agent passes --project through and still rejects malformed arguments')
-}
-
 try {
   testSlugRules()
   await testRenderAndWrite()
@@ -362,11 +225,6 @@ try {
   await testAddAllocatesPortsAndRendersInstances()
   await testSlugCollisionIsRejected()
   await testServiceProjectSelector()
-  await testInstanceSelectorIsExact()
-  await testProjectSessionPriority()
-  await testRestartProjectDryRunAndErrors()
-  await testServiceStatusListsDeployments()
-  await testRestartCommandPassesProject()
   process.stdout.write(`ok (${passed} passed)\n`)
 } catch (error) {
   process.stderr.write(`${error?.stack ?? error}\n`)
