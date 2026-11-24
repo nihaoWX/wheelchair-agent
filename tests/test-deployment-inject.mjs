@@ -16,7 +16,7 @@
 import assert from 'node:assert/strict'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { startResultInjector } from '../src/spv/injector.js'
 import { resolveRoots } from '../src/spv/paths.js'
 import { defineSpvTools } from '../src/spv/tools.js'
@@ -60,10 +60,10 @@ const box = {
   dsh: join(base, 'dsh'),
   data: join(base, 'data'),
   state: join(base, 'dsh', 'state', 'superagent'),
-  queueA: join(base, 'queues', 'alpha'),
-  queueB: join(base, 'queues', 'beta'),
+  queueA: join(base, 'queues', 'alpha', 'spv'),
+  queueB: join(base, 'queues', 'beta', 'spv'),
   queueOverride: join(base, 'queues', 'override'),
-  queueMissing: join(base, 'queues', 'missing'),
+  queueMissing: join(base, 'queues', 'missing', 'spv'),
 }
 for (const dir of [box.home, box.dsh, box.data, box.state]) await mkdir(dir, { recursive: true })
 
@@ -79,7 +79,7 @@ function entry(project, queueDir) {
   return {
     project,
     profile: 'superagent',
-    stateDir: box.state,
+    stateDir: dirname(queueDir),
     queueDir,
     port: null,
     installedSha: null,

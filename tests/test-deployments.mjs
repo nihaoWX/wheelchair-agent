@@ -40,9 +40,10 @@ async function sandbox() {
     dsh: join(base, 'dsh'),
     data: join(base, 'data'),
     state: join(base, 'state'),
+    stateA: join(base, 'state-a'),
     stateB: join(base, 'state-b'),
-    queueA: join(base, 'queue-a'),
-    queueB: join(base, 'queue-b'),
+    queueA: join(base, 'state-a', 'spv'),
+    queueB: join(base, 'state-b', 'spv'),
     queueOverride: join(base, 'queue-override'),
   }
 }
@@ -155,7 +156,7 @@ async function testAddListUpdateAndRemove() {
   const box = await sandbox()
 
   const added = await cli(box, [
-    'deployment', 'add', 'tools/alpha', '--state-dir', box.state, '--queue-dir', box.queueA, '--port', '3101',
+    'deployment', 'add', 'tools/alpha', '--state-dir', box.stateA, '--queue-dir', box.queueA, '--port', '3101',
   ])
   assert.equal(added.status, 0, added.stderr)
   assert.match(added.stdout, /registered project tools\/alpha/)
@@ -165,7 +166,7 @@ async function testAddListUpdateAndRemove() {
     deployments: [{
       project: 'tools/alpha',
       profile: 'superagent',
-      stateDir: box.state,
+      stateDir: box.stateA,
       queueDir: box.queueA,
       port: 3101,
       installedSha: null,
@@ -175,13 +176,13 @@ async function testAddListUpdateAndRemove() {
   // 完全相同的条目是幂等成功，且不重写文件（时间戳/字节都不变）。
   const before = await readFile(registryFile(box), 'utf8')
   const again = await cli(box, [
-    'deployment', 'add', 'tools/alpha', '--state-dir', box.state, '--queue-dir', box.queueA, '--port', '3101',
+    'deployment', 'add', 'tools/alpha', '--state-dir', box.stateA, '--queue-dir', box.queueA, '--port', '3101',
   ])
   assert.equal(again.status, 0, again.stderr)
   assert.match(again.stdout, /already registered with these values; nothing changed/)
   assert.equal(await readFile(registryFile(box), 'utf8'), before)
 
-  const updated = await cli(box, ['deployment', 'add', 'tools/alpha', '--state-dir', box.state, '--queue-dir', box.queueA, '--port', '3103'])
+  const updated = await cli(box, ['deployment', 'add', 'tools/alpha', '--state-dir', box.stateA, '--queue-dir', box.queueA, '--port', '3103'])
   assert.equal(updated.status, 0, updated.stderr)
   assert.match(updated.stdout, /updated tools\/alpha: port 3101 -> 3103/)
   registry = await readJson(registryFile(box))
@@ -217,14 +218,20 @@ async function testAddListUpdateAndRemove() {
 async function testAddDefaultsAndUsageErrors() {
   const box = await sandbox()
 
-  // 省略 --state-dir/--queue-dir 时用当前状态目录，队列是 <stateDir>/spv；端口 stage 1 不猜。
+  // 省略 --state-dir/--queue-dir 时每部署一个 <base>/<slug>，队列必须等于 <stateDir>/spv；
+  // 端口从 3082 起取注册表未用的第一个，实例 overlay 同时渲染出来。
   const added = await cli(box, ['deployment', 'add', 'tools/delta'])
   assert.equal(added.status, 0, added.stderr)
   const entry = (await readJson(registryFile(box))).deployments[0]
-  assert.equal(entry.stateDir, box.state)
-  assert.equal(entry.queueDir, join(box.state, 'spv'))
-  assert.equal(entry.port, null)
+  assert.equal(entry.stateDir, join(box.state, 'delta'))
+  assert.equal(entry.queueDir, join(box.state, 'delta', 'spv'))
+  assert.equal(entry.port, 3082)
   assert.equal(entry.installedSha, null)
+  assert.match(added.stdout, /instance .*deployments\/delta\.yml/)
+  const instance = await readFile(join(box.data, 'deployments', 'delta.yml'), 'utf8')
+  assert.match(instance, /- id: webserver/)
+  assert.match(instance, /port: 3082/)
+  assert.ok(instance.includes(JSON.stringify(join(box.state, 'delta'))))
 
   assert.equal((await cli(box, ['deployment', 'add'])).status, 2, 'add without a project is a usage error')
   assert.equal((await cli(box, ['deployment', 'add', 'tools/alpha', '--port', '70000'])).status, 2)
@@ -247,7 +254,7 @@ async function testAddDefaultsAndUsageErrors() {
 async function testDispatchRoutesEachProjectToItsOwnQueue() {
   const box = await sandbox()
   for (const [project, stateDir, queue, port] of [
-    ['tools/alpha', box.state, box.queueA, '3101'],
+    ['tools/alpha', box.stateA, box.queueA, '3101'],
     ['tools/beta', box.stateB, box.queueB, '3102'],
   ]) {
     const added = await cli(box, ['deployment', 'add', project, '--state-dir', stateDir, '--queue-dir', queue, '--port', port])
@@ -281,7 +288,7 @@ async function testDispatchRoutesEachProjectToItsOwnQueue() {
 async function testToolDispatchUsesTheRegistry() {
   const box = await sandbox()
   for (const [project, stateDir, queue] of [
-    ['tools/alpha', box.state, box.queueA],
+    ['tools/alpha', box.stateA, box.queueA],
     ['tools/beta', box.stateB, box.queueB],
   ]) {
     const added = await cli(box, ['deployment', 'add', project, '--state-dir', stateDir, '--queue-dir', queue])
@@ -323,7 +330,7 @@ async function testToolDispatchUsesTheRegistry() {
 
 async function testMissingDeploymentIsActionable() {
   const box = await sandbox()
-  const added = await cli(box, ['deployment', 'add', 'tools/alpha', '--state-dir', box.state, '--queue-dir', box.queueA])
+  const added = await cli(box, ['deployment', 'add', 'tools/alpha', '--state-dir', box.stateA, '--queue-dir', box.queueA])
   assert.equal(added.status, 0, added.stderr)
 
   const result = await cli(box, ['dispatch', '--project', 'tools/gamma', '--task', 'x'])
@@ -358,6 +365,42 @@ async function testCorruptRegistryIsNeverRewritten() {
   const unknown = await cli(box, ['deployment', 'list'])
   assert.equal(unknown.status, 1)
   assert.match(unknown.stderr, /understands version 1/)
+}
+
+// -------------------------------------------------- 队列必须等于 <stateDir>/spv
+
+async function testQueueDirMustMatchStateDir() {
+  const box = await sandbox()
+  const rejected = await cli(box, [
+    'deployment', 'add', 'tools/alpha', '--state-dir', box.stateA, '--queue-dir', box.queueB,
+  ])
+  assert.equal(rejected.status, 2)
+  assert.match(rejected.stderr, /a deployment reads <stateDir>\/spv/)
+  assert.match(rejected.stderr, /never reads/)
+  assert.equal(await exists(registryFile(box)), false, 'a rejected add wrote nothing')
+
+  // 手改出来的不一致条目在读取时就报错，不静默使用，也不重写。
+  const file = registryFile(box)
+  await mkdir(box.data, { recursive: true })
+  const broken = `${JSON.stringify({
+    version: 1,
+    deployments: [{
+      project: 'tools/alpha',
+      profile: 'superagent',
+      stateDir: box.stateA,
+      queueDir: box.queueB,
+      port: 3101,
+      installedSha: null,
+    }],
+  }, null, 2)}\n`
+  await writeFile(file, broken, 'utf8')
+  const listed = await cli(box, ['deployment', 'list'])
+  assert.equal(listed.status, 1)
+  assert.match(listed.stderr, /must read/)
+  assert.equal(await readFile(file, 'utf8'), broken, 'the inconsistent registry was not rewritten')
+  const dispatched = await cli(box, ['dispatch', '--project', 'tools/alpha', '--task', 'x'])
+  assert.equal(dispatched.status, 1)
+  assert.equal(await readFile(file, 'utf8'), broken)
 }
 
 // ------------------------------------------------------------------- migrate
@@ -398,11 +441,16 @@ async function testMigrateRecordsTheCurrentDeployment() {
   assert.equal(dispatched.status, 0, dispatched.stderr)
   assert.equal((await pendingRecord(join(box.state, 'spv'))).text, 'migrated')
 
-  // $SPV_QUEUE_DIR 仍然决定 migrate 记下的队列。
+  // migrate 只记录恒等式队列 <stateDir>/spv；$SPV_QUEUE_DIR 是运行期的派单覆盖，不进注册表。
   const other = await sandbox()
-  const custom = await cli(other, ['deployment', 'migrate'], { SPV_QUEUE_DIR: other.queueA })
+  const custom = await cli(other, ['deployment', 'migrate'], { SPV_QUEUE_DIR: other.queueOverride })
   assert.equal(custom.status, 0, custom.stderr)
-  assert.equal((await readJson(registryFile(other))).deployments[0].queueDir, other.queueA)
+  assert.equal((await readJson(registryFile(other))).deployments[0].queueDir, join(other.state, 'spv'))
+  assert.equal(
+    (await cli(other, ['dispatch', '--project', 'tools/wheelchair-agent', '--task', 'override'], { SPV_QUEUE_DIR: other.queueOverride })).status,
+    0,
+  )
+  assert.equal((await pendingRecord(other.queueOverride)).text, 'override')
 }
 
 // -------------------------------------------------------------------- main
@@ -415,6 +463,7 @@ try {
   await testToolDispatchUsesTheRegistry()
   await testMissingDeploymentIsActionable()
   await testCorruptRegistryIsNeverRewritten()
+  await testQueueDirMustMatchStateDir()
   await testMigrateRecordsTheCurrentDeployment()
   process.stdout.write('ok\n')
 } catch (error) {

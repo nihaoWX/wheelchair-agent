@@ -447,15 +447,20 @@ check '(18) the install wrote the deployment registry' "$([ -f "$DEPLOYMENTS" ] 
 check '(18) the registry has version 1' "$(registry_top version)" 1
 check '(18) the registry holds exactly one deployment' "$(registry_top count)" 1
 check '(18) the entry names the project' "$(registry_value tools/demo project)" tools/demo
-check '(18) the entry uses the sandbox state directory' "$(registry_value tools/demo stateDir)" "$SB/dsh/state/superagent"
-check '(18) the entry uses the sandbox queue' "$(registry_value tools/demo queueDir)" "$SB/queue"
-check '(18) the entry records the service port' "$(registry_value tools/demo port)" 3082
+check '(18) the entry uses the project state directory' "$(registry_value tools/demo stateDir)" "$SB/dsh/state/superagent/demo"
+check '(18) the entry queue is <stateDir>/spv' "$(registry_value tools/demo queueDir)" "$SB/dsh/state/superagent/demo/spv"
+check '(18) the entry records the first free port' "$(registry_value tools/demo port)" 3082
+check '(18) the install rendered the instance overlay' "$([ -f "$SB/home/.wheelchair-agent/deployments/demo.yml" ] && echo yes || echo no)" yes
+check '(18) the overlay carries the port and state directory' \
+  "$(grep -c 'port: 3082' "$SB/home/.wheelchair-agent/deployments/demo.yml")" 1
+check '(18) the overlay names the project state directory' \
+  "$(grep -c "^    stateDir: .*$SB/dsh/state/superagent/demo\"" "$SB/home/.wheelchair-agent/deployments/demo.yml")" 1
 check '(18) the entry records the profile' "$(registry_value tools/demo profile)" superagent
 stamp_sha=$(node -e 'const fs=require("fs"); try { process.stdout.write(String(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).commit ?? "")) } catch {}' "$STAMP" 2>/dev/null)
 check '(18) the entry records the commit from installed.json' "$(registry_value tools/demo installedSha)" "$stamp_sha"
 check '(18) installed.json really carries the checkout commit' "$stamp_sha" "$(git -C "$REPO" rev-parse HEAD)"
 check '(18) the install reports what it registered' \
-  "$(grep -c "^OK: deployment registry: tools/demo -> $SB/queue$" "$SB/stdout")" 1
+  "$(grep -c "^OK: deployment registry: tools/demo -> $SB/dsh/state/superagent/demo/spv$" "$SB/stdout")" 1
 cp "$DEPLOYMENTS" "$SB/registry-18.json"
 
 run_install --project tools/demo
@@ -463,6 +468,14 @@ check '(18) the rerun exits 0' "$?" 0
 check '(18) the rerun leaves the registry byte-identical' "$(cmp -s "$DEPLOYMENTS" "$SB/registry-18.json" && echo same || echo different)" same
 check '(18) the rerun says the entry is unchanged' \
   "$(grep -c 'already registered with these values; nothing changed' "$SB/stdout")" 1
+
+run_install --project tools/demo2
+check '(18) a second project install exits 0' "$?" 0
+check '(18) the second project gets its own state directory' "$(registry_value tools/demo2 stateDir)" "$SB/dsh/state/superagent/demo2"
+check '(18) the second project gets the next free port' "$(registry_value tools/demo2 port)" 3083
+check '(18) the second project renders its own instance' "$([ -f "$SB/home/.wheelchair-agent/deployments/demo2.yml" ] && echo yes || echo no)" yes
+check '(18) the second project records the same commit' "$(registry_value tools/demo2 installedSha)" "$stamp_sha"
+cp "$DEPLOYMENTS" "$SB/registry-18.json"
 
 run_install
 check '(18) a plain install without --project exits 0' "$?" 0
@@ -472,7 +485,7 @@ run_install --check --project tools/beta
 check '(18) --check --project exits 0' "$?" 0
 check '(18) --check --project writes nothing' "$(cmp -s "$DEPLOYMENTS" "$SB/registry-18.json" && echo same || echo different)" same
 check '(18) --check --project says it is read-only' \
-  "$(grep -c '^note: --check is read-only: the deployment entry for tools/beta is written by a real install, nothing was written now$' "$SB/stdout")" 1
+  "$(grep -c '^note: --check is read-only: the deployment entry and instance overlay for tools/beta are written by a real install, nothing was written now$' "$SB/stdout")" 1
 check '(18) --check did not register the project' "$(registry_value tools/beta project)" ''
 
 run_install --project notaproject

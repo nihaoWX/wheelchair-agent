@@ -31,6 +31,7 @@ import argparse
 import json
 import os
 import re
+import shlex
 import shutil
 import signal
 import subprocess
@@ -44,6 +45,10 @@ DEFAULT_PROFILE = 'superagent'
 DEFAULT_URL = 'http://127.0.0.1:3082'
 STATE_WAIT = 3
 PART_ERROR = 2
+
+# Wildcard for "every process for this profile, whatever patch it loads". `probe` uses it because an
+# install rewrites the shared preset/webui payload, which every instance holds.
+ANY_PATCH = object()
 
 
 def fail(message, fix=None):
@@ -73,26 +78,42 @@ def cmdline_of(pid):
     return [part.decode('utf-8', 'replace') for part in parts if part]
 
 
-def serves(argv, profile):
-    """Return whether these argv belong to the main DSH service process for `profile`.
+def serves(argv, profile, patch=None):
+    """Return whether these argv belong to the main DSH service process for `profile` and `patch`.
 
-    Mirrors the upstream rule: a `--profile <name>` (or `--profile=<name>`) anywhere in the arguments,
-    and no `plugin` subcommand — `dsh plugin ...` is the installer, not the service.
+    A deployment is one `dsh` instance: all of them share a profile, so the loaded `--patch` file is
+    what tells them apart. `patch=None` means the legacy single service (no `--patch` at all);
+    `patch=ANY_PATCH` matches every instance of the profile (the install probe needs that).
     """
     matched = False
-    value_expected = False
+    expecting = None
     words = []
+    patches = []
     for word in argv[1:]:
-        if value_expected:
-            matched = matched or word == profile
-            value_expected = False
+        if expecting is not None:
+            if expecting == 'profile':
+                matched = matched or word == profile
+            else:
+                patches.append(word)
+            expecting = None
         elif word == '--profile':
-            value_expected = True
-        elif word == f'--profile={profile}':
-            matched = True
+            expecting = 'profile'
+        elif word.startswith('--profile='):
+            matched = matched or word.split('=', 1)[1] == profile
+        elif word == '--patch':
+            expecting = 'patch'
+        elif word.startswith('--patch='):
+            patches.append(word.split('=', 1)[1])
         elif not word.startswith('-'):
             words.append(word)
-    return matched and 'plugin' not in words
+    if not matched or 'plugin' in words:
+        return False
+    if patch is ANY_PATCH:
+        return True
+    if patch is None:
+        return not patches
+    wanted = os.path.realpath(str(patch))
+    return any(os.path.realpath(item) == wanted for item in patches)
 
 
 def pid_on_port(port):
@@ -105,8 +126,8 @@ def pid_on_port(port):
     return int(match.group(1)) if match else None
 
 
-def pids_from_proc(profile):
-    """Scan /proc for every process whose argv selects `profile` as the DSH service.
+def pids_from_proc(profile, patch=None):
+    """Scan /proc for every process whose argv selects `profile` (and `patch`) as the DSH service.
 
     The scanning process itself is skipped: `probe` is invoked with `--profile <name>` on its own
     command line (that is how it is told what to look for), so without this it would report itself as
@@ -120,12 +141,12 @@ def pids_from_proc(profile):
         if pid == os.getpid():
             continue
         argv = cmdline_of(entry.name)
-        if argv and serves(argv, profile):
+        if argv and serves(argv, profile, patch):
             found.append(pid)
     return sorted(found)
 
 
-def service_pids(profile, port):
+def service_pids(profile, port, patch=None):
     """All PIDs of the service for `profile`.
 
     The listener on the health port is authoritative; a /proc scan catches a process that is still
@@ -134,8 +155,13 @@ def service_pids(profile, port):
     pids = set()
     listening = pid_on_port(port)
     if listening is not None:
-        pids.add(listening)
-    pids.update(pids_from_proc(profile))
+        # A listener only counts when its argv really serves this profile/instance: an instance that
+        # allocated 3082 while the legacy service was down must not make `service status` claim the
+        # legacy service is running. When /proc is unreadable, keep the socket as the best evidence.
+        argv = cmdline_of(listening)
+        if not argv or serves(argv, profile, patch):
+            pids.add(listening)
+    pids.update(pids_from_proc(profile, patch))
     return sorted(pids)
 
 
@@ -306,7 +332,7 @@ def open_command(url):
 
 def cmd_open(args):
     """Open the tokenised panel URL in the operator's browser."""
-    pids = service_pids(args.profile, args.port)
+    pids = service_pids(args.profile, args.port, args.patch)
     if not pids:
         return fail(
             f'the superagent service is not running for profile {args.profile}, so there is no panel to open',
@@ -332,7 +358,7 @@ def cmd_open(args):
 
 
 def cmd_status(args):
-    pids = service_pids(args.profile, args.port)
+    pids = service_pids(args.profile, args.port, args.patch)
     current = read_state(args.url) if pids else None
     return report(pids, current, args.url, args.profile, False, args.log)
 
@@ -344,7 +370,7 @@ def cmd_probe(args):
     the preset path is loaded in-process by a live SPV session, so a rewrite under either would half-apply
     while they run. One space-separated PID list per key; an empty value means "none found".
     """
-    pids = service_pids(args.profile, args.port)
+    pids = service_pids(args.profile, args.port, ANY_PATCH)
     spv = pids_with_preset(args.preset_patch)
     print(f'service_pids={" ".join(str(pid) for pid in pids)}')
     print(f'service_port={args.port}')
@@ -356,7 +382,7 @@ def cmd_probe(args):
 def wait_ready(args, deadline):
     """Poll the management API until the runtime is up; return (code, current) or (None, None) on timeout."""
     while time.monotonic() < deadline:
-        pids = service_pids(args.profile, args.port)
+        pids = service_pids(args.profile, args.port, args.patch)
         current = read_state(args.url) if pids else None
         if pids and runtime_up(current):
             return outcome(pids, current, args.profile), current
@@ -372,7 +398,7 @@ def cmd_start(args):
     if not subprocess.run(['which', 'tmux'], capture_output=True).returncode == 0:
         return fail('tmux is not on PATH', 'install tmux (apt install tmux), then rerun')
 
-    pids = service_pids(args.profile, args.port)
+    pids = service_pids(args.profile, args.port, args.patch)
     if len(pids) > 1:
         return fail(f'{len(pids)} service processes are running for profile {args.profile}',
                     'stop them first: superagent-service stop')
@@ -388,11 +414,12 @@ def cmd_start(args):
         return fail(f'something answers at {args.url} but is not profile {args.profile}',
                     'check what owns that port: ss -lptn "sport = :<port>"')
 
-    session = f'dsh-{args.profile}'
+    session = args.session
     log = args.log
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text('')
-    command = f'umask 077; exec {dsh} --profile {args.profile} --no-open >> {log} 2>&1'
+    patch = f' --patch {shlex.quote(str(args.patch))}' if args.patch else ''
+    command = f'umask 077; exec {dsh} --profile {args.profile}{patch} --no-open >> {log} 2>&1'
     exists = subprocess.run(['tmux', 'has-session', '-t', '=' + session],
                             capture_output=True).returncode == 0
     target = ['new-window', '-t', '=' + session + ':'] if exists else ['new-session', '-s', session]
@@ -407,7 +434,7 @@ def cmd_start(args):
         print(f'FAIL: no runtime answer within {args.timeout:g}s; the process was left running', file=sys.stderr)
         print(f'fix: read the log: tail -40 {log}', file=sys.stderr)
         return 1
-    pids = service_pids(args.profile, args.port)
+    pids = service_pids(args.profile, args.port, args.patch)
     if current and current['setup']:
         print(f'note: waiting for setup — {current["setup"].get("detail", "")}')
     if code == 0:
@@ -416,7 +443,7 @@ def cmd_start(args):
 
 
 def cmd_stop(args):
-    pids = service_pids(args.profile, args.port)
+    pids = service_pids(args.profile, args.port, args.patch)
     if not pids:
         print('OK: not running; nothing to stop')
         return 0
@@ -459,6 +486,10 @@ def main():
     parser.add_argument('--timeout', type=float, default=60, help='startup timeout in seconds (default: 60)')
     parser.add_argument('--stop-timeout', type=float, default=300,
                         help='graceful shutdown timeout in seconds (default: 300)')
+    parser.add_argument('--patch', default=None,
+                        help='instance overlay loaded with --patch; selects one deployment of a shared profile')
+    parser.add_argument('--session', default=None,
+                        help='tmux session name (default: dsh-<profile>)')
     parser.add_argument('--preset-patch', default=None,
                         help='preset-default.patch.yml of a live SPV session; `probe` reports processes that load it')
     parser.add_argument('--cwd', default=os.getcwd(), help='working directory for the tmux pane')
@@ -466,6 +497,8 @@ def main():
                         help='log file (default: $DSH_HOME/.artifacts/<profile>.log)')
     args = parser.parse_args()
 
+    args.patch = Path(args.patch).expanduser().resolve() if args.patch else None
+    args.session = args.session or f'dsh-{args.profile}'
     explicit_port = args.port is not None
     if args.port is None:
         match = re.search(r':(\d+)', args.url)
@@ -479,7 +512,10 @@ def main():
         # Fixed location, not the caller's directory: a log path that follows the cwd scatters one
         # service's output across every directory it was ever started from.
         dsh_home = Path(os.environ.get('DSH_HOME') or Path.home() / '.dsh')
-        args.log = dsh_home / '.artifacts' / f'{args.profile}.log'
+        # The legacy service keeps `<profile>.log` (byte-identical contract); an instance gets its own
+        # file named after its session, or two deployments would interleave one log.
+        name = f'{args.profile}.log' if args.patch is None else f'{args.session}.log'
+        args.log = dsh_home / '.artifacts' / name
     if args.timeout <= 0 or args.stop_timeout <= 0:
         return fail('--timeout and --stop-timeout must be positive', 'omit them to use the defaults')
 
