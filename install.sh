@@ -389,7 +389,7 @@ render_webui_into() {
   done
   # `settings.js` lives in `lib/shared/` (not `lib/core/`) for the same reason `queue.js` does: the copied
   # `lib/core/inbox.js` imports `../shared/settings.js`, and `lib/core/` is for the src/spv files.
-  for pair in "spv/inbox.js:lib/core/inbox.js" "spv/dispatch.js:lib/core/dispatch.js" "spv/hook-runner.js:lib/core/hook-runner.js" "spv/paths.js:lib/core/paths.js" "shared/home.js:lib/shared/home.js" "shared/hook-events.js:lib/shared/hook-events.js" "shared/hooks.js:lib/shared/hooks.js" "shared/install-stamp.js:lib/shared/install-stamp.js" "shared/queue.js:lib/shared/queue.js" "shared/settings.js:lib/shared/settings.js"; do
+  for pair in "spv/inbox.js:lib/core/inbox.js" "spv/dispatch.js:lib/core/dispatch.js" "spv/hook-runner.js:lib/core/hook-runner.js" "spv/paths.js:lib/core/paths.js" "spv/archive-effect.js:lib/core/archive-effect.js" "shared/home.js:lib/shared/home.js" "shared/hook-events.js:lib/shared/hook-events.js" "shared/hooks.js:lib/shared/hooks.js" "shared/install-stamp.js:lib/shared/install-stamp.js" "shared/queue.js:lib/shared/queue.js" "shared/settings.js:lib/shared/settings.js"; do
     src=${pair%%:*}
     target=${pair##*:}
     if ! cp "$SELF_DIR/src/$src" "$dest/$target"; then

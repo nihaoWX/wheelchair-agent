@@ -104,7 +104,8 @@ export const EVENTS = [
       'SPV 队列里出现一条 `kind: "reply"` 的消息：worker 报告了这次的结果。**这就是本项目里"worker 完成了"的定义，' +
       '但它不是终态**——工单可以被后续消息复活，然后再报告一次。所以不要把 delivered 当成"结束"，也不要把需要 PR ' +
       '身份的自动动作挂在这里（队列消息只带 `ticketId` 与 `thread`，没有 PR 号；见 ARCHITECTURE/hooks.md 的缺口一节）。' +
-      '这个事件的内建行是结果注入（`injection` 模板）：注入属于 core path，正文可改，注入本身不可取消。',
+      '这个事件的内建行是结果注入（`injection` 模板）与会话归档：注入属于 core path，正文可改，注入本身不可取消；' +
+      '归档由 wheelchair-agent-webui 在服务侧执行（见 `builtin:archiveSession`），不是用户脚本。',
     when: 'reply 消息出现在 SPV 队列时，由读取方按消息 id 触发一次。',
     repeatable: true,
     repeatNote: '一张工单可以有多条 reply；复活后的每次报告都是一次新的 occurrence。',
@@ -119,7 +120,7 @@ export const EVENTS = [
       file: '这条消息的绝对路径（`outbox/` 或 `outbox/read/` 里的那个文件）。',
       at: '消息写入时间（ISO 8601）。',
     }),
-    builtin: ['builtin:injection'],
+    builtin: ['builtin:injection', 'builtin:archiveSession'],
     sample: {
       messageId: 'msg-reply-0001',
       ticketId: 'agent-demo-0123abcd',
@@ -394,6 +395,17 @@ export const BUILTIN_ROWS = [
     description:
       '被合并的是安装目标仓库（`merge.installRepo`，默认 wheelchair-agent）时，往 SPV 队列写一条冷安装提醒。' +
       '任何仓库的合并都会触发；冷安装只属于这一侧。',
+    cancellable: false,
+    editableText: false,
+  },
+  {
+    id: 'builtin:archiveSession',
+    events: ['ticket.delivered'],
+    defaultLabel: '归档 worker 会话',
+    description:
+      'worker 报告之后，把它的会话（`worker-<ticketId>`）从默认侧栏归档：日志原地保留、可取消，下次唤醒前 ' +
+      'superagent 会取消归档。**由 wheelchair-agent-webui 在服务侧执行，不是用户脚本**；该会话还有 running/stopping ' +
+      '的 job 时跳过（交给 `ticket.ended` 的归档），turn 尚未结束时下一轮再试。归档失败只记 warning，不影响脚本。',
     cancellable: false,
     editableText: false,
   },

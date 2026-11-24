@@ -242,6 +242,7 @@ async function loadHostApply(box) {
     ['src/spv/dispatch.js', 'lib/core/dispatch.js'],
     ['src/spv/hook-runner.js', 'lib/core/hook-runner.js'],
     ['src/spv/paths.js', 'lib/core/paths.js'],
+    ['src/spv/archive-effect.js', 'lib/core/archive-effect.js'],
     ['src/shared/home.js', 'lib/shared/home.js'],
     ['src/shared/hook-events.js', 'lib/shared/hook-events.js'],
     ['src/shared/hooks.js', 'lib/shared/hooks.js'],
