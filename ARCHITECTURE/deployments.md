@@ -30,7 +30,9 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
 - `spv_dispatch` 与 `wheelchair-agent dispatch` 先查注册表拿 `project → deployment`，再写那份部署的
   `<queueDir>/pending/`。找不到该项目的部署 → **报错并给出下一步**（`wheelchair-agent deployment add <project>`），
   **不自动创建**：创建部署要 profile、端口、systemd 单元，属于显式动作。
-- `spv_status` 按部署汇报队列深度与运行态。
+- **结果回收与观测**：注入器监听**所有**已注册部署的 `outbox/`（外加旧规则那个 `<stateDir>/spv`，让还没迁移的部署继续工作），
+  按「队列文件名 + thread」去重，各根的游标互不覆盖；`spv_status` 按部署分组打印队列深度，`--project` 只看一个。
+  显式 `queueDir` 设置或 `$SPV_QUEUE_DIR` 一旦给出，就只有一个根，不再聚合——显式设置永远赢。
 - 迁移：`wheelchair-agent deployment migrate` 把当前的单部署（`superagent` profile + `~/.dsh/state/superagent`）
   写成一项（项目取 `merge.installRepo` 所在的仓，即 `tools/wheelchair-agent`），旧行为完全不变。
 
@@ -57,7 +59,7 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
 
 | 阶段 | 交付 | 验收 |
 |---|---|---|
-| 1（当前） | 注册表 + `deployment add|list|remove|migrate` + `dispatch`/`spv_dispatch` 走注册表 + 安装契约记 project | 两份注册表条目下 `dispatch` 各写各的队列；没有条目时报错文案指明下一步；`npm test` 全绿；单部署行为逐字不变 |
+| 1（当前） | 注册表 + `deployment add|list|remove|migrate` + `dispatch`/`spv_dispatch` 走注册表 + 注入器/`spv_status` 聚合所有注册部署 + 安装契约记 project | 两份注册表条目下 `dispatch` 各写各的队列、两边的回信都回到同一个 spv 会话且不重复；没有条目时报错文案指明下一步；`npm test` 全绿；单部署行为逐字不变 |
 | 2 | 每部署 `install.sh` / systemd 单元 / 端口 / `service --project` / 重启作用域 | 两个部署同时运行、各自面板可达、互不干扰；`/restart-wheelchair-agent` 仍能 resume 原会话 |
 | 3 | watcher 按项目归属 + `kind: review` 路由 | 任一面板审一封属于别的部署的信，注入落到正确部署的工单 |
 

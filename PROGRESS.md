@@ -47,6 +47,11 @@
 
 # Completed
 
+- **一仓一部署 stage 1（`#42`,`4a24e4f`）**：注册表 `~/.wheelchair-agent/deployments.json`（项目 → 部署，
+  坏文件报错且一字不改、原子写入）+ `wheelchair-agent deployment list|add|remove|migrate` +
+  `dispatch`/`spv_dispatch` 按注册表写对应部署的队列（缺条目报错并指路 `deployment add`，绝不自动建）+
+  `install.sh --project` 装成功后记账（`--check`/`--fingerprint` 只读）。注册表不存在时行为逐字不变，
+  所以升级本身不改变任何现有行为；`deployment migrate` 才切换到分部署模式。
 - **交付后自动合并（`#41`,`82b0d3d`）**：内建效果 `builtin:autoMerge` 挂在 `ticket.delivered`，用
   `work-plan` 找到工单 clone → 分支名 + `remote.origin.url` → `gh pr list --head <branch>` 反推 PR；
   五道闸门（唯一 open PR 且 head 匹配 / 非 draft / `MERGEABLE` / `statusCheckRollup` 非空且全 SUCCESS /
@@ -105,9 +110,8 @@
 
 # In Progress
 
-- **一仓一部署（stage 1）**：设计落定在 `ARCHITECTURE/deployments.md`；下一步是注册表 + 路由
-  （`deployment add|list|remove|migrate`、`dispatch`/`spv_dispatch` 查注册表写对应部署的队列、缺条目给下一步提示）。
-  实现之前当前仍是单部署行为，完全可用。冷安装等操作者：`service stop` → 退出 SPV → `bash install.sh` →
+- **一仓一部署 stage 1 收尾**：注入器与 `spv_status` 还只看挂载时那一个队列，要改成聚合所有已注册部署的
+  `outbox/`（去重按队列文件名 + thread）。设计见 `ARCHITECTURE/deployments.md`。冷安装等操作者：`service stop` → 退出 SPV → `bash install.sh` →
   `service start` → `wheelchair-agent spv`。
 
 # Known Issues
