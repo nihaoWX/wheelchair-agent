@@ -3,7 +3,7 @@
  * tests/test-hooks.mjs：插口（hook）引擎的离线证据。
  *
  * 覆盖（对应 `ARCHITECTURE/hooks.md` 的每一条承诺）：
- *   - 事件表：8 个事件、7 个内建行、六个 `builtin:*` id 逐字存在、`builtin:prepare` 是指针、
+ *   - 事件表：9 个事件、8 个内建行、七个 `builtin:*` id 逐字存在、`builtin:prepare` 是指针、
  *     内建行全部 `cancellable: false`，且没有 `ticket.ended`；
  *   - 执行契约：stdin 是事件负载的 JSON、`WCA_*` 环境变量、`ticket.*` 的 cwd 用 workspace / 其它事件用
  *     opts.cwd；顺序执行；exit 1 / 超时 / 输出洪水都只记录、不抛、不影响下一个 hook；
@@ -12,6 +12,8 @@
  *   - 总开关：`hooks.enabled: false` 一个脚本都不跑，每次 occurrence 只写一条 `paused` 记录；
  *     空 `items` 与全部 disabled 是纯 no-op（连记录都没有）；
  *   - cursor：同一个 eventId 跑一次；重启（新进程）不重跑；看不到 id 的 occurrence 不去重；
+ *   - 服务侧内建效果：delivered 归档 worker 会话（paused/cursor 跳过、empty 执行、有 job 让路、会话不存在
+ *     静默、turn 未结束有限次重试、失败只 warn，且不挡脚本与下一条事件）；
  *   - 队列原语：`outbox/` + `outbox/read/` 都读、按消息 id 去重、按时间排序、cursor 过滤、
  *     **不 rename、不消费**；`outbox/read/` 里 cursor 之前的消息恰好重放一次；
  *   - 设置往返：add / rename / disable / rm、过期 revision 409 且不落盘、坏文件回默认、旧文件仍有效；
@@ -60,7 +62,8 @@ import {
   writeHookSpoolEvent,
 } from '../src/shared/hooks.js'
 import { appendReview, writeItem } from '../src/spv/inbox.js'
-import { startHookRunner } from '../src/spv/hook-runner.js'
+import { EFFECT_MAX_RETRIES, startHookRunner } from '../src/spv/hook-runner.js'
+import { createArchiveSessionEffect, workerSessionIdOf } from '../src/spv/archive-effect.js'
 import { submitTask } from '../src/spv/dispatch.js'
 import { dirsOf, writeMessage } from '../src/shared/queue.js'
 import { SETTINGS_FILE, resolveSettings, saveSettings } from '../src/shared/settings.js'
@@ -216,12 +219,12 @@ async function testTableView() {
     ],
   )
   assert.ok(!model.events.some(entry => entry.id === 'ticket.ended'), 'there is deliberately no ticket.ended')
-  assert.equal(model.builtin.length, 7)
+  assert.equal(model.builtin.length, 8)
   // 精确契约：每个事件的内建行 id 顺序 + 是否可取消。不是 typeof 检查。
   const contract = {
     'ticket.started': { cancellable: false, rows: ['builtin:prepare'] },
     'ticket.acknowledged': { cancellable: true, rows: [] },
-    'ticket.delivered': { cancellable: false, rows: ['builtin:injection'] },
+    'ticket.delivered': { cancellable: false, rows: ['builtin:injection', 'builtin:archiveSession'] },
     'ticket.attention': { cancellable: false, rows: ['builtin:injection'] },
     'inbox.approved': { cancellable: false, rows: ['builtin:reviewRecord'] },
     'inbox.issue': { cancellable: false, rows: ['builtin:prIssue', 'builtin:spvObjection'] },
@@ -252,6 +255,7 @@ async function testTableView() {
     'builtin:reviewRecord',
     'builtin:mergePull',
     'builtin:coldInstallNotice',
+    'builtin:archiveSession',
   ]) {
     assert.ok(ids.includes(id), `${id} exists verbatim`)
   }
@@ -279,12 +283,20 @@ async function testTableView() {
     model.events.find(entry => entry.id === 'inbox.merged').rows.map(row => row.id),
     ['builtin:mergePull', 'builtin:coldInstallNotice'],
   )
-  assert.deepEqual(model.events.find(entry => entry.id === 'ticket.delivered').rows.map(row => row.id), ['builtin:injection'])
+  assert.deepEqual(model.events.find(entry => entry.id === 'ticket.delivered').rows.map(row => row.id), [
+    'builtin:injection',
+    'builtin:archiveSession',
+  ])
   assert.deepEqual(
     model.events.find(entry => entry.id === 'ticket.attention').rows.map(row => row.id),
     ['builtin:injection'],
     'notice injection is core path too',
   )
+  const archive = model.builtin.find(row => row.id === 'builtin:archiveSession')
+  assert.deepEqual(archive.events, ['ticket.delivered'], 'the archive row belongs to delivered, not to notices')
+  assert.equal(archive.cancellable, false)
+  assert.equal(archive.editableText, false)
+  assert.match(archive.description, /wheelchair-agent-webui/, 'the description says it is service-side, not a user script')
 
   // 派生 eventId：每个事件用事实字段，都有稳定答案。
   assert.equal(eventIdFor('ticket.delivered', { messageId: 'm-1' }), 'm-1')
@@ -1374,7 +1386,7 @@ async function waitForJson(file, label, timeoutMs = 8000) {
   return value
 }
 
-function startTestRunner(box, { intervalSecondsOf = () => 0, log = () => {} } = {}) {
+function startTestRunner(box, { intervalSecondsOf = () => 0, log = () => {}, effects } = {}) {
   return startHookRunner({
     env: box.env,
     home: box.root,
@@ -1383,6 +1395,7 @@ function startTestRunner(box, { intervalSecondsOf = () => 0, log = () => {} } = 
     intervalSecondsOf,
     log,
     unref: true,
+    effects,
   })
 }
 
@@ -1722,10 +1735,263 @@ async function testStage2InboxWiring() {
   assert.equal(letterPayload.messageId, `inbox-${letter.id}-review-0`)
 }
 
+/** 只记录调用的假 registry：`failures` 里的每个 error.name 消耗一次调用。 */
+function fakeArchiveHarness({ jobs = [] } = {}) {
+  const calls = []
+  const log = []
+  const registry = {
+    archivedSessionIds: [],
+    failures: [],
+    async archiveSession(sessionId, options) {
+      calls.push({ sessionId, options })
+      const failure = registry.failures.shift()
+      if (failure !== undefined) {
+        const error = new Error(failure)
+        error.name = failure
+        throw error
+      }
+      registry.archivedSessionIds.push(sessionId)
+    },
+  }
+  const effect = createArchiveSessionEffect({
+    workspaceRegistryOf: () => registry,
+    // null 代表"这个 composition 没有 jobs 服务"（jobsOf 返回 undefined）。
+    jobsOf: () => (jobs === null ? undefined : { list: () => (typeof jobs === 'function' ? jobs() : jobs) }),
+    log: line => log.push(line),
+  })
+  return { calls, log, registry, effect }
+}
+
+/** 投一条写到 outbox 的 reply/notice；`ticketId` 缺省时负载里就没有这个字段。 */
+async function deliverQueueMessage(box, { id, ticketId, kind = 'reply', at }) {
+  const message = { id, source: 'spv', thread: 'main', kind, text: 'done', at }
+  if (ticketId !== undefined) message.ticketId = ticketId
+  await writeMessage(dirsOf(box.queue), message)
+}
+
+/**
+ * 服务侧内建效果 `builtin:archiveSession`：交付后归档 worker 会话。
+ *
+ * 契约的边界：paused / cursor 不执行、empty 执行、还有 running/stopping 的 job 不归档、未知会话静默、
+ * turn 没结束时一个 tick 重试一次并在 N 次后放弃、失败只 warn，且绝不影响脚本或下一条事件。
+ */
+async function testArchiveEffect() {
+  // 唯一的约定：worker 会话 id 由工单 id 推导。
+  assert.equal(workerSessionIdOf('tk-1'), 'worker-tk-1')
+  assert.equal(workerSessionIdOf('   '), undefined)
+  assert.equal(workerSessionIdOf(undefined), undefined)
+
+  // 1) 没有自定义脚本的 delivered（skipped='empty'）也归档；认领过的 occurrence 重放不再归档一次。
+  {
+    const box = await sandbox()
+    const harness = fakeArchiveHarness()
+    const runner = startTestRunner(box, { effects: { 'builtin:archiveSession': harness.effect } })
+    try {
+      await deliverQueueMessage(box, { id: 'm-archive-1', ticketId: 'tk-1', at: '2026-11-16T00:00:06.000Z' })
+      await runner.drainOnce()
+      assert.deepEqual(harness.calls, [{ sessionId: 'worker-tk-1', options: { stopActivity: false } }])
+      assert.deepEqual(harness.registry.archivedSessionIds, ['worker-tk-1'])
+      assert.ok(harness.log.includes('archived worker-tk-1'))
+      await runner.drainOnce()
+      assert.equal(harness.calls.length, 1, 'a claimed occurrence does not archive twice')
+
+      // 没有 ticketId 的 reply 推不出会话：warn 一次并跳过，不猜一个 id 去归档。
+      await deliverQueueMessage(box, { id: 'm-archive-no-ticket', at: '2026-11-16T00:00:07.000Z' })
+      await runner.drainOnce()
+      assert.equal(harness.calls.length, 1)
+      assert.ok(harness.log.some(line => line.startsWith('warning:') && line.includes('without a ticketId')))
+    } finally {
+      runner.stop()
+      await runner.done
+    }
+  }
+
+  // 2) 总开关关着（skipped='paused'）：脚本与效果都不跑；恢复后也不补跑。
+  {
+    const box = await sandbox()
+    setHooks(box, { enabled: false })
+    const harness = fakeArchiveHarness()
+    const runner = startTestRunner(box, { effects: { 'builtin:archiveSession': harness.effect } })
+    try {
+      await deliverQueueMessage(box, { id: 'm-archive-paused', ticketId: 'tk-p', at: '2026-11-16T00:00:08.000Z' })
+      await runner.drainOnce()
+      assert.equal(harness.calls.length, 0, 'a paused occurrence runs no effect')
+      setHooks(box, { enabled: true })
+      await runner.drainOnce()
+      assert.equal(harness.calls.length, 0, 'the paused occurrence was claimed, so it is not replayed')
+    } finally {
+      runner.stop()
+      await runner.done
+    }
+  }
+
+  // 3) 会话还有 running/stopping 的 job：完全不归档（留给 ticket.ended 的归档，那条路先杀 job），
+  //    否则 job 结束后的唤醒不经过 revive()，会被 archived gate 拒掉。
+  {
+    const box = await sandbox()
+    const busy = fakeArchiveHarness({ jobs: [{ owner: 'worker-tk-busy', status: 'running' }] })
+    const runner = startTestRunner(box, { effects: { 'builtin:archiveSession': busy.effect } })
+    try {
+      await deliverQueueMessage(box, { id: 'm-archive-busy', ticketId: 'tk-busy', at: '2026-11-16T00:00:09.000Z' })
+      await runner.drainOnce()
+      assert.equal(busy.calls.length, 0, 'a running job keeps the session archived-free')
+      assert.ok(busy.log.some(line => line.includes('running/stopping job')))
+
+      // 一个已结束的 job 不算"还在用"；别人的 job 也不算。
+      const settled = fakeArchiveHarness({
+        jobs: [{ owner: 'worker-tk-busy', status: 'succeeded' }, { owner: 'worker-other', status: 'running' }],
+      })
+      await deliverQueueMessage(box, { id: 'm-archive-settled', ticketId: 'tk-busy', at: '2026-11-16T00:00:10.000Z' })
+      const settledRunner = startTestRunner(box, { effects: { 'builtin:archiveSession': settled.effect } })
+      try {
+        await settledRunner.drainOnce()
+      } finally {
+        settledRunner.stop()
+        await settledRunner.done
+      }
+      assert.equal(settled.calls.length, 1, 'a settled job does not block archiving')
+    } finally {
+      runner.stop()
+      await runner.done
+    }
+  }
+
+  // 4) jobs 服务不可读：降级成"当作有 job"——不归档、只 warn，不猜。
+  {
+    const box = await sandbox()
+    const harness = fakeArchiveHarness({ jobs: null })
+    const runner = startTestRunner(box, { effects: { 'builtin:archiveSession': harness.effect } })
+    try {
+      await deliverQueueMessage(box, { id: 'm-archive-nojobs', ticketId: 'tk-nj', at: '2026-11-16T00:00:11.000Z' })
+      await runner.drainOnce()
+      assert.equal(harness.calls.length, 0)
+      assert.ok(harness.log.some(line => line.startsWith('warning:') && line.includes('jobs service is unavailable')))
+    } finally {
+      runner.stop()
+      await runner.done
+    }
+  }
+
+  // 5) 会话从未创建（WorkspaceUnknownSessionError）：静默，没有 warning。
+  {
+    const box = await sandbox()
+    const harness = fakeArchiveHarness()
+    harness.registry.failures.push('WorkspaceUnknownSessionError')
+    const runner = startTestRunner(box, { effects: { 'builtin:archiveSession': harness.effect } })
+    try {
+      await deliverQueueMessage(box, { id: 'm-archive-unknown', ticketId: 'tk-un', at: '2026-11-16T00:00:12.000Z' })
+      await runner.drainOnce()
+      assert.equal(harness.calls.length, 1)
+      assert.deepEqual(harness.log, [], 'a session that never existed is not a warning')
+      assert.equal(harness.registry.archivedSessionIds.length, 0)
+    } finally {
+      runner.stop()
+      await runner.done
+    }
+  }
+
+  // 6) turn 还没结束（WorkspaceActiveSessionError）：一个 tick 重试一次，成功后清掉待重试项。
+  {
+    const box = await sandbox()
+    const harness = fakeArchiveHarness()
+    harness.registry.failures.push('WorkspaceActiveSessionError')
+    const runner = startTestRunner(box, { effects: { 'builtin:archiveSession': harness.effect } })
+    try {
+      await deliverQueueMessage(box, { id: 'm-archive-active-ok', ticketId: 'tk-ao', at: '2026-11-16T00:00:13.000Z' })
+      await runner.drainOnce()
+      assert.equal(harness.calls.length, 1, 'the active session is not retried inside the same tick')
+      assert.equal(harness.registry.archivedSessionIds.length, 0)
+      await runner.drainOnce()
+      assert.equal(harness.calls.length, 2, 'the next tick retries once')
+      assert.deepEqual(harness.registry.archivedSessionIds, ['worker-tk-ao'])
+      await runner.drainOnce()
+      assert.equal(harness.calls.length, 2, 'a recovered retry stops retrying')
+    } finally {
+      runner.stop()
+      await runner.done
+    }
+  }
+
+  // 7) turn 一直没结束：初始 1 次 + N 次重试后放弃，只留一条 warning，之后不再调用。
+  {
+    const box = await sandbox()
+    const harness = fakeArchiveHarness()
+    for (let index = 0; index <= EFFECT_MAX_RETRIES; index += 1) {
+      harness.registry.failures.push('WorkspaceActiveSessionError')
+    }
+    // 放弃时的 warning 由 runner 写（它掌握重试计数），不是效果自己的 log。
+    const runnerLog = []
+    const runner = startTestRunner(box, { log: line => runnerLog.push(line), effects: { 'builtin:archiveSession': harness.effect } })
+    try {
+      await deliverQueueMessage(box, { id: 'm-archive-active-bad', ticketId: 'tk-ab', at: '2026-11-16T00:00:14.000Z' })
+      await runner.drainOnce()
+      assert.equal(harness.calls.length, 1)
+      for (let index = 0; index < EFFECT_MAX_RETRIES; index += 1) await runner.drainOnce()
+      assert.equal(harness.calls.length, 1 + EFFECT_MAX_RETRIES, 'exactly N retries')
+      assert.ok(runnerLog.some(line => line.startsWith('warning:') && line.includes('giving up')))
+      await runner.drainOnce()
+      assert.equal(harness.calls.length, 1 + EFFECT_MAX_RETRIES, 'a given-up effect is not retried forever')
+      assert.equal(harness.registry.archivedSessionIds.length, 0)
+    } finally {
+      runner.stop()
+      await runner.done
+    }
+  }
+
+  // 8) 脚本失败不挡归档；归档失败只 warn，不挡同一条 drain 里的下一个事件。
+  {
+    const box = await sandbox()
+    const harness = fakeArchiveHarness()
+    harness.registry.failures.push('Error')
+    addHook(box, { event: 'ticket.delivered', name: 'fails', script: 'exit 1' })
+    const afterMarker = join(box.base, 'archive-after.json')
+    addHook(box, { event: 'ticket.attention', name: 'after-archive', script: `cat > ${q(afterMarker)}` })
+    const runner = startTestRunner(box, { effects: { 'builtin:archiveSession': harness.effect } })
+    try {
+      await deliverQueueMessage(box, { id: 'm-archive-hookfail', ticketId: 'tk-hf', at: '2026-11-16T00:00:15.000Z' })
+      await deliverQueueMessage(box, {
+        id: 'm-archive-notice',
+        ticketId: 'tk-hf',
+        kind: 'notice',
+        at: '2026-11-16T00:00:16.000Z',
+      })
+      await runner.drainOnce()
+      assert.equal(harness.calls.length, 1, 'a failing delivered hook still leaves the effect running')
+      assert.ok(harness.log.some(line => line.startsWith('warning:') && line.includes('cannot archive worker-tk-hf')))
+      assert.ok(
+        (await records(box)).some(record => record.event === 'ticket.delivered' && record.exit === 1),
+        'the failing script is still recorded as a normal run',
+      )
+      assert.equal((await readFile(afterMarker, 'utf8')).trim() !== '', true, 'the next event still runs')
+      assert.equal(harness.calls.length, 1, 'a notice does not trigger the archive row')
+    } finally {
+      runner.stop()
+      await runner.done
+    }
+  }
+
+  // 9) 已经归档过（重放/重启）：再调一次也安全，且不重复宣告。
+  {
+    const box = await sandbox()
+    const harness = fakeArchiveHarness()
+    harness.registry.archivedSessionIds.push('worker-tk-archived')
+    const runner = startTestRunner(box, { effects: { 'builtin:archiveSession': harness.effect } })
+    try {
+      await deliverQueueMessage(box, { id: 'm-archive-replay', ticketId: 'tk-archived', at: '2026-11-16T00:00:17.000Z' })
+      await runner.drainOnce()
+      assert.equal(harness.calls.length, 1, 'the effect still asks; the registry itself is idempotent')
+      assert.ok(!harness.log.includes('archived worker-tk-archived'), 'an already archived session is not announced again')
+    } finally {
+      runner.stop()
+      await runner.done
+    }
+  }
+}
 
 try {
   await testStage2IntervalSetting()
   await testStage2RunnerAndSpool()
+  await testArchiveEffect()
   await testStage2InboxWiring()
   await testTableView()
   await testPayloadEnvAndCwd()

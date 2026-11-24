@@ -287,3 +287,59 @@ python3 -c "import sqlite3,json;c=sqlite3.connect('/tmp/wca/orchestrator.sqlite'
 - wheelchair：`src/shared/hook-events.js:101-121,302+`、`src/shared/hooks.js:824-834`、`src/spv/hook-runner.js:100-153`、
   `webui/lib/index.js:175-185`、`src/superagent/watch.js:57-73`、`install.sh:344`、
   `~/.dsh/profiles/superagent/cordis.patch.yml`（wheelchair-webui / wheelchair-spv 的 mount 行）。
+
+## 9. 实现记录（方案 A）
+
+2026-11-24 按 §6 方案 A 落地（仓库 `nihaoWX/wheelchair-agent`，PR 见该仓库 `agent/` 分支）。只改 wheelchair
+自有文件，未碰 dsh-superagent，也未改 HARNESS。
+
+### 落点
+
+1. `src/shared/hook-events.js`：`ticket.delivered` 的 `builtin` 增加 `builtin:archiveSession`；`BUILTIN_ROWS`
+   新增一行（`events: ['ticket.delivered']`、`cancellable: false`、`editableText: false`），说明写明"由
+   wheelchair-agent-webui 在服务侧执行、不是用户脚本"。
+2. `src/spv/archive-effect.js`（新文件）：`workerSessionIdOf(ticketId)` → `worker-<id>`；
+   `createArchiveSessionEffect({ workspaceRegistryOf, jobsOf, log })` 实现归档决策：没有 `ticketId` → warn
+   跳过；会话名下有 `running`/`stopping` job（`jobs.list(sessionId)` 的 `view.owner` 是 owner id 字符串）→
+   跳过，留给 `ticket.ended`；jobs 服务不可读 → 当作"有 job"降级并 warn；registry 拿不到 → warn 跳过；
+   `archiveSession(id, { stopActivity: false })`；`WorkspaceUnknownSessionError` 静默；`WorkspaceActiveSessionError`
+   返回 `{ retry: true }`；其他错误只 warn。效果永不抛。
+3. `src/spv/hook-runner.js`：`startHookRunner(..., effects = {})`；每次 `runHooksFor` 之后按
+   `builtinRowsFor(event)` 执行注入的效果；`summary.skipped` 为 `'paused'`/`'cursor'` 时跳过，`'empty'` 照跑。
+   `{ retry: true }` 进 pending 表，每个 drain 开头各试一次，`EFFECT_MAX_RETRIES = 3` 次后放弃并 warn；
+   drain 顺序 retries → spool → 队列，保证重试至少隔一个间隔。
+4. `webui/lib/index.js`：给 `startHookRunner` 传 `effects: { 'builtin:archiveSession': … }`；registry 与 jobs
+   都用 lazy 查找（直接属性 → `ctx.get`，registry 最多等 5s，同 `src/superagent/watch.js:57-73`）；runner 与
+   效果共用一个 `wheelchair-hooks:` 日志 sink（warning → `ctx.logger.warn`）。
+5. `install.sh`：`render_webui_into` 新增 `spv/archive-effect.js:lib/core/archive-effect.js`（预设白名单不变，
+   该文件只属于 webui 包）；`package.json` 的 `check` 加 `node --check src/spv/archive-effect.js`。
+
+### 与报告的两处偏差
+
+- 报告 §6 说"`install.sh:344` 已经复制，无需改安装脚本"：新增**独立文件**时必须再加一条 webui copy pair，
+  否则装出来的包缺 `lib/core/archive-effect.js`，`check_webui` 与 import 都会失败。已在 `install.sh:392` 附近补上。
+- 报告写"按 `builtinRowsFor(event)` 执行"容易被读成用 `summary.eventId`：实测 `runHooksFor` 返回的
+  `summary.eventId` 是队列消息 id（如 `m-…`），而 `builtinRowsFor` 只接受事件名（`ticket.delivered`）。
+  实现按事件名解析；用 eventId 会解析不到任何行，效果静默不跑（本次测试就是这样抓到的）。
+
+### 测试
+
+`tests/test-hooks.mjs` 新增 `testArchiveEffect()` 九个场景：delivered 归档 + 重放不重复 + 无 ticketId 只 warn；
+paused 不执行且恢复后不补跑；running/stopping job 让路、settled job 与别人的 job 不拦；jobs 服务缺失降级；
+会话从未创建时静默；`WorkspaceActiveSessionError` 下一 tick 重试一次后成功；一直 active 时 1+N 次后放弃；
+脚本失败不挡归档、归档失败不挡下一条事件；已归档会话再调不重复宣告。`tests/test-settings.mjs` 与
+`tests/test-inbox-refresh.mjs` 的临时 webui 包补上 `archive-effect.js` 副本。
+
+`npm test`：退出 0，322 个 `PASS` / 0 failed（其余脚本以 `ok` 结尾），含 `test-layout.sh`、`test-install.sh`。
+
+### 行为与限制
+
+- 工单 delivered 且 turn 结束后，默认侧栏不再显示该 worker；日志原地保留，"显示已归档"可取消归档，
+  面板的 Session 按钮仍能打开只读对话（此时在里面发消息会被 archived gate 拒绝）。
+- 有 `running`/`stopping` job 时**不**归档，交给 `ticket.ended`（那条路先杀 job 再归档）——因为 job 结束的
+  唤醒路径不经过 `revive()`，提前归档会让它被 gate 拒绝。
+- 没有做真机运行验证（按工单要求不启停服务）：`ctx.jobs.list(sessionId)` 在插件作用域的可读性、
+  `stopActivity: false` 的实际拒绝时机只有读码与注入测试证据。jobs 不可读时降级为"不归档"，最坏结果
+  只是回到现状（侧栏继续显示）。
+- `ARCHITECTURE/hooks.md` 的内建行清单未更新（本工单禁止改 HARNESS），需要维护者补 `builtin:archiveSession`
+  一行。
