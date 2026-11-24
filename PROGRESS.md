@@ -8,10 +8,14 @@
 `inbox` / `work` / `restart-all` / `session` / `hook` / `where` / `check`）。`spv`、`superagent-service`、
 `jobctl` 是它的兼容薄壳。
 
-**数据根**：`~/.wheelchair-agent/`（`settings.json`、`inbox/`、`records/`、`logs/`），与 superagent 不耦合；
-队列当前在 `~/.dsh/state/superagent/spv/`（单部署），superagent 自己的 state 在 `~/.dsh/state/superagent/`。
-**一仓一部署**（`INSTRUCTIONS.md`）正在实现：注册表 `~/.wheelchair-agent/deployments.json` 决定
-`project → 部署`，队列随之归各部署自己；见 `ARCHITECTURE/deployments.md`。
+**数据根**：`~/.wheelchair-agent/`（`settings.json`、`inbox/`、`records/`、`logs/`、`deployments.json`），与
+superagent 不耦合；队列归**每份部署**自己（`<stateDir>/spv/`），superagent 自己的 state 在
+`~/.dsh/state/superagent/<slug>/`。
+**一仓一部署**（`INSTRUCTIONS.md`）stage 1–3 已全部落地（`#42`/`#43`/`#44`/`#45`/`#46`/`#48`）：注册表
+`~/.wheelchair-agent/deployments.json` 是**唯一**来源，`project → 部署` 决定队列、实例 overlay、端口与会话；
+没有注册表的机器先 `wheelchair-agent deployment migrate` 认领旧安装。单部署**旧形态**已删除（裸 `service`、
+裸 `restart-all`、默认项目的 `spv`、`resolveRoot` 的 legacy 回退、watcher 的全量轮询），见
+`ARCHITECTURE/deployments.md`。
 
 **面板**：dsh web 里左侧栏 `wheelchair-agent`（功能宿主，不是 iframe），当前三个功能——收件箱、设置、
 插口（hooks 的只读视图）。`webui.style` = `fluid`（默认）/ `minimal`；各页共用 1200px 宽度变量，
@@ -47,6 +51,14 @@
 
 # Completed
 
+- **去单部署（`#48`,`1ba0587`）**：注册表成了唯一来源——`resolveRoot`/`resolveRoots` 删掉 legacy 回退、
+  `install.sh --project` 必填（唯一推断是 checkout 唯一对上已登记部署）、`service` 要 `--project`/`--all`
+  （裸 `status` 例外）、`spv` 三级推断不再默认 `tools/wheelchair-agent`、watcher 认不出自己就什么都不轮询、
+  `deployment remove` 删最后一条要 `--force`、`migrate` 只剩"认领旧安装"。`restart-all --all` 改成逐份
+  stop → 等 lease → 装一次 `install.sh --project` → 逐份 start（原先那条计划里是裸 `install.sh`/裸
+  `service start`，真跑会停光起不回）；`--all --dry-run` 需 `--detach` 才出计划。三轮自验：第一轮抓到
+  `--all` 的洞、第二轮抓到 dry-run 的 `preflight(detached:false)` 回归、第三轮全绿；基线 355 → **367 passed
+  / 0 failed**，CI pass，+1578/−465。
 - **一仓一部署 stage 2 第二片（`#45`,`d9115a5`）**：`restart-all --project <p>` 与
   `/restart-wheelchair-agent --project <p>` 只停/起那一份实例、不跑 install、只 resume 该部署自己的会话
   （`--session` → 该 stateDir 的 `deployment-session.json`，**绝不**读全局 `~/.dsh-tui/resume.txt`）；
@@ -67,21 +79,21 @@
 - **一仓一部署 stage 2 第一片（`#44`,`a83f2b5`）**：每部署一份实例 overlay
   `<data root>/deployments/<slug>.yml`（端口 + `dsh-superagent` 的 stateDir + `wheelchair-spv` 的 queueDir），
   `deployment add`/`install.sh --project` 共用 `renderInstance()`；`writeInstance()` 只在文件不存在时创建。
-  `service … --project <p>` 按注册表找实例文件、端口、会话（`wca-<slug>`）与日志，只动那一份；不带 `--project`
-  时逐字沿用旧行为。`commands/superagent-service.py` 的进程匹配从 profile 细化到「profile + `--patch` 文件」。
+  `service … --project <p>` 按注册表找实例文件、端口、会话（`wca-<slug>`）与日志，只动那一份；当时不带
+  `--project` 仍沿用旧行为（`#48` 已改成必须 `--project`/`--all`）。`commands/superagent-service.py` 的进程匹配从 profile 细化到「profile + `--patch` 文件」。
   我自己验：`dsh --profile superagent --patch <实例文件> --dump-config` 真的把 `port: 3099`（516 行）、
   `stateDir`（1283 行）、`queueDir`（1484 行）套进去了；`deployment add` 幂等、`--queue-dir` 不一致
   `exit 2`、手改注册表 `exit 1`；`npm test` 368 PASS/0 FAIL。
 - **一仓一部署 stage 1 收尾（`#43`,`07c9b24`）**：注入器改用 `resolveRoots()` 每轮解析**所有**部署队列
   （显式 `queueDir`/`$SPV_QUEUE_DIR` 仍然独占一根），去重身份是「队列根 + 文件名 + thread」、每根各自取基线，
-  新 `deployment add` 的部署在运行期被接上且不重放积压；`spv_status` 按部署分组（`project` 参数只看一份），
-  注册表不存在时输出与旧版逐字相同。我实测：三个根（两个部署 + 旧规则根）各投一条 reply → 三条都注入一次，
+  新 `deployment add` 的部署在运行期被接上且不重放积压；`spv_status` 按部署分组（`project` 参数只看一份）；
+  当时注册表不存在时输出与旧版逐字相同（`#48` 已改成给出指路错误）。我实测：三个根（两个部署 + 旧规则根）各投一条 reply → 三条都注入一次，
   随后再向其中一个队列追加一条 → 也注入，共 4 条不重复。
 - **一仓一部署 stage 1（`#42`,`4a24e4f`）**：注册表 `~/.wheelchair-agent/deployments.json`（项目 → 部署，
   坏文件报错且一字不改、原子写入）+ `wheelchair-agent deployment list|add|remove|migrate` +
   `dispatch`/`spv_dispatch` 按注册表写对应部署的队列（缺条目报错并指路 `deployment add`，绝不自动建）+
-  `install.sh --project` 装成功后记账（`--check`/`--fingerprint` 只读）。注册表不存在时行为逐字不变，
-  所以升级本身不改变任何现有行为；`deployment migrate` 才切换到分部署模式。
+  `install.sh --project` 装成功后记账（`--check`/`--fingerprint` 只读）。当时注册表不存在时行为逐字不变，
+  所以升级本身不改变任何现有行为（`#48` 已翻转：注册表是唯一来源）；`deployment migrate` 认领旧安装。
 - **交付后自动合并（`#41`,`82b0d3d`）**：内建效果 `builtin:autoMerge` 挂在 `ticket.delivered`，用
   `work-plan` 找到工单 clone → 分支名 + `remote.origin.url` → `gh pr list --head <branch>` 反推 PR；
   五道闸门（唯一 open PR 且 head 匹配 / 非 draft / `MERGEABLE` / `statusCheckRollup` 非空且全 SUCCESS /
@@ -140,10 +152,12 @@
 
 # In Progress
 
-- **一仓一部署 stage 2（未开始）**：每部署 `install.sh --project`、`wca-<slug>.service`、端口分配、
-  `service --project`、`/restart-wheelchair-agent --project`；stage 3 再给收件箱 watcher 定归属、把审查结果
-  路由回拥有该信的部署。设计见 `ARCHITECTURE/deployments.md`。冷安装等操作者：`service stop` → 退出 SPV → `bash install.sh` →
-  `service start` → `wheelchair-agent spv`。
+- **等操作者做一次冷安装**：`wheelchair-agent deployment migrate`（认领旧安装，`#48` 起是必需步骤）→
+  `bash build/build-core.sh`（`--check` 只比对 checkout 与已装是否一致，不建 core 就会装旧的）→
+  `bash install.sh --project tools/wheelchair-agent` → `service start --project tools/wheelchair-agent`。
+  装完一次带上 `#37`/`#39`/`#40`/`#41`/`#44`–`#48`；之后 `deployment add <project>` 才能加第二份部署。
+- **`merge.autoMerge` 仍是关的**：`settings.json` 里还没有这个键（默认 `false`），要在面板打开，
+  且第一次真正合并前建议先用一张低风险 PR 试。
 
 # Known Issues
 
@@ -156,11 +170,12 @@
   `/proc`、tmux、端口的实时探测。
 - **dsh-superagent 没有 HARNESS**：dsh-superagent 的 `docs/007-architecture.md`（71KB）在充当 ARCHITECTURE，渐进式披露失守。
   拆分前必须先改 `tests/docs.spec.ts` 里硬编码的 `docs/007-architecture.md` 路径。
-- **worker / router 两个 preset 还没挂 billion-context**：`INSTRUCTIONS.md` 的「压缩策略2」要求 worker、orchestrator、
+- **worker / router 两个 preset 的 bili 工具待实机确认**：`INSTRUCTIONS.md` 的「压缩策略2」要求 worker、orchestrator、
   spv 全部交给 billion-context。三处策略1 已关（`dsh-superagent` `#2`、本仓 `#34`），SPV 会话本来就在用
-  billion-context；但 `dsh-superagent-worker` / `dsh-superagent-router` 这两个自建 preset **身上没有 bili 的行**
-  （bili 只往四个内置 preset 注入，操作者也确认 worker 工具表里没有 bili 工具）。挂载要"可选挂"：插件不在
-  就不挂，否则 `MODULE_NOT_FOUND` 或 inject 悬空让 preset 一直 pending。
+  billion-context；worker/router 的 preset 里**没有 bili 的行**（bili 只往四个内置 preset 注入），工具可见性靠
+  `dsh-superagent` `#3`（`c79f104`）的 `BILI_TOOLS` + `allowTools()` 解决——它放宽 `tools.restrict` 的白名单，
+  插件不在时白名单与旧版完全一致。`#3` 随下次冷安装生效，**要等下一次真派单在 worker 工具表里看到
+  `compress`/`acp_status` 等六个工具**才算验证完成。
 - **冷安装现在多一步前置**：`install.sh` 需要 `bash build/build-core.sh` 的产物，所以装的人要有 cargo +
   crates.io。这与"面向大众一键安装"冲突，发布前必须改成按平台预编译产物（`dsh` 的做法：按平台拆包 +
   `os`/`cpu` 门禁）。
@@ -175,15 +190,16 @@
 
 # Next Steps
 
-0. **Rust 迁移的下一张票**：`src/shared/` 剩下的纯逻辑——`settings` → `hooks`（类型面最大的一块）；
+0. **Rust 迁移的下一张票**：`settings` 已在 `#47` 搬完，下一块是 `hooks`（`src/shared/hooks.js`，类型面最大）；
    然后是 CLI 侧 `dispatch`/`outbox`/`check`/`health`/`cron`/`inbox` 存储；`session`/`restart` 链放最后（它管杀进程，
    出事最贵）。每张票的 parity 门都是"对应测试文件零改动 + 用户可见输出逐字一致"。
 
-1. 操作者执行一次冷安装（`#29`/`#30` 需要新 host 才生效）。
+1. 操作者执行一次冷安装（`deployment migrate` → `build-core.sh` → `install.sh --project` → `service start --project`），
+   `#37`–`#48` 一起生效。
 2. 重派 `service-detach`（带禁令），并把 `service open` 作为最后一步并入 `/restart-wheelchair-agent`
    （`src/spv/restart.js` + `tests/test-restart.mjs`，见 `docs/PITFALLS/dsh-web-panel-token-is-per-instance.md`
    的「改法」一节）。
 3. 建 `dsh-superagent` 的 HARNESS 脊梁（`ARCHITECTURE.md` + `core/executor/sources/panel/operations/modules/tests`），
    把 007 拆开并 repoint `tests/docs.spec.ts`；顺带把两个压缩设置做进面板。
-4. 一仓一部署 stage 2：`install.sh --project`、`wca-<slug>.service`、端口分配、`service --project`、
-   `/restart-wheelchair-agent --project`；stage 3 再给收件箱 watcher 定归属、把审查结果路由回拥有该信的部署。
+4. 一仓一部署：stage 1–3 与去单部署都已完成（`#42`–`#48`）。剩下的只有实机验证——`deployment add` 第二份部署
+   （例：`tools/pitfalls-manager`），确认两个面板各自可达、`dispatch --project` 各写各的队列、审查回信落到正确部署。

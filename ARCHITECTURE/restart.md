@@ -1,9 +1,22 @@
-# Restarting the deployment (`restart-all`)
+# Restarting deployments (`restart-all`, `/restart-wheelchair-agent`)
 
-`wheelchair-agent restart-all` restarts everything this deployment runs: the superagent service, a cold
-install of the preset, and the SPV TUI. `/restart-wheelchair-agent` in an SPV session does the same thing
-through the detached path. The point of one command is the **order**; doing those three things by hand in
-the wrong order either hits the cold-install guard or leaves a half-installed deployment.
+Since `#48` there is no bare `restart-all`: a restart always names its scope.
+
+- `restart-all --project <p>` (what `/restart-wheelchair-agent` runs, with `<p>` resolved from the instance's
+  `SPV_QUEUE_DIR`) restarts **one** deployment's instance and resumes that deployment's session. It does **not**
+  run `install.sh`: the preset, webui, CLI and core are installed once for every deployment, so the install is a
+  separate, machine-level step. The implementation is `src/spv/deployment-restart.js`, not this file.
+- `restart-all --all` is the whole-machine cycle documented here: stop **every** registered instance, stop the
+  SPV chain, run **one** `install.sh --project <installProject>`, start every instance back, bring the TUI back.
+  `installProject` comes from the checkout being installed (its git origin or its path under `<projectsRoot>`);
+  when neither identifies a deployment it must be passed explicitly. `--all --dry-run` needs `--detach` to print
+  its plan from inside the SPV session, because the foreground form is refused by the ancestor guard.
+
+`wheelchair-agent restart-all --all` therefore restarts everything a machine runs: the superagent instances, a
+cold install of the preset, and the SPV TUI. `/restart-wheelchair-agent` does the per-deployment half through the
+detached path, and `/restart-wheelchair-agent --all` arms this one. The point of one command is the **order**;
+doing those three things by hand in the wrong order either hits the cold-install guard or leaves a
+half-installed deployment.
 
 The TUI comes back in the terminal that launched `wheelchair-agent spv`: that process survives the restart,
 narrates every step and starts the launcher again there, resumed into the same SPV conversation when

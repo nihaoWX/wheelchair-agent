@@ -29,16 +29,17 @@
 
 | 命令 | 做什么 | 实现 |
 |---|---|---|
-| `wheelchair-agent spv [dsh-tui 参数...]` | 拉起后端（幂等）后启动 SPV 会话，其余参数透传给 `dsh-tui` | `exec sh preset/spv-launcher.sh "$@"` |
+| `wheelchair-agent spv [--project <p>] [dsh-tui 参数...]` | 拉起后端（幂等）后启动 SPV 会话，其余参数透传给 `dsh-tui`；目标部署按 `--project` → cwd 落在 `<projectsRoot>/<project>` → 报错列清单三级推断，并把该部署的 `DSH_SUPERAGENT_STATE_DIR`/`SPV_QUEUE_DIR` 交给实例 | `exec sh preset/spv-launcher.sh "$@"` |
 | `wheelchair-agent prepare` | 面板的 prepare 命令：clone 项目 → 受管 `AGENTS.md` → `tools/` 私有远端 | `exec sh commands/prepare.sh "$@"` |
-| `wheelchair-agent service <start\|stop\|restart\|status\|open>` | 服务启停与面板 | `exec python3 commands/superagent-service.py "$@"` |
+| `wheelchair-agent service <start\|stop\|restart\|status\|open> [--project <p>\|--all]` | 服务启停与面板；除裸 `status` 外必须说清目标（`#48` 起没有无 project 的基服务） | `import src/spv/deployment.js` → `commands/superagent-service.py` |
 | `wheelchair-agent jobctl <submit\|status\|log\|verify\|cancel>` | 长任务交给 systemd | `exec python3 commands/jobctl.py "$@"` |
 | `wheelchair-agent dispatch --project <p> --task <t> [--thread <n>] [--preset <id>]` | 往队列写一个任务 | `import src/spv/dispatch.js` |
 | `wheelchair-agent status [--thread <n>]` | 非阻塞看队列 | `import src/spv/outbox.js` |
 | `wheelchair-agent inbox` | 打印面板在哪里（dsh Web UI 的 `wheelchair-agent` 面板）；不再起独立页 | — |
 | `wheelchair-agent inbox watch [--once] [--interval <秒>]` | 轮询 `tools/*` 的 `gh pr list`，把 PR 写进收件箱 | `import src/spv/inbox.js` |
 | `wheelchair-agent work <gc\|restored>` | 回收可重建的票目录；`restored <ticket>` 打印重建命令 | `import src/shared/work.js` |
-| `wheelchair-agent restart-all [--dry-run] [--force] [--no-install] [--detach]` | 停服务 → 等会话租约 → 冷安装 → 起服务 → 同终端 `--resume` 拉回会话（`/restart-wheelchair-agent` 的实现） | `import src/spv/restart.js` |
+| `wheelchair-agent restart-all --project <p> \| --all [--dry-run] [--force] [--no-install] [--detach]` | `--project`：只停/起那一份实例并 resume 它的会话，**不装**（`/restart-wheelchair-agent` 的实现）；`--all`：逐份停 → 等会话租约 → 装一次 → 逐份起 → 同终端 `--resume` 拉回会话（`/restart-wheelchair-agent --all`） | `import src/spv/deployment-restart.js` / `src/spv/restart.js` |
+| `wheelchair-agent deployment <list\|add\|remove\|migrate>` | 项目 → 部署注册表：路由、实例 overlay、端口分配；`remove` 删最后一条要 `--force`；`migrate` 认领旧安装 | `import src/spv/deployment.js` |
 | `wheelchair-agent session release [--session <id>] [--dry-run]` | 释放占着 `session.lock` 的残留进程 | `import src/spv/session.js` |
 | `wheelchair-agent hook <events\|list\|add\|enable\|disable\|rm\|rename\|test\|log\|prompt>` | 插口表与脚本的读写；`prompt <事件>` 打印可复制的"叫 agent 加一条"提示词 | `import src/spv/hook.js` |
 | `wheelchair-agent where [--json]` | 这套安装把东西装到哪了（数据根、preset、wrapper、队列、日志） | `import src/shared/home.js` |
