@@ -183,6 +183,10 @@ superagent 不耦合；队列归**每份部署**自己（`<stateDir>/spv/`），
   `linux-x64`；多平台前要改成按 `process.platform` / `process.arch` 拼名。
 - **"待冷安装"判定依赖戳**（`#39`）：`install.sh` 写 `<data root>/installed.json`，`--check` 与 `spv`
   的 `detectInstallPending` 共用同一指纹（preset 注释不敏感、块标量逐字保留）；没戳的老部署仍按旧行为提醒一次。
+- **冷安装通知的配方在 `#48` 之后过时**：`src/spv/inbox.js:881-890` 的 `mergeNoticeText()` 仍打印
+  `wheelchair-agent service stop` / `bash install.sh` / `wheelchair-agent service start` / `wheelchair-agent spv`
+  这四条裸命令，而去单部署之后它们全都会被拒绝。修法：按 `ownDeployment()` 得到的项目打印 `--project <p>` 形式
+  （`deployment add` 的建议也一并给），认不出自己时打印 `--project <your project>` 占位并在文案里说明原因。
 - **HARNESS 里仍有 23 处规则重述**（冷安装契约 4 份、面板必须是真包 4 份、`hooks.md` 与
   `ARCHITECTURE/webui/hooks.md` 互相重述）：移动已完成，去重是下一件事，优先级低于功能；动之前先看是否某处已有更权威的一份。
 - **`hooks.md` / `restart.md` 各 28KB 单文件**：同为单主题，暂不拆；要拆的切点在「执行契约」与
