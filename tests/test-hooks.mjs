@@ -1386,7 +1386,7 @@ async function waitForJson(file, label, timeoutMs = 8000) {
   return value
 }
 
-function startTestRunner(box, { intervalSecondsOf = () => 0, log = () => {}, effects } = {}) {
+function startTestRunner(box, { intervalSecondsOf = () => 0, log = () => {}, effects, effectTimeoutMs } = {}) {
   return startHookRunner({
     env: box.env,
     home: box.root,
@@ -1396,6 +1396,7 @@ function startTestRunner(box, { intervalSecondsOf = () => 0, log = () => {}, eff
     log,
     unref: true,
     effects,
+    ...(effectTimeoutMs === undefined ? {} : { effectTimeoutMs }),
   })
 }
 
@@ -1736,8 +1737,9 @@ async function testStage2InboxWiring() {
 }
 
 /** 只记录调用的假 registry：`failures` 里的每个 error.name 消耗一次调用。 */
-function fakeArchiveHarness({ jobs = [] } = {}) {
+function fakeArchiveHarness({ jobs = [], listThrows = false } = {}) {
   const calls = []
+  const listCalls = []
   const log = []
   const registry = {
     archivedSessionIds: [],
@@ -1755,11 +1757,21 @@ function fakeArchiveHarness({ jobs = [] } = {}) {
   }
   const effect = createArchiveSessionEffect({
     workspaceRegistryOf: () => registry,
-    // null 代表"这个 composition 没有 jobs 服务"（jobsOf 返回 undefined）。
-    jobsOf: () => (jobs === null ? undefined : { list: () => (typeof jobs === 'function' ? jobs() : jobs) }),
+    // null 代表"这个 composition 没有 jobs 服务"（jobsOf 返回 undefined）。真实实现是
+    // `list(caller)` 按 caller 过滤，所以假实现记录参数，测试才能发现传错 caller 的回归。
+    jobsOf: () =>
+      jobs === null
+        ? undefined
+        : {
+            list: caller => {
+              listCalls.push(caller)
+              if (listThrows) throw new Error('job store is unreadable')
+              return typeof jobs === 'function' ? jobs() : jobs
+            },
+          },
     log: line => log.push(line),
   })
-  return { calls, log, registry, effect }
+  return { calls, listCalls, log, registry, effect }
 }
 
 /** 投一条写到 outbox 的 reply/notice；`ticketId` 缺省时负载里就没有这个字段。 */
@@ -1836,6 +1848,21 @@ async function testArchiveEffect() {
       await runner.drainOnce()
       assert.equal(busy.calls.length, 0, 'a running job keeps the session archived-free')
       assert.ok(busy.log.some(line => line.includes('running/stopping job')))
+      // 真的 registry 的 `list(caller)` 按 caller 过滤；传 ticketId 之类的错值会永远拿到空列表。
+      assert.deepEqual(busy.listCalls, ['worker-tk-busy'], 'jobs are listed for the worker session id')
+
+      // `stopping` 也算"还在用"。
+      const stopping = fakeArchiveHarness({ jobs: [{ owner: 'worker-tk-stop', status: 'stopping' }] })
+      await deliverQueueMessage(box, { id: 'm-archive-stopping', ticketId: 'tk-stop', at: '2026-11-16T00:00:09.500Z' })
+      const stoppingRunner = startTestRunner(box, { effects: { 'builtin:archiveSession': stopping.effect } })
+      try {
+        await stoppingRunner.drainOnce()
+      } finally {
+        stoppingRunner.stop()
+        await stoppingRunner.done
+      }
+      assert.equal(stopping.calls.length, 0, 'a stopping job also keeps the session archived-free')
+      assert.deepEqual(stopping.listCalls, ['worker-tk-stop'])
 
       // 一个已结束的 job 不算"还在用"；别人的 job 也不算。
       const settled = fakeArchiveHarness({
@@ -1866,6 +1893,25 @@ async function testArchiveEffect() {
       await runner.drainOnce()
       assert.equal(harness.calls.length, 0)
       assert.ok(harness.log.some(line => line.startsWith('warning:') && line.includes('jobs service is unavailable')))
+    } finally {
+      runner.stop()
+      await runner.done
+    }
+  }
+
+  // 4b) `jobs.list` 自己抛错：同样降级为"当作有 job"，不归档、只 warn。
+  {
+    const box = await sandbox()
+    const harness = fakeArchiveHarness({ jobs: [], listThrows: true })
+    const runner = startTestRunner(box, { effects: { 'builtin:archiveSession': harness.effect } })
+    try {
+      await deliverQueueMessage(box, { id: 'm-archive-listthrow', ticketId: 'tk-lt', at: '2026-11-16T00:00:11.500Z' })
+      await runner.drainOnce()
+      assert.equal(harness.calls.length, 0)
+      assert.deepEqual(harness.listCalls, ['worker-tk-lt'])
+      assert.ok(
+        harness.log.some(line => line.startsWith('warning:') && line.includes('cannot list the jobs of worker-tk-lt')),
+      )
     } finally {
       runner.stop()
       await runner.done
@@ -1904,6 +1950,11 @@ async function testArchiveEffect() {
       await runner.drainOnce()
       assert.equal(harness.calls.length, 2, 'the next tick retries once')
       assert.deepEqual(harness.registry.archivedSessionIds, ['worker-tk-ao'])
+      assert.deepEqual(
+        harness.log.filter(line => line === 'archived worker-tk-ao'),
+        ['archived worker-tk-ao'],
+        'one successful archive announces itself exactly once',
+      )
       await runner.drainOnce()
       assert.equal(harness.calls.length, 2, 'a recovered retry stops retrying')
     } finally {
@@ -1981,6 +2032,82 @@ async function testArchiveEffect() {
       await runner.drainOnce()
       assert.equal(harness.calls.length, 1, 'the effect still asks; the registry itself is idempotent')
       assert.ok(!harness.log.includes('archived worker-tk-archived'), 'an already archived session is not announced again')
+    } finally {
+      runner.stop()
+      await runner.done
+    }
+  }
+
+  // 10) 待重试项不能活过一次成功的 occurrence：否则下一轮会再归档一次（用户可能刚取消归档）。
+  {
+    const box = await sandbox()
+    const harness = fakeArchiveHarness()
+    harness.registry.failures.push('WorkspaceActiveSessionError', 'WorkspaceActiveSessionError')
+    const runner = startTestRunner(box, { effects: { 'builtin:archiveSession': harness.effect } })
+    try {
+      await deliverQueueMessage(box, { id: 'm-archive-stale-1', ticketId: 'tk-st', at: '2026-11-16T00:00:18.000Z' })
+      await runner.drainOnce() // 第一次失败 -> 进入待重试
+      await deliverQueueMessage(box, { id: 'm-archive-stale-2', ticketId: 'tk-st', at: '2026-11-16T00:00:19.000Z' })
+      await runner.drainOnce() // 待重试再失败一次，随后的新 occurrence 成功
+      assert.equal(harness.calls.length, 3, 'one retry failed, the fresh occurrence succeeded')
+      assert.deepEqual(harness.registry.archivedSessionIds, ['worker-tk-st'])
+      await runner.drainOnce()
+      assert.equal(harness.calls.length, 3, 'a successful occurrence clears the stale pending retry')
+      assert.deepEqual(harness.log.filter(line => line === 'archived worker-tk-st'), ['archived worker-tk-st'])
+    } finally {
+      runner.stop()
+      await runner.done
+    }
+  }
+
+  // 11) 重试预算按 occurrence 计：新 occurrence 覆盖旧 context 时从 0 重新计数。
+  {
+    const box = await sandbox()
+    const harness = fakeArchiveHarness()
+    for (let index = 0; index < 6; index += 1) harness.registry.failures.push('WorkspaceActiveSessionError')
+    const runnerLog = []
+    const runner = startTestRunner(box, { log: line => runnerLog.push(line), effects: { 'builtin:archiveSession': harness.effect } })
+    try {
+      await deliverQueueMessage(box, { id: 'm-archive-budget-1', ticketId: 'tk-bg', at: '2026-11-16T00:00:20.000Z' })
+      await runner.drainOnce()
+      await deliverQueueMessage(box, { id: 'm-archive-budget-2', ticketId: 'tk-bg', at: '2026-11-16T00:00:21.000Z' })
+      await runner.drainOnce() // 旧的重试失败 + 新的 occurrence 失败：预算回到 0
+      for (let index = 0; index < 4; index += 1) await runner.drainOnce()
+      assert.equal(harness.calls.length, 6, 'the fresh occurrence restarts the retry budget')
+      assert.ok(runnerLog.some(line => line.startsWith('warning:') && line.includes('giving up')))
+      await runner.drainOnce()
+      assert.equal(harness.calls.length, 6, 'a given-up effect stays gone')
+    } finally {
+      runner.stop()
+      await runner.done
+    }
+  }
+
+  // 12) registry 卡死：单次效果有上限，不能把整个串行 drain（以及其他脚本）拖死。
+  {
+    const box = await sandbox()
+    const marker = join(box.base, 'after-effect-timeout.json')
+    addHook(box, { event: 'ticket.attention', name: 'after-effect-timeout', script: `cat > ${q(marker)}` })
+    const runnerLog = []
+    const runner = startTestRunner(box, {
+      log: line => runnerLog.push(line),
+      effectTimeoutMs: 30,
+      effects: { 'builtin:archiveSession': () => new Promise(() => {}) },
+    })
+    try {
+      await deliverQueueMessage(box, { id: 'm-archive-hang', ticketId: 'tk-hang', at: '2026-11-16T00:00:22.000Z' })
+      await deliverQueueMessage(box, {
+        id: 'm-archive-after-hang',
+        ticketId: 'tk-hang',
+        kind: 'notice',
+        at: '2026-11-16T00:00:23.000Z',
+      })
+      await runner.drainOnce()
+      assert.ok(
+        runnerLog.some(line => line.startsWith('warning:') && line.includes('timed out after 30ms')),
+        'a hung builtin effect is bounded and reported',
+      )
+      assert.equal((await readFile(marker, 'utf8')).trim() !== '', true, 'the drain still runs the next event')
     } finally {
       runner.stop()
       await runner.done

@@ -240,8 +240,18 @@ export function apply(ctx, config = {}) {
   // The registry and jobs lookups are lazy with a bounded wait (both may mount later); a composition
   // without them degrades to one warning and simply does not archive. The effect never throws, so a failed
   // archive cannot affect the operator's scripts, and `stopActivity: false` never kills a turn or a job.
+  //
+  // Only the *first* delivered event may spend the 5s wait: a composition that has no workspace service
+  // would otherwise stall the serial hook drain for 5s on every delivery. Later events look the registry up
+  // immediately, so one that mounts late is still used.
+  let registryWaitSpent = false
+  const workspaceRegistryForArchive = () => {
+    if (registryWaitSpent) return currentWorkspaceRegistry(ctx)
+    registryWaitSpent = true
+    return waitForWorkspaceRegistry(ctx)
+  }
   const archiveSessionEffect = createArchiveSessionEffect({
-    workspaceRegistryOf: () => waitForWorkspaceRegistry(ctx),
+    workspaceRegistryOf: workspaceRegistryForArchive,
     jobsOf: () => currentJobs(ctx),
     log: hookLog,
   })

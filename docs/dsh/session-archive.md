@@ -307,10 +307,13 @@ python3 -c "import sqlite3,json;c=sqlite3.connect('/tmp/wca/orchestrator.sqlite'
 3. `src/spv/hook-runner.js`：`startHookRunner(..., effects = {})`；每次 `runHooksFor` 之后按
    `builtinRowsFor(event)` 执行注入的效果；`summary.skipped` 为 `'paused'`/`'cursor'` 时跳过，`'empty'` 照跑。
    `{ retry: true }` 进 pending 表，每个 drain 开头各试一次，`EFFECT_MAX_RETRIES = 3` 次后放弃并 warn；
-   drain 顺序 retries → spool → 队列，保证重试至少隔一个间隔。
+   drain 顺序 retries → spool → 队列，保证重试至少隔一个间隔。新 occurrence 成功时清掉旧 pending，
+   并从 0 重新计重试预算。单次效果有 `EFFECT_TIMEOUT_MS = 15s` 上限（效果跑在串行 drain 里，registry
+   卡死不能把所有脚本和 `stop()` 一起拖住），超时只 warn、不重试。
 4. `webui/lib/index.js`：给 `startHookRunner` 传 `effects: { 'builtin:archiveSession': … }`；registry 与 jobs
-   都用 lazy 查找（直接属性 → `ctx.get`，registry 最多等 5s，同 `src/superagent/watch.js:57-73`）；runner 与
-   效果共用一个 `wheelchair-hooks:` 日志 sink（warning → `ctx.logger.warn`）。
+   都用 lazy 查找（直接属性 → `ctx.get`，registry 只在第一次 delivery 最多等 5s，之后立即查找，同
+   `src/superagent/watch.js:57-73` 的取法）；runner 与效果共用一个 `wheelchair-hooks:` 日志 sink
+   （warning → `ctx.logger.warn`）。
 5. `install.sh`：`render_webui_into` 新增 `spv/archive-effect.js:lib/core/archive-effect.js`（预设白名单不变，
    该文件只属于 webui 包）；`package.json` 的 `check` 加 `node --check src/spv/archive-effect.js`。
 
@@ -324,11 +327,13 @@ python3 -c "import sqlite3,json;c=sqlite3.connect('/tmp/wca/orchestrator.sqlite'
 
 ### 测试
 
-`tests/test-hooks.mjs` 新增 `testArchiveEffect()` 九个场景：delivered 归档 + 重放不重复 + 无 ticketId 只 warn；
-paused 不执行且恢复后不补跑；running/stopping job 让路、settled job 与别人的 job 不拦；jobs 服务缺失降级；
-会话从未创建时静默；`WorkspaceActiveSessionError` 下一 tick 重试一次后成功；一直 active 时 1+N 次后放弃；
-脚本失败不挡归档、归档失败不挡下一条事件；已归档会话再调不重复宣告。`tests/test-settings.mjs` 与
-`tests/test-inbox-refresh.mjs` 的临时 webui 包补上 `archive-effect.js` 副本。
+`tests/test-hooks.mjs` 新增 `testArchiveEffect()` 十二个场景：delivered 归档 + 重放不重复 + 无 ticketId 只 warn；
+paused 不执行且恢复后不补跑；running/stopping job 让路且只按 `worker-<ticketId>` 调 `jobs.list`、settled job 与
+别人的 job 不拦；jobs 服务缺失与 `jobs.list` 抛错都降级为不归档；会话从未创建时静默；
+`WorkspaceActiveSessionError` 下一 tick 重试一次后成功且只宣告一次；一直 active 时 1+N 次后放弃；脚本失败
+不挡归档、归档失败不挡下一条事件；已归档会话再调不重复宣告；成功的新 occurrence 清掉旧待重试项；重试预算
+按 occurrence 重置；卡死的效果在 `effectTimeoutMs` 后超时，同一条 drain 的后续事件照跑。
+`tests/test-settings.mjs` 与 `tests/test-inbox-refresh.mjs` 的临时 webui 包补上 `archive-effect.js` 副本。
 
 `npm test`：退出 0，322 个 `PASS` / 0 failed（其余脚本以 `ok` 结尾），含 `test-layout.sh`、`test-install.sh`。
 

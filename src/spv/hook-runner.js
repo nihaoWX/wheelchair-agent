@@ -17,7 +17,7 @@
  * items 循环里：delivered 通常没有自定义行，`runHooksFor` 在 `items.length === 0` 时认领 occurrence 后
  * 提前返回，效果会被跳掉。本文件在每次 `runHooksFor` 之后按 `builtinRowsFor(event)` 调用效果，且只在
  * occurrence 真的被认领时调用（`skipped` 为 `paused` / `cursor` 时跳过；`empty` 照跑）。效果永不抛；
- * 返回 `{ retry: true }` 的会在后续 drain 里最多重试 `EFFECT_MAX_RETRIES` 次。
+ * 单次最多等 `EFFECT_TIMEOUT_MS`，返回 `{ retry: true }` 的会在后续 drain 里最多重试 `EFFECT_MAX_RETRIES` 次。
  *
  * 纯 Node builtins：不 import dsh，不 `process.exit`。
  */
@@ -47,6 +47,18 @@ const PAUSE_RECHECK_MS = 1000
  * 中途写进队列。默认间隔 15s，3 次≈45s；正常报告之后 turn 很快收尾，等不到的交给 `ticket.ended` 的归档。
  */
 export const EFFECT_MAX_RETRIES = 3
+
+/**
+ * 单个内建效果的上限。效果跑在串行 drain 里，一个永不 settle 的 `archiveSession`（registry 的
+ * `enqueueOperation` 与 `workspace/session-activity` waterfall 都可能卡住）会让所有 hook 脚本停摆，
+ * `stop()` 也结束不了；用户脚本在 `src/shared/settings.js` 里本来就有超时，内建效果同样必须有。
+ *
+ * 15s 大于 webui 里 registry 最多 5s 的等待，正常归档（一次文件写）远在那之前完成。
+ */
+export const EFFECT_TIMEOUT_MS = 15_000
+
+/** `Promise.race` 里表示"超时"的哨兵，不会与效果的真实返回值混淆。 */
+const EFFECT_TIMED_OUT = Symbol('effect-timeout')
 
 function messageOf(error) {
   return error instanceof Error ? error.message : String(error)
@@ -91,6 +103,7 @@ export function startHookRunner({
   log = () => {},
   unref = false,
   effects = {},
+  effectTimeoutMs = EFFECT_TIMEOUT_MS,
 } = {}) {
   const warn = message => {
     try {
@@ -114,7 +127,7 @@ export function startHookRunner({
     wake()
   }
 
-  /** 内建效果返回 `{ retry: true }` 后的待重试表；同一效果 + 同一工单的后一次 occurrence 覆盖前一次。 */
+  /** 内建效果返回 `{ retry: true }` 后的待重试表；同一效果 + 同一工单的新 occurrence 覆盖旧 context 并从 0 计。 */
   const pendingEffects = new Map()
 
   const effectKeyOf = (rowId, context) => `${rowId}:${context.payload?.ticketId ?? context.eventId ?? ''}`
@@ -122,13 +135,31 @@ export function startHookRunner({
   const invokeEffect = async (rowId, context) => {
     const effect = effects[rowId]
     if (typeof effect !== 'function') return undefined
+    let timer
+    const pending = Promise.resolve().then(() => effect(context))
+    const timeout = new Promise(resolve => {
+      // 不 unref：效果还挂着的这十几秒本来就是"有工作没做完"，不能让进程在等待中超时前退出。
+      timer = setTimeout(() => resolve(EFFECT_TIMED_OUT), effectTimeoutMs)
+    })
     try {
-      const outcome = await effect(context)
+      const outcome = await Promise.race([pending, timeout])
+      if (outcome === EFFECT_TIMED_OUT) {
+        // 超时不重试：卡住的 registry 再等一轮也一样，交给 ticket.ended 的归档。
+        warn(
+          `warning: builtin ${rowId} for ${context.eventId ?? context.event} ` +
+            `timed out after ${effectTimeoutMs}ms; not retrying`,
+        )
+        return undefined
+      }
       return outcome !== null && typeof outcome === 'object' ? outcome : undefined
     } catch (error) {
       // 效果自己承诺不抛；这里是最后一道防线，脚本与下一条事件不能因它停摆。
       warn(`warning: builtin ${rowId} failed for ${context.eventId ?? context.event}: ${messageOf(error)}`)
       return undefined
+    } finally {
+      clearTimeout(timer)
+      // 超时后原 promise 仍可能 reject；挂一个 catch，避免 unhandledRejection 打崩 host。
+      void pending.catch(() => {})
     }
   }
 
@@ -151,12 +182,21 @@ export function startHookRunner({
     for (const row of rows) {
       if (typeof effects[row.id] !== 'function') continue
       const context = { event, eventId, payload }
-      const outcome = await invokeEffect(row.id, context)
-      if (outcome?.retry !== true) continue
       const key = effectKeyOf(row.id, context)
+      const outcome = await invokeEffect(row.id, context)
+      if (outcome?.retry !== true) {
+        // 新的 occurrence 已经成功（或明确失败）：旧的待重试项不能留到下一个 tick，
+        // 否则可能在用户手动取消归档后又把它归档一次、多发一条 `archived` 日志。
+        pendingEffects.delete(key)
+        continue
+      }
       const existing = pendingEffects.get(key)
       if (existing === undefined) pendingEffects.set(key, { rowId: row.id, context, retries: 0 })
-      else existing.context = context
+      else {
+        // 重试预算按 occurrence 算：新一次 occurrence 覆盖旧 context，也从 0 重新计。
+        existing.context = context
+        existing.retries = 0
+      }
     }
   }
 
