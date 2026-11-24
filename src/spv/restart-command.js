@@ -9,10 +9,12 @@
  * (`src/spv/restart-ux.js`). tmux is only the fallback when that terminal is gone. This file imports only
  * `node:child_process` so the plugin has no dsh dependency and no duplicate implementation.
  *
- * Only `--force` is accepted. `--force` interrupts running workers and queued tickets instead of refusing;
- * the CLI prints exactly what it is interrupting before it proceeds. The handler passes the invoking
- * Session's id (`invocation.agent.session.id`) as `--session`, so the restart targets the conversation this
- * command was typed in; `~/.dsh-tui/resume.txt` is only the fallback when that id is unavailable.
+ * `--force` interrupts running workers and queued tickets instead of refusing; the CLI prints exactly what it
+ * is interrupting before it proceeds. `--project <p>` restarts only that deployment's instance, skips the
+ * shared install and resumes that deployment's own session; without it the command restarts every
+ * deployment as before. The handler passes the invoking Session's id (`invocation.agent.session.id`) as
+ * `--session`, so the restart targets the conversation this command was typed in; the global
+ * `~/.dsh-tui/resume.txt` is only the fallback when that id is unavailable.
  */
 import { spawnSync } from 'node:child_process'
 
@@ -24,10 +26,11 @@ export const inject = ['commands']
 export const COMMAND = 'restart-wheelchair-agent'
 
 /** Usage text: the argument grammar, the safety statement and where the log lands. */
-export const USAGE = `Usage: /restart-wheelchair-agent [--force]
+export const USAGE = `Usage: /restart-wheelchair-agent [--force] [--project <p>]
 
-Restart everything this deployment runs: the superagent service, a cold install of the preset, and the SPV
-TUI session. This command only arms a detached orchestrator and returns; this SPV session ends here.
+Restart a deployment: without --project the legacy restart of everything (service, cold install of the
+preset, SPV TUI); with --project only that deployment's instance, its own session, and no install. This
+command only arms a detached orchestrator and returns; this SPV session ends here.
 
 The terminal that launched "wheelchair-agent spv" stays open across the restart: it prints every step and
 brings the TUI back in that same terminal, resumed into the same SPV conversation. The target is the session
@@ -49,6 +52,10 @@ supervising CLI — run "wheelchair-agent spv" again to restore it. Do not pass 
 Arguments:
   --force   interrupt running workers and queued tickets instead of refusing. The command prints what it is
             interrupting before anything is stopped. At most once.
+  --project <p>
+            restart only the deployment registered for project <p>: its instance is stopped and started, the
+            shared install is skipped, and the deployment's own session is resumed. Without it every
+            deployment is restarted.
 
 The detached orchestrator stops the service, stops this SPV session's process chain (SIGTERM, then SIGKILL
 after a bounded wait), runs install.sh cold and starts the service again. It only signals processes in that
@@ -58,7 +65,8 @@ stopped and does not relaunch a TUI into a broken deployment. Every step is appe
 <root>/logs/restart-all.log (default ~/.wheelchair-agent/logs/restart-all.log) with its command and exit code.
 
 No other argument is accepted. Without --force the command refuses when the service reports a running worker
-or a queued ticket, because stopping the service then would throw that work away.`
+or a queued ticket, because stopping the service then would throw that work away; the same guard covers the
+requested deployment.`
 
 /** The result shape the command registry expects for an expected failure. */
 function errorResult(text) {
@@ -78,10 +86,23 @@ function makeHandler(config = {}) {
   return invocation => {
     const tokens = String(invocation?.rawInput ?? '').trim().split(/\s+/).filter(Boolean)
     let force = false
-    for (const token of tokens) {
-      if (token !== '--force') return errorResult(USAGE)
-      if (force) return errorResult(USAGE)
-      force = true
+    let project
+    for (let index = 0; index < tokens.length; index += 1) {
+      const token = tokens[index]
+      if (token === '--force') {
+        if (force) return errorResult(USAGE)
+        force = true
+        continue
+      }
+      if (token === '--project') {
+        const value = tokens[index + 1]
+        if (value === undefined || value.startsWith('--')) return errorResult(USAGE)
+        if (project !== undefined) return errorResult(USAGE)
+        project = value
+        index += 1
+        continue
+      }
+      return errorResult(USAGE)
     }
     const sessionId = typeof invocation?.agent?.session?.id === 'string'
       ? invocation.agent.session.id.trim()
@@ -90,6 +111,7 @@ function makeHandler(config = {}) {
       'restart-all',
       '--detach',
       ...(sessionId !== '' ? ['--session', sessionId] : []),
+      ...(project !== undefined ? ['--project', project] : []),
       ...(force ? ['--force'] : []),
     ]
     let result
@@ -130,7 +152,7 @@ function makeHandler(config = {}) {
 export function apply(ctx, config = {}) {
   ctx.commands.register({
     name: COMMAND,
-    description: 'Restart the deployment and bring the SPV TUI back in this terminal',
+    description: 'Restart the deployment and bring the SPV TUI back in this terminal; without --project it restarts all deployments',
     input: { hint: '[--force]' },
     handler: makeHandler(config),
   })
