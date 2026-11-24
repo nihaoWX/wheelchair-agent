@@ -1159,17 +1159,25 @@ export async function pollOnce({ root = resolveInboxRoot(), projectsRoot = defau
   const settings = readPanelSettings()
   const counts = { created: 0, updated: 0, failed: 0, merged: 0 }
   const own = ownDeployment()
-  const deployments = own.registry?.deployments ?? []
-  // The registry is the only project list. When this process cannot identify its own queue, keep the old
-  // scan-every-project behavior instead of silently owning nothing; the one line says why.
-  if (own.entry === null) log(`ownership: ${own.reason}; polling every project as before`)
-  for (const { name, repo } of discoverRepos(projectsRoot)) {
+  // The registry is the only project list. Without an identified deployment this process polls nothing: guessing
+  // would let two deployments pull the same PR (or review someone else's). One line says why, once per poll.
+  if (own.entry === null) {
+    log(`ownership: ${own.reason}; polling nothing until this instance can be identified`)
+    return counts
+  }
+  const deployments = own.registry.deployments
+  for (const { repo } of discoverRepos(projectsRoot)) {
     const project = projectForRepo(repo, { projectsRoot, deployments })
-    if (own.entry !== null && project !== null && project !== own.entry.project) {
+    if (project === null) {
+      log(`skipping ${repo}: not owned by any registered deployment`)
+      continue
+    }
+    if (project !== own.entry.project) {
       log(`skipping ${repo}: owned by deployment ${project}`)
       continue
     }
-    const localPath = join(projectsRoot, project === null ? join('tools', name) : project)
+    const name = repo.split('/').pop()
+    const localPath = join(projectsRoot, project)
     let pullRequests
     try {
       const { stdout } = await execFileAsync(

@@ -419,7 +419,15 @@ def cmd_start(args):
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text('')
     patch = f' --patch {shlex.quote(str(args.patch))}' if args.patch else ''
-    command = f'umask 077; exec {dsh} --profile {args.profile}{patch} --no-open >> {log} 2>&1'
+    # Export the deployment identity to the dsh process: the SPV Source/plugin and the watcher resolve their queue
+    # from SPV_QUEUE_DIR (the registry is the only deployment source), so a restarted instance knows which
+    # deployment it is without guessing from the global state dir.
+    identity = ''
+    if args.queue_dir:
+        identity += f'SPV_QUEUE_DIR={shlex.quote(str(args.queue_dir))} '
+    if args.state_dir:
+        identity += f'DSH_SUPERAGENT_STATE_DIR={shlex.quote(str(args.state_dir))} '
+    command = f'umask 077; {identity}exec {dsh} --profile {args.profile}{patch} --no-open >> {log} 2>&1'
     exists = subprocess.run(['tmux', 'has-session', '-t', '=' + session],
                             capture_output=True).returncode == 0
     target = ['new-window', '-t', '=' + session + ':'] if exists else ['new-session', '-s', session]
@@ -486,6 +494,10 @@ def main():
     parser.add_argument('--timeout', type=float, default=60, help='startup timeout in seconds (default: 60)')
     parser.add_argument('--stop-timeout', type=float, default=300,
                         help='graceful shutdown timeout in seconds (default: 300)')
+    parser.add_argument('--state-dir', default=None,
+                        help='deployment state dir to export to the instance (DSH_SUPERAGENT_STATE_DIR)')
+    parser.add_argument('--queue-dir', default=None,
+                        help='deployment queue to export to the instance (SPV_QUEUE_DIR)')
     parser.add_argument('--patch', default=None,
                         help='instance overlay loaded with --patch; selects one deployment of a shared profile')
     parser.add_argument('--session', default=None,

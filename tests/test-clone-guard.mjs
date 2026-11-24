@@ -192,16 +192,12 @@ async function testCloneDefaultsRefuse() {
     error => error.code === 'TICKET_CLONE',
   )
 
-  // Queue root: this module reads process.env, so point it at the simulated deployment state dir.
+  // Queue root: the registry is now the only source, so a bare resolveRoot() has no deployment context and
+  // refuses instead of deriving <stateDir>/spv. Nothing may be derived (and therefore nothing written) from a
+  // clone's default state dir anymore.
   await withProcessEnv({ DSH_SUPERAGENT_STATE_DIR: box.state, SPV_QUEUE_DIR: undefined }, () => {
-    assertCloneError(
-      () => paths.resolveRoot(),
-      'default spv queue root',
-      join(box.state, 'spv'),
-      'SPV_QUEUE_DIR',
-      'ticket clone',
-    )
-    assertCloneError(() => paths.resolveRoot({ queueDir: '' }), 'default spv queue root')
+    assert.throws(() => paths.resolveRoot(), /cannot tell which deployment this process belongs to/)
+    assert.throws(() => paths.resolveRoot({ queueDir: '' }), /cannot tell which deployment this process belongs to/)
   })
 
   // Nothing was created or moved by any of those refusals.
@@ -328,10 +324,10 @@ async function testStateDirOverrideCannotHideTheDefaultRoot() {
   )
   assertCloneError(() => settings.saveSettings({ env: stateOnly, revision: 0 }), 'default data root')
 
-  // The queue default *did* follow the state dir, so it is genuinely sandboxed and may resolve. Only the
-  // data root stayed live, which is why the staged refusal above matters.
+  // The queue has no default to follow anymore: without a registry entry (or an explicit override) it
+  // refuses instead of deriving <sandboxState>/spv.
   await withProcessEnv({ HOME: box.home, DSH_SUPERAGENT_STATE_DIR: sandboxState, SPV_QUEUE_DIR: undefined }, () => {
-    assert.equal(paths.resolveRoot(), join(sandboxState, 'spv'))
+    assert.throws(() => paths.resolveRoot(), /cannot tell which deployment this process belongs to/)
   })
 
   // Only DSH_HOME is overridden: the un-overridden $HOME/.dsh default still catches the clone.
@@ -386,8 +382,9 @@ async function testNonCloneLayoutsKeepWorking() {
   assert.equal(presetData.reclaimed, join(presetBox.home, '.wheelchair-agent', 'records', 'work-reclaimed.jsonl'))
   assert.equal(presetData.restartLog, join(presetBox.home, '.wheelchair-agent', 'logs', 'restart-all.log'))
   assert.equal(presetData.prepareLog, join(presetBox.home, '.wheelchair-agent', 'logs', 'prepare.log'))
+  // No registry entry: the installed preset refuses instead of guessing <presetState>/spv.
   await withProcessEnv({ DSH_SUPERAGENT_STATE_DIR: presetState, SPV_QUEUE_DIR: undefined }, () => {
-    assert.equal(presetPaths.resolveRoot(), join(presetState, 'spv'))
+    assert.throws(() => presetPaths.resolveRoot(), /cannot tell which deployment this process belongs to/)
   })
 
   // A normal checkout: `~/bioagentforge/tools/wheelchair-agent/src/…`, same default state dir.
@@ -405,7 +402,7 @@ async function testNonCloneLayoutsKeepWorking() {
   assert.equal(checkoutData.settings, join(checkoutBox.home, '.wheelchair-agent', 'settings.json'))
   assert.equal(checkoutData.inbox, join(checkoutBox.home, '.wheelchair-agent', 'inbox'))
   await withProcessEnv({ DSH_SUPERAGENT_STATE_DIR: checkoutState, SPV_QUEUE_DIR: undefined }, () => {
-    assert.equal(checkoutPaths.resolveRoot(), join(checkoutState, 'spv'))
+    assert.throws(() => checkoutPaths.resolveRoot(), /cannot tell which deployment this process belongs to/)
   })
 }
 

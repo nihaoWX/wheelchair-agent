@@ -86,11 +86,12 @@ function envFor(box, extra = {}) {
 }
 
 /** 子进程跑 CLI。必须异步：同进程里的健康检查服务要能在 CLI 等待期间应答。 */
-async function cli(box, argv, extra = {}) {
+async function cli(box, argv, extra = {}, options = {}) {
   try {
     const { stdout, stderr } = await promisify(execFile)(process.execPath, [CLI, ...argv], {
       env: envFor(box, extra),
       encoding: 'utf8',
+      ...options,
     })
     return { status: 0, stdout, stderr }
   } catch (error) {
@@ -132,7 +133,7 @@ async function pendingRecord(queue) {
 
 // ------------------------------------------------------------ 注册表与 CLI 契约
 
-async function testNoRegistryKeepsSingleDeployment() {
+async function testNoRegistryIsAnActionableError() {
   const box = await sandbox()
 
   const listed = await cli(box, ['deployment', 'list'])
@@ -145,11 +146,20 @@ async function testNoRegistryKeepsSingleDeployment() {
   assert.equal(json.status, 0, json.stderr)
   assert.deepEqual(JSON.parse(json.stdout), { version: 1, registry: registryFile(box), deployments: [] })
 
-  // 注册表不存在 = 旧路径：dispatch 写 <stateDir>/spv，行为与升级前一致。
+  // 注册表是唯一部署来源：没有它 dispatch 不会写任何队列，而是给出 migrate/add 的下一步。
   const dispatched = await cli(box, ['dispatch', '--project', 'tools/alpha', '--task', 'old path'])
-  assert.equal(dispatched.status, 0, dispatched.stderr)
-  assert.equal((await pendingFiles(join(box.state, 'spv'))).length, 1)
+  assert.equal(dispatched.status, 1)
+  assert.match(dispatched.stderr, /no deployment for project "tools\/alpha"/)
+  assert.match(dispatched.stderr, /no deployment registry at /)
+  assert.match(dispatched.stderr, /deployment migrate/)
+  assert.match(dispatched.stderr, /deployment add tools\/alpha/)
+  assert.equal(await exists(join(box.state, 'spv')), false, 'no legacy queue was created')
   assert.equal(await exists(registryFile(box)), false, 'dispatch never creates the registry')
+
+  // 旧的“无注册表也能 status”也消失：status 是按部署列队列的。
+  const status = await cli(box, ['status'])
+  assert.equal(status.status, 1)
+  assert.match(status.stderr, /no deployment registry at /)
 }
 
 async function testAddListUpdateAndRemove() {
@@ -215,6 +225,26 @@ async function testAddListUpdateAndRemove() {
   assert.match(missing.stderr, /no deployment for "tools\/gamma"/)
 }
 
+async function testRemoveLastNeedsForce() {
+  const box = await sandbox()
+  const added = await cli(box, ['deployment', 'add', 'tools/solo', '--state-dir', box.stateA, '--queue-dir', box.queueA])
+  assert.equal(added.status, 0, added.stderr)
+  const before = await readFile(registryFile(box), 'utf8')
+
+  const refused = await cli(box, ['deployment', 'remove', 'tools/solo'])
+  assert.equal(refused.status, 1)
+  assert.match(refused.stderr, /refusing to remove the last deployment/)
+  assert.match(refused.stderr, /no usable deployment/)
+  assert.match(refused.stderr, /--force/)
+  assert.equal(await readFile(registryFile(box), 'utf8'), before, 'a refused remove did not rewrite the registry')
+
+  const forced = await cli(box, ['deployment', 'remove', 'tools/solo', '--force'])
+  assert.equal(forced.status, 0, forced.stderr)
+  assert.match(forced.stdout, /warning: removing the last deployment/)
+  assert.match(forced.stdout, /removed tools\/solo;/)
+  assert.deepEqual((await readJson(registryFile(box))).deployments, [])
+}
+
 async function testAddDefaultsAndUsageErrors() {
   const box = await sandbox()
 
@@ -247,6 +277,66 @@ async function testAddDefaultsAndUsageErrors() {
   const invalid = await cli(box, ['deployment', 'add', 'not-a-project'])
   assert.equal(invalid.status, 1)
   assert.match(invalid.stderr, /invalid project/)
+
+}
+
+async function testCommandsRequireARegisteredDeployment() {
+  const box = await sandbox()
+
+  const serviceStart = await cli(box, ['service', 'start'])
+  assert.equal(serviceStart.status, 2)
+  assert.match(serviceStart.stderr, /service start needs --project <p> or --all/)
+
+  const restartBare = await cli(box, ['restart-all', '--dry-run'])
+  assert.equal(restartBare.status, 2)
+  assert.match(restartBare.stderr, /restart-all needs --project <p> or --all/)
+
+  const spvBare = await cli(box, ['spv'])
+  assert.equal(spvBare.status, 1)
+  assert.match(spvBare.stderr, /no deployment registry at /)
+  assert.match(spvBare.stderr, /deployment migrate/)
+
+  const added = await cli(box, ['deployment', 'add', 'tools/alpha', '--state-dir', box.stateA, '--queue-dir', box.queueA, '--port', '3101'])
+  assert.equal(added.status, 0, added.stderr)
+
+  const serviceStopBare = await cli(box, ['service', 'stop'])
+  assert.equal(serviceStopBare.status, 2)
+  assert.match(serviceStopBare.stderr, /service stop needs --project <p> or --all/)
+
+  const serviceMissing = await cli(box, ['service', 'start', '--project', 'tools/nope'])
+  assert.equal(serviceMissing.status, 1)
+  assert.match(serviceMissing.stderr, /deployment add tools\/nope/)
+
+  const restartMissing = await cli(box, ['restart-all', '--dry-run', '--project', 'tools/nope'])
+  assert.equal(restartMissing.status, 1)
+  assert.match(restartMissing.stderr, /deployment add tools\/nope/)
+
+  const spvMissing = await cli(box, ['spv', '--project', 'tools/nope'])
+  assert.equal(spvMissing.status, 1)
+  assert.match(spvMissing.stderr, /deployment add tools\/nope/)
+
+  // cwd 不在 <projectsRoot>/<project> 下：列出已登记部署，而不是默认 tools/wheelchair-agent。
+  const spvInfer = await cli(box, ['spv'])
+  assert.equal(spvInfer.status, 1)
+  assert.match(spvInfer.stderr, /cannot infer which deployment/)
+  assert.match(spvInfer.stderr, /registered deployments: tools\/alpha/)
+
+  // 认领旧安装之后，显式 --project 通过注册表校验（启动器缺失是环境错误，不是推断错误）。
+  await cli(box, ['deployment', 'remove', 'tools/alpha', '--force'])
+  await cli(box, ['deployment', 'migrate'])
+  const explicit = await cli(box, ['spv', '--project', 'tools/wheelchair-agent'],
+    { WHEELCHAIR_AGENT_LAUNCHER: join(box.base, 'missing-launcher') })
+  assert.equal(explicit.status, 1)
+  assert.match(explicit.stderr, /SPV launcher is missing at /)
+
+  // cwd 落在 <projectsRoot>/<project> 下时无需 --project，也能推断出该部署。
+  const checkout = join(box.home, 'bioagentforge', 'tools', 'wheelchair-agent')
+  await mkdir(checkout, { recursive: true })
+  const inferred = await cli(box, ['spv'],
+    { WHEELCHAIR_AGENT_LAUNCHER: join(box.base, 'missing-launcher') }, { cwd: checkout })
+  assert.equal(inferred.status, 1)
+  assert.match(inferred.stderr, /SPV launcher is missing at /)
+  assert.doesNotMatch(inferred.stderr, /cannot infer which deployment/)
 }
 
 // ---------------------------------------------------------------- 按项目路由
@@ -456,8 +546,10 @@ async function testMigrateRecordsTheCurrentDeployment() {
 // -------------------------------------------------------------------- main
 
 try {
-  await testNoRegistryKeepsSingleDeployment()
+  await testNoRegistryIsAnActionableError()
   await testAddListUpdateAndRemove()
+  await testRemoveLastNeedsForce()
+  await testCommandsRequireARegisteredDeployment()
   await testAddDefaultsAndUsageErrors()
   await testDispatchRoutesEachProjectToItsOwnQueue()
   await testToolDispatchUsesTheRegistry()

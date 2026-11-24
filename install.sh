@@ -66,7 +66,8 @@
 #        bash install.sh --fingerprint [--preset-dir ABS]
 #        bash install.sh --help
 #
-# --project records the installed deployment for that project in the registry
+# --project is required (or inferred uniquely from this checkout against the registry) and records the
+# installed deployment for that project in the registry
 # ($WHEELCHAIR_AGENT_HOME/deployments.json, src/shared/deployments.js) and renders its instance overlay
 # (<data root>/deployments/<slug>.yml) after a successful install, so `wheelchair-agent dispatch
 # --project <p>` writes into this deployment's queue and `service ... --project <p>` starts that instance.
@@ -93,6 +94,7 @@ SERVICE_PROFILE=$PROFILE_ID
 SERVICE_PORT=${SPV_SERVICE_PORT:-3082}
 SERVICE_URL=${DSH_SUPERAGENT_URL:-http://127.0.0.1:$SERVICE_PORT}
 DATA_ROOT=${WHEELCHAIR_AGENT_HOME:-$HOME/.wheelchair-agent}
+PROJECTS_ROOT=${SPV_PROJECTS_ROOT:-$HOME/bioagentforge}
 LEGACY_STATE_DIR=${DSH_SUPERAGENT_STATE_DIR:-$DSH_HOME_DIR/state/superagent}
 # The planner binary `src/shared/work.js` spawns. A checkout runs the artifact directly; an installed
 # preset finds the copy on PATH.
@@ -146,7 +148,8 @@ while [ "$#" -gt 0 ]; do
       printf '  --check        read-only self-check; exit 2 when anything is not installed as expected\n'
       printf '  --fingerprint  internal, read-only: print the install fingerprint as JSON on stdout\n'
       printf '  --preset-dir   compare against (or fingerprint for) this preset directory instead of the default\n'
-      printf '  --project      after a successful install, record this project as the deployment in the registry\n'
+      printf '  --project      required unless this checkout uniquely matches a registered deployment; records\n'
+      printf '                 that project as the deployment in the registry after a successful install\n'
       printf 'exit 0 installed or checks pass; 1 install failed; 2 check failed or bad argument;\n'
       printf '     3 refused because the install targets are in use (cold installs only)\n'
       exit 0 ;;
@@ -178,6 +181,49 @@ if [ -n "$PRESET_DIR_OVERRIDE" ]; then
   TARGET_RESTART_URL="file://$PRESET_DIR/src/spv/restart-command.js"
 fi
 
+# No --project is no longer "install the one deployment": the registry is the only source, so infer it from
+# this checkout's git origin / path against the registered projects. Unique match only; otherwise list the
+# registry and stop. --check/--fingerprint stay read-only (this only runs git/node reads).
+infer_project() {
+  node --input-type=module -e '
+import { execFileSync } from "node:child_process"
+import { realpathSync } from "node:fs"
+import { join } from "node:path"
+import { pathToFileURL } from "node:url"
+const [self, data, projects] = process.argv.slice(1)
+const deployments = await import(pathToFileURL(join(self, "src", "shared", "deployments.js")).href)
+const ownership = await import(pathToFileURL(join(self, "src", "spv", "ownership.js")).href)
+const env = { ...process.env, WHEELCHAIR_AGENT_HOME: data }
+const registry = deployments.listDeployments({ env })
+if (!registry.exists) {
+  console.error(`no deployment registry at ${registry.file}`)
+  process.exit(2)
+}
+const canon = value => { try { return realpathSync(value) } catch { return null } }
+const selfReal = canon(self)
+let origin = ""
+try { origin = execFileSync("git", ["-C", self, "config", "--get", "remote.origin.url"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() } catch {}
+const originRepo = ownership.githubRemote(origin)
+const matches = []
+for (const entry of registry.deployments) {
+  const checkout = join(projects, entry.project)
+  if (selfReal !== null && canon(checkout) === selfReal) { matches.push(entry.project); continue }
+  if (originRepo === null) continue
+  let remote = ""
+  try { remote = execFileSync("git", ["-C", checkout, "config", "--get", "remote.origin.url"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim() } catch {}
+  if (ownership.githubRemote(remote) === originRepo) matches.push(entry.project)
+}
+if (matches.length === 1) process.stdout.write(matches[0])
+else {
+  console.error(matches.length === 0
+    ? `this checkout does not match a registered deployment (origin ${origin || "none"}, projects root ${projects})`
+    : `this checkout matches more than one registered deployment: ${matches.join(", ")}`)
+  console.error(`registered deployments: ${registry.deployments.map(entry => entry.project).join(", ") || "(none)"}`)
+  process.exit(1)
+}
+' "$SELF_DIR" "$DATA_ROOT" "$PROJECTS_ROOT"
+}
+
 # --project is validated before any work, including --check, so a typo never reaches the registry. The
 # shape is src/shared/deployments.js PROJECT_PATTERN: "tools/<name>" or "research/<name>", name starting
 # with a letter or digit and otherwise A-Z a-z 0-9 . _ -.
@@ -205,6 +251,17 @@ ok()   { printf 'OK: %s\n' "$1"; }
 note() { printf 'note: %s\n' "$1"; }
 fail() { printf 'FAIL: %s\n' "$1"; PROBLEMS=$((PROBLEMS + 1)); }
 fix()  { printf 'fix: %s\n' "$1"; }
+
+if [ "$FINGERPRINT" -eq 0 ] && [ -z "$PROJECT_NAME" ]; then
+  if ! INFERRED=$(infer_project); then
+    printf 'FAIL: install.sh needs --project <project>: no unique registered deployment matches this checkout\n' >&2
+    printf 'fix: run "wheelchair-agent deployment migrate" (adopt the existing install) or "wheelchair-agent deployment add <project>", then rerun with --project <project>\n' >&2
+    exit 2
+  fi
+  PROJECT_NAME=$INFERRED
+  note "inferred deployment: $PROJECT_NAME (from this checkout and the registry)"
+fi
+
 
 # -------------------------------------------------------------- in-use probe
 

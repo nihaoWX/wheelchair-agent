@@ -29,6 +29,7 @@ import { checkPreset, checkProject, checkTask, checkThread, submitTask } from '.
 import { probe, serviceDown } from './health.js'
 import { createSpvMessage, resolveInboxRoot } from './inbox.js'
 import { startResultInjector } from './injector.js'
+import { ownDeployment } from './ownership.js'
 import { pendingTasks, unreadMessages } from './outbox.js'
 import { missingQueue, resolveRoot, resolveRoots } from './paths.js'
 
@@ -68,8 +69,8 @@ function preview(text, limit) {
 /**
  * 三个工具的定义。派单按项目解析：`queueDir` 设置 > `$SPV_QUEUE_DIR` > 注册表中该项目 > 报错。
  * 挂载时不知道这次会话会派给哪个项目，所以 `spv_dispatch` 在调用时用 `config` 再解析一次。
- * `spv_status` 也按注册表现场解析：注册表存在时逐份部署分组汇报，`--project` 只报一份；注册表不存在时
- * 仍只报 `<stateDir>/spv`，输出与「一仓一部署」之前逐字节相同。`root` 参数只剩这一条旧路径与注入器兜底用。
+ * `spv_status` 也按注册表现场解析，逐份部署分组汇报，`--project` 只报一份；注册表不存在（或本进程无法
+ * 识别自己属于哪份部署）时，把原因作为 `problem` 报出来，而不是退回旧队列。
  *
  * 队列目录不存在不在挂载时报错——那时 superagent 可能只是还没启动，报错会挡住整个会话；改由每次调用报。
  *
@@ -77,7 +78,7 @@ function preview(text, limit) {
  * `getAgent()` 读它。会话没派过活之前是 undefined，注入器此时不会消费任何消息。
  */
 export function defineSpvTools(root, state, config = {}) {
-  const dirs = dirsOf(root)
+  void root
 
   return [
     {
@@ -288,26 +289,18 @@ export function defineSpvTools(root, state, config = {}) {
                 },
               },
             },
+            problem: { type: 'string' },
           },
         },
         render: (_args, value) => {
-          // 注册表存在时按部署分组；注册表不存在时 `deployments` 整个字段缺席，走与旧版逐字节相同的输出。
-          if (value.deployments !== undefined) {
-            const lines = []
-            for (const group of value.deployments) {
-              const name = group.project === null ? 'legacy queue' : group.project
-              lines.push(`${name} (${group.queueDir}): ${group.pending} waiting, ${group.unread} unread`)
-            }
-            if (value.deployments.length === 0) lines.push('no deployments: none')
-            for (const item of value.pending) lines.push(`  ${item.id} ${item.thread} ${item.project}: ${item.preview}`)
-            for (const item of value.unread) lines.push(`  ${item.id} [${item.kind}] ${item.thread}: ${item.preview}`)
-            return [{ type: 'text', text: lines.join('\n') }]
+          const lines = []
+          if (value.problem !== undefined) lines.push(`problem: ${value.problem}`)
+          for (const group of value.deployments) {
+            const name = group.project === null ? 'this instance' : group.project
+            lines.push(`${name} (${group.queueDir}): ${group.pending} waiting, ${group.unread} unread`)
           }
-          const lines = [
-            value.pending.length === 0 ? 'waiting for pickup: none' : `waiting for pickup: ${value.pending.length}`,
-          ]
+          if (value.deployments.length === 0) lines.push('no deployments: none')
           for (const item of value.pending) lines.push(`  ${item.id} ${item.thread} ${item.project}: ${item.preview}`)
-          lines.push(value.unread.length === 0 ? 'unread messages: none' : `unread messages: ${value.unread.length}`)
           for (const item of value.unread) lines.push(`  ${item.id} [${item.kind}] ${item.thread}: ${item.preview}`)
           return [{ type: 'text', text: lines.join('\n') }]
         },
@@ -316,20 +309,27 @@ export function defineSpvTools(root, state, config = {}) {
         const thread = args.thread === undefined ? undefined : checkThread(args.thread)
         const project = args.project === undefined ? undefined : checkProject(args.project)
         const registry = listDeployments()
-        if (project !== undefined && !registry.exists) throw missingDeploymentError(project, registry.file)
-        // 注册表不存在：保持旧行为与旧输出，只读挂载时解析的那条队列。
-        if (project === undefined && !registry.exists) {
-          try {
-            return await readQueueReport(dirs, thread)
-          } catch (error) {
-            if (error.code === 'ENOENT') throw missingQueue(root)
-            throw error
-          }
+        if (project !== undefined && !registry.exists) {
+          throw missingDeploymentError(project, registry.file, false)
         }
-        const queues =
-          project === undefined
+        const own = ownDeployment()
+        let queues
+        try {
+          queues = project === undefined
             ? resolveRoots(config)
             : [{ project, root: resolveRoot(config, { project }) }]
+        } catch (error) {
+          // 注册表是唯一来源：没有它（或本进程无法识别自己）时把原因当 problem 报出来，不退回旧队列。
+          if (project !== undefined) throw error
+          return {
+            pending: [],
+            unread: [],
+            deployments: [],
+            problem: own.entry === null
+              ? `${error.message} (instance: ${own.reason})`
+              : error.message,
+          }
+        }
         const pending = []
         const unread = []
         const deployments = []
@@ -352,7 +352,12 @@ export function defineSpvTools(root, state, config = {}) {
             unread: report.unread.length,
           })
         }
-        return { pending, unread, deployments }
+        return {
+          pending,
+          unread,
+          deployments,
+          ...(own.entry === null ? { problem: `ownership: ${own.reason}; polling nothing until this instance can be identified` } : {}),
+        }
       },
     },
   ]
@@ -367,7 +372,13 @@ export function defineSpvTools(root, state, config = {}) {
  * 空转；它本身没有超时，插件挂着就一直等。
  */
 export function apply(ctx, config = {}) {
-  const root = resolveRoot(config)
+  // 没有部署上下文不能挡住整个会话挂载：工具本身会在调用时报出指路错误，状态工具会把它显示成 problem。
+  let root
+  try {
+    root = resolveRoot(config)
+  } catch {
+    root = undefined
+  }
   const state = { agent: undefined }
   for (const tool of defineSpvTools(root, state, config)) ctx.tools.register(tool)
   ctx.effect(

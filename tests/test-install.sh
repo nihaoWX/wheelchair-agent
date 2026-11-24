@@ -7,7 +7,8 @@
 # `commands/superagent-service.py probe`, so the test states "the service/SPV session is running" as a
 # fixture instead of depending on what happens to run on the machine. No real service or dsh is
 # touched; case 17 briefly edits the checkout's source preset and restores it (also on INT/TERM);
-# case 18 installs with --project, which records a deployment in the sandbox registry.
+# case 18 installs with --project, which records a deployment in the sandbox registry; case 19 covers
+# the required/inferred --project.
 #
 # What it proves:
 #   - a refusal exits 3, explains what is in use, and creates nothing under any install target (a virgin
@@ -97,17 +98,33 @@ set_state() {
   esac
 }
 
-run_install() {
+# A deployment cannot be installed without a project anymore, so every call that does not say otherwise is
+# pinned to the machine's own deployment. Cases that exercise the inference / required-project path call
+# run_install_raw instead.
+run_install_raw() {
   (
     export HOME="$SB/home" DSH_HOME="$SB/dsh" SPV_BIN_DIR="$SB/local-bin" \
       SPV_QUEUE_DIR="$SB/queue" SPV_INSTALL_PROBE="$SB/tools/fake-probe" \
       FAKE_PROBE_SERVICE="$SERVICE_MARKER" FAKE_PROBE_SPV="$SPV_MARKER" \
-      SPV_SERVICE_PORT=3082 PATH="$SB/tools:$PATH" \
+      SPV_SERVICE_PORT=3082 PATH="$SB/tools:$PATH" SPV_PROJECTS_ROOT="$SB/home/bioagentforge" \
       WHEELCHAIR_AGENT_HOME="$SB/home/.wheelchair-agent" \
       DSH_SUPERAGENT_STATE_DIR="$SB/dsh/state/superagent"
     unset SPV_INBOX_DIR SPV_PREPARE_LOG
     bash "$INSTALL" "$@"
   ) >"$SB/stdout" 2>"$SB/stderr"
+}
+run_install() {
+  has_project=0
+  has_fingerprint=0
+  for word in "$@"; do
+    [ "$word" = "--project" ] && has_project=1
+    case $word in --project=*) has_project=1 ;; --fingerprint) has_fingerprint=1 ;; esac
+  done
+  if [ "$has_project" -eq 0 ] && [ "$has_fingerprint" -eq 0 ]; then
+    run_install_raw --project tools/wheelchair-agent "$@"
+  else
+    run_install_raw "$@"
+  fi
 }
 
 # A content-and-path hash of every install target; used to prove a call wrote nothing.
@@ -304,7 +321,7 @@ before=$(install_snapshot)
     SPV_QUEUE_DIR="$SB/queue" SPV_INSTALL_PROBE="$SB/tools/fake-probe" \
     FAKE_PROBE_SERVICE="$SERVICE_MARKER" FAKE_PROBE_SPV="$SPV_MARKER" \
     SPV_SERVICE_PORT=3082 WHEELCHAIR_AGENT_HOME=relative/root PATH="$SB/tools:$PATH"
-  bash "$INSTALL"
+  bash "$INSTALL" --project tools/wheelchair-agent
 ) >"$SB/stdout" 2>"$SB/stderr"
 check '(10) a relative data root exits 1' "$?" 1
 check '(10) the failure names the absolute-path rule' \
@@ -428,8 +445,8 @@ run_install --check
 check '(17) --check is clean again after restoring the source' "$?" 0
 
 # (18) --project records the successful install as that project's deployment, through the installed CLI
-# and the real registry writer. A rerun is idempotent, a plain install (no --project) leaves the registry
-# alone, --check stays read-only, and a malformed project is rejected before any work.
+# and the real registry writer. A rerun is idempotent, a plain install (no --project) is refused without a
+# match, --check stays read-only, and a malformed project is rejected before any work.
 DEPLOYMENTS="$SB/home/.wheelchair-agent/deployments.json"
 registry_value() {
   node -e 'const fs=require("fs"); const d=JSON.parse(fs.readFileSync(process.argv[1],"utf8")).deployments; const e=d.find(x=>x.project===process.argv[2])||{}; process.stdout.write(String(e[process.argv[3]] ?? ""))' \
@@ -477,9 +494,10 @@ check '(18) the second project renders its own instance' "$([ -f "$SB/home/.whee
 check '(18) the second project records the same commit' "$(registry_value tools/demo2 installedSha)" "$stamp_sha"
 cp "$DEPLOYMENTS" "$SB/registry-18.json"
 
-run_install
-check '(18) a plain install without --project exits 0' "$?" 0
-check '(18) a plain install leaves the registry byte-identical' "$(cmp -s "$DEPLOYMENTS" "$SB/registry-18.json" && echo same || echo different)" same
+run_install_raw
+check '(18) a plain install without --project is refused now' "$?" 2
+check '(18) the refusal explains migration and the project flag' "$(grep -c 'FAIL: install.sh needs --project' "$SB/stderr")" 1
+check '(18) a refused plain install leaves the registry byte-identical' "$(cmp -s "$DEPLOYMENTS" "$SB/registry-18.json" && echo same || echo different)" same
 
 run_install --check --project tools/beta
 check '(18) --check --project exits 0' "$?" 0
@@ -498,6 +516,42 @@ run_install --project tools/
 check '(18) an empty project name is a usage error' "$?" 2
 check '(18) the empty-name error changed the registry' \
   "$(cmp -s "$DEPLOYMENTS" "$SB/registry-18.json" && echo same || echo different)" same
+
+# (19) --project is required: without it install.sh may only infer a unique registered deployment from this
+# checkout's repository/path. Zero or several matches stop with the registry listed; a unique match proceeds
+# and --check stays read-only either way.
+set_state
+rm -rf "$SB/home/bioagentforge"
+rm -f "$DEPLOYMENTS"
+run_install --project tools/wheelchair-agent
+check '(19) the wheelchair-agent deployment installs' "$?" 0
+mkdir -p "$SB/home/bioagentforge/tools/wheelchair-agent"
+git -C "$SB/home/bioagentforge/tools/wheelchair-agent" init -q
+git -C "$SB/home/bioagentforge/tools/wheelchair-agent" remote add origin "$(git -C "$REPO" config --get remote.origin.url)"
+inferred_registry=$(sha256sum "$DEPLOYMENTS" | cut -d' ' -f1)
+
+run_install_raw --check
+check '(19) --check infers the unique deployment' "$?" 0
+check '(19) the inferred project is reported' "$(grep -c '^note: inferred deployment: tools/wheelchair-agent' "$SB/stdout")" 1
+check '(19) inferred --check did not touch the registry' "$(sha256sum "$DEPLOYMENTS" | cut -d' ' -f1)" "$inferred_registry"
+
+run_install --project tools/other
+check '(19) a second project installs' "$?" 0
+mkdir -p "$SB/home/bioagentforge/tools/other"
+git -C "$SB/home/bioagentforge/tools/other" init -q
+git -C "$SB/home/bioagentforge/tools/other" remote add origin "$(git -C "$REPO" config --get remote.origin.url)"
+run_install_raw --check
+check '(19) an ambiguous checkout is refused' "$?" 2
+check '(19) the ambiguity names both projects' "$(grep -c 'matches more than one registered deployment: tools/other, tools/wheelchair-agent' "$SB/stderr")" 1
+
+before_none=$(sha256sum "$DEPLOYMENTS" | cut -d' ' -f1)
+rm -rf "$SB/home/bioagentforge/tools/wheelchair-agent" "$SB/home/bioagentforge/tools/other"
+run_install_raw --check
+check '(19) a checkout matching no deployment is refused' "$?" 2
+check '(19) the zero-match error says so' "$(grep -c 'does not match a registered deployment' "$SB/stderr")" 1
+check '(19) the zero-match error lists the registry' "$(grep -c 'registered deployments: tools/other, tools/wheelchair-agent' "$SB/stderr")" 1
+check '(19) the refused inference left the registry alone' "$(sha256sum "$DEPLOYMENTS" | cut -d' ' -f1)" "$before_none"
+rm -rf "$SB/home/bioagentforge"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

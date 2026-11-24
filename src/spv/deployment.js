@@ -40,8 +40,9 @@ commands:
                                record a deployment and render its instance overlay;
                                defaults: stateDir <base>/<slug>, queueDir <stateDir>/spv,
                                port = first unused from 3082
-  remove <project>             delete one deployment record (the deployment itself is not stopped)
-  migrate                      record the current single deployment as tools/wheelchair-agent
+  remove <project> [--force]   delete one deployment record (the deployment itself is not stopped);
+                               removing the last one needs --force and prints a warning
+  migrate                      adopt this machine's existing single deployment as tools/wheelchair-agent
 
 A deployment is never created automatically: "add" records it and renders
 <data root>/deployments/<slug>.yml; starting its service is the explicit next step
@@ -229,8 +230,13 @@ function add(positionals, flags, { env, out }) {
   return 0
 }
 
-/** `deployment remove`：先打印将要删掉的那一条，再改写文件；只影响注册表，不停止部署。 */
-function remove(positionals, { env, out }) {
+/**
+ * `deployment remove`：先打印将要删掉的那一条，再改写文件；只影响注册表，不停止部署。
+ *
+ * 删最后一条会让这台机器没有任何可用部署（`service`/`spv`/`restart-all` 都需要注册表），所以必须
+ * `--force`，并且先把后果写出来。
+ */
+function remove(positionals, flags, { env, out }) {
   const project = checkProject(exactlyOne(positionals, 'tools/<name>'))
   const registry = listDeployments({ env })
   const entry = registry.deployments.find(item => item.project === project)
@@ -246,6 +252,19 @@ function remove(positionals, { env, out }) {
         'to see the registered projects.',
     )
   }
+  if (registry.deployments.length === 1) {
+    if (flags['--force'] !== true) {
+      throw new Error(
+        `refusing to remove the last deployment ${JSON.stringify(project)}: this machine would have no usable ` +
+          'deployment, so "wheelchair-agent service", "spv" and "restart-all" would all fail until one is ' +
+          'registered again. Re-run with --force to remove it anyway.',
+      )
+    }
+    out.write(
+      'warning: removing the last deployment; this machine will have no usable deployment until ' +
+        '"wheelchair-agent deployment add <project>" (or migrate) registers one again\n',
+    )
+  }
   // 先给人看一眼要删的是哪一条（与 list 同样的一行），再动文件。
   out.write(`${describe(entry)}\n`)
   const result = removeDeployment(project, { env })
@@ -257,11 +276,12 @@ function remove(positionals, { env, out }) {
 }
 
 /**
- * `deployment migrate`：把单部署时代的现状写成第一条条目。
+ * `deployment migrate`：认领一台旧安装，把单部署时代的现状写成第一条条目。
  *
  * 只有在注册表不存在或为空时才写；已有条目时是幂等空操作，绝不重新覆盖操作者维护的值。项目名就是
- * `tools/wheelchair-agent`（`ARCHITECTURE/deployments.md`）；profile/stateDir/queue 从当前环境解析，端口取
- * service 的解析顺序。
+ * `tools/wheelchair-agent`（`ARCHITECTURE/deployments.md`）；profile/stateDir/queue 从当前环境解析（即旧规则
+ * 的基 stateDir 与 `<stateDir>/spv`），端口取 service 的解析顺序。注册表是唯一部署来源之后，本命令是旧安装
+ * 进入分部署模式的唯一入口。
  */
 function migrate(positionals, { env, out }) {
   noPositionals(positionals, 'migrate')
@@ -290,8 +310,10 @@ function migrate(positionals, { env, out }) {
   out.write(`registered ${describe(result.entry)}\n`)
   out.write(`${instance.created ? 'instance' : 'instance (already existed, left unchanged):'} ${instance.file}\n`)
   out.write(
-    'the running superagent service is unchanged; dispatches for tools/wheelchair-agent now go to that queue. ' +
-      'Other projects need their own "deployment add" before dispatching.\n',
+    'adopted the existing installation: the running superagent service is unchanged, and dispatches for ' +
+      'tools/wheelchair-agent go to that queue. Continue with "wheelchair-agent service start --project ' +
+      'tools/wheelchair-agent" so the instance identifies itself, and register other projects with ' +
+      '"deployment add" before dispatching to them.\n',
   )
   return 0
 }
@@ -332,12 +354,12 @@ export function runDeploymentCommand(argv, { env = process.env, out = process.st
     return add(parsed.positionals, parsed.flags, { env, out })
   }
   if (verb === 'remove' || verb === 'rm') {
-    const parsed = parse(rest)
+    const parsed = parse(rest, { booleans: ['--force'] })
     if (parsed.help) {
       out.write(`${DEPLOYMENT_USAGE}\n`)
       return 0
     }
-    return remove(parsed.positionals, { env, out })
+    return remove(parsed.positionals, parsed.flags, { env, out })
   }
   if (verb === 'migrate') {
     const parsed = parse(rest)

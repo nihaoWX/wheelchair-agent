@@ -20,9 +20,9 @@
  * `../src/`。`INSTALLED` 用「同目录有没有 preset.yml」区分这两种布局，不猜、不向上找。
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const SELF_DIR = dirname(fileURLToPath(import.meta.url))
@@ -48,12 +48,14 @@ const USAGE = `usage: wheelchair-agent <command> [options]
 The single entry point for the SPV session and the superagent service.
 
 commands:
-  spv [dsh-tui args...]        start the SPV session (backend first; narrates a restart and comes back here)
+  spv [--project <p>] [dsh-tui args...]
+                               start the SPV session (backend first; narrates a restart and comes back here);
+                               --project picks the deployment, otherwise cwd under <projectsRoot>/<project>
   prepare                      the panel's prepare command: clone the project, install a managed
                                AGENTS.md, give tools/<name> a private GitHub remote
-  service <start|stop|restart|status|open> [--project <p>]
-                               start, stop, restart or inspect the superagent service; with
-                               --project, only that project's deployment
+  service <start|stop|restart|status|open> [--project <p>|--all]
+                               start, stop, restart or inspect a deployment's instance; --all does
+                               every registered deployment, and bare "service status" lists them all
   jobctl <submit|status|log|verify|cancel>
                                hand a long job to systemd so it outlives the worker's turn
   dispatch --project <p> --task <t> [--thread <n>] [--preset <id>]
@@ -70,9 +72,9 @@ commands:
   work gc [--dry-run] [--keep <n>] [--keep-days <d>]
                                reclaim ticket clones that are clean, unused and fully pushed
   work restored <ticket>       print the commands that rebuild a reclaimed ticket clone
-  restart-all [--dry-run] [--force] [--no-install] [--detach] [--project <p>]
-                               restart the superagent service, cold-install the preset and bring the SPV TUI back;
-                               with --project only that deployment's instance and session
+  restart-all [--dry-run] [--force] [--no-install] [--detach] [--project <p>|--all]
+                               restart the superagent service, cold-install the preset and bring the SPV TUI
+                               back, or restart one deployment's instance
   session release [--session <id>] [--dry-run]
                                release the kernel session lease held by a stuck TUI/dsh process
   hook <events|list|add|enable|disable|rm|rename|test|log|prompt>
@@ -179,19 +181,23 @@ options:
   --json    print one JSON object for scripting`
 
 const RESTART_USAGE = `usage: wheelchair-agent restart-all [--dry-run] [--force] [--no-install] [--detach]
-                                    [--session <id>] [--project <p>]
+                                    [--session <id>] [--project <p>|--all]
 
-Restart everything this deployment runs: the superagent service, a cold install of the preset, and the SPV TUI
-session. The cold-install guard refuses while the service or a live SPV session holds the install targets, so
-the order is fixed: guard -> service stop -> stop the SPV chain -> install.sh cold -> service start -> the
-terminal that ran "wheelchair-agent spv" brings the TUI back in that same terminal. tmux session "dsh-spv" is
-only the fallback for a terminal that is gone.
+Restart one deployment or the whole machine, then bring the SPV TUI back in the terminal that ran
+"wheelchair-agent spv" (tmux session "dsh-spv" is only the fallback for a terminal that is gone).
 
 With --project only that deployment is restarted: its own instance (profile plus --patch overlay) is stopped
 and started, install.sh is skipped (the preset, webui, CLI and core are installed once for every deployment),
 and the session it resumes is that deployment's own: --session when given, otherwise the record under its
 stateDir. The global ~/.dsh-tui/resume.txt is never read here, because it belongs to whichever deployment
 wrote it last and would resume another deployment's conversation.
+
+With --all every registered deployment is stopped, the SPV session chain is stopped and its lease waited for,
+install.sh runs once, every deployment is started, and the TUI is resumed. The install runs with an explicit
+project: --project when given, otherwise the deployment whose checkout this command runs from when its
+normalized GitHub origin (or the registered checkout path) identifies exactly one; otherwise the command
+refuses before stopping anything and asks for --project. --project may be combined with --all to say which
+checkout installs; it does not narrow the restart.
 
 options:
   --dry-run     print the plan and change nothing (no log, no command, no signal)
@@ -204,8 +210,9 @@ options:
                 is absent or has no directory, the id in ~/.dsh-tui/resume.txt is used and the fallback is
                 logged
   --project <p>
-                restart only the deployment registered for project <p>; without it every deployment is
-                restarted exactly as before
+                restart only the deployment registered for project <p>; with --all, only select the
+                deployment whose checkout runs install.sh (every deployment is still restarted)
+  --all         restart every registered deployment: stop all instances, install once, start all
   --run         internal: run the orchestration in this process (used by --detach)
   --help        this text
 
@@ -352,42 +359,6 @@ function preview(text, limit) {
 // ------------------------------------------------------------------ commands
 
 /**
- * `spv`：拉起后端（幂等）后启动 SPV 会话，其余参数透传给 dsh-tui。
- *
- * 本命令**不** `exec` 启动器：它把启动器当子进程跑，终端由子进程继承，所以 TUI 退出后本进程还在。
- * `restart-all --detach` 留下的 marker 让本进程变成叙述者——tail 日志、打印每一步、然后在同一终端重新
- * 拉起启动器；没有 marker 时就是普通退出，退出码原样透传。循环本身在 `src/spv/restart-ux.js`。
- * `WHEELCHAIR_AGENT_LAUNCHER`（绝对路径）是测试与手动覆盖用的 seam。
- */
-async function commandSpv(argv) {
-  const configured = String(process.env.WHEELCHAIR_AGENT_LAUNCHER ?? '').trim()
-  const launcher = configured === '' ? LAUNCHER : configured
-  if (!existsSync(launcher)) {
-    process.stderr.write(`wheelchair-agent: the SPV launcher is missing at ${launcher}\n`)
-    process.stderr.write('fix: run "bash install.sh" from the wheelchair-agent checkout\n')
-    process.exit(1)
-  }
-  const { resolveResume, runSpvSession } = await load('src', 'spv', 'restart-ux.js')
-  const { resolveSession, resumeIdFromArgv } = await load('src', 'spv', 'session.js')
-  // The initial session hint (when the operator starts with --resume) is passed to the loop; it resolves
-  // each later relaunch itself from the id `restart-ux.js` appends.
-  const resume = resolveResume()
-  const resumeId = resumeIdFromArgv(argv, resume.ok ? resume.id : undefined)
-  const session = resumeId === undefined
-    ? undefined
-    : resolveSession({ env: process.env, cwd: process.cwd(), id: resumeId })
-  process.exitCode = await runSpvSession({
-    launcher,
-    launcherArgv: argv,
-    stateDir: STATE_DIR,
-    sessionDir: session?.dir,
-    presetPatch: join(PRESET_DIR, 'preset-default.patch.yml'),
-    cwd: process.cwd(),
-    env: process.env,
-  })
-}
-
-/**
  * `prepare`：面板的 prepare 命令。
  *
  * 面板里存的是 `wheelchair-agent prepare`（命令名，不是绝对路径），项目路径来自执行环境变量
@@ -435,10 +406,19 @@ function commandPython(script, argv, name) {
   exec('python3', [script, ...argv])
 }
 
-/** 从 `service` 的参数里取出 `--project`，其余原样交给 service manager（它有 --port/--timeout 等自己的选项）。 */
-function takeProjectFlag(argv) {
+/** `service` / `spv` / `restart-all` 需要注册表：不存在时给一句话指路，不打印栈。 */
+async function requiredRegistry() {
+  const deployments = await load('src', 'shared', 'deployments.js')
+  const registry = deployments.listDeployments({})
+  if (!registry.exists) throw deployments.missingRegistryError(registry.file)
+  return { deployments, registry }
+}
+
+/** `service`/`spv` 的目标：--project 与 --all 互斥，其余参数原样交给下層。 */
+function takeServiceTarget(argv) {
   const rest = []
   let project
+  let all = false
   for (let index = 0; index < argv.length; index += 1) {
     const word = argv[index]
     if (word === '--project') {
@@ -453,9 +433,14 @@ function takeProjectFlag(argv) {
       if (project === '') throw new UsageError('--project needs a project name, e.g. tools/<name>')
       continue
     }
+    if (word === '--all') {
+      all = true
+      continue
+    }
     rest.push(word)
   }
-  return { project, rest }
+  if (project !== undefined && all) throw new UsageError('--project and --all cannot be combined')
+  return { project, all, rest }
 }
 
 /** 同步运行 service manager，保留它的输出与退出码（不 execve：跑完还要打提示）。 */
@@ -473,104 +458,184 @@ function runServiceManager(args) {
   return child.status ?? 1
 }
 
-/**
- * The extra `service status` block for a registry with several deployments.
- *
- * The legacy lines (profile/url/pids/runtime) are printed exactly as before; this only appends one line per
- * registered deployment after them, so an operator can see every instance without asking each project. A
- * deployment counts as running only when its overlay is loaded by a live process, using the same
- * profile+patch selector a project-scoped restart uses. The legacy service may itself be registered as
- * `tools/wheelchair-agent`; when it is the process already described above, its line is skipped rather than
- * reported twice.
- */
-async function deploymentStatusBlock(rest) {
-  if (rest[0] !== 'status') return
-  let registry
-  try {
-    const { listDeployments } = await load('src', 'shared', 'deployments.js')
-    registry = listDeployments({})
-  } catch {
-    return // a broken registry is reported by deployment/check, not by hiding the service state
-  }
-  if (!registry.exists || registry.deployments.length <= 1) return
-  const { instancePath } = await load('src', 'shared', 'deployments.js')
-  const { readProcTable, servesProfile } = await load('src', 'spv', 'restart.js')
-  const { hasPatchArg, selectInstanceProcesses } = await load('src', 'spv', 'deployment-restart.js')
-  const table = readProcTable()
-  const legacyDeep = deployments => {
-    const legacy = table.filter(({ argv }) =>
-      servesProfile(argv, deployments.profile) && !hasPatchArg(argv))
-    return legacy.length > 0
-  }
-  const lines = []
-  for (const entry of registry.deployments) {
-    const patch = instancePath(entry.project, {})
-    const running = selectInstanceProcesses(table, { profile: entry.profile, patch })
-    if (running.length === 0 && entry.project === 'tools/wheelchair-agent' && legacyDeep(entry)) continue
-    const port = entry.port === null ? '-' : String(entry.port)
-    const pid = running.length === 0 ? '-' : String(running[0].pid)
-    lines.push(`  ${entry.project}  port ${port}  ${running.length === 0 ? 'stopped' : 'running'}  ${pid}`)
-  }
-  if (lines.length === 0) return
-  process.stdout.write(`\ndeployments:\n${lines.join('\n')}\n`)
-  process.stdout.write('note:   use --project <p> to target one deployment; the service lines above describe the legacy service\n')
-}
-
-/**
- * `service`：不带 --project 时行为与以前逐字相同（旧的单部署服务），只在有多个部署时追加一句提示；
- * 带 --project 时按注册表找到该部署的实例 overlay、端口、会话与日志，只动那一个。
- */
-async function commandService(argv) {
-  const { project, rest } = takeProjectFlag(argv)
-  if (project === undefined) {
-    const status = runServiceManager(rest)
-    let registry
-    try {
-      const { listDeployments } = await load('src', 'shared', 'deployments.js')
-      registry = listDeployments({})
-    } catch {
-      registry = undefined // 坏注册表由 deployment/check 报；这里不掩盖真实服务状态。
-    }
-    if (status === 0 && registry?.exists && registry.deployments.length > 1) {
-      process.stdout.write(
-        `note: ${registry.deployments.length} deployments are registered; add --project <p> to target one\n`,
-      )
-    }
-    await deploymentStatusBlock(rest)
-    process.exit(status)
-  }
+/** 一个部署施加到 service manager 上的参数：profile、实例 overlay、会话/日志/端口与部署身份。 */
+async function serviceArgsFor(entry, rest) {
   const deployments = await load('src', 'shared', 'deployments.js')
-  const { checkProject } = await load('src', 'spv', 'dispatch.js')
-  const wanted = checkProject(project)
-  const registry = deployments.listDeployments({})
-  const entry = registry.deployments.find(item => item.project === wanted)
-  if (entry === undefined) throw deployments.missingDeploymentError(wanted, registry.file)
   if (entry.port === null) {
     throw new Error(
-      `deployment ${JSON.stringify(wanted)} has no port, so it has no panel to start: run ` +
-        `"wheelchair-agent deployment add ${wanted} --port <n>" and start the deployment again.`,
+      `deployment ${JSON.stringify(entry.project)} has no port, so it has no panel to start: run ` +
+        `"wheelchair-agent deployment add ${entry.project} --port <n>" and start the deployment again.`,
     )
   }
-  const instance = deployments.instancePath(wanted)
+  const instance = deployments.instancePath(entry.project)
   if (!existsSync(instance)) {
     throw new Error(
-      `the instance overlay for ${JSON.stringify(wanted)} is missing at ${instance}: run ` +
-        `"wheelchair-agent deployment add ${wanted}" to render it from the registry.`,
+      `the instance overlay for ${JSON.stringify(entry.project)} is missing at ${instance}: run ` +
+        `"wheelchair-agent deployment add ${entry.project}" to render it from the registry.`,
     )
   }
-  const slug = deployments.deploymentSlug(wanted)
+  const slug = deployments.deploymentSlug(entry.project)
   const log = join(DSH_HOME, '.artifacts', `wca-${slug}.log`)
-  const url = `http://127.0.0.1:${entry.port}`
-  const status = runServiceManager([
+  return [
     ...rest,
     '--profile', entry.profile,
     '--patch', instance,
     '--session', `wca-${slug}`,
+    '--state-dir', entry.stateDir,
+    '--queue-dir', entry.queueDir,
     '--log', log,
-    '--url', url,
+    '--url', `http://127.0.0.1:${entry.port}`,
     '--port', String(entry.port),
-  ])
+  ]
+}
+
+/**
+ * `service`：每份部署都有自己的实例，所以 start|stop|restart|open 必须说清目标（--project 或 --all）；
+ * 裸 `service status`（以及 `status --all`）逐个列出所有注册部署。没有 --project 也没有 --all 时不再
+ * 静默使用基 stateDir/3082。
+ */
+async function commandService(argv) {
+  const { project, all, rest } = takeServiceTarget(argv)
+  const action = rest[0] ?? 'status'
+  if (project === undefined && !all && action !== 'status') {
+    throw new UsageError(
+      `service ${action} needs --project <p> or --all: there is no deployment without a project, and this ` +
+        'CLI no longer starts or stops one implicitly. Run "wheelchair-agent deployment list" to see the ' +
+        'registered deployments.',
+    )
+  }
+  const { deployments, registry } = await requiredRegistry()
+  const { checkProject } = await load('src', 'spv', 'dispatch.js')
+  let entries = registry.deployments
+  if (project !== undefined) {
+    const wanted = checkProject(project)
+    const entry = registry.deployments.find(item => item.project === wanted)
+    if (entry === undefined) throw deployments.missingDeploymentError(wanted, registry.file)
+    entries = [entry]
+  }
+  if (entries.length === 0) {
+    throw new Error(
+      `no deployments are registered in ${registry.file}: run "wheelchair-agent deployment migrate" ` +
+        '(adopt the existing installation) or "wheelchair-agent deployment add <project>", then start it.',
+    )
+  }
+  if (project === undefined && action === 'status') {
+    // The old `profile:/url:/pids:/runtime:` lines still describe the machine's service; when more than one
+    // deployment is registered, one compact line per deployment follows. A bare status never guesses a
+    // deployment for a stop/start.
+    const code = runServiceManager(['status'])
+    const block = await deploymentStatusBlock(entries)
+    if (block !== '') process.stdout.write(`\n${block}`)
+    if (code !== 0) process.exit(code)
+    return
+  }
+  let status = 0
+  for (const entry of entries) {
+    if (entries.length > 1) process.stdout.write(`== ${entry.project} ==\n`)
+    const code = runServiceManager(await serviceArgsFor(entry, rest))
+    if (code !== 0 && status === 0) status = code
+  }
   process.exit(status)
+}
+
+/** One line per registered deployment for a multi-deployment `service status`; `''` when there is one. */
+async function deploymentStatusBlock(entries) {
+  if (entries.length < 2) return ''
+  const { instancePath } = await load('src', 'shared', 'deployments.js')
+  const { readProcTable, servesProfile } = await load('src', 'spv', 'restart.js')
+  const { hasPatchArg, selectInstanceProcesses } = await load('src', 'spv', 'deployment-restart.js')
+  const table = readProcTable({})
+  const legacyRunning = table.some(row =>
+    entries.some(entry => entry.project === 'tools/wheelchair-agent' && servesProfile(row.argv, entry.profile) && !hasPatchArg(row.argv)))
+  const lines = ['deployments:']
+  for (const entry of entries) {
+    const instance = instancePath(entry.project)
+    const matches = selectInstanceProcesses(table, { profile: entry.profile, patch: instance })
+    if (entry.project === 'tools/wheelchair-agent' && legacyRunning && matches.length === 0) continue
+    const pid = matches.length > 0 ? String(matches[0].pid ?? matches[0]) : '-'
+    lines.push(`  ${entry.project}  port ${entry.port ?? '-'}  ${matches.length > 0 ? 'running' : 'stopped'}  ${pid}`)
+  }
+  lines.push('note:   use --project <p> (or --all) to target one deployment; the service lines above describe the legacy service')
+  return `${lines.join('\n')}\n`
+}
+
+/*
+ * `spv` 的目标推断：显式 --project 优先；否则 cwd 落在某个已登记项目的 checkout 下（`<projectsRoot>/<project>`）
+ * 就用它；两者都没有时列出已登记部署并报错。不再默认 tools/wheelchair-agent。
+ */
+async function resolveSessionTarget(project) {
+  const { deployments, registry } = await requiredRegistry()
+  const { checkProject } = await load('src', 'spv', 'dispatch.js')
+  if (project !== undefined) {
+    const wanted = checkProject(project)
+    const entry = registry.deployments.find(item => item.project === wanted)
+    if (entry === undefined) throw deployments.missingDeploymentError(wanted, registry.file)
+    return entry
+  }
+  let cwd
+  try {
+    cwd = realpathSync(process.cwd())
+  } catch {
+    cwd = process.cwd()
+  }
+  const candidates = []
+  for (const entry of registry.deployments) {
+    let local
+    try {
+      local = realpathSync(join(PROJECTS_ROOT, entry.project))
+    } catch {
+      continue
+    }
+    if (cwd === local || cwd.startsWith(local + sep)) candidates.push({ entry, local })
+  }
+  if (candidates.length === 0) {
+    const listed = registry.deployments.map(item => item.project).join(', ')
+    throw new Error(
+      `cannot infer which deployment this session belongs to: ${process.cwd()} is not under any registered ` +
+        `project checkout (${PROJECTS_ROOT}/<project>). Run "wheelchair-agent spv --project <project>"; ` +
+        `registered deployments: ${listed}.`,
+    )
+  }
+  candidates.sort((a, b) => b.local.length - a.local.length)
+  return candidates[0].entry
+}
+
+async function commandSpv(argv) {
+  const { project, rest } = takeServiceTarget(argv)
+  if (rest.some(word => word === '--all')) throw new UsageError('spv does not take --all')
+  const entry = await resolveSessionTarget(project)
+  const configured = String(process.env.WHEELCHAIR_AGENT_LAUNCHER ?? '').trim()
+  const launcher = configured === '' ? LAUNCHER : configured
+  if (!existsSync(launcher)) {
+    process.stderr.write(`wheelchair-agent: the SPV launcher is missing at ${launcher}\n`)
+    process.stderr.write('fix: run "bash install.sh" from the wheelchair-agent checkout\n')
+    process.exit(1)
+  }
+  const { resolveResume, runSpvSession } = await load('src', 'spv', 'restart-ux.js')
+  const { resolveSession, resumeIdFromArgv } = await load('src', 'spv', 'session.js')
+  // The initial session hint (when the operator starts with --resume) is passed to the loop; it resolves
+  // each later relaunch itself from the id `restart-ux.js` appends.
+  const resume = resolveResume()
+  const resumeId = resumeIdFromArgv(rest, resume.ok ? resume.id : undefined)
+  const session = resumeId === undefined
+    ? undefined
+    : resolveSession({ env: process.env, cwd: process.cwd(), id: resumeId })
+  // Export the deployment identity to the launcher (and thus the dsh instance): the Source, the watcher and
+  // /restart-wheelchair-agent all resolve this instance from SPV_QUEUE_DIR, never from a global default.
+  const env = {
+    ...process.env,
+    DSH_SUPERAGENT_STATE_DIR: entry.stateDir,
+    SPV_QUEUE_DIR: entry.queueDir,
+  }
+  process.exitCode = await runSpvSession({
+    launcher,
+    launcherArgv: rest,
+    stateDir: entry.stateDir,
+    sessionDir: session?.dir,
+    presetPatch: join(PRESET_DIR, 'preset-default.patch.yml'),
+    cwd: process.cwd(),
+    env,
+  })
 }
 
 /** `dispatch`：写一个任务进队列。与 `spv_dispatch` 工具共用 `src/spv/dispatch.js`。 */
@@ -614,38 +679,50 @@ async function commandDeployment(argv) {
   }
 }
 
-/** `status`：非阻塞看队列。 */
+/**
+ * `status`：非阻塞看队列。注册表是唯一来源，所以默认逐个列出所有部署的队列；`--project` 只看一份。
+ * 队列目录尚未建立（服务没启动）时报 `missingQueue`，与单部署时代一致。
+ */
 async function commandStatus(argv) {
-  const parsed = options(argv, {
+  const { project, rest } = takeServiceTarget(argv)
+  const parsed = options(rest, {
     command: 'status',
-    usage: 'usage: wheelchair-agent status [--thread <name>]',
+    usage: 'usage: wheelchair-agent status [--project <project>] [--thread <name>]',
     flags: { '--thread': 'thread' },
   })
   const { pendingTasks, unreadMessages } = await load('src', 'spv', 'outbox.js')
   const { checkThread } = await load('src', 'spv', 'dispatch.js')
-  const { missingQueue, resolveRoot } = await load('src', 'spv', 'paths.js')
+  const { missingQueue, resolveRoot, resolveRoots } = await load('src', 'spv', 'paths.js')
   const { dirsOf } = await load('src', 'shared', 'queue.js')
-  const root = resolveRoot()
   const thread = parsed.thread === undefined ? undefined : checkThread(parsed.thread)
-  const dirs = dirsOf(root)
-  let tasks
-  let messages
-  try {
-    tasks = await pendingTasks(dirs)
-    messages = await unreadMessages(dirs, thread)
-  } catch (error) {
-    if (error.code === 'ENOENT') throw missingQueue(root)
-    throw error
+  const { checkProject } = await load('src', 'spv', 'dispatch.js')
+  const queues = project === undefined
+    ? resolveRoots({})
+    : [{ project: checkProject(project), root: resolveRoot({}, { project: checkProject(project) }) }]
+  const blocks = []
+  for (const queue of queues) {
+    const dirs = dirsOf(queue.root)
+    let tasks
+    let messages
+    try {
+      tasks = await pendingTasks(dirs)
+      messages = await unreadMessages(dirs, thread)
+    } catch (error) {
+      if (error.code === 'ENOENT') throw missingQueue(queue.root)
+      throw error
+    }
+    const waiting = tasks.filter(task => thread === undefined || task.thread === thread)
+    const lines = [`queue: ${queue.root}`]
+    if (queue.project !== null && queues.length > 1) lines[0] = `${queue.project}  queue: ${queue.root}`
+    lines.push(waiting.length === 0 ? 'waiting for pickup: none' : `waiting for pickup: ${waiting.length}`)
+    for (const task of waiting) lines.push(`  ${task.id} ${task.thread} ${task.project}: ${preview(task.text, 120)}`)
+    lines.push(messages.length === 0 ? 'unread messages: none' : `unread messages: ${messages.length}`)
+    for (const message of messages) {
+      lines.push(`  ${String(message.id ?? '')} [${String(message.kind ?? 'unknown')}] ${String(message.thread ?? 'main')}: ${preview(message.text, 120)}`)
+    }
+    blocks.push(lines.join('\n'))
   }
-  const waiting = tasks.filter(task => thread === undefined || task.thread === thread)
-  const lines = [`queue: ${root}`]
-  lines.push(waiting.length === 0 ? 'waiting for pickup: none' : `waiting for pickup: ${waiting.length}`)
-  for (const task of waiting) lines.push(`  ${task.id} ${task.thread} ${task.project}: ${preview(task.text, 120)}`)
-  lines.push(messages.length === 0 ? 'unread messages: none' : `unread messages: ${messages.length}`)
-  for (const message of messages) {
-    lines.push(`  ${String(message.id ?? '')} [${String(message.kind ?? 'unknown')}] ${String(message.thread ?? 'main')}: ${preview(message.text, 120)}`)
-  }
-  process.stdout.write(`${lines.join('\n')}\n`)
+  process.stdout.write(`${blocks.join('\n\n')}\n`)
 }
 
 /**
@@ -882,7 +959,7 @@ async function commandWork(argv) {
  */
 async function commandRestartAll(argv) {
   const parsed = {
-    dryRun: false, force: false, noInstall: false, detach: false, run: false,
+    dryRun: false, force: false, noInstall: false, detach: false, run: false, all: false,
     session: undefined, project: undefined,
   }
   const booleans = {
@@ -891,6 +968,7 @@ async function commandRestartAll(argv) {
     '--no-install': 'noInstall',
     '--detach': 'detach',
     '--run': 'run',
+    '--all': 'all',
   }
   for (let index = 0; index < argv.length; index += 1) {
     const word = argv[index]
@@ -928,6 +1006,13 @@ async function commandRestartAll(argv) {
   }
   // --run is the detached child's mode. Combining them would spawn a child that immediately arms another.
   if (parsed.detach && parsed.run) throw new UsageError('--detach and --run cannot be combined')
+  if (parsed.project === undefined && !parsed.all) {
+    throw new UsageError(
+      'restart-all needs --project <p> or --all: a bare restart of the whole machine is gone with the single ' +
+        'deployment. Use --all to restart every registered deployment, or --project <p> for one. Run ' +
+        '"wheelchair-agent deployment list" to see them.',
+    )
+  }
   const context = {
     root: ROOT,
     installed: INSTALLED,
@@ -938,17 +1023,17 @@ async function commandRestartAll(argv) {
     cwd: process.cwd(),
     cliPath: fileURLToPath(import.meta.url),
   }
-  if (parsed.project !== undefined) {
-    const { armProjectRestart, runProjectRestart } = await load('src', 'spv', 'deployment-restart.js')
-    if (parsed.detach && !parsed.run && !parsed.dryRun) {
-      process.exitCode = armProjectRestart(context, parsed)
-      return
-    }
-    process.exitCode = await runProjectRestart(context, parsed)
+  if (parsed.all) {
+    const { runRestart } = await load('src', 'spv', 'restart.js')
+    process.exitCode = await runRestart(context, parsed)
     return
   }
-  const { runRestart } = await load('src', 'spv', 'restart.js')
-  process.exitCode = await runRestart(context, parsed)
+  const { armProjectRestart, runProjectRestart } = await load('src', 'spv', 'deployment-restart.js')
+  if (parsed.detach && !parsed.run && !parsed.dryRun) {
+    process.exitCode = armProjectRestart(context, parsed)
+    return
+  }
+  process.exitCode = await runProjectRestart(context, parsed)
 }
 
 /**
@@ -1152,7 +1237,13 @@ async function commandWhere(argv) {
   } catch (error) {
     workRootError = error instanceof Error ? error.message : String(error)
   }
-  const queue = resolveRoot()
+  let queue
+  let queueError
+  try {
+    queue = resolveRoot()
+  } catch (error) {
+    queueError = error instanceof Error ? error.message : String(error)
+  }
   const payload = {
     root: paths.root,
     rootExists: existsSync(paths.root),
@@ -1177,7 +1268,9 @@ async function commandWhere(argv) {
     webuiPackageExists: existsSync(webuiPackage),
     checkout,
     checkoutExists: checkout !== null && existsSync(checkout),
-    queue: { path: queue, exists: existsSync(queue) },
+    queue: queueError === undefined
+      ? { path: queue, exists: existsSync(queue) }
+      : { path: null, exists: false, error: queueError },
     workRoot: workRootError === undefined
       ? { path: workRoot, exists: existsSync(workRoot) }
       : { path: null, exists: false, error: workRootError },

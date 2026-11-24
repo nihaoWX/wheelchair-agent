@@ -1,9 +1,10 @@
 /**
  * Project-scoped restart for one deployment (`wheelchair-agent restart-all --project <p>`).
  *
- * The global `restart-all` (without `--project`) keeps its old behavior: stop every service, cold-install
- * the shared preset, start the service, and let the SPV terminal bring the TUI back. A single deployment is
- * different in three ways:
+ * `--all` is the machine-wide round: every registered instance is stopped, the SPV chain is replaced, the
+ * shared preset is installed once (always with an explicit `--project`), every instance is started, and the
+ * SPV terminal brings the TUI back (`runAllRestart` in `restart.js`). A single deployment is different in
+ * three ways:
  *
  *   - only its own `dsh` instance is stopped and started. The instance is identified by the same runtime
  *     facts the service manager uses: `--profile <profile>` plus the instance's `--patch <overlay>` file.
@@ -179,7 +180,7 @@ export function armProjectRestart(context, options = {}) {
   }
   const entry = registry.deployments.find(item => item.project === options.project)
   if (entry === undefined) {
-    const error = missingDeploymentError(options.project, registry.file)
+    const error = missingDeploymentError(options.project, registry.file, registry.exists)
     process.stdout.write(`FAIL: ${error.message}\n`)
     return 1
   }
@@ -248,7 +249,7 @@ export async function runProjectRestart(context, options = {}) {
   const out = context.out ?? process.stdout
   const registry = listDeployments({ env })
   const entry = registry.deployments.find(item => item.project === options.project)
-  if (entry === undefined) throw missingDeploymentError(options.project, registry.file)
+  if (entry === undefined) throw missingDeploymentError(options.project, registry.file, registry.exists)
   if (entry.port === null) {
     throw new Error(
       `deployment ${JSON.stringify(entry.project)} has no port, so there is no instance to restart: run ` +
@@ -294,6 +295,8 @@ export async function runProjectRestart(context, options = {}) {
     '--profile', entry.profile,
     '--patch', instance,
     '--session', `wca-${slug}`,
+    '--state-dir', entry.stateDir,
+    '--queue-dir', entry.queueDir,
     '--log', log,
     '--url', url,
     '--port', String(entry.port),

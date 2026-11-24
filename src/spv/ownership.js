@@ -4,9 +4,9 @@
  * The registry (`<data root>/deployments.json`) is the only project list. This module answers the two
  * questions the inbox needs without adding registry fields:
  *
- *   - which running instance is this? The entry whose `queueDir` equals the queue this process reads
- *     (`resolveRoot()`). No match (old install, no registry, deleted entry, `$SPV_QUEUE_DIR` override) means
- *     "unknown": callers keep the pre-stage-3 behavior instead of guessing;
+ *   - which running instance is this? The entry whose `queueDir` equals `$SPV_QUEUE_DIR`, the queue the
+ *     launcher sets for this instance (`service start --project <p>`). No match (no registry, no override,
+ *     deleted entry) means "unknown": callers poll nothing and say why; the registry is the only source.
  *   - which project owns a repo? The local checkout is `<projectsRoot>/<project>`; its `origin` URL is the
  *     authoritative back-reference. When a project has no checkout to read, the repo name equal to the
  *     project's leaf name is the fallback (reported as such; no registry field is invented for it).
@@ -17,7 +17,6 @@ import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 
 import { listDeployments } from '../shared/deployments.js'
-import { resolveRoot } from './paths.js'
 
 /** `owner/name` from a GitHub remote URL; null for anything else. */
 export function githubRemote(url) {
@@ -50,10 +49,12 @@ export function projectForRepo(repo, { projectsRoot, deployments } = {}) {
 /**
  * The registry entry of the running instance, or a reason why it cannot be identified.
  *
- * `{entry: null, reason}` is the degradation path: the caller keeps polling every project and logs the
- * reason once per poll. `queue` is the effective queue this process reads, useful in that log line.
+ * The launcher (`service start --project <p>`) exports `SPV_QUEUE_DIR=<entry.queueDir>` for the instance, so
+ * this is a plain reverse lookup. `queue` may be passed explicitly (tests, or a caller that resolved it
+ * another way). `{entry: null, reason}` is not a fallback: the watcher polls nothing and logs the reason,
+ * `spv_status` reports it as a problem, and `/restart-wheelchair-agent` refuses to guess.
  */
-export function ownDeployment({ env = process.env } = {}) {
+export function ownDeployment({ env = process.env, queue } = {}) {
   let registry
   try {
     registry = listDeployments({ env })
@@ -61,17 +62,20 @@ export function ownDeployment({ env = process.env } = {}) {
     return { entry: null, registry: null, queue: null, reason: `cannot read the deployment registry: ${error.message}` }
   }
   if (!registry.exists) return { entry: null, registry, queue: null, reason: 'no deployment registry exists' }
-  let queue
-  try {
-    queue = resolveRoot()
-  } catch (error) {
-    return { entry: null, registry, queue: null, reason: `cannot resolve this queue: ${error.message}` }
+  const fromEnv = String(queue ?? env.SPV_QUEUE_DIR ?? '').trim()
+  if (fromEnv === '') {
+    return {
+      entry: null,
+      registry,
+      queue: null,
+      reason: 'this instance has no SPV_QUEUE_DIR, so it cannot tell which deployment it is',
+    }
   }
-  const entry = registry.deployments.find(item => item.queueDir === queue) ?? null
+  const entry = registry.deployments.find(item => item.queueDir === fromEnv) ?? null
   return {
     entry,
     registry,
-    queue,
-    reason: entry === null ? `no registered deployment reads ${queue}` : undefined,
+    queue: fromEnv,
+    reason: entry === null ? `no registered deployment reads ${fromEnv}` : undefined,
   }
 }
