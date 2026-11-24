@@ -43,7 +43,7 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
 `dsh --profile superagent --patch … --dump-config` 验；验不过才退回「每部署一份 profile」，那需要复制
 `node_modules`，代价大得多）。
 
-- `install.sh --project tools/<name>`：preceding 的安装（preset / webui / core）保持**全局一份**，每个部署
+- `install.sh --project tools/<name>`：前面的安装（preset / webui / core）保持**全局一份**，每个部署
   只多一份实例配置 `<data root>/deployments/<slug>.yml`（端口、stateDir、`queueDir`、面板标题），
   `installed.json` 记 `project` 与 sha（指纹判定沿用 #39）。
 - systemd：一个部署一个 `wca-<slug>.service`，命令形如
