@@ -38,9 +38,18 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
 
 ## 2. 每部署的安装与服务（stage 2）
 
-- `install.sh --project tools/<name>`：装进该部署的 profile，渲染 preset（`queueDir`、project、端口），webui 插件
-  放进对应 profile 的 `node_modules`，`installed.json` 记 `project` 与 sha（指纹判定沿用 #39）。
-- systemd：一个部署一个 `wca-<slug>.service`；端口从 3082 起按注册表分配，注册表里冲突即报错、不自动改。
+**部署 = 一个实例，不是一份 profile**（先证后做：`dsh --profile <p> --patch <file.yml>` 的 overlay 必须能设置
+`webserver` 端口、`dsh-superagent` 的 stateDir、`wheelchair-spv` 的 `queueDir` 与 webui host——用
+`dsh --profile superagent --patch … --dump-config` 验；验不过才退回「每部署一份 profile」，那需要复制
+`node_modules`，代价大得多）。
+
+- `install.sh --project tools/<name>`：preceding 的安装（preset / webui / core）保持**全局一份**，每个部署
+  只多一份实例配置 `<data root>/deployments/<slug>.yml`（端口、stateDir、`queueDir`、面板标题），
+  `installed.json` 记 `project` 与 sha（指纹判定沿用 #39）。
+- systemd：一个部署一个 `wca-<slug>.service`，命令形如
+  `dsh --profile superagent --patch <data root>/deployments/<slug>.yml`；端口从 3082 起按注册表分配，
+  冲突即报错、不自动改。每个部署的 stateDir 独立（`~/.dsh/state/superagent/<slug>`），所以会话、工单、
+  worker 都互不可见。
 - `wheelchair-agent service status|start|stop|open [--project <p>]`：默认**全部**部署，带 `--project` 只动一个。
 - `/restart-wheelchair-agent` 保持「全部停 → 装 → 全部起 → resume 原 spv 会话」的语义，`--project` 只重启一个。
 - 每个部署一个面板（自己的端口），彼此独立；`wheelchair-agent spv` 仍只有一个（spv 不是部署）。
