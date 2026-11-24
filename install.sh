@@ -62,9 +62,14 @@
 #     merge is not stale. The same fingerprint is recorded in $DATA_ROOT/installed.json and read by the
 #     cold-install notice, so all three agree on what "the installed copy" is.
 #
-# Usage: bash install.sh [--check] [--preset-dir ABS]
+# Usage: bash install.sh [--check] [--preset-dir ABS] [--project tools/<name>]
 #        bash install.sh --fingerprint [--preset-dir ABS]
 #        bash install.sh --help
+#
+# --project records the installed deployment for that project in the registry
+# ($WHEELCHAIR_AGENT_HOME/deployments.json, src/shared/deployments.js) after a successful install, so
+# `wheelchair-agent dispatch --project <p>` writes into this deployment's queue. It is opt-in and only a
+# real install writes it: --check and --fingerprint stay read-only.
 set -uo pipefail
 
 SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -97,12 +102,28 @@ CORE_BIN=$BIN_DIR/wheelchair-agent-core
 CHECK=0
 FINGERPRINT=0
 PRESET_DIR_OVERRIDE=''
+PROJECT_NAME=''
 while [ "$#" -gt 0 ]; do
   arg=$1
   case $arg in
     --check) CHECK=1 ;;
     # Internal: print the payload fingerprint as JSON on stdout for src/spv/inbox.js. Read-only.
     --fingerprint) FINGERPRINT=1 ;;
+    --project)
+      shift
+      if [ "$#" -eq 0 ]; then
+        printf 'FAIL: --project needs a value\n' >&2
+        printf 'fix: pass a project, e.g. --project tools/wheelchair-agent\n' >&2
+        exit 2
+      fi
+      PROJECT_NAME=$1 ;;
+    --project=*)
+      PROJECT_NAME=${arg#--project=}
+      if [ -z "$PROJECT_NAME" ]; then
+        printf 'FAIL: --project needs a value\n' >&2
+        printf 'fix: pass a project, e.g. --project tools/wheelchair-agent\n' >&2
+        exit 2
+      fi ;;
     --preset-dir)
       shift
       if [ "$#" -eq 0 ]; then
@@ -119,11 +140,12 @@ while [ "$#" -gt 0 ]; do
         exit 2
       fi ;;
     -h|--help)
-      printf 'usage: bash install.sh [--check] [--preset-dir ABS]\n'
+      printf 'usage: bash install.sh [--check] [--preset-dir ABS] [--project tools/<name>]\n'
       printf '       bash install.sh --fingerprint [--preset-dir ABS]\n'
       printf '  --check        read-only self-check; exit 2 when anything is not installed as expected\n'
       printf '  --fingerprint  internal, read-only: print the install fingerprint as JSON on stdout\n'
       printf '  --preset-dir   compare against (or fingerprint for) this preset directory instead of the default\n'
+      printf '  --project      after a successful install, record this project as the deployment in the registry\n'
       printf 'exit 0 installed or checks pass; 1 install failed; 2 check failed or bad argument;\n'
       printf '     3 refused because the install targets are in use (cold installs only)\n'
       exit 0 ;;
@@ -153,6 +175,28 @@ if [ -n "$PRESET_DIR_OVERRIDE" ]; then
   TARGET_PLUGIN_URL="file://$PRESET_DIR/src/spv/tools.js"
   TARGET_CRON_URL="file://$PRESET_DIR/src/spv/cron-plugin.js"
   TARGET_RESTART_URL="file://$PRESET_DIR/src/spv/restart-command.js"
+fi
+
+# --project is validated before any work, including --check, so a typo never reaches the registry. The
+# shape is src/shared/deployments.js PROJECT_PATTERN: "tools/<name>" or "research/<name>", name starting
+# with a letter or digit and otherwise A-Z a-z 0-9 . _ -.
+if [ -n "$PROJECT_NAME" ]; then
+  case $PROJECT_NAME in
+    tools/*|research/*) PROJECT_LEAF=${PROJECT_NAME#*/} ;;
+    *) PROJECT_LEAF='' ;;
+  esac
+  case $PROJECT_LEAF in
+    ''|*[!A-Za-z0-9._-]*)
+      printf 'FAIL: --project must be "tools/<name>" or "research/<name>", got %s\n' "$PROJECT_NAME" >&2
+      printf 'fix: pass a project like tools/wheelchair-agent (plain name: letters, digits, dot, dash, underscore)\n' >&2
+      exit 2 ;;
+  esac
+  case $PROJECT_LEAF in
+    [!A-Za-z0-9]*)
+      printf 'FAIL: --project name must start with a letter or digit, got %s\n' "$PROJECT_NAME" >&2
+      printf 'fix: pass a project like tools/wheelchair-agent\n' >&2
+      exit 2 ;;
+  esac
 fi
 
 PROBLEMS=0
@@ -297,7 +341,7 @@ render_into() {
     fix "check that $SELF_DIR/bin/wheelchair-agent.mjs exists and is readable, then rerun this script"
     return 1
   fi
-  for file in shared/home.js shared/hook-events.js shared/hooks.js shared/install-stamp.js shared/queue.js shared/schema.js shared/settings.js shared/work.js spv/auto-merge-effect.js spv/check.js spv/cron-plugin.js spv/cron.js spv/dispatch.js spv/health.js spv/hook.js spv/inbox.js spv/injector.js spv/outbox.js spv/paths.js spv/restart-command.js spv/restart-ux.js spv/restart.js spv/session.js spv/tools.js; do
+  for file in shared/deployments.js shared/home.js shared/hook-events.js shared/hooks.js shared/install-stamp.js shared/queue.js shared/schema.js shared/settings.js shared/work.js spv/auto-merge-effect.js spv/check.js spv/cron-plugin.js spv/cron.js spv/deployment.js spv/dispatch.js spv/health.js spv/hook.js spv/inbox.js spv/injector.js spv/outbox.js spv/paths.js spv/restart-command.js spv/restart-ux.js spv/restart.js spv/session.js spv/tools.js; do
     if ! cp "$SELF_DIR/src/$file" "$dest/src/$file"; then
       fail "cannot copy src/$file from this checkout"
       fix "check that $SELF_DIR/src/$file exists and is readable, then rerun this script"
@@ -389,7 +433,7 @@ render_webui_into() {
   done
   # `settings.js` lives in `lib/shared/` (not `lib/core/`) for the same reason `queue.js` does: the copied
   # `lib/core/inbox.js` imports `../shared/settings.js`, and `lib/core/` is for the src/spv files.
-  for pair in "spv/inbox.js:lib/core/inbox.js" "spv/dispatch.js:lib/core/dispatch.js" "spv/hook-runner.js:lib/core/hook-runner.js" "spv/paths.js:lib/core/paths.js" "spv/archive-effect.js:lib/core/archive-effect.js" "spv/auto-merge-effect.js:lib/core/auto-merge-effect.js" "shared/home.js:lib/shared/home.js" "shared/hook-events.js:lib/shared/hook-events.js" "shared/hooks.js:lib/shared/hooks.js" "shared/install-stamp.js:lib/shared/install-stamp.js" "shared/queue.js:lib/shared/queue.js" "shared/schema.js:lib/shared/schema.js" "shared/settings.js:lib/shared/settings.js" "shared/work.js:lib/shared/work.js"; do
+  for pair in "spv/inbox.js:lib/core/inbox.js" "spv/dispatch.js:lib/core/dispatch.js" "spv/hook-runner.js:lib/core/hook-runner.js" "spv/paths.js:lib/core/paths.js" "spv/archive-effect.js:lib/core/archive-effect.js" "spv/auto-merge-effect.js:lib/core/auto-merge-effect.js" "shared/deployments.js:lib/shared/deployments.js" "shared/home.js:lib/shared/home.js" "shared/hook-events.js:lib/shared/hook-events.js" "shared/hooks.js:lib/shared/hooks.js" "shared/install-stamp.js:lib/shared/install-stamp.js" "shared/queue.js:lib/shared/queue.js" "shared/schema.js:lib/shared/schema.js" "shared/settings.js:lib/shared/settings.js" "shared/work.js:lib/shared/work.js"; do
     src=${pair%%:*}
     target=${pair##*:}
     if ! cp "$SELF_DIR/src/$src" "$dest/$target"; then
@@ -470,7 +514,7 @@ check_preset() {
     fix 'run: bash tools/wheelchair-agent/install.sh'
   fi
   actual=$(find "$PRESET_DIR" -type f | sed "s|^$PRESET_DIR/||" | sort | tr '\n' ' ')
-  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/home.js src/shared/hook-events.js src/shared/hooks.js src/shared/install-stamp.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/work.js src/spv/auto-merge-effect.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/dispatch.js src/spv/health.js src/spv/hook.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/paths.js src/spv/restart-command.js src/spv/restart-ux.js src/spv/restart.js src/spv/session.js src/spv/tools.js "
+  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/deployments.js src/shared/home.js src/shared/hook-events.js src/shared/hooks.js src/shared/install-stamp.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/work.js src/spv/auto-merge-effect.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/deployment.js src/spv/dispatch.js src/spv/health.js src/spv/hook.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/paths.js src/spv/restart-command.js src/spv/restart-ux.js src/spv/restart.js src/spv/session.js src/spv/tools.js "
   local missing extras
   missing=$(comm -23 <(printf '%s' "$expected" | tr ' ' '\n' | sort) <(printf '%s' "$actual" | tr ' ' '\n' | sort) | tr '\n' ' ')
   extras=$(comm -13 <(printf '%s' "$expected" | tr ' ' '\n' | sort) <(printf '%s' "$actual" | tr ' ' '\n' | sort) | tr '\n' ' ')
@@ -916,6 +960,38 @@ write_install_stamp() {
   return 0
 }
 
+# Record this install as the deployment of --project. Only a successful install calls this: `--check` and
+# `--fingerprint` never write the registry, and dropping --project keeps the previous "one global queue"
+# behavior byte-for-byte.
+#
+# The registry format lives in src/shared/deployments.js; this function only feeds it the values this
+# install just used, through the installed CLI (the same writer a human would call). A failure here is a
+# real failure: the preset and service landed, but dispatch for the project would not reach this queue.
+register_deployment() {
+  [ -n "$PROJECT_NAME" ] || return 0
+  local queue installed_sha output
+  local -a args
+  queue=${SPV_QUEUE_DIR:-$LEGACY_STATE_DIR/spv}
+  # installedSha 取这次安装刚写下的戳（DATA_ROOT/installed.json），而不是临时 git 查询：它和
+  # `--check` 比对的是同一份“装了什么”的记录。
+  installed_sha=$(node -e 'const fs=require("fs"); try { const stamp=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if (typeof stamp.commit==="string") process.stdout.write(stamp.commit) } catch {}' \
+    "$DATA_ROOT/installed.json" 2>/dev/null || true)
+  args=(deployment add "$PROJECT_NAME" --profile "$PROFILE_ID" --state-dir "$LEGACY_STATE_DIR" \
+    --queue-dir "$queue" --port "$SERVICE_PORT")
+  if [ -n "$installed_sha" ]; then
+    args+=(--installed-sha "$installed_sha")
+  fi
+  if output=$("$CLI" "${args[@]}" 2>&1); then
+    printf '%s\n' "$output" | sed 's/^/     /'
+    ok "deployment registry: $PROJECT_NAME -> $queue"
+    return 0
+  fi
+  fail "the install succeeded, but recording $PROJECT_NAME in the deployment registry failed"
+  printf '%s\n' "$output" | sed 's/^/      /'
+  fix "run: wheelchair-agent deployment add $PROJECT_NAME --profile $PROFILE_ID --state-dir $LEGACY_STATE_DIR --queue-dir $queue --port $SERVICE_PORT"
+  return 1
+}
+
 install_preset() {
   local staged backup
   staged=$(mktemp -d) || { fail 'could not create a staging directory'; return 1; }
@@ -1111,6 +1187,9 @@ if [ "$CHECK" -eq 1 ]; then
   else
     note 'python3 is missing, so the in-use pre-flight was skipped; --check cannot prove a cold install is allowed'
   fi
+  if [ -n "$PROJECT_NAME" ]; then
+    note "--check is read-only: the deployment entry for $PROJECT_NAME is written by a real install, nothing was written now"
+  fi
   check_data_root
   check_preset
   check_webui
@@ -1175,8 +1254,11 @@ install_bin "$SERVICE" render_service_wrapper
 install_bin "$JOBCTL" render_jobctl_wrapper
 
 # The stamp is the last install step: it may only describe a run in which everything else succeeded.
+# Registering the project's deployment follows the stamp for the same reason: it names what this run
+# installed, so a failed install must not leave a registry entry pointing at half-installed files.
 if [ "$PROBLEMS" -eq 0 ]; then
   write_install_stamp
+  register_deployment
 fi
 
 if [ "$PROBLEMS" -gt 0 ]; then

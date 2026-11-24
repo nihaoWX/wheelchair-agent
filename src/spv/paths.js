@@ -2,32 +2,66 @@
  * SPV agent 侧的工具从哪个目录读写文件队列。
  *
  * 队列是本包 `spv_*` 工具（SPV agent preset）与 superagent 侧（`src/superagent/spv.js`、`src/superagent/watch.js`）
- * 之间**唯一**的接口，两侧必须指同一个目录，所以这里的规则与 `src/superagent/spv.js` 刻意保持一致：
+ * 之间**唯一**的接口，两侧必须指同一个目录，所以这里的规则与 `src/superagent/spv.js` 刻意保持一致。
+ *
+ * 单部署时代只有一份队列：
  *
  *   <stateDir>/spv          stateDir = $DSH_SUPERAGENT_STATE_DIR，缺省 ~/.dsh/state/superagent
  *
- * `$SPV_QUEUE_DIR` 与插件自身的 `queueDir` 设置可覆盖它。
+ * 「一仓一部署」之后，每份部署有自己的队列，队列由项目在注册表里的条目决定。优先级（前一项永远赢）：
+ *
+ *   1. 显式 `queueDir` 设置
+ *   2. `$SPV_QUEUE_DIR`
+ *   3. 注册表中该项目的 `queueDir`（仅在调用方给出 `project` 且注册表文件存在时）
+ *   4. 旧规则 `<stateDir>/spv`
+ *
+ * 注册表**存在**却没有该项目的条目时直接报错并给出 `deployment add`，绝不悄悄写进别人的队列，也绝不
+ * 自动创建部署；注册表**不存在**时完全走旧规则，所以升级本身不改变任何现有行为，只有 `deployment migrate`
+ * 显式写下第一条条目之后才进入分部署模式。
  */
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+import { missingDeploymentError, listDeployments } from '../shared/deployments.js'
 import { assertNotTicketClone } from '../shared/home.js'
 
 /** 未指定时 superagent 部署的状态目录。 */
 export const DEFAULT_STATE_DIR = join(homedir(), '.dsh', 'state', 'superagent')
 
-/** SPV 工具读写的队列根目录（绝对路径）。 */
-export function resolveRoot(config = {}) {
-  const configured = String(config.queueDir ?? '').trim()
-  if (configured) return configured
-  const fromEnv = String(process.env.SPV_QUEUE_DIR ?? '').trim()
-  if (fromEnv) return fromEnv
-  const stateDir = String(process.env.DSH_SUPERAGENT_STATE_DIR ?? '').trim() || DEFAULT_STATE_DIR
+/** 旧规则：`<stateDir>/spv`，带 ticket-clone 守卫。 */
+function legacyRoot(stateDir) {
   // The live queue belongs to the deployment; a worker's ticket clone must not resolve it by default
   // (the same shared check refuses the data root in src/shared/home.js). An explicit override wins.
   const root = join(stateDir, 'spv')
   assertNotTicketClone({ env: process.env, stateDir, what: 'the default spv queue root', target: root })
   return root
+}
+
+/**
+ * SPV 工具读写的队列根目录（绝对路径）。
+ *
+ * 不传 `project` 时保持旧语义（挂载时解析注入器/status 读的目录）；传了 `project` 时按注册表路由到该项目
+ * 部署的队列。注册表坏掉时抛错而不是回退——回退会把任务写进错误的队列。
+ */
+export function resolveRoot(config = {}, { project } = {}) {
+  const configured = String(config.queueDir ?? '').trim()
+  if (configured) return configured
+  const fromEnv = String(process.env.SPV_QUEUE_DIR ?? '').trim()
+  if (fromEnv) return fromEnv
+  const stateDir = String(process.env.DSH_SUPERAGENT_STATE_DIR ?? '').trim() || DEFAULT_STATE_DIR
+  if (project === undefined || project === null || String(project).trim() === '') return legacyRoot(stateDir)
+  const wanted = String(project).trim()
+  const registry = listDeployments()
+  if (!registry.exists) return legacyRoot(stateDir)
+  const entry = registry.deployments.find(item => item.project === wanted)
+  if (entry === undefined) throw missingDeploymentError(wanted, registry.file)
+  assertNotTicketClone({
+    env: process.env,
+    stateDir: entry.stateDir,
+    what: `the spv queue root of project ${JSON.stringify(wanted)}`,
+    target: entry.queueDir,
+  })
+  return entry.queueDir
 }
 
 /**
