@@ -35,7 +35,12 @@ ok() { PASS=$((PASS + 1)); printf 'PASS  %s\n' "$1"; }
 bad() { FAIL=$((FAIL + 1)); printf 'FAIL  %s\n      %s\n' "$1" "$2"; }
 check() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1" "expected '$3', got '$2'"; fi; }
 
+SRC_BACKUP=
 cleanup() {
+  # Case 17 temporarily edits the checkout's source preset; put it back even if the run is interrupted.
+  if [ -n "${SRC_BACKUP:-}" ] && [ -f "$SRC_BACKUP" ]; then
+    cp "$SRC_BACKUP" "$REPO/preset/agent.cordis.yml" 2>/dev/null || true
+  fi
   if [ "$KEEP" = 1 ]; then printf '\nsandbox kept at %s\n' "$SB"; else rm -rf "$SB"; fi
 }
 trap cleanup EXIT
@@ -394,6 +399,30 @@ run_install
 check '(16) the repairing install exits 0' "$?" 0
 run_install --check
 check '(16) --check is clean after rewriting the stamp' "$?" 0
+
+# (17) The headline scenario: a merged PR changes the checkout's *source* preset, not the installed copy.
+# A comment-only source change must pass --check; a real value change in the same file must fail it.
+SRC_CORDIS=$REPO/preset/agent.cordis.yml
+SRC_BACKUP=$SB/source-agent.cordis.yml.bak
+cp "$SRC_CORDIS" "$SRC_BACKUP"
+printf '\n# a comment-only source change (as in a merged docs PR)\n' >> "$SRC_CORDIS"
+before=$(install_snapshot)
+run_install --check
+check '(17) --check exits 0 on a comment-only source preset change' "$?" 0
+check '(17) --check says the source preset matches' \
+  "$(grep -c '^OK: preset matches its sources' "$SB/stdout")" 1
+check '(17) --check does not call the source preset stale' \
+  "$(grep -c 'the installed preset at .* differs from this checkout' "$SB/stdout")" 0
+check '(17) the comment-only source --check changed nothing' "$(install_snapshot)" "$before"
+printf 'extra: 1\n' >> "$SRC_CORDIS"
+run_install --check
+check '(17) --check exits 2 on a real source preset change' "$?" 2
+check '(17) --check reports the source preset differs' \
+  "$(grep -c 'the installed preset at .* differs from this checkout' "$SB/stdout")" 1
+cp "$SRC_BACKUP" "$SRC_CORDIS"
+rm -f "$SRC_BACKUP"
+run_install --check
+check '(17) --check is clean again after restoring the source' "$?" 0
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

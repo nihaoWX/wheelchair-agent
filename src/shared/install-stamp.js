@@ -74,12 +74,42 @@ export function installStampPath(root) {
 
 // ------------------------------------------------------------------ YAML normalization
 
+/** The closest character before `index` that is neither a space nor a tab, or '' at line start. */
+function previousNonSpace(line, index) {
+  for (let cursor = index - 1; cursor >= 0; cursor -= 1) {
+    const char = line[cursor]
+    if (char !== ' ' && char !== '\t') return char
+  }
+  return ''
+}
+
+/**
+ * Does a quote at `index` open a quoted scalar, or is it plain content?
+ *
+ * YAML opens a quoted scalar only at the start of a node: after `:`, `-`, `[`, `{`, `,`, `?`, or at
+ * line start. An apostrophe inside a plain scalar (`note: it's fine`) is content, so a `#` after it
+ * still begins a comment.
+ */
+function quoteStartsScalar(line, index) {
+  const previous = previousNonSpace(line, index)
+  return (
+    previous === '' ||
+    previous === ':' ||
+    previous === '-' ||
+    previous === '[' ||
+    previous === '{' ||
+    previous === ',' ||
+    previous === '?'
+  )
+}
+
 /**
  * Remove a YAML comment from one physical line.
  *
  * A `#` starts a comment only at line start (after indentation) or after whitespace, and only when
  * it is outside a quoted scalar. Single quotes escape by doubling (`''`); double quotes escape with
- * a backslash. Everything else in the line is left untouched.
+ * a backslash. A quote opens a scalar only at a node start (see `quoteStartsScalar`), so apostrophes
+ * in plain text do not swallow the rest of the line. Everything else is left untouched.
  */
 function stripYamlComment(line) {
   let single = false
@@ -105,11 +135,11 @@ function stripYamlComment(line) {
       continue
     }
     if (char === '"') {
-      double = true
+      if (quoteStartsScalar(line, index)) double = true
       continue
     }
     if (char === "'") {
-      single = true
+      if (quoteStartsScalar(line, index)) single = true
       continue
     }
     if (char === '#') {
@@ -121,15 +151,22 @@ function stripYamlComment(line) {
   return line
 }
 
-/** The indentation of a block-scalar header (`key: |`, `- >-`, ...), else null. */
+/**
+ * The indentation of a block-scalar header (`key: |`, `- >-`, `disabled: !!js >-`, `key: |2-`), else null.
+ *
+ * The indicator must be the value of a key or a sequence item (optionally behind a tag or anchor
+ * token), and may carry a chomping (`-`/`+`) and/or indentation (`1`-`9`) indicator.
+ */
 function blockScalarHeaderIndent(content) {
   const trimmed = content.replace(/[ \t]+$/, '')
-  const match = /([|>][-+]?)$/.exec(trimmed)
+  const match = /[|>](?:[-+][1-9]?|[1-9][-+]?)?(?:[ \t]+#.*)?$/.exec(trimmed)
   if (match === null) return null
   const index = match.index
-  if (index === 0) return null
-  const previous = trimmed[index - 1]
-  if (previous !== ' ' && previous !== '\t' && previous !== ':' && previous !== '-') return null
+  const prefix = trimmed.slice(0, index).replace(/[ \t]+$/, '')
+  if (prefix === '') return null
+  const token = prefix.split(/[ \t]+/).pop()
+  const valueStart = prefix.endsWith(':') || token === '-' || token === '?' || /^[!&*]/.test(token)
+  if (!valueStart) return null
   return /^[ \t]*/.exec(content)[0].length
 }
 
@@ -138,7 +175,9 @@ function blockScalarHeaderIndent(content) {
  *
  * Rules (documented in the module header):
  *   - comments are stripped (outside quotes; `#` at line start or after whitespace);
- *   - blank / whitespace-only lines are dropped;
+ *   - blank / whitespace-only lines are dropped outside block scalars;
+ *   - inside a block scalar, blank lines followed by more block content are kept (paragraph breaks),
+ *     while blank lines after its last content line are dropped (they are not scalar content);
  *   - trailing whitespace is stripped outside block scalars;
  *   - a block scalar's content lines (indentation greater than the header's) are kept verbatim;
  *   - indentation, quotes and key order are otherwise preserved as-is.
@@ -153,18 +192,25 @@ export function normalizeYaml(text) {
   const lines = source.split('\n')
   const kept = []
   let blockIndent = null
+  let blockBlanks = []
   for (const line of lines) {
     const trimmed = line.trim()
     const indent = /^[ \t]*/.exec(line)[0].length
     if (blockIndent !== null) {
-      // A blank line inside a block scalar is dropped like any other blank line; the block keeps
-      // going until a non-blank line is indented no deeper than its header.
-      if (trimmed === '') continue
+      // Blank lines are buffered: inside a block scalar they are content (the prompt's paragraph
+      // breaks), but after its last content line they are not, so they are only flushed when a
+      // deeper-indented content line follows.
+      if (trimmed === '') {
+        blockBlanks.push('')
+        continue
+      }
       if (indent > blockIndent) {
-        kept.push(line)
+        kept.push(...blockBlanks, line)
+        blockBlanks = []
         continue
       }
       blockIndent = null
+      blockBlanks = []
     }
     if (trimmed === '') continue
     const content = stripYamlComment(line).replace(/[ \t]+$/, '')

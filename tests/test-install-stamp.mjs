@@ -117,6 +117,44 @@ try {
     assert.equal(normalized, 'section: |\n  first # not a comment\n  # second, also content\nnext: 1\n')
   })
 
+  await check('normalizeYaml: blank lines inside a block scalar are content', async () => {
+    const one = normalizeYaml('section: |\n  one\n  two\nnext: 1\n')
+    const broken = normalizeYaml('section: |\n  one\n\n  two\nnext: 1\n')
+    assert.equal(one, 'section: |\n  one\n  two\nnext: 1\n')
+    assert.equal(broken, 'section: |\n  one\n\n  two\nnext: 1\n')
+    assert.notEqual(one, broken)
+  })
+
+  await check('normalizeYaml: blank lines after a block scalar are not content', async () => {
+    assert.equal(
+      normalizeYaml('section: |\n  one\n\nnext: 1\n'),
+      normalizeYaml('section: |\n  one\nnext: 1\n'),
+    )
+  })
+
+  await check('normalizeYaml: an apostrophe in a plain scalar does not open a quote', async () => {
+    assert.equal(normalizeYaml("note: it's fine # old\n"), normalizeYaml("note: it's fine # new\n"))
+    assert.equal(
+      normalizeYaml("note: 'quoted # content' # old\n"),
+      normalizeYaml("note: 'quoted # content' # new\n"),
+    )
+  })
+
+  await check('normalizeYaml: block headers with indicators call out their content', async () => {
+    const indented = normalizeYaml('section: |2\n    one\n    # two\n')
+    assert.equal(indented, 'section: |2\n    one\n    # two\n')
+    assert.notEqual(indented, normalizeYaml('section: |2\n    one\n    # THREE\n'))
+    assert.equal(normalizeYaml('section: |-2 # header note\n  one\n'), 'section: |-2\n  one\n')
+    assert.equal(normalizeYaml('section: >+2\n  one\n'), 'section: >+2\n  one\n')
+  })
+
+  await check('normalizeYaml: a paragraph break in the real preset changes the digest', async () => {
+    const base = await readFile(PRESET_YML, 'utf8')
+    const changed = base.replace(/(You are in plan mode\.[^\n]*\n)/, '$1\n')
+    assert.notEqual(base, changed)
+    assert.notEqual(normalizeYaml(base), normalizeYaml(changed))
+  })
+
   await check('normalizeYaml: a value change differs', async () => {
     assert.notEqual(normalizeYaml('a: 1\n'), normalizeYaml('a: 2\n'))
   })

@@ -703,13 +703,13 @@ function describeInstallChanges(pending) {
  * the old unconditional notice (`no-stamp` / `unknown`) rather than breaking the merge flow.
  */
 export async function detectInstallPending({ localPath, dataRoot } = {}) {
-  const stampFile = join(dataRoot ?? resolveData().root, INSTALL_STAMP_FILE)
-  const stamp = await readStamp(stampFile)
-  if (!stamp) return { kind: 'no-stamp' }
-  const args = [join(localPath, 'install.sh'), '--fingerprint']
-  const presetDir = stamp.targets?.presetDir
-  if (typeof presetDir === 'string' && presetDir !== '') args.push('--preset-dir', presetDir)
   try {
+    const stampFile = join(dataRoot ?? resolveData().root, INSTALL_STAMP_FILE)
+    const stamp = await readStamp(stampFile)
+    if (!stamp) return { kind: 'no-stamp' }
+    const args = [join(localPath, 'install.sh'), '--fingerprint']
+    const presetDir = stamp.targets?.presetDir
+    if (typeof presetDir === 'string' && presetDir !== '') args.push('--preset-dir', presetDir)
     const { stdout } = await execFileAsync('bash', args, {
       encoding: 'utf8',
       timeout: 60_000,
