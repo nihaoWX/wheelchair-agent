@@ -47,6 +47,12 @@
 
 # Completed
 
+- **一仓一部署 stage 2 第二片（`#45`,`d9115a5`）**：`restart-all --project <p>` 与
+  `/restart-wheelchair-agent --project <p>` 只停/起那一份实例、不跑 install、只 resume 该部署自己的会话
+  （`--session` → 该 stateDir 的 `deployment-session.json`，**绝不**读全局 `~/.dsh-tui/resume.txt`）；
+  实例匹配抽成纯函数 `selectInstanceProcesses()`（profile + `--patch` 双条件）；`service status` 在多份部署时
+  追加 `deployments:` 段。我手验纯函数：a.yml → 只有 a 那一个 pid、旧无 patch 服务 → 只有旧 pid、
+  `dsh plugin` 与别的 profile 都不命中；`npm test` 373 PASS/0 FAIL。stage 2 到此完成，剩下的是操作者起第二个实例。
 - **一仓一部署 stage 2 第一片（`#44`,`a83f2b5`）**：每部署一份实例 overlay
   `<data root>/deployments/<slug>.yml`（端口 + `dsh-superagent` 的 stateDir + `wheelchair-spv` 的 queueDir），
   `deployment add`/`install.sh --project` 共用 `renderInstance()`；`writeInstance()` 只在文件不存在时创建。

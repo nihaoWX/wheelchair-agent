@@ -78,7 +78,7 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
 | 阶段 | 交付 | 验收 |
 |---|---|---|
 | 1（已完成，`#42`/`#43`） | 注册表 + `deployment add|list|remove|migrate` + `dispatch`/`spv_dispatch` 走注册表 + 注入器/`spv_status` 聚合所有注册部署 + 安装契约记 project | 两份注册表条目下 `dispatch` 各写各的队列、两边的回信都回到同一个 spv 会话且不重复；没有条目时报错文案指明下一步；`npm test` 全绿；单部署行为逐字不变 |
-| 2（进行中，第一片 `#44` 已合） | 每部署实例 overlay（`<data root>/deployments/<slug>.yml`：端口 + stateDir + queueDir）+ `service … --project`（按注册表找实例、端口、会话、日志）+ `install.sh --project` 按项目分配 stateDir/端口 | 两个部署同时运行、各自面板可达、互不干扰；`/restart-wheelchair-agent` 仍能 resume 原会话 |
+| 2（已完成：`#44` 实例 overlay + `#45` 重启/状态作用域） | 每部署实例 overlay（`<data root>/deployments/<slug>.yml`：端口 + stateDir + queueDir）+ `service … --project`（按注册表找实例、端口、会话、日志）+ `install.sh --project` 按项目分配 stateDir/端口 | 两个部署同时运行、各自面板可达、互不干扰；`/restart-wheelchair-agent` 仍能 resume 原会话 |
 | 3 | watcher 按项目归属 + `kind: review` 路由 | 任一面板审一封属于别的部署的信，注入落到正确部署的工单 |
 
 ### stage 2 第一片落地（`#44`）
@@ -98,6 +98,18 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
   profile, patch)`，`patch=None` = 旧的无 `--patch` 服务，`ANY_PATCH` = 该 profile 的所有实例，安装探针用）：
   同一个 profile 下多实例靠 patch 文件区分；监听端口上的进程也要 argv 对得上才算，避免"实例占了 3082 就
   被当成旧服务还在跑"。
+
+### stage 2 第二片落地（`#45`）
+
+- `restart-all --project <p>`（以及 `/restart-wheelchair-agent --project`）只停/起那一份实例：匹配用
+  `src/spv/deployment-restart.js` 的纯函数 `selectInstanceProcesses(table, {profile, patch})`——profile 与
+  `--patch` 文件两者都对才算命中，`patch: null` 只命中不带 `--patch` 的旧服务，`dsh plugin …` 安装器被排除。
+  **单部署重启不跑 install**：preset/webui/CLI/core 是全局一份。
+- 会话目标：`--session`（命令插件传发起命令的会话）→ 该部署 stateDir 下的 `deployment-session.json`
+  （`SESSION_RECORD`）→ 放弃并打印"去那个部署的终端跑 `spv --resume <id>`"。**永远不读
+  `~/.dsh-tui/resume.txt`**——那是全局"最后打开"指针，跨部署读它等于把别人的会话拖进来；测试里放哨兵 id 断言没被用。
+- `service status` 不带 `--project` 时仍是旧输出，注册表多于一份才追加 `deployments:` 段（每行
+  `<project> port <n> running|stopped <pid|->`），旧服务本体不重复报两次。
 
 ## 不做的事
 
