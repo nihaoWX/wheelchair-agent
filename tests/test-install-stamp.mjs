@@ -168,6 +168,21 @@ try {
     )
   })
 
+  await check('normalizeYaml: a tag right after a flow opener still opens its quote', async () => {
+    assert.equal(
+      normalizeYaml("k: [!!str 'a # b', x] # old\n"),
+      normalizeYaml("k: [!!str 'a # b', x] # new\n"),
+    )
+    assert.match(normalizeYaml("k: [!!str 'a # b', x] # old\n"), /\[!!str 'a # b', x\]\n/)
+  })
+
+  await check('normalizeYaml: a block indicator must be separated from its key', async () => {
+    // `k: a:|` is a plain scalar ("a:|"), so the indented line below is a comment, not content.
+    assert.equal(normalizeYaml('k: a:|\n  # old\n'), normalizeYaml('k: a:|\n  # new\n'))
+    assert.equal(normalizeYaml('k: a:|\n  # kept\n'), 'k: a:|\n')
+    assert.equal(normalizeYaml('k: a:| # old\n'), normalizeYaml('k: a:| # new\n'))
+  })
+
   await check('normalizeYaml: a paragraph break in the real preset changes the digest', async () => {
     const base = await readFile(PRESET_YML, 'utf8')
     const changed = base.replace(/(You are in plan mode\.[^\n]*\n)/, '$1\n')

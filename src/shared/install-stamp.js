@@ -112,7 +112,8 @@ function quoteStartsScalar(line, index) {
   ) {
     return true
   }
-  return /^[!&*]/.test(previousToken(line, index))
+  // A flow opener may sit directly against the tag (`[!!str 'a # b'`); ignore it for this test.
+  return /^[!&*]/.test(previousToken(line, index).replace(/^[[{,]+/, ''))
 }
 
 /**
@@ -179,7 +180,10 @@ function blockScalarHeader(content) {
   if (prefix === '') return null
   const token = prefix.split(/[ \t]+/).pop()
   const valueStart = prefix.endsWith(':') || token === '-' || token === '?' || /^[!&*]/.test(token)
-  if (!valueStart) return null
+  // The indicator must be separated from the key: `key: |` is a block scalar, `key:|` is a plain
+  // scalar (`a:|`), and `-|`/`?|` are plain text too.
+  const separated = trimmed[index - 1] === ' ' || trimmed[index - 1] === '\t'
+  if (!valueStart || !separated) return null
   return { indent: /^[ \t]*/.exec(content)[0].length, keep: match[0].includes('+') }
 }
 
