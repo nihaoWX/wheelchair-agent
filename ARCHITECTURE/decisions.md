@@ -284,3 +284,23 @@ registry-global 集合里加一个 id（日志原地保留、可取消、下次�
 
 **守住它的测试**：`tests/test-hooks.mjs` 的 `builtin:archiveSession` 用例组——turn 中途重试、job 跳过、
 未知会话静默、超时与放弃、`stopActivity: false`、同一 occurrence 不重复归档。
+
+## 交付后自动合并：挂在 `ticket.delivered`，PR 身份从工单 clone 反推（2026-11-24）
+
+**决定**：新增服务侧内建效果 `builtin:autoMerge`（`src/spv/auto-merge-effect.js`），由 `webui/lib/index.js` 以
+`{ run, timeoutMs: 120_000 }` 交给 `src/spv/hook-runner.js`。开关 `merge.autoMerge` 默认 `false`（等于跳过人工
+审查）。PR 身份不来自队列负载，而是 `work-plan` → 工单执行目录 → `git rev-parse --abbrev-ref HEAD` +
+`git config --get remote.origin.url` → `gh pr list --head <branch>`。
+
+**理由**：队列 reply 只带 `ticketId`/`thread`，改负载属于 superagent 侧（禁令下不做）；而工单的 clone 已经
+知道自己是从哪个仓库、哪个分支提交的，这是唯一不需要新字段就能拿到 PR 身份的来源。五道闸门里
+"`statusCheckRollup` 非空且全绿"把"仓库没有 CI"排除在外（dsh-superagent 就是这种），宁可留给人合。
+
+**取舍**：合并之后不自己 `git pull`、不发冷安装通知——`inbox.merged` 的 watcher 会观察到 MERGED 并走既有
+core path，两个事件职责不重叠。clone 被回收后效果只记一行日志（`no unique work directory`）。效果跑在串行
+drain 里，120s 上限是显式代价：最坏情况下后续 hook 脚本推迟两分钟；`archiveSession` 仍保留 15s。
+HARNESS 文件（`ARCHITECTURE*`、`PROGRESS.md`、`INSTRUCTIONS.md`）在 PR 里出现即不合并，因为那部分归操作者。
+
+**守住它的测试**：`tests/test-hooks.mjs` 的 `builtin:autoMerge` 用例组——没有 PR、两个 open PR、draft、
+`CONFLICTING`、检查为空、检查失败、命中 HARNESS、全绿合并一次、第二次 delivered 不动、开关关闭不动、
+gh 失败只 warning。

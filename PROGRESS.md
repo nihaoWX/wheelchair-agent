@@ -9,7 +9,9 @@
 `jobctl` 是它的兼容薄壳。
 
 **数据根**：`~/.wheelchair-agent/`（`settings.json`、`inbox/`、`records/`、`logs/`），与 superagent 不耦合；
-队列仍在 `~/.dsh/state/superagent/spv/`，superagent 自己的 state 在 `~/.dsh/state/superagent/`。
+队列当前在 `~/.dsh/state/superagent/spv/`（单部署），superagent 自己的 state 在 `~/.dsh/state/superagent/`。
+**一仓一部署**（`INSTRUCTIONS.md`）正在实现：注册表 `~/.wheelchair-agent/deployments.json` 决定
+`project → 部署`，队列随之归各部署自己；见 `ARCHITECTURE/deployments.md`。
 
 **面板**：dsh web 里左侧栏 `wheelchair-agent`（功能宿主，不是 iframe），当前三个功能——收件箱、设置、
 插口（hooks 的只读视图）。`webui.style` = `fluid`（默认）/ `minimal`；各页共用 1200px 宽度变量，
@@ -23,7 +25,9 @@
 **插口（hooks）**：stage 1（`#28`, `27d4463`）、stage 2（`#29`, `2788bbc`）、stage 3 面板「插口」
 （`#30`, main `35be1f5`）都已合并；新 host 需要一次冷安装才带 `hookView` 与第三段。
 `#40`（`dcc9dc4`）加了第一个**服务侧内建效果** `builtin:archiveSession`：`ticket.delivered` 之后归档
-`worker-<ticketId>`（有 running/stopping job 跳过，失败只 warning），同样要冷安装才生效。
+`worker-<ticketId>`（有 running/stopping job 跳过，失败只 warning）；`#41`（`82b0d3d`）加第二个
+`builtin:autoMerge`（五道闸门全绿才 `gh pr merge --squash --delete-branch`，开关 `merge.autoMerge` 默认关）。
+两个都要冷安装才生效。
 
 **SPV 系统提示词**：与普通 dsh 会话完全一致——preset 里已无 `persona` 行；派单契约（不自己实现、交付走
 `spv_dispatch`、不等不轮询、复用 thread、插件/面板传 `cordis`、只转述 worker 说的）全在 `spv_dispatch`
@@ -43,6 +47,11 @@
 
 # Completed
 
+- **交付后自动合并（`#41`,`82b0d3d`）**：内建效果 `builtin:autoMerge` 挂在 `ticket.delivered`，用
+  `work-plan` 找到工单 clone → 分支名 + `remote.origin.url` → `gh pr list --head <branch>` 反推 PR；
+  五道闸门（唯一 open PR 且 head 匹配 / 非 draft / `MERGEABLE` / `statusCheckRollup` 非空且全 SUCCESS /
+  files 不含 `ARCHITECTURE*`、`PROGRESS.md`、`INSTRUCTIONS.md`）全绿才 `gh pr merge --squash --delete-branch`；
+  120s 逐项超时、内存幂等、`merge.autoMerge` 默认 `false`。**没有 CI 的仓库（如 dsh-superagent）永远不会被合。**
 - **重启恢复错会话（`#36`,`19e71c4`）**：`/restart-wheelchair-agent` 现在按**发起命令的会话**恢复
   （命令插件取 `invocation.agent.session.id` → CLI `--session`），`~/.dsh-tui/resume.txt` 降级为兜底；`releaseSession`
   只对**重启链内**的 holder 发信号（`holderInRestartChain` 走 `/proc` 祖先链），另一个终端占着会话时
@@ -96,7 +105,10 @@
 
 # In Progress
 
-（无。冷安装等操作者：`service stop` → 退出 SPV → `bash install.sh` → `service start` → `wheelchair-agent spv`。）
+- **一仓一部署（stage 1）**：设计落定在 `ARCHITECTURE/deployments.md`；下一步是注册表 + 路由
+  （`deployment add|list|remove|migrate`、`dispatch`/`spv_dispatch` 查注册表写对应部署的队列、缺条目给下一步提示）。
+  实现之前当前仍是单部署行为，完全可用。冷安装等操作者：`service stop` → 退出 SPV → `bash install.sh` →
+  `service start` → `wheelchair-agent spv`。
 
 # Known Issues
 
@@ -119,7 +131,8 @@
   `os`/`cpu` 门禁）。
 - **平台写死**：`src/shared/queue.js` 的 `CORE_BINARY` 与 `install.sh` 的 `CORE_ARTIFACT_REL` 都写死
   `linux-x64`；多平台前要改成按 `process.platform` / `process.arch` 拼名。
-- **"待冷安装"没有自我清除机制**：每次 install 仓库合并都会排一封 notice，即使几分钟后就装了。
+- **"待冷安装"判定依赖戳**（`#39`）：`install.sh` 写 `<data root>/installed.json`，`--check` 与 `spv`
+  的 `detectInstallPending` 共用同一指纹（preset 注释不敏感、块标量逐字保留）；没戳的老部署仍按旧行为提醒一次。
 - **HARNESS 里仍有 23 处规则重述**（冷安装契约 4 份、面板必须是真包 4 份、`hooks.md` 与
   `ARCHITECTURE/webui/hooks.md` 互相重述）：移动已完成，去重是下一件事，优先级低于功能；动之前先看是否某处已有更权威的一份。
 - **`hooks.md` / `restart.md` 各 28KB 单文件**：同为单主题，暂不拆；要拆的切点在「执行契约」与
@@ -137,4 +150,5 @@
    的「改法」一节）。
 3. 建 `dsh-superagent` 的 HARNESS 脊梁（`ARCHITECTURE.md` + `core/executor/sources/panel/operations/modules/tests`），
    把 007 拆开并 repoint `tests/docs.spec.ts`；顺带把两个压缩设置做进面板。
-4. 把"已装 sha"落盘，让面板/通知能自己判断"待冷安装"是否还成立。
+4. 一仓一部署 stage 2：`install.sh --project`、`wca-<slug>.service`、端口分配、`service --project`、
+   `/restart-wheelchair-agent --project`；stage 3 再给收件箱 watcher 定归属、把审查结果路由回拥有该信的部署。

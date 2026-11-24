@@ -107,6 +107,7 @@ files); `lib/client.js` hot-reloads through dsh's client-bundle watcher.
 |---|---|---|
 | `webui.style` | `fluid` | Panel variant: `fluid` (tonal card wash, layered shadows and motion) or `minimal` (flat cards, no tint, shadow or motion). Read when the panel loads; a save applies without a reload. |
 | `inbox.intervalSeconds` | `60` | Seconds between inbox polls. Every tick runs one `gh pr list` per repository. `0` pauses automatic refresh (the CLI still works). Env `SPV_INBOX_INTERVAL_SECONDS`; plugin config `intervalSeconds`. |
+| `merge.autoMerge` | `false` | When on, `ticket.delivered` tries to squash-merge the ticket PR after five gates (one open PR matching the clone's branch and repository, not a draft, `MERGEABLE`, non-empty all-SUCCESS `statusCheckRollup`, no HARNESS files). Any failing gate logs one line and does not merge. |
 | `merge.installRepo` | `wheelchair-agent` | Merges of this repository queue the cold-install notice instead of a plain pull. `owner/name` or `name`. Env `SPV_INSTALL_REPO`. |
 | `injection.intervalMs` | `1000` | How often the SPV-session result injector checks the outbox. |
 | `injection.maxBodyChars` | `12000` | Maximum characters of a message body injected into the SPV session; longer bodies are truncated. |

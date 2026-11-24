@@ -40,7 +40,7 @@ service 侧 runner 统一执行；stage 3 交付面板「插口」一节（§10�
 |---|---|---|---|---|
 | `ticket.started` | prepare 成功结束之后（脚本可能在 worker 启动后才跑） | 能（工单复活后会重新启动） | `builtin:prepare` | 否 |
 | `ticket.acknowledged` | 队列里出现 `kind: "acknowledgement"` | 能 | — | —（没有内建行） |
-| `ticket.delivered` | 队列里出现 `kind: "reply"` | 能 | `builtin:injection`、`builtin:archiveSession` | 否 |
+| `ticket.delivered` | 队列里出现 `kind: "reply"` | 能 | `builtin:injection`、`builtin:archiveSession`、`builtin:autoMerge` | 否 |
 | `ticket.attention` | 队列里出现 `kind: "notice"` | 能 | `builtin:injection` | 否 |
 | `inbox.approved` | 操作者在收件箱点「通过」 | 能（同一 item 可再次审查） | `builtin:reviewRecord` | 否 |
 | `inbox.issue` | 操作者标「有问题」并写评论 | 能 | `builtin:prIssue`、`builtin:spvObjection` | 否 |
@@ -86,6 +86,7 @@ core path 本身。
 | `builtin:mergePull` | `inbox.merged` | 合并后 `git pull --ff-only` | 否 | — |
 | `builtin:coldInstallNotice` | `inbox.merged` | 安装目标仓库合并后的冷安装提醒 | 否 | — |
 | `builtin:archiveSession` | `ticket.delivered` | 交付后归档 worker 会话（`worker-<ticketId>`） | 否 | — |
+| `builtin:autoMerge` | `ticket.delivered` | `merge.autoMerge` 打开时把工单 PR squash 合并（五道闸门） | 否 | — |
 
 「文本可改」的三行走**已有模板 id**（`src/shared/settings.js` 的 `TEMPLATE_SPECS`），不新增文本；改模板就
 是改面板「设置」里的那几个模板。`rename` 只改显示标签，不改行为。
@@ -110,6 +111,28 @@ core path 本身。
   只记 warning），因为效果跑在串行 drain 里，一个永不 settle 的调用会让所有 hook 脚本停摆。
   会话从未创建（`WorkspaceUnknownSessionError`）→ 静默，不 warning。
 - 效果**永不抛**：任何失败只走 `wheelchair-hooks: warning: …` 日志，绝不影响用户脚本与下一条事件。
+
+### `builtin:autoMerge`：PR 身份从工单 clone 反推，五道闸门全绿才合并
+
+负载里仍然没有 PR（见 §7），所以效果自己找：`work-plan` 给出该工单的执行目录（目录名以 `ticketId` 前 12
+位结尾，**必须唯一匹配**，0 或 2 个都当作读不到）→ 目录里 `git rev-parse --abbrev-ref HEAD` 取分支、
+`git config --get remote.origin.url` 取仓库（只认 github.com 的 https/ssh/scp 形状）→
+`gh pr list --repo <owner/name> --head <branch> --state open --json number,url,isDraft,mergeable,mergeStateStatus,statusCheckRollup,files,headRefName,headRepository`。
+
+五道闸门（任一条不成立只记一行日志，**不合并**）：恰好一个 open PR 且 `headRefName`/`headRepository`
+都与 clone 一致（fork 的同名分支不算）；`isDraft === false`；`mergeable === 'MERGEABLE'`；
+`statusCheckRollup` **非空且全部 SUCCESS**（`CheckRun` 看 `conclusion`、`StatusContext` 看 `state`；空列表等于
+"没有 CI"，记 `no CI checks`，不合并——`dsh-superagent` 就是这种仓库，只能由人合）；`files` 不含
+`ARCHITECTURE.md`、`ARCHITECTURE/**`、`PROGRESS.md`、`INSTRUCTIONS.md`（HARNESS 归操作者）。
+
+合并命令固定 `gh pr merge <n> --repo <owner/name> --squash --delete-branch`；之后**不 pull、不发冷安装通知**，
+那是 `inbox.merged` 那条 core path 的事（watcher 会自己观察到 MERGED）。开关 `merge.autoMerge` 默认 `false`，
+因为它等于跳过人工审查。gh 二进制取法与收件箱一致（参数 → `$SPV_GH` → `gh`）。
+
+超时：这个效果由 host 以 `{ run, timeoutMs: 120_000 }` 注册，`src/spv/hook-runner.js` 允许逐项覆盖默认的
+`EFFECT_TIMEOUT_MS = 15_000`。代价要写清：效果跑在**串行** drain 里，120s 的上限意味着最坏情况下后续 hook
+脚本推迟两分钟；`archiveSession` 仍用 15s。超时不重试（卡住的 gh 再等一轮也一样），只记 warning。
+"已合并过"的 PR 与已成功合并的工单各有一份内存集合，进程重启后靠"没有 open PR"自然幂等。
 
 
 ---
@@ -377,15 +400,18 @@ shell 的路径；stage 3 的面板也只显示这段提示词。
 
 ---
 
-## 7. 已知缺口：PR 身份（stage 2 仍未解决）
+## 7. PR 身份：负载里没有，只能事后反推
 
-`ticket.delivered` 的负载来自队列消息，只有 `ticketId` 与 `thread`——**没有 PR 号、仓库或 url**。想在
-worker 报告时自动合并 PR 的 hook，现在拿不到要合并哪一个。stage 2 按 assignment 只搬运消息里真实存在的
-字段，**不发明** outcome/PR 字段，所以这个缺口仍然存在：要解决它，需要让 reply 消息携带 PR 身份，或由
-一个能查到工单→PR 映射的调用点补全负载。
+`ticket.delivered` 的负载来自队列消息，只有 `ticketId` 与 `thread`——**没有 PR 号、仓库或 url**。stage 2 按
+assignment 只搬运消息里真实存在的字段，**不发明** outcome/PR 字段；这条约束仍然有效。
 
-相关但不相同：`inbox.merged` 有完整 PR 字段（`pr` / `repo` / `url` / `mergeCommit` / `pulledSha`），
-所以合并后的动作应该挂在那里。
+所以"合并 PR"这类需要 PR 身份的动作不在负载里找答案，而是从工单自己的 clone 反推（`builtin:autoMerge`，
+见 §2）。这条路径的代价写在明处：**clone 被回收之后就读不到**（`work-plan` 找不到唯一目录、或目录里的
+`origin` 不是 github.com），此时效果只记一行日志、不合并。要更早的身份，只能改 reply 负载——那属于
+superagent 侧的改动，本项目的禁令下不做。
+
+`inbox.merged` 仍然有完整 PR 字段（`pr` / `repo` / `url` / `mergeCommit` / `pulledSha`），所以**合并之后**的动作
+（pull、冷安装提醒）继续挂在那里；两个事件的职责不重叠。
 
 ---
 
@@ -410,7 +436,8 @@ worker 报告时自动合并 PR 的 hook，现在拿不到要合并哪一个。s
 | `src/spv/hook.js` | `wheelchair-agent hook ...` 的命令逻辑 |
 | `src/spv/hook-runner.js` | service 侧唯一 runner：drain spool + 队列，按 `hooks.intervalSeconds` 调度；执行注入进来的内建效果（含重试与超时） |
 | `src/spv/archive-effect.js` | 内建效果 `builtin:archiveSession`：交付后归档 `worker-<ticketId>`（纯 Node，服务由 host 注入） |
-| `webui/lib/index.js` | 在 host 里挂 runner（与 `startInboxWatcher` 同一层，`ctx.effect` 停止）；注入 `effects`（`builtin:archiveSession` 用懒取的 `workspaceRegistry` / `jobs`）；给 settings 快照挂只读的 `hookView` |
+| `src/spv/auto-merge-effect.js` | 内建效果 `builtin:autoMerge`：交付后按五道闸门 squash 合并工单 PR（纯 Node；`planOf`/`execFile`/开关由 host 注入，测试用假实现） |
+| `webui/lib/index.js` | 在 host 里挂 runner（与 `startInboxWatcher` 同一层，`ctx.effect` 停止）；注入 `effects`（`builtin:archiveSession` 用懒取的 `workspaceRegistry` / `jobs`；`builtin:autoMerge` 用 `resolveSettings().values['merge.autoMerge']` 与 `planWork()`，超时 120s）；给 settings 快照挂只读的 `hookView` |
 | `webui/lib/client.js` | 第三个功能段「插口」：事件/行/最近 5 次执行的只读视图；内建行改名走同一个 revision PUT |
 | `src/spv/inbox.js` | review / notice / merge 的 core path，之后 fire `inbox.*` |
 | `src/spv/dispatch.js` | 任务落进 `pending/` 后写 `spv.dispatch` spool |
