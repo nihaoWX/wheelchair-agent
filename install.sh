@@ -856,9 +856,10 @@ create_data_root() {
   return 1
 }
 
-# Create the settings file ship-empty instead of warning about it. Empty `values` means "use the
-# built-in defaults", so a later default change still reaches this machine; the installer must never
-# write resolved values. Existing files are left untouched (the Node helper opens with `wx`).
+# Create a self-contained settings file instead of warning about a missing one: `ensureSettingsFile`
+# writes every KEY_SPECS default into `values` (marked in `filled`), so the file can be inspected and
+# hand-edited without knowing the source. Existing files are left untouched (the Node helper opens with
+# `wx`); keys an older file is missing are filled once by the first `resolveSettings()` read, not here.
 #
 # This is a reader, so it can also complete the one-shot data migration when an old layout exists
 # (`settingsFile()`/`resolveData()` do that before the existence test); the helper returns the path it

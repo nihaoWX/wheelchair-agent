@@ -5,9 +5,11 @@
  * 它们收成**一个有版本号的文件**，服务（webui 的 host 半身）和 SPV 会话（注入器、`work gc`）都读同一份，
  * 每次用到时重读，所以「试一个自定义提示词，不好就切回默认」不需要重启。
  *
- * 三层优先级（低 → 高）：内置默认 < 环境变量 < 插件 config < 设置文件。设置文件里的显式覆盖存 `values`；
- * 没写过的键不落盘，所以改默认值不会被旧文件永久钉住。`rows` 同时给出有效值、默认值、来源，以及被压住的
- * 低层值——「看起来生效其实没生效」是这里最该避免的失败模式。
+ * 三层优先级（低 → 高）：内置默认 < 环境变量 < 插件 config < 设置文件。文件是自包含的：新建时把
+ * `KEY_SPECS` 的全部默认值写进 `values`，读到一个缺键的旧文件时也只补缺的那些键（revision 不动、已有值
+ * 不改）。补进去的键记在顶层 `filled` 里：它们不是用户选择，所以 panel 的 source 仍是 `default`，环境变量/
+ * 插件 config 也仍然能压过它们；用户显式设成默认值的键不在 `filled` 里，source 仍是 `file`。`rows` 同时
+ * 给出被压住的低层值——「看起来生效其实没生效」是这里最该避免的失败模式。
  *
  * 模板：每个模板永远有一个不可修改的内置预设 `default`，外加任意个命名预设，同一时刻只有一个 active。
  * 占位符按模板声明，保存时校验；未知占位符和缺失的必填占位符都直接报错——收件箱的接收方需要评论与线程
@@ -767,12 +769,76 @@ function corrupt(file, warning) {
     templates: {},
     hooks: defaultHooks(),
     hooksRaw: undefined,
+    filled: new Set(),
     warning,
   }
 }
 
+/** 全部内置默认值；新装文件和每次保存都用它铺底，文件因此永远不缺键。 */
+function defaultValues() {
+  const values = {}
+  for (const [key, spec] of Object.entries(KEY_SPECS)) values[key] = spec.default
+  return values
+}
+
+/** `filled` 的落盘顺序与面板行一致；Set 只用于内存判断。 */
+function filledArray(filled) {
+  return Object.keys(KEY_SPECS).filter(key => filled.has(key))
+}
+
+/**
+ * 读顶层 `filled`：这些键的值是补键时从内置默认抄进去的，不是用户选择。
+ *
+ * 未知/非字符串条目只 warning 后跳过；`values` 里被手改成非默认值的键会在 `readStoredValues` 里重新算成
+ * 显式覆盖，所以手改永远优先于这份元数据。
+ */
+function readStoredFilled(raw, warnings) {
+  const filled = new Set()
+  if (raw === undefined) return filled
+  if (!Array.isArray(raw)) {
+    warnings.push('ignoring "filled": it must be an array of settings keys.')
+    return filled
+  }
+  for (const key of raw) {
+    if (typeof key !== 'string' || !has(KEY_SPECS, key)) {
+      warnings.push(`ignoring unknown settings key ${JSON.stringify(key)} in "filled".`)
+      continue
+    }
+    filled.add(key)
+  }
+  return filled
+}
+
+/**
+ * 老文件只补**缺的**键：已有键（哪怕值非法）原样保留，revision 不动，未知顶层字段也不动。
+ *
+ * 补进去的键同时记进 `filled`，面板才会把它们的来源报成 `default` 而不是用户设置。用一个原子写完成，且
+ * 只在真的缺键时写；补齐后所有键都在，下一次读取不会再碰磁盘。写失败不抛——读设置的路径（注入器、
+ * 轮询器、面板 GET）不能被一个只读目录拖死，warning 会说明这次没补上。
+ * `values` 字段不是对象时不猜，留给 `readStoredValues` 报警告。
+ */
+function fillMissingDefaults({ env, home, stateDir, file, parsed, filled, warnings }) {
+  if (parsed.values !== undefined && !isPlainObject(parsed.values)) return
+  const values = { ...(parsed.values ?? {}) }
+  let missing = false
+  for (const [key, spec] of Object.entries(KEY_SPECS)) {
+    if (has(values, key)) continue
+    values[key] = spec.default
+    filled.add(key)
+    missing = true
+  }
+  if (!missing) return
+  try {
+    writeStored({ env, home, stateDir }, { ...parsed, values, filled: filledArray(filled) })
+  } catch (error) {
+    warnings.push(
+      `could not fill missing default settings in ${file} (${error?.code ?? error?.message ?? error}); using defaults.`,
+    )
+  }
+}
+
 /** 读磁盘；任何坏文件都变成一个 `fileState`/`warning`，绝不抛给调用方。 */
-function readStored({ env, home, stateDir, migrate = true } = {}) {
+function readStored({ env, home, stateDir, migrate = true, fillDefaults = false } = {}) {
   const file = settingsFile({ env, home, stateDir, migrate })
   let text
   try {
@@ -787,6 +853,7 @@ function readStored({ env, home, stateDir, migrate = true } = {}) {
         templates: {},
         hooks: defaultHooks(),
         hooksRaw: undefined,
+        filled: new Set(),
         warning: undefined,
       }
     }
@@ -816,26 +883,35 @@ function readStored({ env, home, stateDir, migrate = true } = {}) {
   }
   const warnings = []
   for (const field of Object.keys(parsed)) {
-    if (!['version', 'revision', 'values', 'templates', 'hooks'].includes(field)) {
+    if (!['version', 'revision', 'values', 'templates', 'hooks', 'filled'].includes(field)) {
       warnings.push(`ignoring unknown settings field ${JSON.stringify(field)} in ${file}.`)
     }
   }
+  const filled = readStoredFilled(parsed.filled, warnings)
+  if (fillDefaults) fillMissingDefaults({ env, home, stateDir, file, parsed, filled, warnings })
   return {
     file,
     fileState: 'ok',
     revision: parsed.revision,
-    values: readStoredValues(parsed.values, warnings),
+    values: readStoredValues(parsed.values, warnings, filled),
     templates: readStoredTemplates(parsed.templates, warnings),
     hooks: readStoredHooks(parsed.hooks, warnings),
     // 原样保留磁盘上的块：一次只改 values/templates 的保存必须把它逐字放回去，而不是用"读出来再规范化"
     // 的结果覆盖（那会把超限的 timeout 夹成 300000，也会丢掉被忽略的字段）。
     hooksRaw: isPlainObject(parsed.hooks) ? parsed.hooks : undefined,
+    filled,
     warning: warnings.length > 0 ? warnings.join('; ') : undefined,
   }
 }
 
-/** `values` 只保留通过校验的显式覆盖；坏键/坏值各自一条 warning，然后落到下一层。 */
-function readStoredValues(raw, warnings) {
+/**
+ * `values` 只保留通过校验的显式覆盖；坏键/坏值各自一条 warning，然后落到下一层。
+ *
+ * 文件里必须有全部默认键（新装/补键会写进去），但由补键抄进去、且仍然等于内置默认的键不算用户选择：
+ * 跳过它们，`source` 才显示 `default`，环境变量/插件 config 也仍然能在它们之上生效。被手改成非默认值的
+ * 键即使还留在 `filled` 里也照常算显式覆盖。
+ */
+function readStoredValues(raw, warnings, filled) {
   const values = {}
   if (raw === undefined) return values
   if (!isPlainObject(raw)) {
@@ -848,7 +924,9 @@ function readStoredValues(raw, warnings) {
       continue
     }
     try {
-      values[key] = normalizeValue(key, value)
+      const normalized = normalizeValue(key, value)
+      if (filled.has(key) && normalized === specOf(key).default) continue
+      values[key] = normalized
     } catch (error) {
       warnings.push(`ignoring ${key} in the file: ${error.message}`)
     }
@@ -929,15 +1007,15 @@ function writeStored({ env, home, stateDir } = {}, payload) {
 }
 
 /**
- * Make sure the settings file exists, with the empty-but-valid shape a fresh machine should have:
- * `{version, revision: 0, values: {}, templates: {}}`.
+ * Make sure the settings file exists, with the self-contained shape a fresh machine should have:
+ * `{version, revision: 0, values: <every KEY_SPECS default>, templates: {}}`.
  *
- * Empty `values` deliberately means "every key uses its built-in default"; resolved values must never be
- * written here, otherwise a later default change could not reach this machine. `install.sh` calls this
- * after creating the data root, and the webui host half calls it at mount so an upgraded machine that
- * skipped the installer also gets a file. Existing files are never touched (`wx`), and a legacy
- * `panel-settings.json` is migrated by `settingsFile()` before that test, so the empty file cannot shadow
- * real old values.
+ * Writing the defaults here is deliberate: the file is the machine's single source of truth, so a fresh
+ * install can be inspected (and hand-edited) without knowing the source. Values equal to a built-in default
+ * are still reported with source `default` (see `readStoredValues`), so the panel is unchanged. An existing
+ * file is never touched (`wx`); missing keys there are filled once by the first `resolveSettings` read, and a
+ * legacy `panel-settings.json` is migrated by `settingsFile()` before that test, so the new file cannot
+ * shadow real old values.
  */
 export function ensureSettingsFile({ env = process.env, home, stateDir } = {}) {
   const file = settingsFile({ env, home, stateDir })
@@ -948,7 +1026,14 @@ export function ensureSettingsFile({ env = process.env, home, stateDir } = {}) {
     if (error?.code !== 'ENOENT') throw error
   }
   mkdirSync(dirname(file), { recursive: true })
-  const payload = { version: SETTINGS_VERSION, revision: 0, values: {}, templates: {} }
+  const payload = {
+    version: SETTINGS_VERSION,
+    revision: 0,
+    values: defaultValues(),
+    templates: {},
+    // 默认值是补出来的、不是用户选的：记下来，面板的 source 仍是 default，env/config 也仍能压过它们。
+    filled: Object.keys(KEY_SPECS),
+  }
   try {
     writeFileSync(file, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o644, flag: 'wx' })
     chmodSync(file, 0o644)
@@ -1078,10 +1163,18 @@ function compose({ stored, env, config }) {
 /**
  * 解析当前有效设置。每次调用都重读磁盘（文件很小），所以改了文件不需要重启。
  *
+ * 读到版本正确但缺键的旧文件时，会**只补缺失的默认键**（revision 不变、已有值不动，只写一次）；文件
+ * 不存在时仍然不创建——新装由 `ensureSettingsFile()`（install.sh / webui 挂载）负责。坏文件只回退默认，
+ * 不猜、不写。
+ *
  * 不会因为坏文件抛错；只有「配置层本身写错」会被记进 `warning` 并跳过。
  */
 export function resolveSettings({ home, stateDir, env = process.env, config = {}, migrate = true } = {}) {
-  return compose({ stored: readStored({ home, stateDir, env, migrate }), env, config })
+  return compose({
+    stored: readStored({ home, stateDir, env, migrate, fillDefaults: true }),
+    env,
+    config,
+  })
 }
 
 /**
@@ -1099,6 +1192,7 @@ export function defaultSettings({ home, stateDir, env = process.env } = {}) {
       values: {},
       templates: {},
       hooks: defaultHooks(),
+      filled: new Set(),
       warning: undefined,
     },
     env: {},
@@ -1288,12 +1382,15 @@ export function saveSettings({
   const payload = {
     version: SETTINGS_VERSION,
     revision: revision + 1,
-    values: nextValues,
+    // 保存也写全量：默认值铺底 + 显式覆盖。这样写入永远产出完整文件，下一次读取不需要再补键。
+    values: { ...defaultValues(), ...nextValues },
     templates: serializeTemplates(nextTemplates),
   }
+  const filled = Object.keys(KEY_SPECS).filter(key => !has(nextValues, key))
+  if (filled.length > 0) payload.filled = filled
   if (hooks !== undefined) {
-    // 默认的 hooks 子块不落盘：与 templates 同样的理由（默认值升级要能到达旧文件），也让新装机器上那份
-    // "empty-but-valid" 文件保持逐字节不变（install.sh / webui 挂载都断言这一点）。
+    // 默认的 hooks 子块不落盘：与 templates 同样的理由（默认值升级要能到达旧文件），也让只改 values 的
+    // 保存不凭空多出一个空的 hooks 块。
     const storedHooks = serializeHooks(nextHooks)
     if (Object.keys(storedHooks).length > 0) payload.hooks = storedHooks
   } else if (stored.hooksRaw !== undefined) {

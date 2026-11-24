@@ -40,7 +40,7 @@ import {
   startInboxWatcher,
 } from '../src/spv/inbox.js'
 import { INSTALL_STAMP_FILE } from '../src/shared/install-stamp.js'
-import { resolveSettings, saveSettings } from '../src/shared/settings.js'
+import { KEY_SPECS, resolveSettings, saveSettings } from '../src/shared/settings.js'
 
 const REAL_GIT = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
 const REPO = fileURLToPath(new URL('..', import.meta.url))
@@ -979,9 +979,17 @@ async function testHostSettingsRouteAndFence() {
   // The web host runs each non-poller effect on mount; that is what registers the routes.
   for (const effect of host.effects.filter(item => !item.label.includes('poller'))) effect.fn()
 
-  // The mount ships the empty-but-valid settings file; stale/rejected writes must leave it untouched.
+  // The mount ships a self-contained settings file (all defaults + provenance); stale/rejected writes
+  // must leave it untouched.
   const mounted = await readFile(join(box.root, 'settings.json'), 'utf8')
-  assert.deepEqual(JSON.parse(mounted), { version: 1, revision: 0, values: {}, templates: {} })
+  const settingsDefaults = Object.fromEntries(Object.entries(KEY_SPECS).map(([key, spec]) => [key, spec.default]))
+  assert.deepEqual(JSON.parse(mounted), {
+    version: 1,
+    revision: 0,
+    values: settingsDefaults,
+    templates: {},
+    filled: Object.keys(KEY_SPECS),
+  })
   const route = host.routes.find(candidate => candidate.path === '/wheelchair-settings')
   assert.ok(route, 'the host registers the /wheelchair-settings route')
   assert.equal(route.kind, 'exact', 'the settings route is an exact route')

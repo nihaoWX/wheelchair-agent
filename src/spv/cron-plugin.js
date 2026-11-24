@@ -13,6 +13,8 @@ import { execFileSync } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { resolveData } from '../shared/home.js'
+import { runHooksFor } from '../shared/hooks.js'
 import { apply as applyCore, inject as coreInject, name as coreName } from './cron.js'
 
 export const name = coreName
@@ -57,6 +59,37 @@ function injectBrief(agent, text) {
   })
 }
 
+/** Data root for the hook engine; an unavailable root just means this occurrence runs no hooks. */
+function hookHome() {
+  try {
+    return resolveData({ migrate: false }).root
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Fire the `cron.spv_cron` occurrence: fire-and-forget, like `spv/inbox.js`.
+ *
+ * `cursor: false` because every tick carries a new `at` and is its own occurrence; there is nothing to
+ * dedupe. A missing root or a broken settings file only produces a warning inside the engine, never an
+ * error here — the brief has already been injected.
+ */
+export function fireHook(event, payload) {
+  const home = hookHome()
+  const env = { ...process.env }
+  try {
+    void runHooksFor(event, payload, {
+      ...(home === undefined ? {} : { home }),
+      env,
+      eventId: `${event}:${payload.at}`,
+      cursor: false,
+    }).catch(() => {})
+  } catch {
+    // runHooksFor promises never to reject; this is the second fence for the timer path.
+  }
+}
+
 export function apply(ctx, config = {}) {
   return applyCore(ctx, {
     minutes: config.minutes,
@@ -64,5 +97,6 @@ export function apply(ctx, config = {}) {
     fs: { readFileSync },
     isActive: unitIsActive,
     inject: injectBrief,
+    fireHook,
   })
 }
