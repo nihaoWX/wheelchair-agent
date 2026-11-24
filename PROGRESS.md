@@ -53,6 +53,11 @@
   实例匹配抽成纯函数 `selectInstanceProcesses()`（profile + `--patch` 双条件）；`service status` 在多份部署时
   追加 `deployments:` 段。我手验纯函数：a.yml → 只有 a 那一个 pid、旧无 patch 服务 → 只有旧 pid、
   `dsh plugin` 与别的 profile 都不命中；`npm test` 373 PASS/0 FAIL。stage 2 到此完成，剩下的是操作者起第二个实例。
+- **一仓一部署 stage 3（`#46`,`e32b0e6`）**：收件箱 watcher 只轮询本实例注册表条目对应的项目（归属靠
+  `queueDir` 对上运行实例、`src/spv/ownership.js`，读不到注册表就退回旧的全量行为并记一行降级），别家项目
+  的 PR 不再被重复 `pull`/发通知；审查别家 PR 的结果以 `kind: "review"` 消息转发到**拥有它的**部署队列
+  （`thread: inbox-<pr>`、稳定 id 幂等），接收侧注入文本标明"转来的审查结论"。`npm test` 377 PASS/0 FAIL。
+  一仓一部署三阶段到此全部实现。
 - **一仓一部署 stage 2 第一片（`#44`,`a83f2b5`）**：每部署一份实例 overlay
   `<data root>/deployments/<slug>.yml`（端口 + `dsh-superagent` 的 stateDir + `wheelchair-spv` 的 queueDir），
   `deployment add`/`install.sh --project` 共用 `renderInstance()`；`writeInstance()` 只在文件不存在时创建。

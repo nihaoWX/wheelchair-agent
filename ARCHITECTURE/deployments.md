@@ -79,7 +79,7 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
 |---|---|---|
 | 1（已完成，`#42`/`#43`） | 注册表 + `deployment add|list|remove|migrate` + `dispatch`/`spv_dispatch` 走注册表 + 注入器/`spv_status` 聚合所有注册部署 + 安装契约记 project | 两份注册表条目下 `dispatch` 各写各的队列、两边的回信都回到同一个 spv 会话且不重复；没有条目时报错文案指明下一步；`npm test` 全绿；单部署行为逐字不变 |
 | 2（已完成：`#44` 实例 overlay + `#45` 重启/状态作用域） | 每部署实例 overlay（`<data root>/deployments/<slug>.yml`：端口 + stateDir + queueDir）+ `service … --project`（按注册表找实例、端口、会话、日志）+ `install.sh --project` 按项目分配 stateDir/端口 | 两个部署同时运行、各自面板可达、互不干扰；`/restart-wheelchair-agent` 仍能 resume 原会话 |
-| 3 | watcher 按项目归属 + `kind: review` 路由 | 任一面板审一封属于别的部署的信，注入落到正确部署的工单 |
+| 3（已完成，`#46`） | watcher 按项目归属 + `kind: review` 路由 | 任一面板审一封属于别的部署的信，注入落到正确部署的工单 |
 
 ### stage 2 第一片落地（`#44`）
 
@@ -110,6 +110,22 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
   `~/.dsh-tui/resume.txt`**——那是全局"最后打开"指针，跨部署读它等于把别人的会话拖进来；测试里放哨兵 id 断言没被用。
 - `service status` 不带 `--project` 时仍是旧输出，注册表多于一份才追加 `deployments:` 段（每行
   `<project> port <n> running|stopped <pid|->`），旧服务本体不重复报两次。
+
+### stage 3 落地（`#46`）
+
+- 归属由 `src/spv/ownership.js` 回答两个问题，**不新增注册表字段**：
+  - *本实例是谁*：注册表里 `queueDir` 等于本进程 `resolveRoot()` 读到的那条。对不上（老部署、注册表不存在、
+    条目被删、`$SPV_QUEUE_DIR` 覆盖）→ `{entry: null, reason}`，调用方**退回 stage 3 之前的全量行为**并打一行原因，
+    不猜。
+  - *repo 属于哪个项目*：先读 `<projectsRoot>/<project>` 的 `git config --get remote.origin.url` 反查
+    （`githubRemote()` 解析 https/ssh），读不到时退到「repo 名 == 项目叶子名」，报告里标明是兜底。
+- watcher 只对**本部署的项目**做 `git pull --ff-only`、`pullEndNotices`、冷安装通知；别家项目的 PR 跳过并留一行
+  `skipping <repo>: owned by deployment <project>`。同一个 PR 因此只会被 pull 一次。
+- 审查回信：`inbox.approved`/`inbox.issue` 发现 item 的 repo 属于别的部署 → 不本地注入，而是往**那个部署**的
+  `pending/` 写一条 `kind: "review"` 的消息（`thread: inbox-<pr>` 让同一 PR 的多次审查落到同一工单；
+  `id = review-<item.id>-<sha256(id,verdict,comment)[:16]>` 保证重试只覆盖不叠加）；接收侧的注入文本以
+  「这是另一份部署转来的审查结论」开头并原样带上 repo/PR/verdict/comment。`src/spv/outbox.js` 的
+  `RESULT_KINDS` 相应加上 `review`。属于自己项目的审查仍走原来的本地通知路径。
 
 ## 不做的事
 
