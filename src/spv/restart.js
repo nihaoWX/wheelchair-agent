@@ -1788,7 +1788,11 @@ export async function runAllRestart(context, options = {}) {
     return 1
   }
 
-  const pre = await preflight({ ...context, stateDir }, { ...options, noInstall: true }, { detached: false })
+  // A detached run is the parent of nothing: its `--run` child performs the restart. A dry run is read-only
+  // for the same reason, so `--detach` must be honoured here too, otherwise a preview from inside the SPV
+  // session always fails the ancestor check that only a real foreground restart deserves.
+  const detached = Boolean(options.detach)
+  const pre = await preflight({ ...context, stateDir }, { ...options, noInstall: true }, { detached })
   if (!pre.ok) {
     if (!options.dryRun) {
       try {
@@ -1797,7 +1801,14 @@ export async function runAllRestart(context, options = {}) {
         // The printed lines are the primary diagnosis.
       }
     }
-    process.stdout.write(`${pre.lines.join('\n')}\n`)
+    const lines = [...pre.lines]
+    if (options.dryRun && !detached && lines.some(line => line.includes('orchestrator is still a descendant'))) {
+      lines.push(
+        'note: a dry run is read-only; add --detach to preview the whole --all plan from inside this session ' +
+          '(--detach only changes how the ancestor check sees this command, nothing is stopped).',
+      )
+    }
+    process.stdout.write(`${lines.join('\n')}\n`)
     return pre.code
   }
 

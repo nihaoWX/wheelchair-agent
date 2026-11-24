@@ -344,6 +344,39 @@ async function testRestartAllDryRun() {
   pass('restart-all --all plans one install plus every project stop/start, and refuses without a project')
 }
 
+async function testRestartAllDryRunFromInsideSession() {
+  const box = await sandbox()
+  assert.equal(cli(box, ['deployment', 'add', 'tools/alpha']).status, 0)
+  assert.equal(cli(box, ['deployment', 'add', 'tools/beta']).status, 0)
+
+  // This test process is the CLI child's real parent; a fake chain entry that names it makes the CLI see
+  // itself as a descendant of the session it would replace, exactly like a prompt inside the SPV session.
+  await mkdir(join(box.proc, String(process.pid)), { recursive: true })
+  await writeFile(
+    join(box.proc, String(process.pid), 'cmdline'),
+    ['node', join(box.dsh, 'dsh'), '--patch', join(box.dsh, '.agent-presets', 'spv', 'preset-default.patch.yml')].join('\0') + '\0',
+  )
+  await writeFile(join(box.proc, String(process.pid), 'status'), 'Name:\tdsh\nPPid:\t1\n')
+
+  const foreground = cli(box, ['restart-all', '--all', '--dry-run', '--project', 'tools/alpha'])
+  assert.notEqual(foreground.status, 0, 'a bare dry run from inside the session still refuses to plan')
+  const said = `${foreground.stdout}${foreground.stderr}`
+  assert.match(said, /descendant of the SPV session it must replace/)
+  assert.match(said, /add --detach to preview the whole --all plan from inside this session/)
+
+  const detached = cli(box, ['restart-all', '--all', '--dry-run', '--detach', '--project', 'tools/alpha'])
+  assert.equal(detached.status, 0, `${detached.stdout}${detached.stderr}`)
+  assert.match(detached.stdout, /restart-all --all plan \(dry run; nothing is changed\)/)
+  for (const project of ['tools/alpha', 'tools/beta']) {
+    assert.match(detached.stdout, new RegExp(`stop:  wheelchair-agent service stop --project ${project}`))
+    assert.match(detached.stdout, new RegExp(`start: wheelchair-agent service start --project ${project}`))
+  }
+  assert.match(detached.stdout, /3\. bash .*install\.sh --project tools\/alpha/)
+  assert.doesNotMatch(detached.stdout, /install\.sh\s*$/m)
+  assert.doesNotMatch(detached.stdout, /service (?:stop|start)\s*$/m)
+  pass('restart-all --all --dry-run --detach previews from inside the session; a bare dry run explains why')
+}
+
 async function fakeProcEntry(root, pid, argv, ppid = 1) {
   const dir = join(root, String(pid))
   await mkdir(dir, { recursive: true })
@@ -433,6 +466,7 @@ try {
   await testProjectSessionPriority()
   await testRestartProjectDryRunAndErrors()
   await testRestartAllDryRun()
+  await testRestartAllDryRunFromInsideSession()
   await testServiceStatusListsDeployments()
   await testRestartCommandPassesProject()
   process.stdout.write(`ok (${passed} passed)\n`)
