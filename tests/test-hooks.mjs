@@ -64,6 +64,12 @@ import {
 import { appendReview, writeItem } from '../src/spv/inbox.js'
 import { EFFECT_MAX_RETRIES, startHookRunner } from '../src/spv/hook-runner.js'
 import { createArchiveSessionEffect, workerSessionIdOf } from '../src/spv/archive-effect.js'
+import {
+  AUTO_MERGE_TIMEOUT_MS,
+  createAutoMergeEffect,
+  parseGitHubRemote,
+  ticketDirectoryFromPlan,
+} from '../src/spv/auto-merge-effect.js'
 import { submitTask } from '../src/spv/dispatch.js'
 import { dirsOf, writeMessage } from '../src/shared/queue.js'
 import { SETTINGS_FILE, resolveSettings, saveSettings } from '../src/shared/settings.js'
@@ -219,12 +225,15 @@ async function testTableView() {
     ],
   )
   assert.ok(!model.events.some(entry => entry.id === 'ticket.ended'), 'there is deliberately no ticket.ended')
-  assert.equal(model.builtin.length, 8)
+  assert.equal(model.builtin.length, 9)
   // 精确契约：每个事件的内建行 id 顺序 + 是否可取消。不是 typeof 检查。
   const contract = {
     'ticket.started': { cancellable: false, rows: ['builtin:prepare'] },
     'ticket.acknowledged': { cancellable: true, rows: [] },
-    'ticket.delivered': { cancellable: false, rows: ['builtin:injection', 'builtin:archiveSession'] },
+    'ticket.delivered': {
+      cancellable: false,
+      rows: ['builtin:injection', 'builtin:archiveSession', 'builtin:autoMerge'],
+    },
     'ticket.attention': { cancellable: false, rows: ['builtin:injection'] },
     'inbox.approved': { cancellable: false, rows: ['builtin:reviewRecord'] },
     'inbox.issue': { cancellable: false, rows: ['builtin:prIssue', 'builtin:spvObjection'] },
@@ -256,6 +265,7 @@ async function testTableView() {
     'builtin:mergePull',
     'builtin:coldInstallNotice',
     'builtin:archiveSession',
+    'builtin:autoMerge',
   ]) {
     assert.ok(ids.includes(id), `${id} exists verbatim`)
   }
@@ -286,6 +296,7 @@ async function testTableView() {
   assert.deepEqual(model.events.find(entry => entry.id === 'ticket.delivered').rows.map(row => row.id), [
     'builtin:injection',
     'builtin:archiveSession',
+    'builtin:autoMerge',
   ])
   assert.deepEqual(
     model.events.find(entry => entry.id === 'ticket.attention').rows.map(row => row.id),
@@ -2115,10 +2126,284 @@ async function testArchiveEffect() {
   }
 }
 
+/**
+ * `builtin:autoMerge`：服务侧自动合并。
+ *
+ * 契约的边界：默认关闭、开关/目录/PR 缺失都只记日志、五条闸门逐条拒绝、gh 失败不吞异常、同一 PR/工单
+ * 不重复合并；`{ run, timeoutMs }` 形式的单次上限独立于 15s 默认值。
+ */
+async function testAutoMergeEffect() {
+  const ticketId = '91f0b0e3697029a759d69de8c5853c2f'
+  const directory = `/tmp/w/auto-merge-effect-${ticketId.slice(0, 12)}`
+  const repo = 'nihaoWX/wheelchair-agent'
+  const branch = 'agent/auto-merge-effect'
+  const context = { payload: { ticketId } }
+  const plan = { entries: [{ name: `auto-merge-effect-${ticketId.slice(0, 12)}`, path: directory }] }
+  const basePr = (overrides = {}) => ({
+    number: 42,
+    url: `https://github.com/${repo}/pull/42`,
+    isDraft: false,
+    mergeable: 'MERGEABLE',
+    mergeStateStatus: 'CLEAN',
+    statusCheckRollup: [{ name: 'ci', status: 'COMPLETED', conclusion: 'SUCCESS' }],
+    files: [{ path: 'src/spv/auto-merge-effect.js' }],
+    headRefName: branch,
+    headRepository: { nameWithOwner: repo },
+    ...overrides,
+  })
+
+  function fakeAutoMerge({
+    enabled = true,
+    enabledError,
+    planValue = plan,
+    planError,
+    gitBranch = branch,
+    remote = `git@github.com:${repo}.git`,
+    prs = [basePr()],
+    listError,
+    mergeError,
+    gh = 'gh',
+    env = {},
+  } = {}) {
+    const calls = []
+    const lines = []
+    const run = async (command, args, options) => {
+      calls.push({ command, args, options })
+      if (command === 'git') {
+        if (args[0] === 'rev-parse') return { stdout: `${gitBranch}\n`, stderr: '' }
+        if (args[0] === 'config') return { stdout: `${remote}\n`, stderr: '' }
+      }
+      if (args[0] === 'pr') {
+        if (args[1] === 'list') {
+          if (listError !== undefined) throw listError
+          return { stdout: JSON.stringify(prs), stderr: '' }
+        }
+        if (args[1] === 'merge') {
+          if (mergeError !== undefined) throw mergeError
+          return { stdout: '', stderr: '' }
+        }
+      }
+      throw new Error(`unexpected command: ${command} ${args.join(' ')}`)
+    }
+    const effect = createAutoMergeEffect({
+      enabled: () => {
+        if (enabledError !== undefined) throw enabledError
+        return enabled
+      },
+      planOf: () => {
+        if (planError !== undefined) throw planError
+        return planValue
+      },
+      gh,
+      env,
+      execFile: run,
+      log: line => lines.push(line),
+    })
+    return { calls, lines, effect }
+  }
+
+  const mergeCalls = harness =>
+    harness.calls.filter(call => call.args[0] === 'pr' && call.args[1] === 'merge')
+
+  // 0) 纯函数与常量：不依赖 host，也不猜 PR。
+  assert.equal(AUTO_MERGE_TIMEOUT_MS, 120_000)
+  assert.equal(parseGitHubRemote(`git@github.com:${repo}.git`), repo)
+  assert.equal(parseGitHubRemote(`https://github.com/${repo}`), repo)
+  assert.equal(parseGitHubRemote(`ssh://git@github.com/${repo}.git`), repo)
+  assert.equal(parseGitHubRemote('https://gitlab.com/o/n'), undefined)
+  assert.equal(parseGitHubRemote('git@github.com:o/n/extra'), undefined)
+  assert.equal(parseGitHubRemote(''), undefined)
+  assert.equal(ticketDirectoryFromPlan(plan, ticketId), directory)
+  assert.equal(ticketDirectoryFromPlan({ entries: [{ name: ticketId, path: directory }] }, ticketId), directory)
+  assert.deepEqual(ticketDirectoryFromPlan({ entries: [{ name: `x-${ticketId}`, path: directory }] }, ticketId), undefined)
+  assert.deepEqual(ticketDirectoryFromPlan({ entries: [] }, ticketId), undefined)
+  assert.deepEqual(
+    ticketDirectoryFromPlan({ entries: [plan.entries[0], { ...plan.entries[0] }] }, ticketId),
+    undefined,
+    'two matching directories are ambiguous',
+  )
+
+  // 1) 默认关闭：不开开关就什么都不做，连日志都没有。
+  {
+    const harness = fakeAutoMerge({ enabled: false })
+    await harness.effect(context)
+    assert.deepEqual(harness.calls, [], 'a disabled effect runs no command')
+    assert.deepEqual(harness.lines, [], 'a disabled effect is silent')
+  }
+
+  // 2) 开关读不出来 / 没有 ticketId / 目录读不出来 / 找不到唯一目录：只 warn 或记一行。
+  {
+    const harness = fakeAutoMerge({ enabledError: new Error('settings unreadable') })
+    await harness.effect(context)
+    assert.ok(harness.lines.some(line => line.startsWith('warning:') && line.includes('cannot read merge.autoMerge')))
+    assert.deepEqual(harness.calls, [])
+  }
+  {
+    const harness = fakeAutoMerge()
+    await harness.effect({ payload: {} })
+    assert.ok(harness.lines.some(line => line.startsWith('warning:') && line.includes('without a ticketId')))
+    assert.deepEqual(harness.calls, [])
+  }
+  {
+    const harness = fakeAutoMerge({ planError: new Error('core missing') })
+    await harness.effect(context)
+    assert.ok(harness.lines.some(line => line.startsWith('warning:') && line.includes('cannot read the work plan')))
+    assert.deepEqual(harness.calls, [])
+  }
+  {
+    const harness = fakeAutoMerge({ planValue: { entries: [] } })
+    await harness.effect(context)
+    assert.deepEqual(harness.lines, [`no unique work directory for ticket ${ticketId}; not merging`])
+    assert.deepEqual(harness.calls, [])
+  }
+
+  // 3) 本地 git 读不出来 / detached HEAD / 非 GitHub origin：都不合并。
+  {
+    const harness = fakeAutoMerge({ gitBranch: 'HEAD' })
+    await harness.effect(context)
+    assert.ok(harness.lines.some(line => line.includes('is not on a branch')))
+    assert.deepEqual(mergeCalls(harness), [])
+  }
+  {
+    const broken = fakeAutoMerge()
+    broken.effect = createAutoMergeEffect({
+      enabled: () => true,
+      planOf: () => plan,
+      gh: 'gh',
+      env: {},
+      execFile: async (command, args) => {
+        if (command === 'git' && args[0] === 'rev-parse') throw new Error('not a git repository')
+        return { stdout: '' }
+      },
+      log: line => broken.lines.push(line),
+    })
+    await broken.effect(context)
+    assert.ok(broken.lines.some(line => line.startsWith('warning:') && line.includes('cannot read the git branch')))
+  }
+  {
+    const harness = fakeAutoMerge({ remote: 'https://gitlab.com/o/n.git' })
+    await harness.effect(context)
+    assert.ok(harness.lines.some(line => line.includes('is not a GitHub repository')))
+    assert.deepEqual(mergeCalls(harness), [])
+  }
+
+  // 4) PR 选择：0 个、多个、gh list 失败、JSON 形状不对都不合并。
+  for (const [label, prs, expected] of [
+    ['no open PR', [], 'no open PR'],
+    ['multiple open PRs', [basePr(), basePr({ number: 43 })], 'found 2 open PRs'],
+  ]) {
+    const harness = fakeAutoMerge({ prs })
+    await harness.effect(context)
+    assert.ok(harness.lines.some(line => line.includes(expected)), label)
+    assert.deepEqual(mergeCalls(harness), [], label)
+  }
+  {
+    const harness = fakeAutoMerge({ listError: new Error('gh: not authenticated') })
+    await harness.effect(context)
+    assert.ok(harness.lines.some(line => line.startsWith('warning:') && line.includes('gh pr list')))
+    assert.deepEqual(mergeCalls(harness), [])
+  }
+
+  // 5) 五条闸门逐条拒绝；每条都只记一行，不调用 merge。
+  for (const [label, overrides, expected] of [
+    ['head repository mismatch', { headRepository: { nameWithOwner: 'someone/fork' } }, 'comes from someone/fork'],
+    ['head branch mismatch', { headRefName: 'other' }, 'has head other'],
+    ['draft', { isDraft: true }, 'is a draft'],
+    ['not mergeable', { mergeable: 'CONFLICTING' }, 'is not mergeable'],
+    ['no checks', { statusCheckRollup: [] }, 'has no CI checks'],
+    [
+      'failing check',
+      { statusCheckRollup: [{ name: 'ci', status: 'COMPLETED', conclusion: 'FAILURE' }] },
+      'failing or unfinished checks (ci)',
+    ],
+    ['unfinished check', { statusCheckRollup: [{ name: 'ci', status: 'IN_PROGRESS' }] }, 'failing or unfinished checks'],
+    ['HARNESS file', { files: [{ path: 'PROGRESS.md' }] }, 'touches HARNESS file PROGRESS.md'],
+    ['HARNESS directory', { files: [{ path: 'ARCHITECTURE/hooks.md' }] }, 'touches HARNESS file ARCHITECTURE/hooks.md'],
+    ['missing files', { files: undefined }, 'returned no files'],
+  ]) {
+    const harness = fakeAutoMerge({ prs: [basePr(overrides)] })
+    await harness.effect(context)
+    assert.ok(
+      harness.lines.some(line => line.includes(expected)),
+      `${label}: expected ${expected} in ${JSON.stringify(harness.lines)}`,
+    )
+    assert.deepEqual(mergeCalls(harness), [], `${label} must not merge`)
+  }
+
+  // 6) 全部成立：用固定命令 squash 合并，记录工单；同一 PR/工单不重复合并。
+  {
+    const harness = fakeAutoMerge()
+    await harness.effect(context)
+    const merges = mergeCalls(harness)
+    assert.equal(merges.length, 1)
+    assert.deepEqual(merges[0].args, ['pr', 'merge', '42', '--repo', repo, '--squash', '--delete-branch'])
+    assert.equal(merges[0].command, 'gh')
+    assert.equal(merges[0].options.timeout, AUTO_MERGE_TIMEOUT_MS)
+    assert.ok(harness.lines.includes(`merged ${repo}#42 for ticket ${ticketId}`))
+    const gitCalls = harness.calls.filter(call => call.command === 'git')
+    assert.equal(gitCalls[0].options.cwd, directory, 'git runs inside the ticket clone')
+    await harness.effect(context)
+    assert.equal(mergeCalls(harness).length, 1, 'a merged ticket is not merged again')
+    assert.ok(harness.lines.some(line => line.includes('this effect already merged its PR')))
+  }
+
+  // 7) gh merge 失败：只 warning，不把工单记为已合并。
+  {
+    const harness = fakeAutoMerge({ mergeError: Object.assign(new Error('gh failed'), { stderr: 'merge blocked\n' }) })
+    await harness.effect(context)
+    assert.equal(mergeCalls(harness).length, 1)
+    assert.ok(harness.lines.some(line => line.startsWith('warning:') && line.includes('gh pr merge')))
+    await harness.effect(context)
+    assert.equal(mergeCalls(harness).length, 2, 'a failed merge may be retried on the next delivery')
+  }
+
+  // 8) gh 可执行文件：显式参数优先，其次 $SPV_GH，最后 `gh`。
+  {
+    const explicit = fakeAutoMerge({ gh: '/opt/gh' })
+    await explicit.effect(context)
+    assert.equal(mergeCalls(explicit)[0].command, '/opt/gh')
+    const fromEnv = fakeAutoMerge({ gh: '', env: { SPV_GH: '/env/gh' } })
+    await fromEnv.effect(context)
+    assert.equal(mergeCalls(fromEnv)[0].command, '/env/gh')
+  }
+
+  // 9) runner 的 per-effect 上限：120s 只作用于 autoMerge，且 `{ run, timeoutMs }` 真的被 runner 采用。
+  {
+    const box = await sandbox()
+    const marker = join(box.base, 'auto-merge-after-timeout.json')
+    addHook(box, { event: 'ticket.attention', name: 'after-auto-merge-timeout', script: `cat > ${q(marker)}` })
+    const runnerLog = []
+    const runner = startTestRunner(box, {
+      log: line => runnerLog.push(line),
+      effectTimeoutMs: 60_000,
+      effects: { 'builtin:autoMerge': { run: () => new Promise(() => {}), timeoutMs: 30 } },
+    })
+    try {
+      await deliverQueueMessage(box, { id: 'm-auto-merge-hang', ticketId: 'tk-am-hang', at: '2026-11-16T00:00:24.000Z' })
+      await deliverQueueMessage(box, {
+        id: 'm-auto-merge-after-hang',
+        ticketId: 'tk-am-hang',
+        kind: 'notice',
+        at: '2026-11-16T00:00:25.000Z',
+      })
+      await runner.drainOnce()
+      assert.ok(
+        runnerLog.some(line => line.startsWith('warning:') && line.includes('builtin:autoMerge') && line.includes('timed out after 30ms')),
+        'the per-entry timeout wins over effectTimeoutMs',
+      )
+      assert.equal((await readFile(marker, 'utf8')).trim() !== '', true, 'the next event still runs after a hung merge')
+    } finally {
+      runner.stop()
+      await runner.done
+    }
+  }
+}
+
 try {
   await testStage2IntervalSetting()
   await testStage2RunnerAndSpool()
   await testArchiveEffect()
+  await testAutoMergeEffect()
   await testStage2InboxWiring()
   await testTableView()
   await testPayloadEnvAndCwd()

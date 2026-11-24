@@ -243,12 +243,15 @@ async function loadHostApply(box) {
     ['src/spv/hook-runner.js', 'lib/core/hook-runner.js'],
     ['src/spv/paths.js', 'lib/core/paths.js'],
     ['src/spv/archive-effect.js', 'lib/core/archive-effect.js'],
+    ['src/spv/auto-merge-effect.js', 'lib/core/auto-merge-effect.js'],
     ['src/shared/home.js', 'lib/shared/home.js'],
     ['src/shared/hook-events.js', 'lib/shared/hook-events.js'],
     ['src/shared/hooks.js', 'lib/shared/hooks.js'],
     ['src/shared/install-stamp.js', 'lib/shared/install-stamp.js'],
     ['src/shared/queue.js', 'lib/shared/queue.js'],
+    ['src/shared/schema.js', 'lib/shared/schema.js'],
     ['src/shared/settings.js', 'lib/shared/settings.js'],
+    ['src/shared/work.js', 'lib/shared/work.js'],
     ['webui/lib/index.js', 'lib/index.js'],
   ]) {
     await copyFile(new URL(`../${source}`, import.meta.url), join(app, target))
@@ -393,6 +396,7 @@ const EXPECTED_DEFAULTS = {
   'webui.style': 'fluid',
   'inbox.intervalSeconds': 60,
   'merge.installRepo': 'wheelchair-agent',
+  'merge.autoMerge': false,
   'injection.intervalMs': 1000,
   'injection.maxBodyChars': 12000,
   'work.keep': 0,

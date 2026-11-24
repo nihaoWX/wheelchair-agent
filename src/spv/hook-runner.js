@@ -12,12 +12,14 @@
  * 定时器不阻止进程退出。`drainOnce()` 是测试与 host 的"立刻跑一轮"入口；`startHookRunner()` 先 drain 一次
  * 再按间隔调度，所以服务停着期间累积的事件在启动时被补跑（cursor 保证每个 occurrence 只跑一次）。
  *
- * **内建效果（`effects`）**：`{ 'builtin:archiveSession': async context => … }`。它们不是用户脚本，而是
- * core path 的服务侧实现（目前只有交付后归档 worker 会话）。为什么在这里执行而不是 `runHooksFor` 的
- * items 循环里：delivered 通常没有自定义行，`runHooksFor` 在 `items.length === 0` 时认领 occurrence 后
- * 提前返回，效果会被跳掉。本文件在每次 `runHooksFor` 之后按 `builtinRowsFor(event)` 调用效果，且只在
- * occurrence 真的被认领时调用（`skipped` 为 `paused` / `cursor` 时跳过；`empty` 照跑）。效果永不抛；
- * 单次最多等 `EFFECT_TIMEOUT_MS`，返回 `{ retry: true }` 的会在后续 drain 里最多重试 `EFFECT_MAX_RETRIES` 次。
+ * **内建效果（`effects`）**：`{ 'builtin:archiveSession': async context => … }`，或需要单独超时的
+ * `{ 'builtin:autoMerge': { run: async context => …, timeoutMs: 120_000 } }`。它们不是用户脚本，而是
+ * core path 的服务侧实现（交付后归档 worker 会话、按开关自动合并工单 PR）。为什么在这里执行而不是
+ * `runHooksFor` 的 items 循环里：delivered 通常没有自定义行，`runHooksFor` 在 `items.length === 0` 时
+ * 认领 occurrence 后提前返回，效果会被跳掉。本文件在每次 `runHooksFor` 之后按 `builtinRowsFor(event)`
+ * 调用效果，且只在 occurrence 真的被认领时调用（`skipped` 为 `paused` / `cursor` 时跳过；`empty` 照跑）。
+ * 效果永不抛；单次默认最多等 `EFFECT_TIMEOUT_MS`，`{ timeoutMs }` 可以逐个放宽/收紧；返回
+ * `{ retry: true }` 的会在后续 drain 里最多重试 `EFFECT_MAX_RETRIES` 次。
  *
  * 纯 Node builtins：不 import dsh，不 `process.exit`。
  */
@@ -53,7 +55,8 @@ export const EFFECT_MAX_RETRIES = 3
  * `enqueueOperation` 与 `workspace/session-activity` waterfall 都可能卡住）会让所有 hook 脚本停摆，
  * `stop()` 也结束不了；用户脚本在 `src/shared/settings.js` 里本来就有超时，内建效果同样必须有。
  *
- * 15s 大于 webui 里 registry 最多 5s 的等待，正常归档（一次文件写）远在那之前完成。
+ * 15s 大于 webui 里 registry 最多 5s 的等待，正常归档（一次文件写）远在那之前完成。个别效果可以传
+ * `{ run, timeoutMs }` 覆盖它（例如 `builtin:autoMerge` 的 gh 调用上限是 120s）。
  */
 export const EFFECT_TIMEOUT_MS = 15_000
 
@@ -132,14 +135,29 @@ export function startHookRunner({
 
   const effectKeyOf = (rowId, context) => `${rowId}:${context.payload?.ticketId ?? context.eventId ?? ''}`
 
+  /** 效果可以是函数，也可以是 `{ run, timeoutMs }`；返回可执行函数或 `undefined`。 */
+  const effectOf = rowId => {
+    const entry = effects[rowId]
+    const effect = typeof entry === 'function' ? entry : entry?.run
+    return typeof effect === 'function' ? effect : undefined
+  }
+
+  /** 这个效果的等待上限：逐项的有限正数优先，否则用 runner 的默认值。 */
+  const effectTimeoutOf = rowId => {
+    const entry = effects[rowId]
+    const timeout = entry !== null && typeof entry === 'object' ? entry.timeoutMs : undefined
+    return Number.isFinite(timeout) && timeout > 0 ? timeout : effectTimeoutMs
+  }
+
   const invokeEffect = async (rowId, context) => {
-    const effect = effects[rowId]
-    if (typeof effect !== 'function') return undefined
+    const effect = effectOf(rowId)
+    if (effect === undefined) return undefined
+    const timeoutMs = effectTimeoutOf(rowId)
     let timer
     const pending = Promise.resolve().then(() => effect(context))
     const timeout = new Promise(resolve => {
       // 不 unref：效果还挂着的这十几秒本来就是"有工作没做完"，不能让进程在等待中超时前退出。
-      timer = setTimeout(() => resolve(EFFECT_TIMED_OUT), effectTimeoutMs)
+      timer = setTimeout(() => resolve(EFFECT_TIMED_OUT), timeoutMs)
     })
     try {
       const outcome = await Promise.race([pending, timeout])
@@ -147,7 +165,7 @@ export function startHookRunner({
         // 超时不重试：卡住的 registry 再等一轮也一样，交给 ticket.ended 的归档。
         warn(
           `warning: builtin ${rowId} for ${context.eventId ?? context.event} ` +
-            `timed out after ${effectTimeoutMs}ms; not retrying`,
+            `timed out after ${timeoutMs}ms; not retrying`,
         )
         return undefined
       }
@@ -180,7 +198,7 @@ export function startHookRunner({
       return
     }
     for (const row of rows) {
-      if (typeof effects[row.id] !== 'function') continue
+      if (effectOf(row.id) === undefined) continue
       const context = { event, eventId, payload }
       const key = effectKeyOf(row.id, context)
       const outcome = await invokeEffect(row.id, context)
