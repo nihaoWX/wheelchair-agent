@@ -155,3 +155,64 @@ fn queue_layout_round_trips() {
         "/tmp/wca-cli-queue/root/outbox/read"
     );
 }
+
+#[test]
+fn settings_rejects_malformed_missing_and_out_of_range_requests_cleanly() {
+    for input in ["not json", "{\"op\":\"nope\"}", "{\"op\":\"save\"}"] {
+        let (status, stdout, stderr) = run(&["settings"], input);
+        assert_ne!(status, 0, "input must fail: {}", input);
+        assert!(
+            !stderr.contains("panicked"),
+            "no panic for {}: {}",
+            input,
+            stderr
+        );
+        let envelope: serde_json::Value =
+            serde_json::from_str(&stdout).expect("stdout is one JSON envelope");
+        assert_eq!(envelope["ok"], false, "input: {}", input);
+        assert_eq!(envelope["code"], "invalid_request", "input: {}", input);
+    }
+    let request = serde_json::json!({
+        "op": "save",
+        "current": 0,
+        "values": { "work.keep": -1 }
+    });
+    let (status, stdout, stderr) = run(&["settings"], &request.to_string());
+    assert_ne!(status, 0);
+    assert!(!stderr.contains("panicked"), "no panic: {}", stderr);
+    let envelope: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout is one JSON envelope");
+    assert_eq!(envelope["ok"], false);
+    assert_eq!(envelope["code"], "SETTINGS_INVALID");
+    assert_eq!(envelope["message"], "work.keep must be at least 0, got -1.");
+}
+
+#[test]
+fn settings_defaults_are_ordered_and_complete() {
+    let (status, stdout, stderr) = run(&["settings"], "{\"op\":\"defaults\"}");
+    assert_eq!(status, 0, "stderr: {}", stderr);
+    let envelope: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout is one JSON envelope");
+    assert_eq!(envelope["ok"], true);
+    let values = envelope["data"]["values"]
+        .as_object()
+        .expect("defaults values are an object");
+    let keys: Vec<&str> = values.keys().map(String::as_str).collect();
+    assert_eq!(
+        keys,
+        vec![
+            "webui.style",
+            "inbox.intervalSeconds",
+            "merge.installRepo",
+            "merge.autoMerge",
+            "injection.intervalMs",
+            "injection.maxBodyChars",
+            "work.keep",
+            "work.keepDays",
+            "work.sweepOnMount",
+        ]
+    );
+    assert_eq!(values["webui.style"], "fluid");
+    assert_eq!(values["inbox.intervalSeconds"], 60);
+    assert_eq!(values["work.sweepOnMount"], true);
+}

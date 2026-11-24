@@ -17,6 +17,7 @@ pub mod plan;
 pub mod procscan;
 pub mod queue;
 pub mod schema;
+pub mod settings;
 pub mod time;
 pub mod util;
 
@@ -105,6 +106,10 @@ pub fn schema_bundle() -> Value {
         "schemaCheck": {
             "request": schemars::schema_for!(schema::SchemaCheckRequest),
             "response": schemars::schema_for!(Envelope<schema::SchemaCheckResult>),
+        },
+        "settings": {
+            "request": schemars::schema_for!(settings::SettingsRequest),
+            "response": schemars::schema_for!(Envelope<Value>),
         },
     })
 }

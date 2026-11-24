@@ -12,6 +12,7 @@ use serde::Serialize;
 use serde_json::Value;
 use wca_core::queue::{self, QueueRequest};
 use wca_core::schema::{self, SchemaCheckRequest};
+use wca_core::settings::{self, SettingsRequest};
 use wca_core::{plan_from_request, schema_bundle, Envelope, WorkPlanRequest};
 
 fn main() -> ExitCode {
@@ -20,10 +21,13 @@ fn main() -> ExitCode {
         [command] if command == "work-plan" => work_plan(),
         [command] if command == "queue-op" => queue_op(),
         [command] if command == "schema-check" => schema_check(),
+        [command] if command == "settings" => settings_op(),
         [command] if command == "schema" => schema(),
-        [] => usage("missing subcommand; expected \"work-plan\", \"queue-op\", \"schema-check\" or \"schema\""),
+        [] => usage(
+            "missing subcommand; expected \"work-plan\", \"queue-op\", \"schema-check\", \"schema\" or \"settings\"",
+        ),
         [command] => usage(&format!(
-            "unknown subcommand {:?}; expected \"work-plan\", \"queue-op\", \"schema-check\" or \"schema\"",
+            "unknown subcommand {:?}; expected \"work-plan\", \"queue-op\", \"schema-check\", \"schema\" or \"settings\"",
             command
         )),
         _ => usage("expected exactly one subcommand"),
@@ -85,6 +89,26 @@ fn schema_check() -> ExitCode {
         }
         Err((code, message)) => {
             emit_failure(&code, &message);
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn settings_op() -> ExitCode {
+    let request: SettingsRequest = match read_request() {
+        Ok(request) => request,
+        Err(message) => {
+            emit_failure("invalid_request", &message);
+            return ExitCode::from(1);
+        }
+    };
+    match settings::run(&request) {
+        Ok(data) => {
+            emit(&Envelope::success(data));
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            emit_failure(&error.code, &error.message);
             ExitCode::from(1)
         }
     }

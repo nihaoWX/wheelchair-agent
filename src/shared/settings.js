@@ -37,6 +37,7 @@ import { chmodSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'n
 import { dirname } from 'node:path'
 
 import { SETTINGS_FILE, dataPaths, resolveData } from './home.js'
+import { runCore } from './queue.js'
 import { BUILTIN_ROWS, EVENTS, builtinRowById, eventById } from './hook-events.js'
 
 export { SETTINGS_FILE } from './home.js'
@@ -56,9 +57,6 @@ const TEMPLATE_LIMIT = 20000
 /** 请求体上限：与 `/wheelchair-inbox/review` 的 64 KiB 约定一致。 */
 const MAX_BODY_BYTES = 64 * 1024
 
-/** 安装目标仓库的形状：`owner/name` 或 `name`。 */
-const INSTALL_REPO_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_.-]*(?:\/[A-Za-z0-9][A-Za-z0-9_.-]*)?$/
-
 /** 预设名的控制字符（含换行、制表符）一律拒绝：它会破坏面板的一行式选择器。 */
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/
 
@@ -74,67 +72,40 @@ const RESERVED_PRESET_NAMES = new Set(['__proto__', 'prototype', 'constructor'])
  * `env` 是同一旋钮的环境变量（只用于展示 precedence，不写回）；`min`/`max` 对数字与长度生效；
  * `label` 是双语行名（面板仍可自行本地化，这里给默认值）。
  */
-export const KEY_SPECS = {
-  'webui.style': {
-    type: 'string',
-    default: 'fluid',
-    options: ['minimal', 'fluid'],
-    label: { zh: '面板样式', en: 'Panel style' },
-  },
-  'inbox.intervalSeconds': {
-    type: 'integer',
-    default: 60,
-    env: 'SPV_INBOX_INTERVAL_SECONDS',
-    min: 0,
-    max: 2147483,
-    label: { zh: '收件箱刷新间隔（秒）', en: 'Inbox refresh interval (seconds)' },
-  },
-  'merge.installRepo': {
-    type: 'string',
-    default: 'wheelchair-agent',
-    env: 'SPV_INSTALL_REPO',
-    label: { zh: '合并即冷安装的仓库', en: 'Install-target repository' },
-  },
-  'merge.autoMerge': {
-    type: 'boolean',
-    default: false,
-    label: { zh: '交付后自动合并工单 PR', en: 'Auto-merge a ticket PR after delivery' },
-  },
-  'injection.intervalMs': {
-    type: 'integer',
-    default: 1000,
-    min: 50,
-    max: 3600000,
-    label: { zh: '结果注入间隔（毫秒）', en: 'Result injection interval (ms)' },
-  },
-  'injection.maxBodyChars': {
-    type: 'integer',
-    default: 12000,
-    min: 100,
-    max: 200000,
-    label: { zh: '注入正文上限（字符）', en: 'Injected body limit (characters)' },
-  },
-  'work.keep': {
-    type: 'integer',
-    default: 0,
-    min: 0,
-    max: 100000,
-    label: { zh: 'work gc 保留最新的目录数', en: 'work gc newest directories to keep' },
-  },
-  'work.keepDays': {
-    type: 'integer',
-    default: 0,
-    min: 0,
-    max: 36500,
-    label: { zh: 'work gc 保留最近天数', en: 'work gc retention days' },
-  },
-  'work.sweepOnMount': {
-    type: 'boolean',
-    default: true,
-    label: { zh: '服务启动时自动回收', en: 'Reclaim at mount' },
-  },
+/**
+ * 值 schema 的唯一来源在 Rust core 的 `settings` 子命令里（`specs` 动作）。这里用延迟代理保持同样的对象
+ * 形状：模块导入本身不 spawn，首次 `Object.keys(KEY_SPECS)` / `KEY_SPECS[key]` 时才读取。这样
+ * `injector.js` / `inbox.js` / 测试拿到的仍是同一张表，而 JS 里没有第二份定义会漂移。
+ */
+const settingsOp = request => runCore(['settings'], JSON.stringify(request))
+
+let specsCache
+function keySpecs() {
+  if (specsCache === undefined) {
+    const data = settingsOp({ op: 'specs' })
+    if (!isPlainObject(data?.specs)) throw new Error('the Rust core returned no settings specs')
+    specsCache = data.specs
+  }
+  return specsCache
 }
 
+export const KEY_SPECS = new Proxy(Object.create(null), {
+  get(target, property) {
+    if (typeof property === 'symbol') return target[property]
+    const specs = keySpecs()
+    return Object.hasOwn(specs, property) ? specs[property] : undefined
+  },
+  has(target, property) {
+    return typeof property === 'string' && Object.hasOwn(keySpecs(), property)
+  },
+  ownKeys() {
+    return Reflect.ownKeys(keySpecs())
+  },
+  getOwnPropertyDescriptor(target, property) {
+    if (typeof property !== 'string' || !Object.hasOwn(keySpecs(), property)) return undefined
+    return { value: keySpecs()[property], enumerable: true, writable: false, configurable: true }
+  },
+})
 /**
  * 内置模板。`injection` 与 `spvObjection` 保持改造前的输出；`prIssue` 现在是 PR「有问题」评论发给
  * SPV 入口会话的 notice 正文（它不再派 worker，所以不能再复刻旧任务正文）：
@@ -223,19 +194,6 @@ function invalid(message) {
   return settingsError('SETTINGS_INVALID', message)
 }
 
-/** 过期 revision：HTTP 409，什么都不写。 */
-function conflict(current, given) {
-  const why =
-    given === undefined
-      ? 'settings revision is required'
-      : `settings revision ${JSON.stringify(given)} is stale`
-  return settingsError(
-    'SETTINGS_CONFLICT',
-    `${why}: the current revision is ${current}. Reload the panel and retry; nothing was written.`,
-    { revision: current },
-  )
-}
-
 function isPlainObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
@@ -258,59 +216,6 @@ function specOf(key) {
   // own-property：`constructor` / `toString` 会从 Object.prototype 读到「值」，不能当成已知键。
   if (!has(KEY_SPECS, key)) throw invalid(`unknown settings key ${JSON.stringify(key)}.`)
   return KEY_SPECS[key]
-}
-
-/**
- * 校验并规范化一个值。
- *
- * `strict` 用于磁盘文件与 PUT：整数键必须是整数（0.02 秒这类分数只允许来自旧插件 config / 环境变量）；
- * 布尔键必须是 JSON 布尔，字符串 `"true"` 不算。非 strict 只用于 config / env 这两层，且只有
- * `inbox.intervalSeconds` 允许分数——`webui/lib/index.js` 的既有 config 就写过 0.02。
- */
-function normalizeValue(key, raw, { strict = true } = {}) {
-  const spec = specOf(key)
-  if (spec.type === 'boolean') {
-    if (typeof raw === 'boolean') return raw
-    if (!strict && (raw === 'true' || raw === 'false')) return raw === 'true'
-    throw invalid(`${key} must be true or false, got ${describeValue(raw)}.`)
-  }
-  if (spec.type === 'string') {
-    if (typeof raw !== 'string') {
-      throw invalid(`${key} must be a string, got ${describeValue(raw)}.`)
-    }
-    const value = raw.trim()
-    if (spec.options !== undefined && !spec.options.includes(value)) {
-      throw invalid(
-        `${key} must be one of ${spec.options.map(option => JSON.stringify(option)).join(', ')}, ` +
-          `got ${JSON.stringify(raw)}.`,
-      )
-    }
-    if (key === 'merge.installRepo' && !INSTALL_REPO_PATTERN.test(value)) {
-      throw invalid(
-        `${key} must be "name" or "owner/name" using letters, digits, dot, dash and underscore, ` +
-          `got ${JSON.stringify(raw)}.`,
-      )
-    }
-    return value
-  }
-  // integer
-  if (typeof raw === 'boolean' || raw === null || typeof raw === 'object' || String(raw).trim() === '') {
-    throw invalid(`${key} must be a number, got ${describeValue(raw)}.`)
-  }
-  const value = typeof raw === 'number' ? raw : Number(String(raw).trim())
-  if (!Number.isFinite(value)) {
-    throw invalid(`${key} must be a number, got ${describeValue(raw)}.`)
-  }
-  if (!Number.isInteger(value) && (strict || key !== 'inbox.intervalSeconds')) {
-    throw invalid(`${key} must be a whole number, got ${describeValue(raw)}.`)
-  }
-  if (spec.min !== undefined && value < spec.min) {
-    throw invalid(`${key} must be at least ${spec.min}, got ${describeValue(raw)}.`)
-  }
-  if (spec.max !== undefined && value > spec.max) {
-    throw invalid(`${key} must be at most ${spec.max}, got ${describeValue(raw)}.`)
-  }
-  return value
 }
 
 // ----------------------------------------------------------------- templates
@@ -765,7 +670,21 @@ function serializeHooks(hooks) {
 
 // -------------------------------------------------------------- file storage
 
-function corrupt(file, warning) {
+function corrupt(file, warning, { resolve = false, env, home, stateDir, config } = {}) {
+  if (resolve) {
+    return finishStored({
+      file,
+      fileState: 'corrupt',
+      parsed: undefined,
+      fillDefaults: false,
+      env,
+      home,
+      stateDir,
+      config,
+      resolve: true,
+      warning,
+    })
+  }
   return {
     file,
     fileState: 'corrupt',
@@ -779,167 +698,110 @@ function corrupt(file, warning) {
   }
 }
 
-/** 全部内置默认值；新装文件和每次保存都用它铺底，文件因此永远不缺键。 */
-function defaultValues() {
-  const values = {}
-  for (const [key, spec] of Object.entries(KEY_SPECS)) values[key] = spec.default
-  return values
-}
-
-/** `filled` 的落盘顺序与面板行一致；Set 只用于内存判断。 */
-function filledArray(filled) {
-  return Object.keys(KEY_SPECS).filter(key => filled.has(key))
-}
-
-/**
- * 读顶层 `filled`：这些键的值是补键时从内置默认抄进去的，不是用户选择。
- *
- * 未知/非字符串条目只 warning 后跳过；`values` 里被手改成非默认值的键会在 `readStoredValues` 里重新算成
- * 显式覆盖，所以手改永远优先于这份元数据。
- */
-function readStoredFilled(raw, warnings) {
-  const filled = new Set()
-  if (raw === undefined) return filled
-  if (!Array.isArray(raw)) {
-    warnings.push('ignoring "filled": it must be an array of settings keys.')
-    return filled
-  }
-  for (const key of raw) {
-    if (typeof key !== 'string' || !has(KEY_SPECS, key)) {
-      warnings.push(`ignoring unknown settings key ${JSON.stringify(key)} in "filled".`)
-      continue
-    }
-    filled.add(key)
-  }
-  return filled
-}
-
-/**
- * 老文件只补**缺的**键：已有键（哪怕值非法）原样保留，revision 不动，未知顶层字段也不动。
- *
- * 补进去的键同时记进 `filled`，面板才会把它们的来源报成 `default` 而不是用户设置。用一个原子写完成，且
- * 只在真的缺键时写；补齐后所有键都在，下一次读取不会再碰磁盘。写失败不抛——读设置的路径（注入器、
- * 轮询器、面板 GET）不能被一个只读目录拖死，warning 会说明这次没补上。
- * `values` 字段不是对象时不猜，留给 `readStoredValues` 报警告。
- */
-function fillMissingDefaults({ env, home, stateDir, file, parsed, filled, warnings }) {
-  if (parsed.values !== undefined && !isPlainObject(parsed.values)) return
-  const values = { ...(parsed.values ?? {}) }
-  let missing = false
-  for (const [key, spec] of Object.entries(KEY_SPECS)) {
-    if (has(values, key)) continue
-    values[key] = spec.default
-    filled.add(key)
-    missing = true
-  }
-  if (!missing) return
-  try {
-    writeStored({ env, home, stateDir }, { ...parsed, values, filled: filledArray(filled) })
-  } catch (error) {
-    warnings.push(
-      `could not fill missing default settings in ${file} (${error?.code ?? error?.message ?? error}); using defaults.`,
-    )
-  }
-}
-
 /** 读磁盘；任何坏文件都变成一个 `fileState`/`warning`，绝不抛给调用方。 */
-function readStored({ env, home, stateDir, migrate = true, fillDefaults = false } = {}) {
+function readStored({
+  env,
+  home,
+  stateDir,
+  migrate = true,
+  fillDefaults = false,
+  resolve = false,
+  config = {},
+} = {}) {
   const file = settingsFile({ env, home, stateDir, migrate })
   let text
   try {
     text = readFileSync(file, 'utf8')
   } catch (error) {
     if (error?.code === 'ENOENT') {
-      return {
+      return finishStored({
         file,
         fileState: 'missing',
-        revision: 0,
-        values: {},
-        templates: {},
-        hooks: defaultHooks(),
-        hooksRaw: undefined,
-        filled: new Set(),
-        warning: undefined,
-      }
+        parsed: undefined,
+        fillDefaults: false,
+        env,
+        home,
+        stateDir,
+        config,
+        resolve,
+      })
     }
-    return corrupt(file, `${file} cannot be read (${error?.code ?? error?.message ?? error}); using defaults.`)
+    return corrupt(file, `${file} cannot be read (${error?.code ?? error?.message ?? error}); using defaults.`, { resolve, env, home, stateDir, config })
   }
   let parsed
   try {
     parsed = JSON.parse(text)
   } catch (error) {
-    return corrupt(file, `${file} is not valid JSON (${error.message}); using defaults.`)
+    return corrupt(file, `${file} is not valid JSON (${error.message}); using defaults.`, { resolve, env, home, stateDir, config })
   }
   if (!isPlainObject(parsed)) {
-    return corrupt(file, `${file} must hold one JSON object; using defaults.`)
+    return corrupt(file, `${file} must hold one JSON object; using defaults.`, { resolve, env, home, stateDir, config })
   }
   if (parsed.version !== SETTINGS_VERSION) {
     return corrupt(
       file,
       `${file} has version ${describeValue(parsed.version)}, but only version ${SETTINGS_VERSION} is ` +
         'supported; using defaults.',
+      { resolve, env, home, stateDir, config },
     )
   }
   if (!Number.isInteger(parsed.revision) || parsed.revision < 0) {
     return corrupt(
       file,
       `${file} has revision ${describeValue(parsed.revision)}; it must be a non-negative integer. Using defaults.`,
+      { resolve, env, home, stateDir, config },
     )
   }
-  const warnings = []
-  for (const field of Object.keys(parsed)) {
-    if (!['version', 'revision', 'values', 'templates', 'hooks', 'filled'].includes(field)) {
-      warnings.push(`ignoring unknown settings field ${JSON.stringify(field)} in ${file}.`)
+  return finishStored({ file, fileState: 'ok', parsed, fillDefaults, env, home, stateDir, config, resolve })
+}
+
+/** Parse the values/filled blocks through the Rust core, fill once if asked, and keep warning order. */
+function finishStored({ file, fileState, parsed, fillDefaults, env, home, stateDir, config, resolve, warning }) {
+  const warnings = warning === undefined ? [] : [warning]
+  if (parsed !== undefined) {
+    for (const field of Object.keys(parsed)) {
+      if (!['version', 'revision', 'values', 'templates', 'hooks', 'filled'].includes(field)) {
+        warnings.push(`ignoring unknown settings field ${JSON.stringify(field)} in ${file}.`)
+      }
     }
   }
-  const filled = readStoredFilled(parsed.filled, warnings)
-  if (fillDefaults) fillMissingDefaults({ env, home, stateDir, file, parsed, filled, warnings })
+  const request = {
+    op: resolve ? 'resolve' : 'read',
+    fillMissing: fillDefaults,
+    ...(parsed === undefined ? {} : { values: parsed.values, filled: parsed.filled }),
+    ...(resolve ? { env, config } : {}),
+  }
+  const data = settingsOp(request)
+  warnings.push(...(data.filledWarnings ?? []))
+  let filled = new Set(data.filled ?? [])
+  if (data.fill !== undefined) {
+    try {
+      writeStored({ env, home, stateDir }, { ...parsed, values: data.fill.values, filled: data.fill.filled })
+      filled = new Set(data.fill.filled)
+    } catch (error) {
+      warnings.push(
+        `could not fill missing default settings in ${file} (${error?.code ?? error?.message ?? error}); using defaults.`,
+      )
+    }
+  }
+  warnings.push(...(data.valuesWarnings ?? []))
+  const templates = parsed === undefined ? {} : readStoredTemplates(parsed.templates, warnings)
+  const hooks = parsed === undefined ? defaultHooks() : readStoredHooks(parsed.hooks, warnings)
   return {
     file,
-    fileState: 'ok',
-    revision: parsed.revision,
-    values: readStoredValues(parsed.values, warnings, filled),
-    templates: readStoredTemplates(parsed.templates, warnings),
-    hooks: readStoredHooks(parsed.hooks, warnings),
-    // 原样保留磁盘上的块：一次只改 values/templates 的保存必须把它逐字放回去，而不是用"读出来再规范化"
-    // 的结果覆盖（那会把超限的 timeout 夹成 300000，也会丢掉被忽略的字段）。
-    hooksRaw: isPlainObject(parsed.hooks) ? parsed.hooks : undefined,
+    fileState,
+    revision: parsed === undefined ? 0 : parsed.revision,
+    values: data.values ?? {},
+    templates,
+    hooks,
+    hooksRaw: parsed !== undefined && isPlainObject(parsed.hooks) ? parsed.hooks : undefined,
     filled,
     warning: warnings.length > 0 ? warnings.join('; ') : undefined,
+    effective: data.effective,
+    rows: data.rows,
+    composeWarnings: data.composeWarnings ?? [],
   }
-}
-
-/**
- * `values` 只保留通过校验的显式覆盖；坏键/坏值各自一条 warning，然后落到下一层。
- *
- * 文件里必须有全部默认键（新装/补键会写进去），但由补键抄进去、且仍然等于内置默认的键不算用户选择：
- * 跳过它们，`source` 才显示 `default`，环境变量/插件 config 也仍然能在它们之上生效。被手改成非默认值的
- * 键即使还留在 `filled` 里也照常算显式覆盖。
- */
-function readStoredValues(raw, warnings, filled) {
-  const values = {}
-  if (raw === undefined) return values
-  if (!isPlainObject(raw)) {
-    warnings.push('ignoring "values": it must be a JSON object of dotted keys.')
-    return values
-  }
-  for (const [key, value] of Object.entries(raw)) {
-    if (!has(KEY_SPECS, key)) {
-      warnings.push(`ignoring unknown settings key ${JSON.stringify(key)} in the file.`)
-      continue
-    }
-    try {
-      const normalized = normalizeValue(key, value)
-      if (filled.has(key) && normalized === specOf(key).default) continue
-      values[key] = normalized
-    } catch (error) {
-      warnings.push(`ignoring ${key} in the file: ${error.message}`)
-    }
-  }
-  return values
-}
-
-/** `templates` 的坏预设同样跳过；内置预设不受文件影响。 */
+}/** `templates` 的坏预设同样跳过；内置预设不受文件影响。 */
 function readStoredTemplates(raw, warnings) {
   const templates = {}
   if (raw === undefined) return templates
@@ -1017,7 +879,8 @@ function writeStored({ env, home, stateDir } = {}, payload) {
  *
  * Writing the defaults here is deliberate: the file is the machine's single source of truth, so a fresh
  * install can be inspected (and hand-edited) without knowing the source. Values equal to a built-in default
- * are still reported with source `default` (see `readStoredValues`), so the panel is unchanged. An existing
+ * are still reported with source `default` (see the filled-default skip in `readStored`/the core `read` op),
+ * so the panel is unchanged. An existing
  * file is never touched (`wx`); missing keys there are filled once by the first `resolveSettings` read, and a
  * legacy `panel-settings.json` is migrated by `settingsFile()` before that test, so the new file cannot
  * shadow real old values.
@@ -1031,13 +894,14 @@ export function ensureSettingsFile({ env = process.env, home, stateDir } = {}) {
     if (error?.code !== 'ENOENT') throw error
   }
   mkdirSync(dirname(file), { recursive: true })
+  const defaults = settingsOp({ op: 'defaults' })
   const payload = {
     version: SETTINGS_VERSION,
     revision: 0,
-    values: defaultValues(),
+    values: defaults.values,
     templates: {},
     // 默认值是补出来的、不是用户选的：记下来，面板的 source 仍是 default，env/config 也仍能压过它们。
-    filled: Object.keys(KEY_SPECS),
+    filled: defaults.filled,
   }
   try {
     writeFileSync(file, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o644, flag: 'wx' })
@@ -1078,67 +942,10 @@ function describeTemplate(id, state) {
  * 组装 `resolveSettings()` 的返回：文件有效值 > config > env > 内置默认，并保留每一层的痕迹。
  * `stored` 是 `readStored()` 的形状；`config` 只认 dotted key（外加 `intervalSeconds` 这个旧别名）。
  */
-function compose({ stored, env, config }) {
+function composeSnapshot(stored) {
   const warnings = []
   if (stored.warning !== undefined) warnings.push(stored.warning)
-  const configValues = {}
-  const envValues = {}
-  const envInfo = {}
-  for (const [key, spec] of Object.entries(KEY_SPECS)) {
-    if (isPlainObject(config)) {
-      let raw
-      let present = false
-      if (has(config, key)) {
-        present = true
-        raw = config[key]
-      } else if (key === 'inbox.intervalSeconds' && has(config, 'intervalSeconds')) {
-        // 旧 host 半身的 config 形状就是 `{intervalSeconds}`；保留它，面板改 HTML 之前也能读到值。
-        present = true
-        raw = config.intervalSeconds
-      }
-      if (present) {
-        try {
-          configValues[key] = normalizeValue(key, raw, { strict: false })
-        } catch (error) {
-          warnings.push(`ignoring the plugin config for ${key}: ${error.message}`)
-        }
-      }
-    }
-    if (spec.env !== undefined) {
-      const raw = isPlainObject(env) || env === undefined ? env?.[spec.env] : undefined
-      const present = raw !== undefined && raw !== null && String(raw).trim() !== ''
-      envInfo[key] = { name: spec.env, present, value: present ? String(raw) : null }
-      if (present) {
-        try {
-          envValues[key] = normalizeValue(key, raw, { strict: false })
-        } catch (error) {
-          warnings.push(`ignoring ${spec.env}: ${error.message}`)
-        }
-      }
-    } else {
-      envInfo[key] = null
-    }
-  }
-
-  const effective = {}
-  const rows = []
-  for (const [key, spec] of Object.entries(KEY_SPECS)) {
-    const candidates = []
-    if (has(stored.values, key)) candidates.push(['file', stored.values[key]])
-    if (has(configValues, key)) candidates.push(['config', configValues[key]])
-    if (has(envValues, key)) candidates.push(['env', envValues[key]])
-    const [source, value] = candidates[0] ?? ['default', spec.default]
-    effective[key] = value
-    rows.push({
-      key,
-      value,
-      default: spec.default,
-      source,
-      overridden: candidates.slice(1).map(([layer, lower]) => ({ source: layer, value: lower })),
-      env: envInfo[key],
-      ...(spec.options === undefined ? {} : { options: [...spec.options] }),
-    })
-  }
+  warnings.push(...(stored.composeWarnings ?? []))
 
   const templates = {}
   for (const id of TEMPLATE_IDS) {
@@ -1152,8 +959,8 @@ function compose({ stored, env, config }) {
     fileState: stored.fileState,
     ...(warnings.length > 0 ? { warning: warnings.join('; ') } : {}),
     values: { ...stored.values },
-    effective,
-    rows,
+    effective: stored.effective ?? {},
+    rows: stored.rows ?? [],
     templates,
     hooks: {
       enabled: stored.hooks.enabled,
@@ -1175,11 +982,9 @@ function compose({ stored, env, config }) {
  * 不会因为坏文件抛错；只有「配置层本身写错」会被记进 `warning` 并跳过。
  */
 export function resolveSettings({ home, stateDir, env = process.env, config = {}, migrate = true } = {}) {
-  return compose({
-    stored: readStored({ home, stateDir, env, migrate, fillDefaults: true }),
-    env,
-    config,
-  })
+  return composeSnapshot(
+    readStored({ home, stateDir, env, migrate, fillDefaults: true, resolve: true, config }),
+  )
 }
 
 /**
@@ -1189,19 +994,18 @@ export function resolveSettings({ home, stateDir, env = process.env, config = {}
  * `file` 只是展示用的配置路径；这里刻意不触发迁移（`defaultSettings` 的契约是不碰磁盘）。
  */
 export function defaultSettings({ home, stateDir, env = process.env } = {}) {
-  return compose({
-    stored: {
-      file: dataPaths({ home, stateDir, env }).settings.current,
-      fileState: 'missing',
-      revision: 0,
-      values: {},
-      templates: {},
-      hooks: defaultHooks(),
-      filled: new Set(),
-      warning: undefined,
-    },
-    env: {},
-    config: {},
+  const data = settingsOp({ op: 'resolve', fillMissing: false, env: {}, config: {} })
+  return composeSnapshot({
+    file: dataPaths({ home, stateDir, env }).settings.current,
+    fileState: 'missing',
+    revision: 0,
+    values: {},
+    templates: {},
+    hooks: defaultHooks(),
+    warning: undefined,
+    effective: data.effective,
+    rows: data.rows,
+    composeWarnings: data.composeWarnings ?? [],
   })
 }
 
@@ -1240,17 +1044,6 @@ function applyReset(reset, values, templates) {
     } else {
       throw invalid('reset.templates must be true or an array of template ids.')
     }
-  }
-}
-
-/** 合并 PUT 的 `values`：未知键/坏值整体拒绝，一个都不写。 */
-function applyValues(raw, values) {
-  if (!isPlainObject(raw)) {
-    throw invalid('values must be a JSON object of dotted keys.')
-  }
-  for (const [key, value] of Object.entries(raw)) {
-    specOf(key)
-    values[key] = normalizeValue(key, value)
   }
 }
 
@@ -1367,11 +1160,16 @@ export function saveSettings({
   config = {},
 } = {}) {
   const stored = readStored({ home, stateDir, env })
-  if (!Number.isInteger(revision) || revision < 0) {
-    throw conflict(stored.revision, revision)
-  }
-  if (revision !== stored.revision) {
-    throw conflict(stored.revision, revision)
+  try {
+    settingsOp({
+      op: 'check-revision',
+      current: stored.revision,
+      givenPresent: revision !== undefined,
+      given: revision ?? null,
+    })
+  } catch (error) {
+    if (error?.code === 'SETTINGS_CONFLICT') error.revision = stored.revision
+    throw error
   }
   const nextValues = { ...stored.values }
   const nextTemplates = {}
@@ -1380,19 +1178,24 @@ export function saveSettings({
   }
   const nextHooks = cloneHooks(stored.hooks)
   if (reset !== undefined) applyReset(reset, nextValues, nextTemplates)
-  if (values !== undefined) applyValues(values, nextValues)
+  // 值校验与「默认值铺底 + 显式覆盖」的 payload 都在 core 里做；patch 省略表示只保留已有显式值。
+  const saved = settingsOp({
+    op: 'save',
+    current: stored.revision,
+    values: nextValues,
+    ...(values === undefined ? {} : { patch: values }),
+  })
   if (templates !== undefined) applyTemplates(templates, nextTemplates)
   if (hooks !== undefined) applyHooks(hooks, nextHooks)
 
   const payload = {
     version: SETTINGS_VERSION,
-    revision: revision + 1,
+    revision: saved.revision,
     // 保存也写全量：默认值铺底 + 显式覆盖。这样写入永远产出完整文件，下一次读取不需要再补键。
-    values: { ...defaultValues(), ...nextValues },
+    values: saved.values,
     templates: serializeTemplates(nextTemplates),
   }
-  const filled = Object.keys(KEY_SPECS).filter(key => !has(nextValues, key))
-  if (filled.length > 0) payload.filled = filled
+  if (Array.isArray(saved.filled) && saved.filled.length > 0) payload.filled = saved.filled
   if (hooks !== undefined) {
     // 默认的 hooks 子块不落盘：与 templates 同样的理由（默认值升级要能到达旧文件），也让只改 values 的
     // 保存不凭空多出一个空的 hooks 块。
