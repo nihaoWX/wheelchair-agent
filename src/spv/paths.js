@@ -18,6 +18,10 @@
  * 注册表**存在**却没有该项目的条目时直接报错并给出 `deployment add`，绝不悄悄写进别人的队列，也绝不
  * 自动创建部署；注册表**不存在**时完全走旧规则，所以升级本身不改变任何现有行为，只有 `deployment migrate`
  * 显式写下第一条条目之后才进入分部署模式。
+ *
+ * 观测与结果回收不按单个项目取队列，而是用 `resolveRoots()` 一次拿到所有要监听的队列根：注册表里每一份
+ * 部署的队列，外加旧规则那个 `<stateDir>/spv`（还没迁移的部署仍然工作）。显式 `queueDir` 或
+ * `$SPV_QUEUE_DIR` 仍然只有一根——显式设置永远赢，不再聚合。
  */
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -35,6 +39,17 @@ function legacyRoot(stateDir) {
   const root = join(stateDir, 'spv')
   assertNotTicketClone({ env: process.env, stateDir, what: 'the default spv queue root', target: root })
   return root
+}
+
+/** 注册表条目的队列根，带 ticket-clone 守卫（注册表是自动解析，不是显式覆盖）。 */
+function registryRoot(entry) {
+  assertNotTicketClone({
+    env: process.env,
+    stateDir: entry.stateDir,
+    what: `the spv queue root of project ${JSON.stringify(entry.project)}`,
+    target: entry.queueDir,
+  })
+  return entry.queueDir
 }
 
 /**
@@ -55,13 +70,41 @@ export function resolveRoot(config = {}, { project } = {}) {
   if (!registry.exists) return legacyRoot(stateDir)
   const entry = registry.deployments.find(item => item.project === wanted)
   if (entry === undefined) throw missingDeploymentError(wanted, registry.file)
-  assertNotTicketClone({
-    env: process.env,
-    stateDir: entry.stateDir,
-    what: `the spv queue root of project ${JSON.stringify(wanted)}`,
-    target: entry.queueDir,
-  })
-  return entry.queueDir
+  return registryRoot(entry)
+}
+
+/**
+ * 要监听/观测的**所有**队列根：`[{ project, root }]`。
+ *
+ * 注入器与 `spv_status` 用这一份列表，不再只盯挂载时那一个目录：
+ *   1. 显式 `queueDir` 设置 → 只有它一根（`project: null`）；
+ *   2. `$SPV_QUEUE_DIR` → 同样只有一根；
+ *   3. 注册表存在 → 每一条部署的 `queueDir`（按项目排序、按路径去重），并且把旧规则解析出的
+ *      `<stateDir>/spv` 也加进去（`project: null`），让还没迁移的部署继续工作；
+ *   4. 注册表不存在 → 只有旧规则那一根。
+ *
+ * 每一根都过 `assertNotTicketClone`；坏注册表照旧大声报错，绝不悄悄丢掉某一条——丢掉意味着那份部署的
+ * 回信永远没人读。
+ */
+export function resolveRoots(config = {}) {
+  const configured = String(config.queueDir ?? '').trim()
+  if (configured) return [{ project: null, root: configured }]
+  const fromEnv = String(process.env.SPV_QUEUE_DIR ?? '').trim()
+  if (fromEnv) return [{ project: null, root: fromEnv }]
+  const stateDir = String(process.env.DSH_SUPERAGENT_STATE_DIR ?? '').trim() || DEFAULT_STATE_DIR
+  const registry = listDeployments()
+  if (!registry.exists) return [{ project: null, root: legacyRoot(stateDir) }]
+  const roots = []
+  const seen = new Set()
+  for (const entry of registry.deployments) {
+    const root = registryRoot(entry)
+    if (seen.has(root)) continue
+    seen.add(root)
+    roots.push({ project: entry.project, root })
+  }
+  const legacy = legacyRoot(stateDir)
+  if (!seen.has(legacy)) roots.push({ project: null, root: legacy })
+  return roots
 }
 
 /**

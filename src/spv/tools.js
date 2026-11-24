@@ -23,13 +23,36 @@
  * 安装树里，`@deepseek-ai/dsh-tools` 这个 bare specifier 从本包位置解析不到，preset 会整个 mount 失败。
  * 用原始 JSON Schema 直接注册就没有任何 dsh 包依赖：参数校验由各 `execute` 自己做（校验文案本来也该写在这里）。
  */
+import { listDeployments, missingDeploymentError } from '../shared/deployments.js'
 import { dirsOf } from '../shared/queue.js'
 import { checkPreset, checkProject, checkTask, checkThread, submitTask } from './dispatch.js'
 import { probe, serviceDown } from './health.js'
 import { createSpvMessage, resolveInboxRoot } from './inbox.js'
 import { startResultInjector } from './injector.js'
 import { pendingTasks, unreadMessages } from './outbox.js'
-import { missingQueue, resolveRoot } from './paths.js'
+import { missingQueue, resolveRoot, resolveRoots } from './paths.js'
+
+/** 读一条队列并整理成 status 的形状：pending 任务条目 + 未读消息条目。 */
+async function readQueueReport(dirs, thread) {
+  const tasks = await pendingTasks(dirs)
+  const messages = await unreadMessages(dirs, thread)
+  return {
+    pending: tasks
+      .filter(task => thread === undefined || task.thread === thread)
+      .map(task => ({
+        id: task.id,
+        thread: task.thread,
+        project: task.project,
+        preview: preview(task.text, 120),
+      })),
+    unread: messages.map(message => ({
+      id: String(message.id ?? ''),
+      thread: String(message.thread ?? message.address?.thread ?? 'main'),
+      kind: String(message.kind ?? 'unknown'),
+      preview: preview(message.text, 120),
+    })),
+  }
+}
 
 /** 插件名（Loader 诊断里显示的名字）。 */
 export const name = 'spv-tools'
@@ -43,9 +66,10 @@ function preview(text, limit) {
 }
 
 /**
- * 三个工具的定义。`root` 由挂载时解析：`queueDir` 设置 > `$SPV_QUEUE_DIR` > 注册表中项目 > `<stateDir>/spv`。
- * 挂载时不知道这次会话会派给哪个项目，所以 `spv_dispatch` 在调用时用 `config` 再解析一次（与挂载时同一组
- * 覆盖规则，只是多了 `project`）；status 与注入器仍读挂载时的目录。
+ * 三个工具的定义。派单按项目解析：`queueDir` 设置 > `$SPV_QUEUE_DIR` > 注册表中该项目 > 报错。
+ * 挂载时不知道这次会话会派给哪个项目，所以 `spv_dispatch` 在调用时用 `config` 再解析一次。
+ * `spv_status` 也按注册表现场解析：注册表存在时逐份部署分组汇报，`--project` 只报一份；注册表不存在时
+ * 仍只报 `<stateDir>/spv`，输出与「一仓一部署」之前逐字节相同。`root` 参数只剩这一条旧路径与注入器兜底用。
  *
  * 队列目录不存在不在挂载时报错——那时 superagent 可能只是还没启动，报错会挡住整个会话；改由每次调用报。
  *
@@ -196,7 +220,9 @@ export function defineSpvTools(root, state, config = {}) {
       name: 'spv_status',
       description:
         'Report the SPV queue without waiting: tasks still waiting to be picked up, and messages that arrived and ' +
-        'were not read yet. Use it to check whether superagent is alive and whether a dispatched task has been ' +
+        'were not read yet. Once projects have their own deployments the report is grouped by deployment, so a ' +
+        'queue is never invisible just because it is not the one this session mounted with; pass project to report ' +
+        'one deployment only. Use it to check whether superagent is alive and whether a dispatched task has been ' +
         'taken in. Results are not read here: the background injector pushes each reply or notice into the ' +
         'conversation by itself. A result older than this session stays listed as unread on purpose, so do not ' +
         'treat that list as news.',
@@ -204,6 +230,10 @@ export function defineSpvTools(root, state, config = {}) {
         type: 'object',
         additionalProperties: false,
         properties: {
+          project: {
+            type: 'string',
+            description: "Only this project's deployment (\"tools/<name>\" or \"research/<name>\"); omit to report every registered deployment.",
+          },
           thread: {
             type: 'string',
             description: 'Only this thread; omit to report every thread.',
@@ -244,9 +274,35 @@ export function defineSpvTools(root, state, config = {}) {
                 },
               },
             },
+            deployments: {
+              type: 'array',
+              items: {
+                type: 'object',
+                additionalProperties: false,
+                required: ['project', 'queueDir', 'pending', 'unread'],
+                properties: {
+                  project: { type: ['string', 'null'] },
+                  queueDir: { type: 'string' },
+                  pending: { type: 'integer' },
+                  unread: { type: 'integer' },
+                },
+              },
+            },
           },
         },
         render: (_args, value) => {
+          // 注册表存在时按部署分组；注册表不存在时 `deployments` 整个字段缺席，走与旧版逐字节相同的输出。
+          if (value.deployments !== undefined) {
+            const lines = []
+            for (const group of value.deployments) {
+              const name = group.project === null ? 'legacy queue' : group.project
+              lines.push(`${name} (${group.queueDir}): ${group.pending} waiting, ${group.unread} unread`)
+            }
+            if (value.deployments.length === 0) lines.push('no deployments: none')
+            for (const item of value.pending) lines.push(`  ${item.id} ${item.thread} ${item.project}: ${item.preview}`)
+            for (const item of value.unread) lines.push(`  ${item.id} [${item.kind}] ${item.thread}: ${item.preview}`)
+            return [{ type: 'text', text: lines.join('\n') }]
+          }
           const lines = [
             value.pending.length === 0 ? 'waiting for pickup: none' : `waiting for pickup: ${value.pending.length}`,
           ]
@@ -258,29 +314,45 @@ export function defineSpvTools(root, state, config = {}) {
       },
       async execute(args) {
         const thread = args.thread === undefined ? undefined : checkThread(args.thread)
-        try {
-          const tasks = await pendingTasks(dirs)
-          const messages = await unreadMessages(dirs, thread)
-          return {
-            pending: tasks
-              .filter(task => thread === undefined || task.thread === thread)
-              .map(task => ({
-                id: task.id,
-                thread: task.thread,
-                project: task.project,
-                preview: preview(task.text, 120),
-              })),
-            unread: messages.map(message => ({
-              id: String(message.id ?? ''),
-              thread: String(message.thread ?? message.address?.thread ?? 'main'),
-              kind: String(message.kind ?? 'unknown'),
-              preview: preview(message.text, 120),
-            })),
+        const project = args.project === undefined ? undefined : checkProject(args.project)
+        const registry = listDeployments()
+        if (project !== undefined && !registry.exists) throw missingDeploymentError(project, registry.file)
+        // 注册表不存在：保持旧行为与旧输出，只读挂载时解析的那条队列。
+        if (project === undefined && !registry.exists) {
+          try {
+            return await readQueueReport(dirs, thread)
+          } catch (error) {
+            if (error.code === 'ENOENT') throw missingQueue(root)
+            throw error
           }
-        } catch (error) {
-          if (error.code === 'ENOENT') throw missingQueue(root)
-          throw error
         }
+        const queues =
+          project === undefined
+            ? resolveRoots(config)
+            : [{ project, root: resolveRoot(config, { project }) }]
+        const pending = []
+        const unread = []
+        const deployments = []
+        for (const queue of queues) {
+          const queueDirs = dirsOf(queue.root)
+          let report
+          try {
+            report = await readQueueReport(queueDirs, thread)
+          } catch (error) {
+            // 一份部署的队列还没建好（服务没启动）不该让整个 status 失败：它报 0，别的部署照常。
+            if (error.code !== 'ENOENT') throw error
+            report = { pending: [], unread: [] }
+          }
+          pending.push(...report.pending)
+          unread.push(...report.unread)
+          deployments.push({
+            project: queue.project,
+            queueDir: queue.root,
+            pending: report.pending.length,
+            unread: report.unread.length,
+          })
+        }
+        return { pending, unread, deployments }
       },
     },
   ]
@@ -289,7 +361,8 @@ export function defineSpvTools(root, state, config = {}) {
 /**
  * 注册三个工具，并让插件自己持有结果注入器。
  *
- * 队列根解析一次供 status 与注入器使用；派活时 `spv_dispatch` 再按项目解析（见 `defineSpvTools`）。
+ * 注入器每轮重新解析注册表，监听**所有**已登记部署的队列（外加旧规则那条），所以会话运行期间新增的部署
+ * 也会被接上，它第一次出现时取自己的基线、不重放积压结果。派活时 `spv_dispatch` 再按项目解析。
  * 注入器挂在 `ctx.effect` 上，返回的 stop 函数交给插件 fiber，所以会话关闭时定时器随之清掉，不会在进程里
  * 空转；它本身没有超时，插件挂着就一直等。
  */
@@ -300,7 +373,8 @@ export function apply(ctx, config = {}) {
   ctx.effect(
     () =>
       startResultInjector({
-        dirs: dirsOf(root),
+        queuesOf: () =>
+          resolveRoots(config).map(entry => ({ project: entry.project, root: entry.root })),
         getAgent: () => state.agent,
         // 与 `injectBrief`（src/spv/cron-plugin.js）同样的消息形状：`followup` 排到下一轮，不打断当前回合。
         inject: (agent, text, message) => {
