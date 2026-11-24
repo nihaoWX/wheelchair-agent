@@ -54,7 +54,7 @@ dsh 的归档**不是删除，也不是移动文件**：它把 id 写进 `~/.dsh
   （`dsh-workspace/lib/types/index.d.ts:190-260`）。
 - **不影响 workspace 记账**：`sessionIds` 槽位保留，取消归档后回到原位（同上）。
 - **不删日志**：dsh 核心没有会话删除 API（只有 dsh-tui 自己的 `rmSync`）；Web UI 没有删除入口（§3）。
-- **归档后拒绝新 step**：`dsh-agent/lib/types/archived-session-gate.js` 在 `agent/pre-step` 检查当前 Session 或其
+- **归档后拒绝新 step**：`dsh-api-session-controller/lib/types/archived-session-gate.js` 在 `agent/pre-step` 检查当前 Session 或其
   subagent 祖先是否在归档集合里，命中就拒绝这一步，turn 以 `blocked` 结束；取消归档后整条 lineage 恢复。
 - **可以带 `stopActivity`**：`archiveSession(id, {stopActivity:false})` 先问 `workspace/session-activity`（只有"正在
   running 的 turn"算活动），有活动就拒绝（`WorkspaceActiveSessionError`）；`{stopActivity:true}` 先写归档再通知
@@ -275,7 +275,7 @@ python3 -c "import sqlite3,json;c=sqlite3.connect('/tmp/wca/orchestrator.sqlite'
   存储形状：`lib/types/spec.d.ts`（`archivedSessionIds`）。
 - RPC：`dsh-api-workspace-controller/lib/typert.host.js:344,453,601`。
 - 前端：`dsh-client-ui-workspace/lib/client.js:176,964-973,1269-1274,1471-1473,2878,3533-3538,3664-3669,4137,4156,4183,4627-4632,4681-4720,4813`。
-- 归档 gate：`dsh-agent/lib/types/archived-session-gate.js`（`agent/pre-step`）。
+- 归档 gate：`dsh-api-session-controller/lib/types/archived-session-gate.js`（`agent/pre-step`）。
 - 列表链：`dsh-api-session-controller/lib/index.js:1951-1990,3061-3065`、`lib/typert.host.js:1635`、
   `dsh-session-query/lib/index.js:95-117`、`dsh-session-persistence-jsonl/lib/index.js:2603,3435,3506-3524`、
   `dsh-base/cordis.patch.yml:138-141`。
