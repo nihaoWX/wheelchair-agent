@@ -47,6 +47,11 @@
 
 # Completed
 
+- **一仓一部署 stage 1 收尾（`#43`,`07c9b24`）**：注入器改用 `resolveRoots()` 每轮解析**所有**部署队列
+  （显式 `queueDir`/`$SPV_QUEUE_DIR` 仍然独占一根），去重身份是「队列根 + 文件名 + thread」、每根各自取基线，
+  新 `deployment add` 的部署在运行期被接上且不重放积压；`spv_status` 按部署分组（`project` 参数只看一份），
+  注册表不存在时输出与旧版逐字相同。我实测：三个根（两个部署 + 旧规则根）各投一条 reply → 三条都注入一次，
+  随后再向其中一个队列追加一条 → 也注入，共 4 条不重复。
 - **一仓一部署 stage 1（`#42`,`4a24e4f`）**：注册表 `~/.wheelchair-agent/deployments.json`（项目 → 部署，
   坏文件报错且一字不改、原子写入）+ `wheelchair-agent deployment list|add|remove|migrate` +
   `dispatch`/`spv_dispatch` 按注册表写对应部署的队列（缺条目报错并指路 `deployment add`，绝不自动建）+
@@ -110,8 +115,9 @@
 
 # In Progress
 
-- **一仓一部署 stage 1 收尾**：注入器与 `spv_status` 还只看挂载时那一个队列，要改成聚合所有已注册部署的
-  `outbox/`（去重按队列文件名 + thread）。设计见 `ARCHITECTURE/deployments.md`。冷安装等操作者：`service stop` → 退出 SPV → `bash install.sh` →
+- **一仓一部署 stage 2（未开始）**：每部署 `install.sh --project`、`wca-<slug>.service`、端口分配、
+  `service --project`、`/restart-wheelchair-agent --project`；stage 3 再给收件箱 watcher 定归属、把审查结果
+  路由回拥有该信的部署。设计见 `ARCHITECTURE/deployments.md`。冷安装等操作者：`service stop` → 退出 SPV → `bash install.sh` →
   `service start` → `wheelchair-agent spv`。
 
 # Known Issues
