@@ -20,6 +20,7 @@ cli + 插件，插件是为了与dsh/dsh-superagent接入，通常是薄入口�
 # 目录/仓库/git管理
 
 - spv位于一个管理所有仓库的顶层路径，这里是`bioagentforge/`（面向大众的产品不要硬编码，应该是可供其他用户配置的）。worker管理各个小仓库，例如`rsearch/<a task>/`, `tools/<a tool>/`，为什么说worker管理这些仓库，因为真实工单开始时是将仓库clone到`<stateDir>/work/<ticket>/`，然后worker在clone里工作。
+- 各worker小仓分别部署superagent，spv根仓不部署：superagent的原设计似乎是每个仓库各自部署，分别部署的特征就是每个仓都各自含它们的orchestrator。我们的旧设计（截止到PR#41之前）都还是单部署，就是只挂`bioagentforge`进去，其余的仓都是拐一个弯去实现功能的。我思考了一下发现完全没必要单部署，遵循superagent的各自部署更加符合原生设计并且完全和我的设计理念不冲突，因此就采用小仓分别部署，`bioagentforge`不部署。`bioagentforge`这个spv根仓属于是我们自己的设计，也没啥比较关联到superagent，因为不关联该实现的功能还可以实现。
 - worker只能提交PR不能通过PR，spv可以审核/通过PR。但是本wheelchair-agent我建议可以直接自动合并，自动合并是通过在wheelchair-agent的这个插口上挂一个脚本`ticket.delivered`，这个事件的意思相当于一次worker的成功工作完成结束（它有可能被再次拉起，所以名字不叫工单结束）。
 - `<stateDir>/work/<ticket>/`的clone和worker的会话管理：clone在`ticket.delivered`后经过检查（无进程占用+树干净+已提交到远程）就删除，因为它可以由源头`tools/<a tool>` + commit id恢复，所以删了省磁盘空间；worker的会话在`ticket.delivered`后归档，理由是webui如果不归档这些积压的会话会很乱，归档也是可以取消的，如果这个worker未来再次被拉起，可以取消归档。
 
@@ -47,20 +48,23 @@ cli + 插件，插件是为了与dsh/dsh-superagent接入，通常是薄入口�
 - `inbox.approved`收件箱通过：用户评论了通过后触发
 - `inbox.issue`收件箱有问题：用户评论了有问题后触发
 - `inbox.merged`收件箱观察器观察到某个PR已经合并：收件箱观察起观察到某个PR合并后触发
-- `cron.spv_corn`斜杠命令/spv-cron的轮询：当/spv-cron轮询时间到达的时候触发
+- `cron.spv_cron`斜杠命令/spv-cron的轮询：当/spv-cron轮询时间到达的时候触发
 
 ## 固定不可改hook
 
 - worker工作结束后的消息注入：消息注入内容可改但消息注入这个行为不可取消。
-- worker的`ticket.delivered`上下文压缩：相关成本，不建议改
 - `ticket.started`的prepare，这个prepare是dsh-superagent的原生功能，`ticket.started`只是我们自定义了一个事件而已。prepare的基本行为不可改但细节可改，prepare会：1. 从仓库源clone，2. 检查clone内的AGENTS.md是不是最新的，不是则替换，3. 检查git状态，如果有变动没commit将会自动commit，这样是为了干净。
 - 收件箱用户审查结果是有问题，将会把信息注入给spv：注入行为不可改，注入内容可改。
 - /spv-cron到时间后消息注入：消息注入行为不可改，注入信息可改。
 
+## 可改hook
+
+- worker的`ticket.delivered`上下文压缩：如果采用压缩策略一不建议改，采用压缩策略2（billion-context）的话可以改（但是改了也不会生效就是了，billion已经全线接管了压缩，原生压缩会被禁，被禁是合理行为，保持即可，这是防呆设计）.
+
 ## 本机用户的hook配置
 这个意思就是它是我的个人配置，是不上最终wheelchair-agent的仓库的，因为wheelchair-agent是大众的
 
-- wheelchair-agent这个仓库在`ticket.delivered`后冷安装，即自动更新，但是因为限制原因它不可以热安装，但是这里的hook配置还是会自动运行`install.sh`，只不过如果wheelchair-agent正在运行的话会失败。
+- wheelchair-agent这个仓库在`inbox.merge`后冷安装，即自动更新，但是因为限制原因它不可以热安装，但是这里的hook配置还是会自动运行`install.sh`，只不过如果wheelchair-agent正在运行的话会失败。
 
 # webui
 
