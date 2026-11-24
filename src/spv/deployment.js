@@ -3,16 +3,27 @@
  * `wheelchair-agent deployment`：查看、登记、删除项目 → 部署的对应关系。
  *
  * 注册表（`~/.wheelchair-agent/deployments.json`，见 `src/shared/deployments.js`）是「哪个项目归哪份部署」的
- * 唯一真相；`dispatch`、`spv_dispatch` 都按它把任务写进对应部署的队列。本子命令只维护注册表，**不**安装
- * profile、不写 systemd unit、不动端口——那是 stage 2；所以 `add` 只登记操作者已经（或即将）独立安装的部署，
- * 并明确要求显式给出端口/状态目录，而不是替用户猜。
+ * 唯一真相；`dispatch`、`spv_dispatch` 都按它把任务写进对应部署的队列。本子命令维护注册表、分配端口并渲染
+ * 每部署的实例 overlay（`<data root>/deployments/<slug>.yml`），但**不**安装 profile、不启停服务：
+ * `deployment add` 之后用 `wheelchair-agent service start --project <p>` 显式启动那一份。
  *
  * 退出码约定与其他子命令一致：参数错误（未知选项、缺项目、端口非法）用 `.code = 'DEPLOYMENT_USAGE'`，
  * 由 `bin/wheelchair-agent.mjs` 转成 exit 2；注册表内容/IO 错误是普通 Error，exit 1。
  */
-import { DEFAULT_PROFILE, installedShaOf, listDeployments, removeDeployment, upsertDeployment } from '../shared/deployments.js'
+import { join, resolve } from 'node:path'
+
+import {
+  DEFAULT_PROFILE,
+  allocatePort,
+  deploymentSlug,
+  installedShaOf,
+  listDeployments,
+  removeDeployment,
+  upsertDeployment,
+  writeInstance,
+} from '../shared/deployments.js'
+import { resolveLegacyStateDir } from '../shared/home.js'
 import { checkProject } from './dispatch.js'
-import { DEFAULT_STATE_DIR, resolveRoot } from './paths.js'
 
 /** `deployment --help` 与参数错误的固定文案；命令本身不解释单个部署怎么安装。 */
 export const DEPLOYMENT_USAGE = `usage: wheelchair-agent deployment <list|add|remove|migrate> [options]
@@ -26,13 +37,18 @@ commands:
                                show every registered deployment
   add <project> [--profile <id>] [--state-dir <dir>] [--queue-dir <dir>]
       [--port <n>] [--installed-sha <sha>]
-                               record an existing or planned deployment for one project
+                               record a deployment and render its instance overlay;
+                               defaults: stateDir <base>/<slug>, queueDir <stateDir>/spv,
+                               port = first unused from 3082
   remove <project>             delete one deployment record (the deployment itself is not stopped)
   migrate                      record the current single deployment as tools/wheelchair-agent
 
-A deployment is never created automatically: "add" changes only this file. Installing the profile,
-the service and its port is a separate, explicit step. Run "wheelchair-agent --help" for the
-commands that use the registry.`
+A deployment is never created automatically: "add" records it and renders
+<data root>/deployments/<slug>.yml; starting its service is the explicit next step
+("wheelchair-agent service start --project <p>"). Every deployment must read <stateDir>/spv:
+its wheelchair-spv Source resolves the queue from that instance's own stateDir/settings, so a
+different registry value would dispatch into a queue the deployment never reads.
+Run "wheelchair-agent --help" for the commands that use the registry.`
 
 /** 参数错误：保持模块不依赖 bin 的 UsageError，由调用方按 code 转换。 */
 function usageError(message) {
@@ -99,9 +115,17 @@ function describe(entry) {
     `queueDir=${entry.queueDir} port=${entry.port ?? '-'} installedSha=${entry.installedSha ?? '-'}`
 }
 
-/** 状态目录默认值与旧单部署一致；显式环境变量优先，和 dispatch 看到的是同一份。 */
-function defaultStateDir(env) {
-  return String(env.DSH_SUPERAGENT_STATE_DIR ?? '').trim() || DEFAULT_STATE_DIR
+/**
+ * 单部署时代的基准状态目录（`$DSH_SUPERAGENT_STATE_DIR` → `$DSH_HOME/state/superagent`）。
+ * `migrate` 把它当成已有部署的 stateDir；`add` 在它下面按实例名分目录，两个部署的会话/工单互不可见。
+ */
+function baseStateDir(env) {
+  return resolveLegacyStateDir({ env })
+}
+
+/** 新部署的状态目录：`<base>/<slug>`。 */
+function deploymentStateDir(project, env) {
+  return join(baseStateDir(env), deploymentSlug(project))
 }
 
 /** migrate 写的端口：与 service/restart 的解析顺序一致，避免把 3082 记错。 */
@@ -144,33 +168,64 @@ function list({ env, json, out }) {
   return 0
 }
 
-/** `deployment add`：只写注册表；完全相同的条目是成功的空操作，不碰文件。 */
+/** `deployment add`：写注册表并渲染实例 overlay；完全相同的条目是成功的空操作。 */
 function add(positionals, flags, { env, out }) {
   const project = checkProject(exactlyOne(positionals, 'tools/<name>'))
-  const stateDir = String(flags['--state-dir'] ?? '').trim() || defaultStateDir(env)
+  const registry = listDeployments({ env })
+  const existing = registry.deployments.find(entry => entry.project === project)
+  const stateDir = String(flags['--state-dir'] ?? '').trim() || existing?.stateDir || deploymentStateDir(project, env)
+  const expectedQueue = join(stateDir, 'spv')
+  const requestedQueue = String(flags['--queue-dir'] ?? '').trim()
+  if (requestedQueue !== '' && resolve(requestedQueue) !== expectedQueue) {
+    throw usageError(
+      `--queue-dir ${JSON.stringify(requestedQueue)} is not ${JSON.stringify(expectedQueue)}: a deployment reads ` +
+        '<stateDir>/spv (its wheelchair-spv Source resolves the queue from that instance\'s own stateDir/settings), ' +
+        'so a different value would dispatch into a queue the deployment never reads. Use ' +
+        `${JSON.stringify(expectedQueue)}.`,
+    )
+  }
+  const explicitPort = parsePort(flags['--port'])
+  if (explicitPort !== null) {
+    const owner = registry.deployments.find(entry => entry.project !== project && entry.port === explicitPort)
+    if (owner !== undefined) {
+      throw usageError(
+        `--port ${explicitPort} is already registered for ${owner.project}; every deployment needs its own port. ` +
+          'Pick another one, or remove that deployment first.',
+      )
+    }
+  }
+  const port = explicitPort ?? existing?.port ?? allocatePort(registry.deployments)
   const result = upsertDeployment(
     {
       project,
-      profile: String(flags['--profile'] ?? '').trim() || String(env.DSH_SUPERAGENT_PROFILE ?? '').trim() || DEFAULT_PROFILE,
+      profile: String(flags['--profile'] ?? '').trim() || existing?.profile ||
+        String(env.DSH_SUPERAGENT_PROFILE ?? '').trim() || DEFAULT_PROFILE,
       stateDir,
-      queueDir: String(flags['--queue-dir'] ?? '').trim(),
-      port: parsePort(flags['--port']),
-      installedSha: String(flags['--installed-sha'] ?? '').trim(),
+      queueDir: expectedQueue,
+      port,
+      installedSha: String(flags['--installed-sha'] ?? '').trim() || existing?.installedSha || '',
     },
     { env },
   )
+  const instance = writeInstance(result.entry, { env })
   if (result.created) {
     out.write(`registered ${describe(result.entry)}\n`)
-    return 0
-  }
-  if (result.changed.length === 0) {
+  } else if (result.changed.length === 0) {
     out.write(`${project} is already registered with these values; nothing changed\n`)
-    return 0
+  } else {
+    const changes = result.changed
+      .map(field => `${field} ${result.before[field] ?? '-'} -> ${result.entry[field] ?? '-'}`)
+      .join(', ')
+    out.write(`updated ${project}: ${changes}\n`)
   }
-  const changes = result.changed
-    .map(field => `${field} ${result.before[field] ?? '-'} -> ${result.entry[field] ?? '-'}`)
-    .join(', ')
-  out.write(`updated ${project}: ${changes}\n`)
+  if (instance.created) {
+    out.write(`instance ${instance.file}\n`)
+  } else {
+    out.write(`instance ${instance.file} already exists; left unchanged\n`)
+    if (result.changed.length > 0) {
+      out.write(`note: the registry changed, but the existing instance file was not rewritten; remove it and rerun "deployment add" to render the new values\n`)
+    }
+  }
   return 0
 }
 
@@ -217,20 +272,23 @@ function migrate(positionals, { env, out }) {
     )
     return 0
   }
-  const stateDir = defaultStateDir(env)
+  const stateDir = baseStateDir(env)
+  // 注册表里的 queueDir 必须是 <stateDir>/spv（实例的 Source 只读这个目录）；$SPV_QUEUE_DIR 仍然是
+  // 派单时的运行时覆盖，不写进注册表，否则注册表和部署实际读的队列会分叉。
   const result = upsertDeployment(
     {
       project: 'tools/wheelchair-agent',
       profile: String(env.DSH_SUPERAGENT_PROFILE ?? '').trim() || DEFAULT_PROFILE,
       stateDir,
-      // 与旧规则完全一致：显式 queueDir 设置 > $SPV_QUEUE_DIR > <stateDir>/spv。
-      queueDir: resolveRoot(),
+      queueDir: join(stateDir, 'spv'),
       port: defaultPort(env),
       installedSha: installedShaOf({ env }) ?? '',
     },
     { env },
   )
+  const instance = writeInstance(result.entry, { env })
   out.write(`registered ${describe(result.entry)}\n`)
+  out.write(`${instance.created ? 'instance' : 'instance (already existed, left unchanged):'} ${instance.file}\n`)
   out.write(
     'the running superagent service is unchanged; dispatches for tools/wheelchair-agent now go to that queue. ' +
       'Other projects need their own "deployment add" before dispatching.\n',

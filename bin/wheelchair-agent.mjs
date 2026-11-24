@@ -51,8 +51,9 @@ commands:
   spv [dsh-tui args...]        start the SPV session (backend first; narrates a restart and comes back here)
   prepare                      the panel's prepare command: clone the project, install a managed
                                AGENTS.md, give tools/<name> a private GitHub remote
-  service <start|stop|restart|status|open>
-                               start, stop, restart or inspect the superagent service
+  service <start|stop|restart|status|open> [--project <p>]
+                               start, stop, restart or inspect the superagent service; with
+                               --project, only that project's deployment
   jobctl <submit|status|log|verify|cancel>
                                hand a long job to systemd so it outlives the worker's turn
   dispatch --project <p> --task <t> [--thread <n>] [--preset <id>]
@@ -422,6 +423,100 @@ function commandPython(script, argv, name) {
     process.exit(1)
   }
   exec('python3', [script, ...argv])
+}
+
+/** 从 `service` 的参数里取出 `--project`，其余原样交给 service manager（它有 --port/--timeout 等自己的选项）。 */
+function takeProjectFlag(argv) {
+  const rest = []
+  let project
+  for (let index = 0; index < argv.length; index += 1) {
+    const word = argv[index]
+    if (word === '--project') {
+      const value = argv[index + 1]
+      if (value === undefined || value.startsWith('-')) throw new UsageError('--project needs a project name, e.g. tools/<name>')
+      project = value
+      index += 1
+      continue
+    }
+    if (word.startsWith('--project=')) {
+      project = word.slice('--project='.length)
+      if (project === '') throw new UsageError('--project needs a project name, e.g. tools/<name>')
+      continue
+    }
+    rest.push(word)
+  }
+  return { project, rest }
+}
+
+/** 同步运行 service manager，保留它的输出与退出码（不 execve：跑完还要打提示）。 */
+function runServiceManager(args) {
+  if (!existsSync(SERVICE)) {
+    process.stderr.write(`wheelchair-agent: the service manager is missing at ${SERVICE}\n`)
+    process.stderr.write('fix: run "bash install.sh" from the wheelchair-agent checkout\n')
+    return 1
+  }
+  const child = spawnSync('python3', [SERVICE, ...args], { stdio: 'inherit' })
+  if (child.error) {
+    process.stderr.write(`wheelchair-agent: cannot run the service manager: ${child.error.message}\n`)
+    return 1
+  }
+  return child.status ?? 1
+}
+
+/**
+ * `service`：不带 --project 时行为与以前逐字相同（旧的单部署服务），只在有多个部署时追加一句提示；
+ * 带 --project 时按注册表找到该部署的实例 overlay、端口、会话与日志，只动那一个。
+ */
+async function commandService(argv) {
+  const { project, rest } = takeProjectFlag(argv)
+  if (project === undefined) {
+    const status = runServiceManager(rest)
+    let registry
+    try {
+      const { listDeployments } = await load('src', 'shared', 'deployments.js')
+      registry = listDeployments({})
+    } catch {
+      registry = undefined // 坏注册表由 deployment/check 报；这里不掩盖真实服务状态。
+    }
+    if (status === 0 && registry?.exists && registry.deployments.length > 1) {
+      process.stdout.write(
+        `note: ${registry.deployments.length} deployments are registered; add --project <p> to target one\n`,
+      )
+    }
+    process.exit(status)
+  }
+  const deployments = await load('src', 'shared', 'deployments.js')
+  const { checkProject } = await load('src', 'spv', 'dispatch.js')
+  const wanted = checkProject(project)
+  const registry = deployments.listDeployments({})
+  const entry = registry.deployments.find(item => item.project === wanted)
+  if (entry === undefined) throw deployments.missingDeploymentError(wanted, registry.file)
+  if (entry.port === null) {
+    throw new Error(
+      `deployment ${JSON.stringify(wanted)} has no port, so it has no panel to start: run ` +
+        `"wheelchair-agent deployment add ${wanted} --port <n>" and start the deployment again.`,
+    )
+  }
+  const instance = deployments.instancePath(wanted)
+  if (!existsSync(instance)) {
+    throw new Error(
+      `the instance overlay for ${JSON.stringify(wanted)} is missing at ${instance}: run ` +
+        `"wheelchair-agent deployment add ${wanted}" to render it from the registry.`,
+    )
+  }
+  const slug = deployments.deploymentSlug(wanted)
+  const log = join(DSH_HOME, '.artifacts', `wca-${slug}.log`)
+  const url = `http://127.0.0.1:${entry.port}`
+  const status = runServiceManager([
+    ...rest,
+    '--profile', entry.profile,
+    '--patch', instance,
+    '--session', `wca-${slug}`,
+    '--log', log,
+    '--url', url,
+    '--port', String(entry.port),
+  ])
+  process.exit(status)
 }
 
 /** `dispatch`：写一个任务进队列。与 `spv_dispatch` 工具共用 `src/spv/dispatch.js`。 */
@@ -1102,7 +1197,7 @@ try {
       commandPrepare(rest)
       break
     case 'service':
-      commandPython(SERVICE, rest, 'the service manager')
+      await commandService(rest)
       break
     case 'jobctl':
       commandPython(JOBCTL, rest, 'jobctl')

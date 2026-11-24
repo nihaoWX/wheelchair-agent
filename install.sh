@@ -67,9 +67,10 @@
 #        bash install.sh --help
 #
 # --project records the installed deployment for that project in the registry
-# ($WHEELCHAIR_AGENT_HOME/deployments.json, src/shared/deployments.js) after a successful install, so
-# `wheelchair-agent dispatch --project <p>` writes into this deployment's queue. It is opt-in and only a
-# real install writes it: --check and --fingerprint stay read-only.
+# ($WHEELCHAIR_AGENT_HOME/deployments.json, src/shared/deployments.js) and renders its instance overlay
+# (<data root>/deployments/<slug>.yml) after a successful install, so `wheelchair-agent dispatch
+# --project <p>` writes into this deployment's queue and `service ... --project <p>` starts that instance.
+# It is opt-in and only a real install writes either file: --check and --fingerprint stay read-only.
 set -uo pipefail
 
 SELF_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
@@ -961,23 +962,43 @@ write_install_stamp() {
 }
 
 # Record this install as the deployment of --project. Only a successful install calls this: `--check` and
-# `--fingerprint` never write the registry, and dropping --project keeps the previous "one global queue"
-# behavior byte-for-byte.
+# `--fingerprint` never write the registry or an instance overlay, and dropping --project keeps the previous
+# "one global queue" behavior byte-for-byte.
 #
 # The registry format lives in src/shared/deployments.js; this function only feeds it the values this
-# install just used, through the installed CLI (the same writer a human would call). A failure here is a
-# real failure: the preset and service landed, but dispatch for the project would not reach this queue.
+# install just used, through the installed CLI (the same writer a human would call). `tools/wheelchair-agent`
+# is the legacy single deployment: it keeps the base stateDir and the install port. Every other project gets
+# its own stateDir `<base>/<slug>` and the next free port, so its sessions/tickets/workers are separate. The
+# instance overlay is rendered by `deployment add` (only when the file does not already exist). A failure
+# here is a real failure: the preset and service landed, but dispatch for the project would not reach this
+# queue.
 register_deployment() {
   [ -n "$PROJECT_NAME" ] || return 0
-  local queue installed_sha output
+  local state_dir queue slug installed_sha output legacy_shape=0
   local -a args
-  queue=${SPV_QUEUE_DIR:-$LEGACY_STATE_DIR/spv}
+  if [ "$PROJECT_NAME" = "tools/wheelchair-agent" ]; then
+    legacy_shape=1
+    state_dir=$LEGACY_STATE_DIR
+  else
+    # Same slug rule as src/shared/deployments.js: lower-case the leaf, turn other characters into "-".
+    slug=$(printf '%s' "${PROJECT_NAME#*/}" | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9._-]/-/g; s/^-*//; s/-*$//')
+    state_dir=$LEGACY_STATE_DIR/$slug
+  fi
+  # A deployment always reads <stateDir>/spv (its instance resolves the queue from its own stateDir);
+  # $SPV_QUEUE_DIR stays a runtime dispatch override and is deliberately not recorded.
+  queue=$state_dir/spv
+  if [ -n "${SPV_QUEUE_DIR:-}" ] && [ "$SPV_QUEUE_DIR" != "$queue" ]; then
+    note "SPV_QUEUE_DIR=$SPV_QUEUE_DIR stays a runtime dispatch override; the registry records $queue because the deployment reads its own stateDir queue"
+  fi
   # installedSha 取这次安装刚写下的戳（DATA_ROOT/installed.json），而不是临时 git 查询：它和
   # `--check` 比对的是同一份“装了什么”的记录。
   installed_sha=$(node -e 'const fs=require("fs"); try { const stamp=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if (typeof stamp.commit==="string") process.stdout.write(stamp.commit) } catch {}' \
     "$DATA_ROOT/installed.json" 2>/dev/null || true)
-  args=(deployment add "$PROJECT_NAME" --profile "$PROFILE_ID" --state-dir "$LEGACY_STATE_DIR" \
-    --queue-dir "$queue" --port "$SERVICE_PORT")
+  args=(deployment add "$PROJECT_NAME" --profile "$PROFILE_ID" --state-dir "$state_dir" \
+    --queue-dir "$queue")
+  if [ "$legacy_shape" -eq 1 ]; then
+    args+=(--port "$SERVICE_PORT")
+  fi
   if [ -n "$installed_sha" ]; then
     args+=(--installed-sha "$installed_sha")
   fi
@@ -988,7 +1009,11 @@ register_deployment() {
   fi
   fail "the install succeeded, but recording $PROJECT_NAME in the deployment registry failed"
   printf '%s\n' "$output" | sed 's/^/      /'
-  fix "run: wheelchair-agent deployment add $PROJECT_NAME --profile $PROFILE_ID --state-dir $LEGACY_STATE_DIR --queue-dir $queue --port $SERVICE_PORT"
+  if [ "$legacy_shape" -eq 1 ]; then
+    fix "run: wheelchair-agent deployment add $PROJECT_NAME --profile $PROFILE_ID --state-dir $state_dir --queue-dir $queue --port $SERVICE_PORT"
+  else
+    fix "run: wheelchair-agent deployment add $PROJECT_NAME --profile $PROFILE_ID --state-dir $state_dir --queue-dir $queue"
+  fi
   return 1
 }
 
@@ -1188,7 +1213,7 @@ if [ "$CHECK" -eq 1 ]; then
     note 'python3 is missing, so the in-use pre-flight was skipped; --check cannot prove a cold install is allowed'
   fi
   if [ -n "$PROJECT_NAME" ]; then
-    note "--check is read-only: the deployment entry for $PROJECT_NAME is written by a real install, nothing was written now"
+    note "--check is read-only: the deployment entry and instance overlay for $PROJECT_NAME are written by a real install, nothing was written now"
   fi
   check_data_root
   check_preset
