@@ -29,9 +29,9 @@
 
 | 命令 | 做什么 | 实现 |
 |---|---|---|
-| `wheelchair-agent spv [--project <p>] [dsh-tui 参数...]` | 拉起后端（幂等）后启动 SPV 会话，其余参数透传给 `dsh-tui`；目标部署按 `--project` → cwd 落在 `<projectsRoot>/<project>` → 报错列清单三级推断，并把该部署的 `DSH_SUPERAGENT_STATE_DIR`/`SPV_QUEUE_DIR` 交给实例 | `exec sh preset/spv-launcher.sh "$@"` |
+| `wheelchair-agent spv [--project <p>] [dsh-tui 参数...]` | 拉起后端（幂等）后启动 SPV 会话，其余参数透传给 `dsh-tui`；目标部署按 `--project` → cwd 落在 `<projectsRoot>/<project>` → 报错列清单三级推断，并把该部署的 `DSH_SUPERAGENT_STATE_DIR`/`SPV_QUEUE_DIR` 交给实例 | `runSpvSession` 把 `preset/spv-launcher.sh` 当受监督子进程跑（`src/spv/restart-ux.js`） |
 | `wheelchair-agent prepare` | 面板的 prepare 命令：clone 项目 → 受管 `AGENTS.md` → `tools/` 私有远端 | `exec sh commands/prepare.sh "$@"` |
-| `wheelchair-agent service <start\|stop\|restart\|status\|open> [--project <p>\|--all]` | 服务启停与面板；除裸 `status` 外必须说清目标（`#48` 起没有无 project 的基服务） | `import src/spv/deployment.js` → `commands/superagent-service.py` |
+| `wheelchair-agent service <start\|stop\|restart\|status\|open> [--project <p>\|--all]` | 服务启停与面板；必须说清目标（`#48` 起没有无 project 的基服务）。唯一例外：本进程带着 `SPV_QUEUE_DIR`（`wheelchair-agent spv` 导出的身份）时，裸 `status`/`start` 作用在自己那份部署上——启动器就靠它保活 | `import src/spv/deployment.js` → `commands/superagent-service.py` |
 | `wheelchair-agent jobctl <submit\|status\|log\|verify\|cancel>` | 长任务交给 systemd | `exec python3 commands/jobctl.py "$@"` |
 | `wheelchair-agent dispatch --project <p> --task <t> [--thread <n>] [--preset <id>]` | 往队列写一个任务 | `import src/spv/dispatch.js` |
 | `wheelchair-agent status [--thread <n>]` | 非阻塞看队列 | `import src/spv/outbox.js` |
@@ -53,7 +53,9 @@
 
 实现位置：`bin/wheelchair-agent.mjs`（argv 解析 + `process.exit`），`check` 的四项在
 `src/spv/check.js`（纯函数，返回结构化结果，不结束进程）。`dispatch` / `status` 直接 import
-`src/spv/{dispatch,outbox}.js`；`spv` / `prepare` / `service` / `jobctl` 用 `exec` 换进程。
+`src/spv/{dispatch,outbox}.js`；`prepare` / `jobctl` 用 `exec` 换进程（TUI 要独占终端）；`service`
+用 `spawnSync` 等 python 跑完再打提示；`spv` 由 `runSpvSession` 把启动器当受监督子进程拉起，以便
+崩溃后按标记重启。
 
 ## `prepare` 怎么拿到项目路径
 
@@ -105,7 +107,15 @@ superagent 的 sqlite**，而 `install.sh` 管不到它——它只 `printf` 一
 
 ## 保留独立命令名
 
-`spv`、`superagent-service`、`jobctl` 继续作为独立命令存在（薄 wrapper，`exec wheelchair-agent <子命令> "$@"`）。
+`spv`、`superagent-service`、`jobctl` 继续作为独立命令存在。`superagent-service` / `jobctl` 是薄
+wrapper（`exec wheelchair-agent <子命令> "$@"`）；`spv` 装的是**渲染过的启动器本身**
+（`render_launcher` 把 `@SPV_HOME@` 换成 preset 目录），因为 `runSpvSession` 要直接 exec 它、它也要能在
+没有部署身份时起一个会话。
+
+由此有一个已知缺口：直接敲 `spv`（而不是 `wheelchair-agent spv`）时环境里没有 `SPV_QUEUE_DIR`，
+`service status`/`start` 无法反查该会话属于哪份部署，启动器只能如实报告"不知道属于哪份部署"并提示
+改用 `wheelchair-agent spv --project <p>`。`wheelchair-agent spv` 那条路会把身份导出，裸调用照常工作。
+
 理由：worker 的 prompt、`AGENTS.md`、`PROGRESS.md`、`docs/` 里都是按名字引用它们的，改名要同步改一堆
 文档，收益只是"少三个文件"。CLI 里的子命令是**规范形式**，独立名字是兼容层。
 

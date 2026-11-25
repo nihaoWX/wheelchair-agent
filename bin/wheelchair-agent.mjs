@@ -493,11 +493,21 @@ async function serviceArgsFor(entry, rest) {
  * `service`：每份部署都有自己的实例，所以 start|stop|restart|open 必须说清目标（--project 或 --all）；
  * 裸 `service status`（以及 `status --all`）逐个列出所有注册部署。没有 --project 也没有 --all 时不再
  * 静默使用基 stateDir/3082。
+ *
+ * 例外是"本进程知道自己属于哪份部署"：`wheelchair-agent spv` 会给启动器和它 exec 的 TUI 导出
+ * `SPV_QUEUE_DIR`，启动器正是用它裸跑 `service status` / `service start` 来保活自己那份实例。这不是
+ * 默认部署——没有 `SPV_QUEUE_DIR` 的普通终端仍然必须说清目标。
  */
 async function commandService(argv) {
   const { project, all, rest } = takeServiceTarget(argv)
   const action = rest[0] ?? 'status'
-  if (project === undefined && !all && action !== 'status') {
+  let target = project
+  if (target === undefined && !all) {
+    const { ownDeployment } = await load('src', 'spv', 'ownership.js')
+    const own = ownDeployment()
+    if (own.entry !== null) target = own.entry.project
+  }
+  if (target === undefined && !all && action !== 'status') {
     throw new UsageError(
       `service ${action} needs --project <p> or --all: there is no deployment without a project, and this ` +
         'CLI no longer starts or stops one implicitly. Run "wheelchair-agent deployment list" to see the ' +
@@ -507,8 +517,8 @@ async function commandService(argv) {
   const { deployments, registry } = await requiredRegistry()
   const { checkProject } = await load('src', 'spv', 'dispatch.js')
   let entries = registry.deployments
-  if (project !== undefined) {
-    const wanted = checkProject(project)
+  if (target !== undefined) {
+    const wanted = checkProject(target)
     const entry = registry.deployments.find(item => item.project === wanted)
     if (entry === undefined) throw deployments.missingDeploymentError(wanted, registry.file)
     entries = [entry]
@@ -519,7 +529,7 @@ async function commandService(argv) {
         '(adopt the existing installation) or "wheelchair-agent deployment add <project>", then start it.',
     )
   }
-  if (project === undefined && action === 'status') {
+  if (target === undefined && action === 'status') {
     // The old `profile:/url:/pids:/runtime:` lines still describe the machine's service; when more than one
     // deployment is registered, one compact line per deployment follows. A bare status never guesses a
     // deployment for a stop/start.

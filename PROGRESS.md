@@ -5,8 +5,8 @@
 → `reply` 写回队列 → 会话内注入器作为新消息推进对话。没有 `spv_result`、没有超时。
 
 **入口**：`wheelchair-agent` 是唯一命令（`spv` / `prepare` / `service` / `jobctl` / `dispatch` / `status` /
-`inbox` / `work` / `restart-all` / `session` / `hook` / `where` / `check`）。`spv`、`superagent-service`、
-`jobctl` 是它的兼容薄壳。
+`inbox` / `work` / `restart-all` / `session` / `hook` / `where` / `check`）。`superagent-service`、`jobctl`
+是它的兼容薄壳；`spv` 装的是渲染过的启动器本身（`runSpvSession` 直接 exec 它）。
 
 **数据根**：`~/.wheelchair-agent/`（`settings.json`、`inbox/`、`records/`、`logs/`、`deployments.json`），与
 superagent 不耦合；队列归**每份部署**自己（`<stateDir>/spv/`），superagent 自己的 state 在
@@ -51,6 +51,22 @@ superagent 不耦合；队列归**每份部署**自己（`<stateDir>/spv/`），
 
 # Completed
 
+- **SPV 起不来（dsh schema 子集）+ 启动器保活（本次，未提交）**：`src/spv/tools.js:285` 的
+  `project: { type: ['string','null'] }` 用的是 type 数组，而 dsh 只接受单个 type 字符串，整份 preset 在
+  `failed to create agent` 时被拒（`#48` 的 `1ba0587` 引入）——改成 `oneOf: [{type:'string'},{type:'null'}]`。
+  `tests/test-preset.mjs` 新增 schema 子集 walker（`type/oneOf/properties/required/additionalProperties/
+  items/enum/const` + 四个注释键，递归 `properties`/`items`/`oneOf`），把回归挡在测试里。
+  另修启动器：`#48` 后裸 `service status`/`start` 必失败（无 `--patch` 匹配 / `UsageError`），
+  `preset/spv-launcher.sh` 于是每次都报 "superagent did not start"。现在 `commandService` 在既无
+  `--project` 也无 `--all` 时先用 `ownDeployment()`（读 `SPV_QUEUE_DIR`，与 `restart-command.js` 同一套）
+  反查本进程所属部署；`wheelchair-agent spv` 会把该变量导出给启动器，所以启动器裸跑 status/start 就落在
+  自己那份实例上。没有身份的普通终端行为不变（裸 start/stop 仍 exit 2，测试 `test-deployments.mjs` 未动）；
+  直接敲 `spv` 时如实报告"不知道属于哪份部署"并指路 `wheelchair-agent spv --project <p>`。
+  验证：`npm test` 63 passed / 0 failed（`test-deployment-instance.mjs` 新增假 python3 记录器，
+  断言 `--patch`/`--queue-dir` 指向 alpha、`--project` 压过环境、匿名 start 不触达 service manager）；
+  冷安装后 `SPV_QUEUE_DIR=… spv --version` 自动起后端并打印 `superagent: ready`；
+  `wheelchair-agent spv --project tools/wheelchair-agent` 在 tmux 里正常渲染 SPV TUI（状态行 `SPV`，
+  无 schema 错误、无 superagent 警告）。
 - **去单部署（`#48`,`1ba0587`）**：注册表成了唯一来源——`resolveRoot`/`resolveRoots` 删掉 legacy 回退、
   `install.sh --project` 必填（唯一推断是 checkout 唯一对上已登记部署）、`service` 要 `--project`/`--all`
   （裸 `status` 例外）、`spv` 三级推断不再默认 `tools/wheelchair-agent`、watcher 认不出自己就什么都不轮询、
@@ -152,10 +168,13 @@ superagent 不耦合；队列归**每份部署**自己（`<stateDir>/spv/`），
 
 # In Progress
 
-- **等操作者做一次冷安装**：`wheelchair-agent deployment migrate`（认领旧安装，`#48` 起是必需步骤）→
-  `bash build/build-core.sh`（`--check` 只比对 checkout 与已装是否一致，不建 core 就会装旧的）→
-  `bash install.sh --project tools/wheelchair-agent` → `service start --project tools/wheelchair-agent`。
-  装完一次带上 `#37`/`#39`/`#40`/`#41`/`#44`–`#48`；之后 `deployment add <project>` 才能加第二份部署。
+- **本次修复已提交（`git log` 顶部 `fix(preset)`，未推送）**：`src/spv/tools.js`（`oneOf`）、`tests/test-preset.mjs`（schema 子集
+  walker）、`bin/wheelchair-agent.mjs`（按 `SPV_QUEUE_DIR` 反查本部署）、`preset/spv-launcher.sh`（无身份时
+  如实报告）、`tests/test-deployment-instance.mjs`（假 python3 观察 service manager 的 argv）与三份 HARNESS
+  文档；`npm test` 63 passed / 0 failed，已冷安装、`install.sh --check` 全绿、SPV TUI 实测可起。
+- **冷安装已做过一次**（`#48` 之后那次）：`deployment migrate` 认领旧安装 → `bash install.sh --project
+  tools/wheelchair-agent` → `service start --project tools/wheelchair-agent` 都成功，`install.sh --check`
+  全绿。之后 `deployment add <project>` 才能加第二份部署（尚未做）。
 - **`merge.autoMerge` 仍是关的**：`settings.json` 里还没有这个键（默认 `false`），要在面板打开，
   且第一次真正合并前建议先用一张低风险 PR 试。
 
@@ -189,6 +208,13 @@ superagent 不耦合；队列归**每份部署**自己（`<stateDir>/spv/`），
   `wheelchair-agent service stop` / `bash install.sh` / `wheelchair-agent service start` / `wheelchair-agent spv`
   这四条裸命令，而去单部署之后它们全都会被拒绝。修法：按 `ownDeployment()` 得到的项目打印 `--project <p>` 形式
   （`deployment add` 的建议也一并给），认不出自己时打印 `--project <your project>` 占位并在文案里说明原因。
+- **`install.sh` 结尾的配方同样是裸命令**：装完打印的 `wheelchair-agent service start` / `wheelchair-agent spv`
+  在 `#48` 之后也会被拒（`service start` 要 `--project`；`spv` 推断不出项目就报错列清单）。同一类修法。
+- **直接敲 `spv` 没有部署身份**：`~/.local/bin/spv` 装的是渲染过的启动器本身（不是
+  `exec wheelchair-agent spv` 的薄壳），所以直接调用时环境里没有 `SPV_QUEUE_DIR`——启动器无法反查会话属于
+  哪份部署，只能如实提示改用 `wheelchair-agent spv --project <p>`（见 `ARCHITECTURE/cli.md`「保留独立命令名」）。
+  两条路二选一：把 `spv` 改成薄壳（则必须在项目目录里或带 `--project` 才能起），或让启动器在只有一个注册
+  部署时也直接用它（与 `#48`「不猜默认部署」冲突，需操作者定夺）。
 - **HARNESS 里仍有 23 处规则重述**（冷安装契约 4 份、面板必须是真包 4 份、`hooks.md` 与
   `ARCHITECTURE/webui/hooks.md` 互相重述）：移动已完成，去重是下一件事，优先级低于功能；动之前先看是否某处已有更权威的一份。
 - **`hooks.md` / `restart.md` 各 28KB 单文件**：同为单主题，暂不拆；要拆的切点在「执行契约」与

@@ -162,7 +162,43 @@ try {
   assert.match(dispatch.description, /do not wait/i, '"do not wait" rule is missing')
   assert.match(dispatch.description, /do not poll/i, '"do not poll" rule is missing')
 
+  // Every registered tool schema must stay inside the dsh JSON Schema subset. dsh rejects the whole preset
+  // (the session cannot start at all) on an unsupported keyword, and the one that already bit us is a type
+  // array: `type: ['string', 'null']` must be written as `oneOf`. This walks the schemas without importing
+  // dsh-tools, which does not resolve from this checkout (tests/test-layout.sh rule 3).
+  const SUPPORTED = new Set(['type', 'oneOf', 'properties', 'required', 'additionalProperties', 'items', 'enum', 'const'])
+  const ANNOTATIONS = new Set(['description', 'title', 'default', 'examples'])
+  const TYPES = new Set(['object', 'array', 'string', 'number', 'integer', 'boolean', 'null'])
+  const violations = []
+  const walkSchema = (node, path) => {
+    if (node === null || typeof node !== 'object' || Array.isArray(node)) {
+      violations.push(`${path} must be a schema object`)
+      return
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (ANNOTATIONS.has(key)) continue
+      if (!SUPPORTED.has(key)) violations.push(`${path}.${key} is not in the dsh schema subset`)
+      if (key === 'type' && (typeof value !== 'string' || !TYPES.has(value))) {
+        violations.push(`${path}.type must be a single type string (write oneOf for a nullable field)`)
+      }
+      if (key === 'properties') {
+        for (const [name, child] of Object.entries(value)) walkSchema(child, `${path}.properties.${name}`)
+      }
+      if (key === 'items') walkSchema(value, `${path}.items`)
+      if (key === 'oneOf') {
+        if (!Array.isArray(value) || value.length < 2) violations.push(`${path}.oneOf must list at least two schemas`)
+        else value.forEach((child, index) => walkSchema(child, `${path}.oneOf[${index}]`))
+      }
+    }
+  }
+  for (const tool of defineSpvTools(join(out, 'queue'), {})) {
+    if (tool.parameters) walkSchema(tool.parameters, `${tool.name}.parameters`)
+    if (tool.output?.schema) walkSchema(tool.output.schema, `${tool.name}.output.schema`)
+  }
+  assert.deepEqual(violations, [], `tool schemas fall outside the dsh JSON Schema subset:\n${violations.join('\n')}`)
+
   process.stdout.write('PASS  the compaction group keeps the fallback rows and the pruner, with auto compaction off\n')
+  process.stdout.write('PASS  every tool schema stays inside the dsh JSON Schema subset\n')
   process.stdout.write('ok: preset has no persona; spv_dispatch carries the dispatch rules\n')
 } finally {
   await rm(out, { recursive: true, force: true }).catch(() => {})
