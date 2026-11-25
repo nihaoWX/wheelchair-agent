@@ -183,6 +183,8 @@ superagent 不耦合；队列归**每份部署**自己（`<stateDir>/spv/`），
   `linux-x64`；多平台前要改成按 `process.platform` / `process.arch` 拼名。
 - **"待冷安装"判定依赖戳**（`#39`）：`install.sh` 写 `<data root>/installed.json`，`--check` 与 `spv`
   的 `detectInstallPending` 共用同一指纹（preset 注释不敏感、块标量逐字保留）；没戳的老部署仍按旧行为提醒一次。
+- **`deployment list` 的空注册表文案也过时**：`src/spv/deployment.js:150-153` 仍说 "this install still uses the
+  single-deployment default"，而 `#48` 之后没有这个默认了（同一句里的 `deployment migrate` 建议仍然正确）。
 - **冷安装通知的配方在 `#48` 之后过时**：`src/spv/inbox.js:881-890` 的 `mergeNoticeText()` 仍打印
   `wheelchair-agent service stop` / `bash install.sh` / `wheelchair-agent service start` / `wheelchair-agent spv`
   这四条裸命令，而去单部署之后它们全都会被拒绝。修法：按 `ownDeployment()` 得到的项目打印 `--project <p>` 形式
