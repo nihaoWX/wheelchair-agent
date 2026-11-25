@@ -53,6 +53,16 @@ runner）故意只留在 dsh 插件宿主**——没开面板也照常合并与�
 
 # Completed
 
+- **Rust 第四步：插口数据面（`#54`, `9c98064`）**：`crates/wca-core/src/hooks.rs` + 子命令 `hooks`
+  （`payload|eventId|timeout|cwd|env|record|records|cursor-read|cursor-write|texts`）。搬的是数据面
+  （payload 采样、事件 id、超时夹取、cwd/env 推导、`hooks.jsonl` 追加与读取、游标读写、12000 code point
+  截断），**执行面留 Node**（spawn/流式/强杀/超时），游标锁与 claim 协议也留 Node。事件表仍在
+  `hook-events.js`，二进制不认识事件名。自验：`cargo test --release --workspace` 56 passed；
+  `npm test` 446 passed / 0 failed；我自己写的 65 项对比脚本（九个事件 payload、eventId、timeout、cwd、
+  env 白名单与凭证过滤、记录字节、游标格式与 claim 幂等）在 `c655edf` 与 PR 之间**逐字相同**（只差时间戳）；
+  生产代码 `unwrap/expect/panic` 零命中；`spawn` 仍只有 `hooks.js:622`。已知**既有**抖动（与本 PR 无关）：
+  `tests/test-hooks.mjs:435` 的"the timeout bounds the run"在 main 上也会 ~1/8 概率失败。
+
 - **spv 项目 + 面板「项目」段（`#53`, `16d0a97`）**：`<data root>/spv-projects.json`
   （`{version:1,spvProjects:[{root,workers}]}`，坏 JSON 报错且一字不改、相同内容不写盘）+
   `spv-project list|add|remove` + `deployment add --spv`（唯一祖先可推断才自动）+
@@ -258,8 +268,8 @@ runner）故意只留在 dsh 插件宿主**——没开面板也照常合并与�
 
 # Next Steps
 
-0. **Rust 迁移的下一张票**：`settings` 已在 `#47` 搬完，下一块是 `hooks`（`src/shared/hooks.js`，类型面最大）；
-   然后是 CLI 侧 `dispatch`/`outbox`/`check`/`health`/`cron`/`inbox` 存储；`session`/`restart` 链放最后（它管杀进程，
+0. **Rust 迁移的下一张票**：`settings`（`#47`）与 `hooks` 数据面（`#54`）已搬完，下一块是 CLI 侧
+   `dispatch`/`outbox`/`check`/`health`/`cron`/`inbox` 存储；`session`/`restart` 链放最后（它管杀进程，
    出事最贵）。每张票的 parity 门都是"对应测试文件零改动 + 用户可见输出逐字一致"。
 
 1. 操作者执行一次冷安装（`service stop` → 退出 SPV → `build-core.sh`（若 core 未建）→ `install.sh --project` →
