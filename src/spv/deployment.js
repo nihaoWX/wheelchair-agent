@@ -10,6 +10,9 @@
  * 退出码约定与其他子命令一致：参数错误（未知选项、缺项目、端口非法）用 `.code = 'DEPLOYMENT_USAGE'`，
  * 由 `bin/wheelchair-agent.mjs` 转成 exit 2；注册表内容/IO 错误是普通 Error，exit 1。
  */
+import { execFileSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import {
@@ -19,11 +22,13 @@ import {
   installedShaOf,
   listDeployments,
   removeDeployment,
+  repositoryFromRemote,
   upsertDeployment,
   writeInstance,
 } from '../shared/deployments.js'
 import { resolveLegacyStateDir } from '../shared/home.js'
 import { checkProject } from './dispatch.js'
+import { setupDeployment } from './deployment-setup.js'
 
 /** `deployment --help` 与参数错误的固定文案；命令本身不解释单个部署怎么安装。 */
 export const DEPLOYMENT_USAGE = `usage: wheelchair-agent deployment <list|add|remove|migrate> [options]
@@ -36,10 +41,14 @@ commands:
   list [--json]
                                show every registered deployment
   add <project> [--profile <id>] [--state-dir <dir>] [--queue-dir <dir>]
-      [--port <n>] [--installed-sha <sha>]
+      [--port <n>] [--installed-sha <sha>] [--repo <owner/name>]
                                record a deployment and render its instance overlay;
                                defaults: stateDir <base>/<slug>, queueDir <stateDir>/spv,
-                               port = first unused from 3082
+                               port = first unused from 3082, repo inferred from the
+                               project checkout's origin (or pass --repo)
+  setup --project <p>          point that deployment's own dsh-superagent instance at the
+                               repository recorded here, through its panel API; run it after
+                               "service start --project <p>" (setup waits up to 90s)
   remove <project> [--force]   delete one deployment record (the deployment itself is not stopped);
                                removing the last one needs --force and prints a warning
   migrate                      adopt this machine's existing single deployment as tools/wheelchair-agent
@@ -113,7 +122,53 @@ function noPositionals(positionals, command) {
 /** 一条部署的稳定单行形式；null 打印成 `-`，方便脚本用空格切分。 */
 function describe(entry) {
   return `project ${entry.project} profile=${entry.profile} stateDir=${entry.stateDir} ` +
-    `queueDir=${entry.queueDir} port=${entry.port ?? '-'} installedSha=${entry.installedSha ?? '-'}`
+    `queueDir=${entry.queueDir} port=${entry.port ?? '-'} installedSha=${entry.installedSha ?? '-'} ` +
+    `repository=${entry.repository ?? '-'}`
+}
+
+function sameRepository(left, right) {
+  return String(left ?? '').trim().toLowerCase() === String(right ?? '').trim().toLowerCase()
+}
+
+/** 项目 checkout 的根：与 `prepare`/watcher 看的是同一层（`$SPV_PROJECTS_ROOT` 或 ~/bioagentforge）。 */
+function projectsRoot(env) {
+  return String(env.SPV_PROJECTS_ROOT ?? '').trim() || join(homedir(), 'bioagentforge')
+}
+
+/**
+ * 从 `<projectsRoot>/<project>` 的 `remote.origin.url` 反推 `owner/name`。
+ *
+ * 这正是这份部署 clone 代码的那个仓库，所以 `deployment add` 不要求操作者再手抄一遍。没有 checkout、
+ * 没有 origin、或 origin 不是 GitHub 时都报错并写出它读到的内容，要求显式 `--repo`；不猜。
+ */
+function repositoryOfCheckout(project, env) {
+  const checkout = join(projectsRoot(env), project)
+  if (!existsSync(checkout)) {
+    throw new Error(
+      `cannot infer the GitHub repository for ${JSON.stringify(project)}: ${checkout} does not exist. ` +
+        'Register the deployment with an explicit --repo <owner/name>, or check $SPV_PROJECTS_ROOT.',
+    )
+  }
+  let remote = ''
+  try {
+    remote = execFileSync('git', ['-C', checkout, 'config', '--get', 'remote.origin.url'], {
+      encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim()
+  } catch (error) {
+    const detail = String(error?.stderr ?? error?.message ?? error).trim()
+    throw new Error(
+      `cannot infer the GitHub repository for ${JSON.stringify(project)}: "git -C ${checkout} config --get ` +
+        `remote.origin.url" failed${detail === '' ? '' : ` (${detail})`}. Pass --repo <owner/name>.`,
+    )
+  }
+  const repository = repositoryFromRemote(remote)
+  if (repository === null) {
+    throw new Error(
+      `cannot infer the GitHub repository for ${JSON.stringify(project)}: its origin is ${JSON.stringify(remote)}, ` +
+        'which is not a GitHub repository. Pass --repo <owner/name>.',
+    )
+  }
+  return repository
 }
 
 /**
@@ -199,6 +254,29 @@ function add(positionals, flags, { env, out }) {
     }
   }
   const port = explicitPort ?? existing?.port ?? allocatePort(registry.deployments)
+  const explicitRepository = String(flags['--repo'] ?? '').trim()
+  let repository
+  if (explicitRepository !== '') {
+    repository = explicitRepository
+  } else if (existing?.repository) {
+    repository = existing.repository
+  } else {
+    try {
+      repository = repositoryOfCheckout(project, env)
+    } catch (error) {
+      // 老注册表（版本 1，没有 repository）里的条目再 add 一次时，checkout 可能不在这台机器上：
+      // 保留已有的 null，而不是让一次空操作失败。新部署仍然必须能推出仓库或显式给 --repo。
+      if (existing === undefined) throw error
+      repository = null
+    }
+  }
+  if (existing?.repository && !sameRepository(existing.repository, repository)) {
+    throw new Error(
+      `deployment ${JSON.stringify(project)} already targets ${existing.repository}; refusing to change it to ` +
+        `${repository} in place. Stop its service, remove it with "wheelchair-agent deployment remove ${project}", ` +
+        `then add it again with --repo ${repository} (and --port ${port}).`,
+    )
+  }
   const result = upsertDeployment(
     {
       project,
@@ -208,6 +286,7 @@ function add(positionals, flags, { env, out }) {
       queueDir: expectedQueue,
       port,
       installedSha: String(flags['--installed-sha'] ?? '').trim() || existing?.installedSha || '',
+      repository,
     },
     { env },
   )
@@ -298,6 +377,12 @@ function migrate(positionals, { env, out }) {
   const stateDir = baseStateDir(env)
   // 注册表里的 queueDir 必须是 <stateDir>/spv（实例的 Source 只读这个目录）；$SPV_QUEUE_DIR 仍然是
   // 派单时的运行时覆盖，不写进注册表，否则注册表和部署实际读的队列会分叉。
+  let repository = null
+  try {
+    repository = repositoryOfCheckout('tools/wheelchair-agent', env)
+  } catch {
+    // 旧安装可能没有 checkout（例如从别处运行 migrate）；空白 repository 允许，之后用 deployment add --repo 补。
+  }
   const result = upsertDeployment(
     {
       project: 'tools/wheelchair-agent',
@@ -306,6 +391,7 @@ function migrate(positionals, { env, out }) {
       queueDir: join(stateDir, 'spv'),
       port: defaultPort(env),
       installedSha: installedShaOf({ env }) ?? '',
+      repository,
     },
     { env },
   )
@@ -318,6 +404,12 @@ function migrate(positionals, { env, out }) {
       'tools/wheelchair-agent" so the instance identifies itself, and register other projects with ' +
       '"deployment add" before dispatching to them.\n',
   )
+  if (result.entry.repository === null) {
+    out.write(
+      'note: no GitHub repository was recorded (there is no checkout origin to infer it from); when the checkout ' +
+        'exists, run "wheelchair-agent deployment add tools/wheelchair-agent --repo owner/name".\n',
+    )
+  }
   return 0
 }
 
@@ -325,7 +417,7 @@ function migrate(positionals, { env, out }) {
  * 执行一个 `deployment` 子命令。`argv` 是 `deployment` 之后的参数；`--help` 打印本命令用法并返回 0。
  * 所有输出走 `out`（默认 stdout），便于测试替换。
  */
-export function runDeploymentCommand(argv, { env = process.env, out = process.stdout } = {}) {
+export async function runDeploymentCommand(argv, { env = process.env, out = process.stdout } = {}) {
   const [verb, ...rest] = argv
   if (verb === undefined || verb === '--help' || verb === '-h' || verb === 'help') {
     out.write(`${DEPLOYMENT_USAGE}\n`)
@@ -343,6 +435,7 @@ export function runDeploymentCommand(argv, { env = process.env, out = process.st
   if (verb === 'add') {
     const parsed = parse(rest, {
       values: {
+        '--repo': 'repo',
         '--profile': 'profile',
         '--state-dir': 'state-dir',
         '--queue-dir': 'queue-dir',
@@ -363,6 +456,17 @@ export function runDeploymentCommand(argv, { env = process.env, out = process.st
       return 0
     }
     return remove(parsed.positionals, parsed.flags, { env, out })
+  }
+  if (verb === 'setup') {
+    const parsed = parse(rest, { values: { '--project': 'project' } })
+    if (parsed.help) {
+      out.write(`${DEPLOYMENT_USAGE}\n`)
+      return 0
+    }
+    noPositionals(parsed.positionals, 'setup')
+    const project = String(parsed.flags['--project'] ?? '').trim()
+    if (project === '') throw usageError('deployment setup needs --project <project>')
+    return await setupDeployment(project, { env, out })
   }
   if (verb === 'migrate') {
     const parsed = parse(rest)

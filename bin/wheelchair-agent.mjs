@@ -49,8 +49,8 @@ The single entry point for the SPV session and the superagent service.
 
 commands:
   spv [dsh-tui args...]
-                               start the SPV session (backend first; narrates a restart and comes back here);
-                               --project picks the deployment, otherwise cwd under <projectsRoot>/<project>
+                               start the one global SPV session: it starts every registered backend and
+                               supervises them all (no deployment selector; extra args go to dsh-tui)
   prepare                      the panel's prepare command: clone the project, install a managed
                                AGENTS.md, give tools/<name> a private GitHub remote
   service <start|stop|restart|status|open> [--project <p>|--all]
@@ -61,7 +61,7 @@ commands:
   dispatch --project <p> --task <t> [--thread <n>] [--preset <id>]
                                write one task into the queue and return
   status [--thread <n>]        show the queue without waiting
-  deployment <list|add|remove|migrate>
+  deployment <list|add|remove|migrate|setup>
                                show or edit the project -> deployment registry; dispatch uses it to
                                pick the queue of the project's own deployment
   inbox                        print where the review inbox lives (the dsh Web UI panel)
@@ -544,6 +544,14 @@ async function commandService(argv) {
     if (entries.length > 1) process.stdout.write(`== ${entry.project} ==\n`)
     const code = runServiceManager(await serviceArgsFor(entry, rest))
     if (code !== 0 && status === 0) status = code
+    // `repository` is a source setting, not a config key, so a freshly started instance is still "waiting
+    // for setup" until the operator runs `deployment setup`. This hint is informational only: a slow or
+    // unreachable panel must never change the start result.
+    if (code === 0 && action === 'start') {
+      const { setupHint } = await load('src', 'spv', 'deployment-setup.js')
+      const hint = await setupHint(entry)
+      if (hint !== null) process.stdout.write(`note: ${hint}\n`)
+    }
   }
   process.exit(status)
 }

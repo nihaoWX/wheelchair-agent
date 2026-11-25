@@ -171,7 +171,7 @@ function testPortAllocation() {
 
 async function testAddAllocatesPortsAndRendersInstances() {
   const box = await sandbox()
-  const first = cli(box, ['deployment', 'add', 'tools/alpha'])
+  const first = cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'test/alpha'])
   assert.equal(first.status, 0, first.stderr)
   assert.match(first.stdout, /registered project tools\/alpha/)
   assert.match(first.stdout, /instance .*deployments\/alpha\.yml/)
@@ -181,14 +181,14 @@ async function testAddAllocatesPortsAndRendersInstances() {
   assert.equal(firstEntry.port, 3082)
   assert.match(await readFile(join(box.data, 'deployments', 'alpha.yml'), 'utf8'), /port: 3082/)
 
-  const second = cli(box, ['deployment', 'add', 'research/beta'])
+  const second = cli(box, ['deployment', 'add', 'research/beta', '--repo', 'test/beta'])
   assert.equal(second.status, 0, second.stderr)
   const entries = JSON.parse(await readFile(join(box.data, 'deployments.json'), 'utf8')).deployments
   assert.deepEqual(entries.map(item => [item.project, item.port]), [['research/beta', 3083], ['tools/alpha', 3082]])
 
   // 显式端口冲突是用法错误，且不改注册表。
   const before = await readFile(join(box.data, 'deployments.json'), 'utf8')
-  const clash = cli(box, ['deployment', 'add', 'tools/gamma', '--port', '3082'])
+  const clash = cli(box, ['deployment', 'add', 'tools/gamma', '--repo', 'test/gamma', '--port', '3082'])
   assert.equal(clash.status, 2)
   assert.match(clash.stderr, /already registered for tools\/alpha/)
   assert.equal(await readFile(join(box.data, 'deployments.json'), 'utf8'), before)
@@ -229,7 +229,7 @@ async function testSlugCollisionIsRejected() {
 
 async function testServiceProjectSelector() {
   const box = await sandbox()
-  const added = cli(box, ['deployment', 'add', 'tools/alpha'])
+  const added = cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'test/alpha'])
   assert.equal(added.status, 0, added.stderr)
 
   const missingValue = cli(box, ['service', 'status', '--project'])
@@ -301,7 +301,7 @@ async function testProjectSessionPriority() {
 
 async function testRestartProjectDryRunAndErrors() {
   const box = await sandbox()
-  const added = cli(box, ['deployment', 'add', 'tools/alpha'])
+  const added = cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'test/alpha'])
   assert.equal(added.status, 0, added.stderr)
 
   const plan = cli(box, ['restart-all', '--project', 'tools/alpha', '--dry-run'])
@@ -323,8 +323,8 @@ async function testRestartProjectDryRunAndErrors() {
 
 async function testRestartAllDryRun() {
   const box = await sandbox()
-  assert.equal(cli(box, ['deployment', 'add', 'tools/alpha']).status, 0)
-  assert.equal(cli(box, ['deployment', 'add', 'tools/beta']).status, 0)
+  assert.equal(cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'test/alpha']).status, 0)
+  assert.equal(cli(box, ['deployment', 'add', 'tools/beta', '--repo', 'test/beta']).status, 0)
 
   const plan = cli(box, ['restart-all', '--all', '--dry-run', '--project', 'tools/alpha'])
   assert.equal(plan.status, 0, plan.stderr)
@@ -349,8 +349,8 @@ async function testRestartAllDryRun() {
 
 async function testRestartAllDryRunFromInsideSession() {
   const box = await sandbox()
-  assert.equal(cli(box, ['deployment', 'add', 'tools/alpha']).status, 0)
-  assert.equal(cli(box, ['deployment', 'add', 'tools/beta']).status, 0)
+  assert.equal(cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'test/alpha']).status, 0)
+  assert.equal(cli(box, ['deployment', 'add', 'tools/beta', '--repo', 'test/beta']).status, 0)
 
   // This test process is the CLI child's real parent; a fake chain entry that names it makes the CLI see
   // itself as a descendant of the session it would replace, exactly like a prompt inside the SPV session.
@@ -402,8 +402,8 @@ async function fakeServiceManager(box) {
 
 async function testServiceTargetsOwnDeployment() {
   const box = await sandbox()
-  assert.equal(cli(box, ['deployment', 'add', 'tools/alpha']).status, 0)
-  assert.equal(cli(box, ['deployment', 'add', 'tools/beta']).status, 0)
+  assert.equal(cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'test/alpha']).status, 0)
+  assert.equal(cli(box, ['deployment', 'add', 'tools/beta', '--repo', 'test/beta']).status, 0)
   const alpha = instancePath('tools/alpha', { env: envFor(box) })
   const alphaQueue = join(box.state, 'alpha', 'spv')
   const betaQueue = join(box.state, 'beta', 'spv')
@@ -443,8 +443,8 @@ async function testServiceTargetsOwnDeployment() {
 
 async function testSpvHasNoDeploymentSelectorAndAggregatesEveryQueue() {
   const box = await sandbox()
-  assert.equal(cli(box, ['deployment', 'add', 'tools/alpha']).status, 0)
-  assert.equal(cli(box, ['deployment', 'add', 'tools/beta']).status, 0)
+  assert.equal(cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'test/alpha']).status, 0)
+  assert.equal(cli(box, ['deployment', 'add', 'tools/beta', '--repo', 'test/beta']).status, 0)
 
   const help = cli(box, ['--help'])
   assert.equal(help.status, 0, help.stderr)
@@ -532,8 +532,8 @@ async function testStaleSingleDeploymentTextIsGone() {
 
 async function testServiceStatusListsDeployments() {
   const box = await sandbox()
-  assert.equal(cli(box, ['deployment', 'add', 'tools/alpha']).status, 0)
-  assert.equal(cli(box, ['deployment', 'add', 'tools/beta']).status, 0)
+  assert.equal(cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'test/alpha']).status, 0)
+  assert.equal(cli(box, ['deployment', 'add', 'tools/beta', '--repo', 'test/beta']).status, 0)
   const alpha = instancePath('tools/alpha', { env: envFor(box) })
   const beta = instancePath('tools/beta', { env: envFor(box) })
   const procRoot = join(box.base, 'proc')
@@ -555,7 +555,7 @@ async function testServiceStatusListsDeployments() {
 
   // The legacy service is a registry entry too: when it is already the process described by the old lines,
   // it is not reported a second time.
-  assert.equal(cli(box, ['deployment', 'add', 'tools/wheelchair-agent']).status, 0)
+  assert.equal(cli(box, ['deployment', 'add', 'tools/wheelchair-agent', '--repo', 'nihaoWX/wheelchair-agent']).status, 0)
   const legacyStatus = cli(box, ['service', 'status'], { WHEELCHAIR_PROC_ROOT: procRoot })
   assert.doesNotMatch(legacyStatus.stdout, /^  tools\/wheelchair-agent  port/m)
   assert.match(legacyStatus.stdout, /^  tools\/alpha  port 3082  running  100$/m)
@@ -580,7 +580,7 @@ async function testRestartCommandPassesProject() {
   assert.equal(bad.kind, 'error')
 
   // --all is the machine-wide entry point: the handler still names its own deployment as the install checkout.
-  assert.equal(cli(box, ['deployment', 'add', 'tools/alpha']).status, 0)
+  assert.equal(cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'test/alpha']).status, 0)
   const saved = process.env.SPV_QUEUE_DIR
   const savedHome = process.env.WHEELCHAIR_AGENT_HOME
   process.env.WHEELCHAIR_AGENT_HOME = box.data
