@@ -36,6 +36,29 @@ export const DEFAULT_PROFILE = 'superagent'
 /** superagent executor 能 clone 并交给 worker 的项目；`src/spv/dispatch.js` 复用这一份。 */
 export const PROJECT_PATTERN = /^(?:tools|research)\/[A-Za-z0-9][A-Za-z0-9._-]*$/
 
+/** GitHub 仓库的 `owner/name` 形状；这是面板里 `source:github` 的 repository 字段。 */
+export const REPOSITORY_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/
+
+/**
+ * 从 `git config --get remote.origin.url` 的输出反推 `owner/name`。
+ *
+ * 支持操作者会遇到的三种写法：`https://github.com/owner/name(.git)`、
+ * `git@github.com:owner/name(.git)`（ssh 短写）以及 scp 形式 `github.com:owner/name(.git)`。
+ * 非 GitHub、缺 owner/name 时返回 null，由调用方给出带原始 URL 的错误——这里不猜。
+ */
+export function repositoryFromRemote(remote) {
+  const value = String(remote ?? '').trim()
+  if (value === '') return null
+  let path = ''
+  const https = /^https?:\/\/github\.com\/([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i.exec(value)
+  if (https) path = `${https[1]}/${https[2]}`
+  else {
+    const ssh = /^(?:ssh:\/\/)?(?:git@)?github\.com[:/]([^/\s]+)\/([^/\s]+?)(?:\.git)?\/?$/i.exec(value)
+    if (ssh) path = `${ssh[1]}/${ssh[2]}`
+  }
+  return REPOSITORY_PATTERN.test(path) ? path : null
+}
+
 /**
  * 一条部署的字段校验。`port` 允许 null（stage 1 还没有分配端口，stage 2 的安装才写真实值）；
  * `installedSha` 允许 null（旧安装或手工条目）。数组/容器由下面的 `listDeployments` 检查。
@@ -47,6 +70,7 @@ const entrySchema = object({
   queueDir: text({ max: 4096 }),
   port: integer({ fallback: null, min: 1, max: 65535 }),
   installedSha: text({ fallback: null, max: 200 }),
+  repository: text({ fallback: null, max: 200 }),
 })
 
 /**
@@ -113,6 +137,16 @@ function normalizeEntry(raw, where) {
         `never reads. Use ${JSON.stringify(expectedQueue)}.`,
     )
   }
+  const repository = parsed.repository === null || String(parsed.repository).trim() === ''
+    ? null
+    : String(parsed.repository).trim()
+  if (repository !== null && !REPOSITORY_PATTERN.test(repository)) {
+    throw new Error(
+      `${where}.repository is ${JSON.stringify(repository)}, but it must be a GitHub "owner/name" (letters, digits, ` +
+        '".", "_" and "-"). It is the value the deployment\'s own dsh-superagent instance stores as its ' +
+        'source:github repository, not an arbitrary URL.',
+    )
+  }
   return {
     project,
     profile: String(parsed.profile).trim() || DEFAULT_PROFILE,
@@ -122,6 +156,7 @@ function normalizeEntry(raw, where) {
     installedSha: parsed.installedSha === null || String(parsed.installedSha).trim() === ''
       ? null
       : String(parsed.installedSha).trim(),
+    repository,
   }
 }
 
@@ -133,7 +168,7 @@ function byProject(a, b) {
 }
 
 /** 严格比较两条规范条目；`changedFields` 用同一组字段顺序生成可读差异。 */
-const ENTRY_FIELDS = ['profile', 'stateDir', 'queueDir', 'port', 'installedSha']
+const ENTRY_FIELDS = ['profile', 'stateDir', 'queueDir', 'port', 'installedSha', 'repository']
 
 /**
  * 一个项目的实例名：去掉 `tools/`/`research/` 前缀，小写，非法字符换成 `-`。
@@ -168,6 +203,8 @@ export function renderInstance(entry) {
 # this file only feeds "dsh --profile ${entry.profile} --patch <this file>".
 # Remove it and run "deployment add" again to render it from the registry.
 # The panel label is the same for every deployment (the web UI has no title setting); ports differ.
+# Repository: ${entry.repository ?? '-'} (a comment only: the deployment's source:github configuration is not a
+# patchable dsh config key, so "deployment setup" writes it through the instance's own panel API).
 - id: webserver
   config:
     host: "127.0.0.1"

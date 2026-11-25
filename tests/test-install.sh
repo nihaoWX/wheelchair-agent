@@ -458,6 +458,13 @@ registry_top() {
 }
 set_state
 rm -f "$DEPLOYMENTS"
+# `deployment add` records the GitHub repository of the project checkout; make the checkouts (and their
+# origins) real so the registry writer infers them exactly as it would on the operator's machine.
+mkdir -p "$SB/home/bioagentforge/tools/demo" "$SB/home/bioagentforge/tools/demo2"
+git -C "$SB/home/bioagentforge/tools/demo" init -q
+git -C "$SB/home/bioagentforge/tools/demo" remote add origin https://github.com/nihaoWX/demo.git
+git -C "$SB/home/bioagentforge/tools/demo2" init -q
+git -C "$SB/home/bioagentforge/tools/demo2" remote add origin https://github.com/nihaoWX/demo2.git
 run_install --project tools/demo
 check '(18) the --project install exits 0' "$?" 0
 check '(18) the install wrote the deployment registry' "$([ -f "$DEPLOYMENTS" ] && echo yes || echo no)" yes
@@ -466,6 +473,7 @@ check '(18) the registry holds exactly one deployment' "$(registry_top count)" 1
 check '(18) the entry names the project' "$(registry_value tools/demo project)" tools/demo
 check '(18) the entry uses the project state directory' "$(registry_value tools/demo stateDir)" "$SB/dsh/state/superagent/demo"
 check '(18) the entry queue is <stateDir>/spv' "$(registry_value tools/demo queueDir)" "$SB/dsh/state/superagent/demo/spv"
+check '(18) the entry records the checkout repository' "$(registry_value tools/demo repository)" nihaoWX/demo
 check '(18) the entry records the first free port' "$(registry_value tools/demo port)" 3082
 check '(18) the install rendered the instance overlay' "$([ -f "$SB/home/.wheelchair-agent/deployments/demo.yml" ] && echo yes || echo no)" yes
 check '(18) the overlay carries the port and state directory' \
@@ -523,11 +531,13 @@ check '(18) the empty-name error changed the registry' \
 set_state
 rm -rf "$SB/home/bioagentforge"
 rm -f "$DEPLOYMENTS"
+mkdir -p "$SB/home/bioagentforge/tools/wheelchair-agent" "$SB/home/bioagentforge/tools/other"
+for repo in wheelchair-agent other; do
+  git -C "$SB/home/bioagentforge/tools/$repo" init -q
+  git -C "$SB/home/bioagentforge/tools/$repo" remote add origin "$(git -C "$REPO" config --get remote.origin.url)"
+done
 run_install --project tools/wheelchair-agent
 check '(19) the wheelchair-agent deployment installs' "$?" 0
-mkdir -p "$SB/home/bioagentforge/tools/wheelchair-agent"
-git -C "$SB/home/bioagentforge/tools/wheelchair-agent" init -q
-git -C "$SB/home/bioagentforge/tools/wheelchair-agent" remote add origin "$(git -C "$REPO" config --get remote.origin.url)"
 inferred_registry=$(sha256sum "$DEPLOYMENTS" | cut -d' ' -f1)
 
 run_install_raw --check
@@ -537,9 +547,6 @@ check '(19) inferred --check did not touch the registry' "$(sha256sum "$DEPLOYME
 
 run_install --project tools/other
 check '(19) a second project installs' "$?" 0
-mkdir -p "$SB/home/bioagentforge/tools/other"
-git -C "$SB/home/bioagentforge/tools/other" init -q
-git -C "$SB/home/bioagentforge/tools/other" remote add origin "$(git -C "$REPO" config --get remote.origin.url)"
 run_install_raw --check
 check '(19) an ambiguous checkout is refused' "$?" 2
 check '(19) the ambiguity names both projects' "$(grep -c 'matches more than one registered deployment: tools/other, tools/wheelchair-agent' "$SB/stderr")" 1

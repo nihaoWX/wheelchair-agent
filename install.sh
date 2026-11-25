@@ -399,7 +399,7 @@ render_into() {
     fix "check that $SELF_DIR/bin/wheelchair-agent.mjs exists and is readable, then rerun this script"
     return 1
   fi
-  for file in shared/deployments.js shared/home.js shared/hook-events.js shared/hooks.js shared/install-stamp.js shared/queue.js shared/schema.js shared/settings.js shared/work.js spv/auto-merge-effect.js spv/check.js spv/cron-plugin.js spv/cron.js spv/deployment-restart.js spv/deployment.js spv/dispatch.js spv/health.js spv/hook.js spv/inbox.js spv/injector.js spv/outbox.js spv/ownership.js spv/paths.js spv/restart-command.js spv/restart-ux.js spv/restart.js spv/session.js spv/tools.js; do
+  for file in shared/deployments.js shared/home.js shared/hook-events.js shared/hooks.js shared/install-stamp.js shared/queue.js shared/schema.js shared/settings.js shared/work.js spv/auto-merge-effect.js spv/check.js spv/cron-plugin.js spv/cron.js spv/deployment-restart.js spv/deployment-setup.js spv/deployment.js spv/dispatch.js spv/health.js spv/hook.js spv/inbox.js spv/injector.js spv/outbox.js spv/ownership.js spv/paths.js spv/restart-command.js spv/restart-ux.js spv/restart.js spv/session.js spv/tools.js; do
     if ! cp "$SELF_DIR/src/$file" "$dest/src/$file"; then
       fail "cannot copy src/$file from this checkout"
       fix "check that $SELF_DIR/src/$file exists and is readable, then rerun this script"
@@ -572,7 +572,7 @@ check_preset() {
     fix 'run: bash tools/wheelchair-agent/install.sh'
   fi
   actual=$(find "$PRESET_DIR" -type f | sed "s|^$PRESET_DIR/||" | sort | tr '\n' ' ')
-  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/deployments.js src/shared/home.js src/shared/hook-events.js src/shared/hooks.js src/shared/install-stamp.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/work.js src/spv/auto-merge-effect.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/deployment-restart.js src/spv/deployment.js src/spv/dispatch.js src/spv/health.js src/spv/hook.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/ownership.js src/spv/paths.js src/spv/restart-command.js src/spv/restart-ux.js src/spv/restart.js src/spv/session.js src/spv/tools.js "
+  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/deployments.js src/shared/home.js src/shared/hook-events.js src/shared/hooks.js src/shared/install-stamp.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/work.js src/spv/auto-merge-effect.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/deployment-restart.js src/spv/deployment-setup.js src/spv/deployment.js src/spv/dispatch.js src/spv/health.js src/spv/hook.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/ownership.js src/spv/paths.js src/spv/restart-command.js src/spv/restart-ux.js src/spv/restart.js src/spv/session.js src/spv/tools.js "
   local missing extras
   missing=$(comm -23 <(printf '%s' "$expected" | tr ' ' '\n' | sort) <(printf '%s' "$actual" | tr ' ' '\n' | sort) | tr '\n' ' ')
   extras=$(comm -13 <(printf '%s' "$expected" | tr ' ' '\n' | sort) <(printf '%s' "$actual" | tr ' ' '\n' | sort) | tr '\n' ' ')
@@ -1032,7 +1032,7 @@ write_install_stamp() {
 # queue.
 register_deployment() {
   [ -n "$PROJECT_NAME" ] || return 0
-  local state_dir queue slug installed_sha output legacy_shape=0
+  local state_dir queue slug installed_sha output repo='' remote='' legacy_shape=0
   local -a args
   if [ "$PROJECT_NAME" = "tools/wheelchair-agent" ]; then
     legacy_shape=1
@@ -1052,8 +1052,19 @@ register_deployment() {
   # `--check` 比对的是同一份“装了什么”的记录。
   installed_sha=$(node -e 'const fs=require("fs"); try { const stamp=JSON.parse(fs.readFileSync(process.argv[1],"utf8")); if (typeof stamp.commit==="string") process.stdout.write(stamp.commit) } catch {}' \
     "$DATA_ROOT/installed.json" 2>/dev/null || true)
+  # 正常情况 install.sh 就跑在项目仓库自己的 checkout 里：它的 origin 就是这个项目的 GitHub 仓库。
+  # 显式带上它可以不依赖 <projectsRoot>/<project> 已经存在（早装、或从任意目录安装时也可用）；
+  # 非本项目 checkout（例如为 tools/demo 安装但人在 wheelchair-agent 里）则留空，让 CLI 去推。
+  remote=$(git -C "$SELF_DIR" config --get remote.origin.url 2>/dev/null || true)
+  if [ -n "$remote" ]; then
+    repo=$(node --input-type=module -e 'import { pathToFileURL } from "node:url"; const m = await import(pathToFileURL(process.argv[1]).href); const r = m.repositoryFromRemote(process.argv[2]); const leaf = process.argv[3].split("/").pop().toLowerCase(); if (r && r.split("/").pop().toLowerCase() === leaf) process.stdout.write(r)' \
+      "$SELF_DIR/src/shared/deployments.js" "$remote" "$PROJECT_NAME" 2>/dev/null || true)
+  fi
   args=(deployment add "$PROJECT_NAME" --profile "$PROFILE_ID" --state-dir "$state_dir" \
     --queue-dir "$queue")
+  if [ -n "$repo" ]; then
+    args+=(--repo "$repo")
+  fi
   if [ "$legacy_shape" -eq 1 ]; then
     args+=(--port "$SERVICE_PORT")
   fi
@@ -1068,9 +1079,9 @@ register_deployment() {
   fail "the install succeeded, but recording $PROJECT_NAME in the deployment registry failed"
   printf '%s\n' "$output" | sed 's/^/      /'
   if [ "$legacy_shape" -eq 1 ]; then
-    fix "run: wheelchair-agent deployment add $PROJECT_NAME --profile $PROFILE_ID --state-dir $state_dir --queue-dir $queue --port $SERVICE_PORT"
+    fix "run: wheelchair-agent deployment add $PROJECT_NAME --profile $PROFILE_ID --state-dir $state_dir --queue-dir $queue --port $SERVICE_PORT${repo:+ --repo $repo}"
   else
-    fix "run: wheelchair-agent deployment add $PROJECT_NAME --profile $PROFILE_ID --state-dir $state_dir --queue-dir $queue"
+    fix "run: wheelchair-agent deployment add $PROJECT_NAME --profile $PROFILE_ID --state-dir $state_dir --queue-dir $queue${repo:+ --repo $repo}"
   fi
   return 1
 }
@@ -1351,6 +1362,7 @@ fi
 
 printf '\nDone. Start the deployment backends, then the SPV session:\n'
 printf '  wheelchair-agent service start --all   # every registered backend that executes tickets\n'
+printf '  wheelchair-agent deployment setup --project %s   # point that backend at its GitHub repository\n' "${PROJECT_NAME:-<project>}"
 printf '  wheelchair-agent spv                   # supervises all deployments; one SPV manages them\n'
 # Only when the preset really landed: printing a command for a file that is not there would send the
 # operator to a prepare command that fails on every ticket.

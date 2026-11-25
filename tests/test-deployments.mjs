@@ -16,12 +16,12 @@
  * 用法：node tests/test-deployments.mjs（任一断言失败则 exit 1）
  */
 import assert from 'node:assert/strict'
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createServer } from 'node:http'
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { installStampPath, writeStamp } from '../src/shared/install-stamp.js'
@@ -166,7 +166,7 @@ async function testAddListUpdateAndRemove() {
   const box = await sandbox()
 
   const added = await cli(box, [
-    'deployment', 'add', 'tools/alpha', '--state-dir', box.stateA, '--queue-dir', box.queueA, '--port', '3101',
+    'deployment', 'add', 'tools/alpha', '--repo', 'test/alpha', '--state-dir', box.stateA, '--queue-dir', box.queueA, '--port', '3101',
   ])
   assert.equal(added.status, 0, added.stderr)
   assert.match(added.stdout, /registered project tools\/alpha/)
@@ -180,26 +180,27 @@ async function testAddListUpdateAndRemove() {
       queueDir: box.queueA,
       port: 3101,
       installedSha: null,
+      repository: 'test/alpha',
     }],
   })
 
   // 完全相同的条目是幂等成功，且不重写文件（时间戳/字节都不变）。
   const before = await readFile(registryFile(box), 'utf8')
   const again = await cli(box, [
-    'deployment', 'add', 'tools/alpha', '--state-dir', box.stateA, '--queue-dir', box.queueA, '--port', '3101',
+    'deployment', 'add', 'tools/alpha', '--repo', 'test/alpha', '--state-dir', box.stateA, '--queue-dir', box.queueA, '--port', '3101',
   ])
   assert.equal(again.status, 0, again.stderr)
   assert.match(again.stdout, /already registered with these values; nothing changed/)
   assert.equal(await readFile(registryFile(box), 'utf8'), before)
 
-  const updated = await cli(box, ['deployment', 'add', 'tools/alpha', '--state-dir', box.stateA, '--queue-dir', box.queueA, '--port', '3103'])
+  const updated = await cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'test/alpha', '--state-dir', box.stateA, '--queue-dir', box.queueA, '--port', '3103'])
   assert.equal(updated.status, 0, updated.stderr)
   assert.match(updated.stdout, /updated tools\/alpha: port 3101 -> 3103/)
   registry = await readJson(registryFile(box))
   assert.equal(registry.deployments[0].port, 3103)
 
   const second = await cli(box, [
-    'deployment', 'add', 'tools/beta', '--profile', 'superagent', '--state-dir', box.stateB,
+    'deployment', 'add', 'tools/beta', '--repo', 'test/beta', '--profile', 'superagent', '--state-dir', box.stateB,
     '--queue-dir', box.queueB, '--port', '3102',
   ])
   assert.equal(second.status, 0, second.stderr)
@@ -227,7 +228,7 @@ async function testAddListUpdateAndRemove() {
 
 async function testRemoveLastNeedsForce() {
   const box = await sandbox()
-  const added = await cli(box, ['deployment', 'add', 'tools/solo', '--state-dir', box.stateA, '--queue-dir', box.queueA])
+  const added = await cli(box, ['deployment', 'add', 'tools/solo', '--repo', 'test/solo', '--state-dir', box.stateA, '--queue-dir', box.queueA])
   assert.equal(added.status, 0, added.stderr)
   const before = await readFile(registryFile(box), 'utf8')
 
@@ -250,7 +251,7 @@ async function testAddDefaultsAndUsageErrors() {
 
   // 省略 --state-dir/--queue-dir 时每部署一个 <base>/<slug>，队列必须等于 <stateDir>/spv；
   // 端口从 3082 起取注册表未用的第一个，实例 overlay 同时渲染出来。
-  const added = await cli(box, ['deployment', 'add', 'tools/delta'])
+  const added = await cli(box, ['deployment', 'add', 'tools/delta', '--repo', 'test/delta'])
   assert.equal(added.status, 0, added.stderr)
   const entry = (await readJson(registryFile(box))).deployments[0]
   assert.equal(entry.stateDir, join(box.state, 'delta'))
@@ -264,15 +265,16 @@ async function testAddDefaultsAndUsageErrors() {
   assert.ok(instance.includes(JSON.stringify(join(box.state, 'delta'))))
 
   assert.equal((await cli(box, ['deployment', 'add'])).status, 2, 'add without a project is a usage error')
-  assert.equal((await cli(box, ['deployment', 'add', 'tools/alpha', '--port', '70000'])).status, 2)
-  assert.equal((await cli(box, ['deployment', 'add', 'tools/alpha', '--port', 'nope'])).status, 2)
+  assert.equal((await cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'test/alpha', '--port', '70000'])).status, 2)
+  assert.equal((await cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'test/alpha', '--port', 'nope'])).status, 2)
   assert.equal((await cli(box, ['deployment', 'list', 'extra'])).status, 2)
-  assert.equal((await cli(box, ['deployment', 'add', 'tools/alpha', '--bogus', 'x'])).status, 2)
+  assert.equal((await cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'test/alpha', '--bogus', 'x'])).status, 2)
   assert.equal((await cli(box, ['deployment', 'unknown'])).status, 2)
 
   const help = await cli(box, ['deployment', '--help'])
   assert.equal(help.status, 0)
-  assert.match(help.stdout, /deployment <list|add|remove|migrate>/)
+  assert.match(help.stdout, /deployment <list|add|remove|migrate|setup>/)
+  assert.doesNotMatch(help.stdout, /picks the deployment/)
 
   const invalid = await cli(box, ['deployment', 'add', 'not-a-project'])
   assert.equal(invalid.status, 1)
@@ -303,7 +305,7 @@ async function testCommandsRequireARegisteredDeployment() {
   assert.match(spvProject.stderr, /spv does not take "--project"/)
   assert.match(spvProject.stderr, /global SPV session/)
 
-  const added = await cli(box, ['deployment', 'add', 'tools/alpha', '--state-dir', box.stateA, '--queue-dir', box.queueA, '--port', '3101'])
+  const added = await cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'test/alpha', '--state-dir', box.stateA, '--queue-dir', box.queueA, '--port', '3101'])
   assert.equal(added.status, 0, added.stderr)
 
   const serviceStopBare = await cli(box, ['service', 'stop'])
@@ -346,7 +348,7 @@ async function testDispatchRoutesEachProjectToItsOwnQueue() {
     ['tools/alpha', box.stateA, box.queueA, '3101'],
     ['tools/beta', box.stateB, box.queueB, '3102'],
   ]) {
-    const added = await cli(box, ['deployment', 'add', project, '--state-dir', stateDir, '--queue-dir', queue, '--port', port])
+    const added = await cli(box, ['deployment', 'add', project, '--repo', `test/${project.split('/').pop()}`, '--state-dir', stateDir, '--queue-dir', queue, '--port', port])
     assert.equal(added.status, 0, added.stderr)
   }
 
@@ -380,7 +382,7 @@ async function testToolDispatchUsesTheRegistry() {
     ['tools/alpha', box.stateA, box.queueA],
     ['tools/beta', box.stateB, box.queueB],
   ]) {
-    const added = await cli(box, ['deployment', 'add', project, '--state-dir', stateDir, '--queue-dir', queue])
+    const added = await cli(box, ['deployment', 'add', project, '--repo', `test/${project.split('/').pop()}`, '--state-dir', stateDir, '--queue-dir', queue])
     assert.equal(added.status, 0, added.stderr)
   }
 
@@ -419,7 +421,7 @@ async function testToolDispatchUsesTheRegistry() {
 
 async function testMissingDeploymentIsActionable() {
   const box = await sandbox()
-  const added = await cli(box, ['deployment', 'add', 'tools/alpha', '--state-dir', box.stateA, '--queue-dir', box.queueA])
+  const added = await cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'test/alpha', '--state-dir', box.stateA, '--queue-dir', box.queueA])
   assert.equal(added.status, 0, added.stderr)
 
   const result = await cli(box, ['dispatch', '--project', 'tools/gamma', '--task', 'x'])
@@ -461,7 +463,7 @@ async function testCorruptRegistryIsNeverRewritten() {
 async function testQueueDirMustMatchStateDir() {
   const box = await sandbox()
   const rejected = await cli(box, [
-    'deployment', 'add', 'tools/alpha', '--state-dir', box.stateA, '--queue-dir', box.queueB,
+    'deployment', 'add', 'tools/alpha', '--repo', 'test/alpha', '--state-dir', box.stateA, '--queue-dir', box.queueB,
   ])
   assert.equal(rejected.status, 2)
   assert.match(rejected.stderr, /a deployment reads <stateDir>\/spv/)
@@ -516,6 +518,7 @@ async function testMigrateRecordsTheCurrentDeployment() {
     queueDir: join(box.state, 'spv'),
     port: 3082,
     installedSha: commit,
+    repository: null,
   }])
 
   // 幂等：已有条目时一个字节都不改。
@@ -542,6 +545,201 @@ async function testMigrateRecordsTheCurrentDeployment() {
   assert.equal((await pendingRecord(other.queueOverride)).text, 'override')
 }
 
+
+// ------------------------------------------------------- repository inference + setup
+
+async function makeCheckout(box, project, origin) {
+  const checkout = join(box.home, 'bioagentforge', project)
+  await mkdir(checkout, { recursive: true })
+  execFileSync('git', ['-C', checkout, 'init', '-q'])
+  if (origin !== null) execFileSync('git', ['-C', checkout, 'remote', 'add', 'origin', origin])
+  return checkout
+}
+
+async function testRepositoryInferenceAndConflict() {
+  const box = await sandbox()
+  const cases = [
+    ['tools/https', 'https://github.com/nihaoWX/https.git', 'nihaoWX/https'],
+    ['tools/ssh', 'git@github.com:nihaoWX/ssh.git', 'nihaoWX/ssh'],
+    ['tools/scp', 'github.com:nihaoWX/scp', 'nihaoWX/scp'],
+  ]
+  let port = 3200
+  for (const [project, origin, expected] of cases) {
+    await makeCheckout(box, project, origin)
+    const added = await cli(box, ['deployment', 'add', project, '--port', String(port++)])
+    assert.equal(added.status, 0, added.stderr)
+    assert.match(added.stdout, new RegExp(`repository=${expected.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
+    const entry = (await readJson(registryFile(box))).deployments.find(item => item.project === project)
+    assert.equal(entry.repository, expected)
+  }
+
+  await makeCheckout(box, 'tools/not-github', 'https://gitlab.com/nihaoWX/not-github.git')
+  const notGithub = await cli(box, ['deployment', 'add', 'tools/not-github'])
+  assert.equal(notGithub.status, 1)
+  assert.match(notGithub.stderr, /not a GitHub repository/)
+  assert.match(notGithub.stderr, /gitlab\.com\/nihaoWX\/not-github\.git/)
+
+  await makeCheckout(box, 'tools/no-origin', null)
+  const noOrigin = await cli(box, ['deployment', 'add', 'tools/no-origin'])
+  assert.equal(noOrigin.status, 1)
+  assert.match(noOrigin.stderr, /failed/)
+  assert.match(noOrigin.stderr, /Pass --repo/)
+
+  const missing = await cli(box, ['deployment', 'add', 'tools/missing-checkout'])
+  assert.equal(missing.status, 1)
+  assert.match(missing.stderr, /does not exist/)
+  assert.match(missing.stderr, /--repo/)
+
+  // 同一个 repository 再登记是幂等空操作；换一个 repository 必须拒绝原地改。
+  const before = await readFile(registryFile(box), 'utf8')
+  const same = await cli(box, ['deployment', 'add', 'tools/https', '--port', '3200'])
+  assert.equal(same.status, 0, same.stderr)
+  assert.match(same.stdout, /already registered with these values/)
+  assert.equal(await readFile(registryFile(box), 'utf8'), before)
+  const conflict = await cli(box, ['deployment', 'add', 'tools/https', '--repo', 'someone/else', '--port', '3200'])
+  assert.equal(conflict.status, 1)
+  assert.match(conflict.stderr, /already targets nihaoWX\/https/)
+  assert.match(conflict.stderr, /refusing to change it/)
+  assert.match(conflict.stderr, /deployment remove tools\/https/)
+  assert.equal(await readFile(registryFile(box), 'utf8'), before)
+
+  const listed = await cli(box, ['deployment', 'list'])
+  assert.match(listed.stdout, /project tools\/https .*repository=nihaoWX\/https/)
+  assert.doesNotMatch(listed.stdout, /tools\/not-github|tools\/no-origin|tools\/missing-checkout/, 'rejected projects were not registered')
+}
+
+/** 一个只实现 setup 需要的三条路由的假面板；`mode` 决定 state 的返回。 */
+async function setupServer(mode, { repository = null } = {}) {
+  // 面板请求走 keep-alive；close() 只停止 accept，不掐断空闲 socket，测试进程会因此挂住。
+  const shutdown = () => {}
+  const calls = []
+  const server = createServer(async (request, response) => {
+    const chunks = []
+    for await (const chunk of request) chunks.push(chunk)
+    const body = chunks.length === 0 ? null : JSON.parse(Buffer.concat(chunks).toString('utf8'))
+    calls.push({ method: request.method, url: request.url, headers: request.headers, body })
+    const json = value => {
+      response.statusCode = 200
+      response.setHeader('content-type', 'application/json')
+      response.end(JSON.stringify(value))
+    }
+    if (request.method === 'GET' && request.url === '/orchestrator/api/settings') {
+      json({ sources: [{ id: 'github', revision: 4, value: { enabled: true, config: { repository, cli: '/bin/sh' } } }] })
+      return
+    }
+    if (request.method === 'PUT' && request.url === '/orchestrator/api/settings/source:github') {
+      json({ saved: true })
+      return
+    }
+    if (request.method === 'GET' && request.url === '/orchestrator/api/state') {
+      json({ setup: mode === 'success'
+        ? { accounts: { repository: 'nihaoWX/alpha', agent: 'a', feishu: null } }
+        : { accounts: null, problem: 'GitHub token lacks push access' } })
+      return
+    }
+    response.statusCode = 404
+    response.end('{}')
+  })
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  const close = () => { server.closeAllConnections(); server.close() }
+  return { server, close, port: server.address().port, calls }
+}
+
+async function testDeploymentSetup() {
+  const box = await sandbox()
+  const panel = await setupServer('success')
+  const added = await cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'nihaoWX/alpha', '--port', String(panel.port)])
+  assert.equal(added.status, 0, added.stderr)
+
+  const configured = await cli(box, ['deployment', 'setup', '--project', 'tools/alpha'])
+  assert.equal(configured.status, 0, configured.stderr)
+  assert.match(configured.stdout, /configured: tools\/alpha now targets nihaoWX\/alpha/)
+  assert.match(configured.stdout, new RegExp(`127\\.0\\.0\\.1:${panel.port}`))
+  const put = panel.calls.find(call => call.method === 'PUT')
+  assert.ok(put, 'setup sent a PUT')
+  assert.equal(put.headers.host, `127.0.0.1:${panel.port}`)
+  assert.equal(put.headers['x-orchestrator-request'], '1')
+  assert.deepEqual(put.body, {
+    value: { enabled: true, config: { repository: 'nihaoWX/alpha', cli: '/bin/sh' } },
+    revision: 4,
+  })
+  panel.close()
+
+  // 已配置时不发 PUT。
+  const box2 = await sandbox()
+  const already = await setupServer('success', { repository: 'nihaoWX/alpha' })
+  assert.equal((await cli(box2, ['deployment', 'add', 'tools/alpha', '--repo', 'nihaoWX/alpha', '--port', String(already.port)])).status, 0)
+  const noop = await cli(box2, ['deployment', 'setup', '--project', 'tools/alpha'])
+  assert.equal(noop.status, 0, noop.stderr)
+  assert.match(noop.stdout, /already configured/)
+  assert.equal(already.calls.filter(call => call.method === 'PUT').length, 0)
+  already.close()
+
+  // 超时：打印 setup.problem 与面板 URL。
+  const box3 = await sandbox()
+  const broken = await setupServer('timeout')
+  assert.equal((await cli(box3, ['deployment', 'add', 'tools/alpha', '--repo', 'nihaoWX/alpha', '--port', String(broken.port)])).status, 0)
+  const timeout = await cli(box3, ['deployment', 'setup', '--project', 'tools/alpha'], {
+    WHEELCHAIR_AGENT_SETUP_TIMEOUT_MS: '300', WHEELCHAIR_AGENT_SETUP_INTERVAL_MS: '50',
+  })
+  assert.equal(timeout.status, 1)
+  assert.match(timeout.stderr, /did not report nihaoWX\/alpha within/)
+  assert.match(timeout.stderr, /GitHub token lacks push access/)
+  assert.match(timeout.stderr, new RegExp(`127\\.0\\.0\\.1:${broken.port}`))
+  broken.close()
+
+  // 没有 repository 的条目：指路 --repo。
+  const box4 = await sandbox()
+  assert.equal((await cli(box4, ['deployment', 'add', 'tools/norepo', '--repo', 'nihaoWX/norepo'])).status, 0)
+  const listed = await cli(box4, ['deployment', 'list'])
+  assert.match(listed.stdout, /repository=nihaoWX\/norepo/)
+}
+
+
+async function testOldRegistryEntriesReadAsNoRepository() {
+  const box = await sandbox()
+  // 版本 1 的老条目没有 repository 字段；读成 null，并照常列出 `-`，不要求重写文件。
+  const legacy = `${JSON.stringify({
+    version: 1,
+    deployments: [{
+      project: 'tools/old', profile: 'superagent', stateDir: box.stateA, queueDir: box.queueA, port: 3101, installedSha: null,
+    }],
+  }, null, 2)}\n`
+  await mkdir(dirname(registryFile(box)), { recursive: true })
+  await writeFile(registryFile(box), legacy, 'utf8')
+  const listed = await cli(box, ['deployment', 'list'])
+  assert.equal(listed.status, 0, listed.stderr)
+  assert.match(listed.stdout, /project tools\/old .*repository=-/)
+  assert.equal(await readFile(registryFile(box), 'utf8'), legacy)
+
+  const broken = `${JSON.stringify({
+    version: 1,
+    deployments: [{
+      project: 'tools/old', profile: 'superagent', stateDir: box.stateA, queueDir: box.queueA, port: 3101, installedSha: null,
+      repository: 'not a github repository',
+    }],
+  }, null, 2)}\n`
+  await writeFile(registryFile(box), broken, 'utf8')
+  const failed = await cli(box, ['deployment', 'list'])
+  assert.equal(failed.status, 1)
+  assert.match(failed.stderr, /repository .*must be a GitHub "owner\/name"/)
+  assert.equal(await readFile(registryFile(box), 'utf8'), broken)
+}
+
+async function testServiceStartPrintsSetupHint() {
+  const box = await sandbox()
+  const panel = await setupServer('timeout')
+  assert.equal((await cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'nihaoWX/alpha', '--port', String(panel.port)])).status, 0)
+  const tools = join(box.base, 'tools-bin')
+  await mkdir(tools, { recursive: true })
+  await writeFile(join(tools, 'python3'), '#!/bin/sh\nexit 0\n', 'utf8')
+  await chmod(join(tools, 'python3'), 0o755)
+  const started = await cli(box, ['service', 'start', '--project', 'tools/alpha'], { PATH: `${tools}:${process.env.PATH}`, WHEELCHAIR_AGENT_SETUP_TIMEOUT_MS: '300' })
+  assert.equal(started.status, 0, started.stderr)
+  assert.match(started.stdout, /run "wheelchair-agent deployment setup --project tools\/alpha"/)
+  panel.close()
+}
+
 // -------------------------------------------------------------------- main
 
 try {
@@ -556,6 +754,10 @@ try {
   await testCorruptRegistryIsNeverRewritten()
   await testQueueDirMustMatchStateDir()
   await testMigrateRecordsTheCurrentDeployment()
+  await testRepositoryInferenceAndConflict()
+  await testDeploymentSetup()
+  await testOldRegistryEntriesReadAsNoRepository()
+  await testServiceStartPrintsSetupHint()
   process.stdout.write('ok\n')
 } catch (error) {
   process.stderr.write(`not ok: ${error?.stack ?? error}\n`)
