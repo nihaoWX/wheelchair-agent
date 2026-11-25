@@ -1,7 +1,7 @@
 /**
  * The standalone wheelchair-agent panel: a loopback-only HTTP host for the same three JSON routes the
- * dsh plugin serves, plus the page in `panel-page.js`. It imports no `@deepseek-ai/*` package and no
- * dsh service; the background work (inbox polling, hook runner, auto-merge, cold-install notices)
+ * dsh plugin serves, plus the existing dsh-client bundle. It imports no `@deepseek-ai/*` package and
+ * no dsh service; the background work (inbox polling, hook runner, auto-merge, cold-install notices)
  * deliberately stays in each deployment's dsh plugin — see `ARCHITECTURE/webui/index.md`.
  *
  * Lifecycle:
@@ -15,14 +15,15 @@
  * an instance's token URL.
  */
 import { spawn, spawnSync } from 'node:child_process'
-import { chmodSync, closeSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { dirname, join } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 import { dataPaths } from '../shared/home.js'
 import { resolveSettings } from '../shared/settings.js'
 import { createPanelHandlers, panelRouteTable } from './panel-routes.js'
-import { PANEL_HTML } from './panel-page.js'
+import { PANEL_SHELL_HTML } from './panel-shell.js'
 
 export const PANEL_HOST = '127.0.0.1'
 export const DEFAULT_PANEL_PORT = 3080
@@ -31,6 +32,42 @@ export const PANEL_PID_FILE = 'panel.pid'
 const READY_TIMEOUT_MS = 8000
 const READY_INTERVAL_MS = 120
 const STOP_TIMEOUT_MS = 5000
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
+const CHECKOUT_WEBUI = join(MODULE_DIR, '..', '..', 'webui')
+
+/**
+ * Locate the browser bundle and its vendored React.
+ *
+ * In a checkout the bundle is `<repo>/webui/lib/client.js`; in an installed preset `panel.js` lives
+ * under `<preset>/src/spv/`, while the webui package sits in the profile's `node_modules` next to
+ * the preset. The caller (`bin/wheelchair-agent.mjs`) passes `clientPath` for the installed case; the
+ * fallbacks keep direct imports (tests, `node src/spv/panel.js`) usable from the checkout.
+ */
+export function resolvePanelAssets(options = {}) {
+  const { env = process.env, clientPath, vendorDir } = options
+  const candidates = []
+  if (typeof clientPath === 'string' && clientPath !== '') candidates.push(clientPath)
+  const override = String(env.WHEELCHAIR_AGENT_WEBUI ?? '').trim()
+  if (override !== '') candidates.push(join(override, 'lib', 'client.js'))
+  candidates.push(join(CHECKOUT_WEBUI, 'lib', 'client.js'))
+  const profile = String(env.DSH_SUPERAGENT_PROFILE ?? '').trim() || 'superagent'
+  const dshHome = String(env.DSH_HOME ?? '').trim() || join(env.HOME ?? '', '.dsh')
+  candidates.push(join(dshHome, 'profiles', profile, 'node_modules', 'wheelchair-agent-webui', 'lib', 'client.js'))
+  const client = candidates.find(candidate => existsSync(candidate))
+  if (client === undefined) {
+    throw new Error(`cannot find the panel client bundle; tried ${candidates.join(', ')}. Run "bash install.sh --project <project>" (or set WHEELCHAIR_AGENT_WEBUI) to install it.`)
+  }
+  return {
+    clientPath: client,
+    vendorDir: typeof vendorDir === 'string' && vendorDir !== '' ? vendorDir : join(dirname(dirname(client)), 'vendor'),
+  }
+}
+
+const STATIC_TYPES = {
+  '.js': 'text/javascript; charset=utf-8',
+  '.md': 'text/markdown; charset=utf-8',
+  '.txt': 'text/plain; charset=utf-8',
+}
 
 /** The configured panel port, falling back to 3080 when the settings file has no usable value. */
 export function panelPort({ env = process.env, home, stateDir } = {}) {
@@ -134,6 +171,7 @@ const sleep = milliseconds => new Promise(resolve => setTimeout(resolve, millise
  */
 export function createPanelServer(options = {}) {
   const { env = process.env, home, stateDir, config = {}, log = () => {} } = options
+  const assets = resolvePanelAssets(options)
   const handlers = createPanelHandlers({ env, home, stateDir, config })
   const routes = panelRouteTable(handlers)
   const server = createServer((req, res) => {
@@ -158,6 +196,19 @@ export function createPanelServer(options = {}) {
     res.setHeader('content-type', 'application/json; charset=utf-8')
     res.end(JSON.stringify({ ok: false, message }))
   }
+  const serveStatic = (res, file, contentType) => {
+    let body
+    try {
+      body = readFileSync(file)
+    } catch (error) {
+      log(`panel asset ${file} is unreadable: ${error?.message ?? error}`)
+      return reject(res, 500, `panel asset ${file} is unreadable; reinstall the webui package`)
+    }
+    res.statusCode = 200
+    res.setHeader('content-type', contentType)
+    res.setHeader('cache-control', 'no-store')
+    res.end(body)
+  }
 
   async function handle(req, res) {
     if (!hostAllowed(req)) return reject(res, 403, 'the panel only answers its loopback host')
@@ -168,7 +219,24 @@ export function createPanelServer(options = {}) {
       res.statusCode = 200
       res.setHeader('content-type', 'text/html; charset=utf-8')
       res.setHeader('cache-control', 'no-store')
-      res.end(PANEL_HTML)
+      res.end(PANEL_SHELL_HTML)
+      return
+    }
+    if (path === '/client.js') {
+      serveStatic(res, assets.clientPath, 'text/javascript; charset=utf-8')
+      return
+    }
+    if (path === '/vendor/react.production.min.js') {
+      serveStatic(res, join(assets.vendorDir, 'react.production.min.js'), 'text/javascript; charset=utf-8')
+      return
+    }
+    if (path === '/vendor/react-dom.production.min.js') {
+      serveStatic(res, join(assets.vendorDir, 'react-dom.production.min.js'), 'text/javascript; charset=utf-8')
+      return
+    }
+    if (path === '/vendor/LICENSE.react' || path === '/vendor/LICENSE.react-dom' || path === '/vendor/README.md') {
+      const name = path.slice('/vendor/'.length)
+      serveStatic(res, join(assets.vendorDir, name), STATIC_TYPES[name.slice(name.lastIndexOf('.'))] ?? 'text/plain; charset=utf-8')
       return
     }
     if (path === '/favicon.ico') {

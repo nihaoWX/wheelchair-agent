@@ -42,6 +42,12 @@ const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh')
 const PRESET_DIR = INSTALLED ? SELF_DIR : join(DSH_HOME, '.agent-presets', 'spv')
 const STATE_DIR = process.env.DSH_SUPERAGENT_STATE_DIR || join(DSH_HOME, 'state', 'superagent')
 const PROJECTS_ROOT = process.env.SPV_PROJECTS_ROOT || join(homedir(), 'bioagentforge')
+/** The installed webui package keeps the same `lib/client.js` + `vendor/` layout as the checkout. */
+const PROFILE_ID = String(process.env.DSH_SUPERAGENT_PROFILE ?? '').trim() || 'superagent'
+const WEBUI_ROOT = INSTALLED
+  ? join(DSH_HOME, 'profiles', PROFILE_ID, 'node_modules', 'wheelchair-agent-webui')
+  : join(ROOT, 'webui')
+process.env.WHEELCHAIR_AGENT_WEBUI ??= WEBUI_ROOT
 
 const USAGE = `usage: wheelchair-agent <command> [options]
 

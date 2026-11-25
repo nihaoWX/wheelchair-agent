@@ -7,7 +7,7 @@
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import { createServer } from 'node:net'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -116,7 +116,22 @@ async function testPanelRoutes() {
   try {
     const page = await fetch(`http://127.0.0.1:${port}/`)
     const html = await page.text()
-    check('panel serves its page', page.ok && html.includes('wheelchair-agent') && html.includes('收件箱'), html.slice(0, 120))
+    check(
+      'panel serves the bundle shell',
+      page.ok && html.includes('id="root"') && html.includes('/client.js') && html.includes('/vendor/react.production.min.js') && !html.includes('@deepseek-ai/'),
+      html.slice(0, 160),
+    )
+    const bundle = await fetch(`http://127.0.0.1:${port}/client.js`)
+    const bundleText = await bundle.text()
+    check(
+      'panel serves the real dsh client bundle',
+      bundle.ok && bundleText === readFileSync(join(ROOT, 'webui', 'lib', 'client.js'), 'utf8'),
+      `status ${bundle.status} bytes ${bundleText.length}`,
+    )
+    for (const asset of ['react.production.min.js', 'react-dom.production.min.js', 'LICENSE.react', 'LICENSE.react-dom', 'README.md']) {
+      const served = await fetch(`http://127.0.0.1:${port}/vendor/${asset}`)
+      check(`panel serves vendor/${asset}`, served.ok && (await served.text()).length > 0, `status ${served.status}`)
+    }
 
     const empty = await json(port, '/wheelchair-inbox/items')
     check('inbox starts empty', empty.status === 200 && Array.isArray(empty.payload.items) && empty.payload.items.length === 0, JSON.stringify(empty.payload))
@@ -194,6 +209,43 @@ async function testServiceOpen() {
   }
 }
 
+async function testInstalledLayout() {
+  const box = makeBox()
+  const preset = join(box.dsh, '.agent-presets', 'spv')
+  const webui = join(box.dsh, 'profiles', 'superagent', 'node_modules', 'wheelchair-agent-webui')
+  mkdirSync(preset, { recursive: true })
+  writeFileSync(join(preset, 'preset.yml'), 'id: spv\n', 'utf8')
+  cpSync(join(ROOT, 'bin', 'wheelchair-agent.mjs'), join(preset, 'cli.js'))
+  cpSync(join(ROOT, 'src'), join(preset, 'src'), { recursive: true })
+  mkdirSync(join(webui, 'lib'), { recursive: true })
+  cpSync(join(ROOT, 'webui', 'lib', 'client.js'), join(webui, 'lib', 'client.js'))
+  cpSync(join(ROOT, 'webui', 'vendor'), join(webui, 'vendor'), { recursive: true })
+  const child = spawn(process.execPath, [join(preset, 'cli.js'), 'panel', '--foreground', '--port', '0'], {
+    env: envFor(box),
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  let output = ''
+  child.stdout.setEncoding('utf8')
+  child.stdout.on('data', chunk => { output += chunk })
+  child.stderr.setEncoding('utf8')
+  child.stderr.on('data', chunk => { output += chunk })
+  try {
+    const port = await waitFor(() => output.match(/http:\/\/127\.0\.0\.1:(\d+)\//)?.[1], value => value !== undefined, 8000)
+    check('installed preset runs the panel without a checkout', port !== undefined, output.slice(0, 200))
+    if (port !== undefined) {
+      const page = await fetch(`http://127.0.0.1:${port}/`)
+      const html = await page.text()
+      check('installed preset serves the bundle from the profile', page.ok && html.includes('/client.js'), html.slice(0, 120))
+      const bundle = await fetch(`http://127.0.0.1:${port}/client.js`)
+      check('installed preset serves client.js', bundle.ok && (await bundle.text()).includes('__ModuleLoader__'), `status ${bundle.status}`)
+    }
+  } finally {
+    child.kill('SIGTERM')
+    await new Promise(resolve => child.once('exit', resolve))
+    rmSync(box.base, { recursive: true, force: true })
+  }
+}
+
 /** The core's import graph must not reach a dsh package; the panel has to run without one. */
 function testCoreImportGraph() {
   const seen = new Set()
@@ -214,13 +266,14 @@ function testCoreImportGraph() {
   }
   visit(join(ROOT, 'src', 'spv', 'panel.js'))
   visit(join(ROOT, 'src', 'spv', 'panel-routes.js'))
-  visit(join(ROOT, 'src', 'spv', 'panel-page.js'))
+  visit(join(ROOT, 'src', 'spv', 'panel-shell.js'))
   check('panel core never imports @deepseek-ai/*', offenders.length === 0, offenders.join(', '))
   check('panel core import graph is broader than the three files', seen.size > 5, `${seen.size} files`)
 }
 
 async function main() {
   testCoreImportGraph()
+  await testInstalledLayout()
   await testPanelRoutes()
   await testServiceOpen()
   process.stdout.write(`\n${PASS} passed, ${FAIL} failed\n`)

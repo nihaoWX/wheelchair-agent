@@ -903,7 +903,6 @@ async function loadHostApply(box) {
   for (const [source, target] of [
     ['src/spv/inbox.js', 'lib/core/inbox.js'],
     ['src/spv/panel-routes.js', 'lib/core/panel-routes.js'],
-    ['src/spv/panel-page.js', 'lib/core/panel-page.js'],
     ['src/spv/ownership.js', 'lib/core/ownership.js'],
     ['src/spv/dispatch.js', 'lib/core/dispatch.js'],
     ['src/spv/hook-runner.js', 'lib/core/hook-runner.js'],
