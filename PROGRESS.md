@@ -17,13 +17,17 @@ superagent 不耦合；队列归**每份部署**自己（`<stateDir>/spv/`），
 裸 `restart-all`、默认项目的 `spv`、`resolveRoot` 的 legacy 回退、watcher 的全量轮询），见
 `ARCHITECTURE/deployments.md`。
 
-**面板**：两个宿主、同一份 `webui/lib/client.js`（`#52`, `25b8e29`）。①独立面板 `wheelchair-agent panel`
-（`127.0.0.1:3080`，`panel.port` 可改，`--detach` 常驻 + `panel stop/status`），`service open` 只开它，
-`service status` 把面板与各部署分行列；②dsh 插件宿主保留（面板仍出现在 dsh web 左侧栏）。功能仍是
-收件箱、设置、插口三段；`webui.style` = `fluid`（默认）/ `minimal`；各页共用 1200px 宽度变量，收件箱无
-左侧日期栏。**后台行为（收件箱轮询、`builtin:autoMerge`、`builtin:archiveSession`、冷安装提醒、hook
-runner）故意只留在 dsh 插件宿主**——没开面板也照常合并与提醒。dsh 内嵌面板的 URL 仍每实例一 token
-（见 `docs/PITFALLS/dsh-web-panel-token-is-per-instance.md`），独立面板不需要 token。
+**面板**：两个宿主、同一份 `webui/lib/client.js`。①`wheelchair-agent panel`（`#58`, `aabe316`）是一份
+**自己的 dsh 实例**——profile `panel`（`dsh-base` + `dsh-web-app` + 我们的 webui，**不含** `dsh-superagent`），
+`127.0.0.1:3080`（`panel.port` 可改），overlay 是 `preset/panel.patch.yml`，tmux `wca-panel`，stateDir
+`<data root>/panel`；所以它有完整 harness UI（会话列表/新会话/顶栏），但**不是部署**（不进注册表、
+`service stop --all` 不停它）。`panel status` 打 port/pid/带 token 的 url/`check: http <code>`/state，并说明
+没有 orchestrator 可报。②dsh 插件宿主不变（面板仍出现在各部署 dsh web 左侧栏）。四段功能：收件箱、设置、
+插口、项目；`webui.style` = `fluid`（默认）/ `minimal`；各页共用 1200px 宽度变量，收件箱无左侧日期栏。
+**后台行为（收件箱轮询、`builtin:autoMerge`、`builtin:archiveSession`、冷安装提醒、hook runner）故意只留在
+dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了手工 `node:http` 宿主、`panel-shell.js` 的
+`__ModuleLoader__` 垫片与 `webui/vendor/` 的 React UMD，`client.js` 只多了一条「打开该部署的完整 UI」链接
+（URL 带 token，见 `src/spv/projects-view.js`）。
 
 **服务**：当前跑在用户级瞬时 unit `wca-svc.service`（app.slice，不在任何 logind session scope 里），
 不是从终端直接起的 tmux server。`wheelchair-agent service stop/start` 会把它拉回调用者 scope，慎用。
@@ -53,6 +57,18 @@ runner）故意只留在 dsh 插件宿主**——没开面板也照常合并与�
 
 # Completed
 
+- **`#58` 合并（`aabe316`，`panel: run as its own dsh instance instead of the minimal host`）**：
+  独立面板从手工 `node:http` 宿主改成一份自己的 dsh 实例；新增 `preset/panel.patch.yml`（`!!js` 读
+  `WHEELCHAIR_PANEL_PORT`，`wheelchair-webui: {background: false}`）、`src/spv/panel-instance.js`、
+  `commands/superagent-service.py --mode panel`、`install.sh` 的第五种安装目标 `$DSH_HOME/profiles/panel/`；
+  删掉 `src/spv/panel.js`、`panel-shell.js`、`webui/vendor/`。我的验证：worktree 内 build + `npm test`
+  **462 passed / 0 failed**；`node tests/test-panel.mjs`（真起实例、临时 DSH_HOME）**31 passed / 0 failed**，
+  其中 `the page is the dsh web app mount point`、`the page loads our client bundle`、`the inbox route answers
+  200 JSON`、`panel stop closes the port`、`install.sh --check exits 0 after installing the panel`、`a changed
+  panel dsh version fails --check` 都过了；`git diff -- webui/lib/client.js` 只有 i18n 两条、三行 CSS、一个
+  链接元素；CI `ci` pass、CLEAN；After 截图我逐眼看：真 harness 侧栏 + 我们的四段 + 每行「打开该部署的完整
+  UI」。我否决过把 `dsh-superagent` 塞进 panel profile 的提议（那等于再开一份 orchestrator），
+  `panel status` 因此只报 port/pid/url/`check: http`/state。
 - **`#57` 合并（`09c187f`，`fix(core): fail --check when the built core predates its Rust sources`）**：
   `build/build-core.sh` 编完写 `build/artifacts/core-stamp.json`（源码摘要 + commit + cargo 版本 + 产物
   sha256/size）；`install.sh --check` 先比"戳里的源码摘要 vs 现在 `crates/**`"，陈旧就 FAIL 并打印
@@ -308,8 +324,9 @@ runner）故意只留在 dsh 插件宿主**——没开面板也照常合并与�
    出事最贵）。每张票的 parity 门都是"对应测试文件零改动 + 用户可见输出逐字一致"。
 
 1. 操作者执行一次冷安装（`service stop --project tools/wheelchair-agent` → 退出 SPV → `install.sh --project` →
-   `service start --project` → `spv`），`#37`–`#57` 一起生效；`#57` 起 `--check` 会先比产物戳，core 陈旧会被
-   拦下（逃生口 `--allow-stale-core` 只告警）。
+   `service start --project` → `spv`），`#37`–`#58` 一起生效；`#57` 起 `--check` 会先比产物戳，core 陈旧会被
+   拦下（逃生口 `--allow-stale-core` 只告警）；`#58` 起 install 还会建 `$DSH_HOME/profiles/panel/`，装完
+   `wheelchair-agent service open` 打开的就是带完整 harness UI 的独立面板。
 2. 重派 `service-detach`（带禁令），并把 `service open` 作为最后一步并入 `/restart-wheelchair-agent`
    （`src/spv/restart.js` + `tests/test-restart.mjs`，见 `docs/PITFALLS/dsh-web-panel-token-is-per-instance.md`
    的「改法」一节）。

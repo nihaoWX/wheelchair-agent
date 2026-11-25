@@ -33,40 +33,48 @@ its own loader row in `~/.dsh/profiles/superagent/cordis.patch.yml` (written by 
   `@deepseek-ai/dsh-client-ui-primitives` (the dsh plugin guide forbids loading Harness Client
   packages as modules). This repository has no TypeScript and no build chain.
 
-## Two hosts, one bundle (`#52`)
+## Two hosts, one bundle (`#52`), and the panel is a dsh instance of its own (`#58`)
 
 The page has two hosts. They serve **the same** `lib/client.js` (byte-identical, never forked) and the
-same three JSON routes; only the surrounding page chrome differs.
+same JSON routes; they differ in what surrounds the page.
 
 - **Host A — the dsh plugin** (`lib/index.js`). `inject = ['webServer', 'connection']`; it registers
   the routes on the composition's `webServer` behind `ctx.connection.requestRejection` (dsh's
   Host/Origin and login fence), and it is where **every background behaviour lives**: the inbox
   poller, the hook runner, `builtin:autoMerge`, `builtin:archiveSession` and the cold-install notice.
   This is deliberate — a deployment keeps merging and reporting while no panel is open.
-- **Host B — `wheelchair-agent panel`** (`src/spv/panel.js` + `src/spv/panel-shell.js`). A plain
-  `node:http` server bound to `127.0.0.1` only, default port **3080** (per run with `--port`,
-  persistently with the `panel.port` setting). It has its own fence — the request must carry the
-  loopback `Host`, and any browser `Origin` must be same-origin — but **no** poller, no effects,
-  nothing that changes a ticket. `--detach` keeps it resident (`<data root>/panel.pid`);
-  `panel stop` / `panel status` manage it; `service open` starts it if needed and opens the URL;
-  `service status` lists the panel separately from the deployments, and `service stop --all` never
-  stops it.
+- **Host B — `wheelchair-agent panel`**: its own **dsh instance**, not a hand-written server. The
+  installed profile `panel` (`$DSH_HOME/profiles/panel/`) carries `dsh-base`, `dsh-web-app` and the
+  `wheelchair-agent-webui` package, and **never** `dsh-superagent` — so it has no orchestrator, no
+  sources and no tickets. `preset/panel.patch.yml` is passed with `--patch` and supplies only the
+  webserver binding (`127.0.0.1`, port `!!js Number(process.env.WHEELCHAIR_PANEL_PORT ?? 3080)`) and
+  `wheelchair-webui: {background: false}` — background off, because a second reader would poll the
+  inbox twice and fire every hook twice. Process lifecycle (tmux session `wca-panel`, token URL,
+  log at `<dsh home>/.artifacts/wca-panel.log`, state root `<data root>/panel`) is the same
+  `commands/superagent-service.py --mode panel` that drives deployments; `src/spv/panel-instance.js`
+  only computes what is panel-specific.
+  Consequences worth remembering:
+  - the chrome is **dsh's own** (session list, New Session, top bar) — the 48 px rail, the
+    `__ModuleLoader__` shim and the vendored React UMD builds are gone with `#58`; our page is
+    mounted through `slots.inject('sidebar.panellist', …)` + `slots.register(…)` exactly as in a
+    deployment;
+  - its sessions are **its own**; the deployments' worker sessions stay on their ports, which is why
+    each row in Projects carries an additive "open this deployment's full UI" link (URL with token,
+    from `src/spv/projects-view.js`) — that link is the only client change `#58` allowed;
+  - `panel status` prints `panel: port <p> running <pid>`, the tokenised `url:`, `check: http <code>`
+    (one bounded `GET /`) and `state:`, then says outright that there is no orchestrator to report
+    (`panel: no orchestrator …`), because `dsh-web-app` has no health endpoint;
+  - the panel is **not** a deployment: it is never written to `deployments.json`, `deployment list`
+    never shows it, `service stop --all` never stops it, and it must not appear in `spv-projects.json`
+    either.
 
 The JSON routes and their handlers are the shared core `src/spv/panel-routes.js`, copied into the
 installed package as `lib/core/panel-routes.js` (and into the preset as `src/spv/panel-routes.js`) by
 `install.sh`. Nothing in the core imports `@deepseek-ai/*`.
 
-The shell (`panel-shell.js`) gives the bundle what the dsh page gives it, and nothing else:
-`window.__ModuleLoader__.load({ id, factory })`, `require('react')` / `require('react/jsx-runtime')`
-(React 18.3.1 UMD builds vendored under `webui/vendor/`, with their licences and a README recording
-the pinned version and tarball SHA), a small `jsx-runtime` shim, and a minimal `ctx` with `effect`,
-`locale.register`, `slots.inject` and `slots.register` — enough for the `sidebar.panellist` row and
-the `main` page the bundle declares. The dsh session sidebar and top bar are replaced by a 48 px
-rail; everything inside the page is the untouched client bundle.
-
-Proof for that claim: `webui/docs/panel-standalone-before-1440.png` and `...-after-1440.png` (same
-data root, 1440×1000, dark theme). A change that makes the two differ in more than the rail is a
-regression, not a redesign.
+Proof for the "same page" claim: `webui/docs/panel-dsh-before-1440.png` and `...-after-1440.png`
+(1440×1000). Inside the content column the two must match; the surrounding chrome is expected to
+differ (it used to be a 48 px rail, now it is the real harness sidebar).
 
 ## Features and the review model
 
