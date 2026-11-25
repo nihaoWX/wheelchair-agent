@@ -134,6 +134,11 @@ function settingsConfig(config) {
 }
 
 export function apply(ctx, config = {}) {
+  // The panel instance mounts this page for its own browser but must not duplicate a deployment's
+  // background work: two inbox pollers would refresh the same data and two hook runners would fire
+  // every hook twice (`src/spv/hook-runner.js` explains why it is the only reader). The panel's
+  // overlay therefore sets `background: false`; a deployment leaves the key out and keeps the work.
+  const background = config?.background !== false
   // Resolve once at mount so the first run performs the one-shot migration; the handler and the poller
   // then re-resolve per request/tick, so a mount that had to fall back picks up a later migration.
   resolveInboxRoot()
@@ -177,7 +182,9 @@ export function apply(ctx, config = {}) {
     }
   }
   const initialInterval = intervalSecondsOf()
-  if (initialInterval > 0) {
+  if (!background) {
+    ctx.logger?.info?.('wheelchair-inbox: background work disabled in this composition (panel instance)')
+  } else if (initialInterval > 0) {
     ctx.logger?.info?.(`wheelchair-inbox: refreshing every ${initialInterval}s`)
   } else {
     ctx.logger?.info?.(
@@ -186,7 +193,7 @@ export function apply(ctx, config = {}) {
   }
   // Registered even at 0: a paused poller runs no `gh` call and re-checks every second, so enabling it
   // again from the Settings section needs no remount either.
-  ctx.effect(() => {
+  if (background) ctx.effect(() => {
     const watcher = startInboxWatcher({
       rootOf,
       projectsRoot: defaultProjectsRoot(),
@@ -245,7 +252,7 @@ export function apply(ctx, config = {}) {
       }),
     log: hookLog,
   })
-  ctx.effect(() => {
+  if (background) ctx.effect(() => {
     const runner = startHookRunner({
       queueRootOf: () => resolveRoot(),
       unref: true,

@@ -47,6 +47,7 @@ window.__ModuleLoader__.load({
 			"projects.noWorkers": "没有绑定 worker 项目",
 			"projects.undeployed": "未部署",
 			"projects.port": "端口 {port}",
+			"projects.openFullUi": "打开该部署的完整 UI",
 			"projects.idle": "空闲",
 			"projects.running": "正在跑 {count} 个工单 · {workers} 个 worker",
 			"projects.queued": "排队 {count}",
@@ -308,6 +309,7 @@ window.__ModuleLoader__.load({
 			"projects.noWorkers": "No worker project is bound",
 			"projects.undeployed": "not deployed",
 			"projects.port": "port {port}",
+			"projects.openFullUi": "Open this deployment's full UI",
 			"projects.idle": "idle",
 			"projects.running": "{count} running ticket(s) · {workers} worker(s)",
 			"projects.queued": "{count} queued",
@@ -1444,6 +1446,9 @@ window.__ModuleLoader__.load({
 			.wca-project-worker:first-child { border-top: 0; padding-top: 0; }
 			.wca-project-worker-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 			.wca-project-worker-head strong { font-size: 13px; font-weight: 600; }
+			.wca-project-jump { margin-top: 2px; }
+			.wca-project-jump a { color: var(--dsw-alias-state-business-primary); text-decoration: none; }
+			.wca-project-jump a:hover { text-decoration: underline; }
 			.wca-project-path {
 				font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 				font-size: 12px;
@@ -6026,6 +6031,25 @@ window.__ModuleLoader__.load({
 							},
 							"head"
 						),
+						state.kind === "ok" && typeof worker.deployment?.url === "string" && worker.deployment.url !== ""
+							? jsx(
+									"p",
+									{
+										className: "wca-meta wca-project-jump",
+										children: jsx(
+											"a",
+											{
+												href: worker.deployment.url,
+												target: "_blank",
+												rel: "noreferrer",
+												children: t("projects.openFullUi")
+											},
+											"link"
+										)
+									},
+									"jump"
+								)
+							: null,
 						jsx("p", { className: "wca-meta wca-project-path", children: String(worker.path ?? "") }, "path"),
 						running.length > 0
 							? jsx(

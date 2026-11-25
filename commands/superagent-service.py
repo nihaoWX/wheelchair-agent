@@ -28,6 +28,7 @@ exchanged for a command. A failure explains what is wrong, why, and what to run.
 """
 
 import argparse
+import http.cookiejar
 import json
 import os
 import re
@@ -278,6 +279,98 @@ def panel_url(log_path, url):
     return matches[-1] if matches else None
 
 
+def panel_pids(args):
+    """The panel instance's own processes: profile + overlay, never a port-only listener.
+
+    A port listener may be the old standalone host (or anything else) and `panel start` must refuse
+    that as foreign instead of treating its 200 answer as "the panel is already running".
+    """
+    return pids_from_proc(args.profile, args.patch)
+
+
+def panel_check(log_path, url):
+    """One authenticated page fetch: the panel is alive when GET / answers 200.
+
+    `dsh web` serves the harness only after the browser has exchanged the startup token for its
+    authentication cookie, so the probe takes the same path a browser does: open the tokenised URL
+    from the log (or the bare URL when the token is not there yet) with a cookie jar and redirects
+    enabled. A non-200 answer is reported as a status, never raised: `panel status` must not fail
+    just because the page is not ready.
+    """
+    target = panel_url(log_path, url) or url.rstrip('/') + '/'
+    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
+    try:
+        with opener.open(target, timeout=2) as response:
+            body = response.read(65536)
+            # Any old standalone host (or an unrelated server) may answer 200; only the dsh web shell
+            # carries this boot marker. Without it, `panel start` would mistake a foreign listener
+            # for an already-running panel and never report the port conflict.
+            if response.status == 200 and b'__DSH_BOOT__' in body:
+                return {'ok': True, 'status': response.status, 'reason': None}
+            reason = None if response.status == 200 else f'HTTP {response.status}'
+            return {'ok': False, 'status': response.status, 'reason': reason or 'not a dsh web page'}
+    except urllib.error.HTTPError as error:
+        return {'ok': False, 'status': error.code, 'reason': f'HTTP {error.code}'}
+    except (OSError, ValueError) as error:
+        return {'ok': False, 'status': None, 'reason': str(error) or error.__class__.__name__}
+
+
+def panel_state(args):
+    """Collect the panel facts `panel status` prints (and a future caller may consume as JSON)."""
+    pids = panel_pids(args)
+    running = len(pids) == 1
+    token = panel_url(args.log, args.url) if running else None
+    # A start may have used a `--port` override that is not in the settings file; the token URL printed
+    # in the log is then the only record of the port this instance actually serves.
+    port = args.port
+    if token:
+        found = re.search(r'127\.0\.0\.1:(\d+)', token)
+        if found:
+            port = int(found.group(1))
+    check = panel_check(args.log, args.url) if running else {'ok': False, 'status': None, 'reason': 'not running'}
+    return {
+        'port': port,
+        'pids': pids,
+        'running': running,
+        'token': token,
+        'check': check,
+        'state': str(args.state_dir) if args.state_dir else None,
+    }
+
+
+def print_panel_status(args):
+    """Print the stable `panel status` block. The liveness check never changes the exit code."""
+    status = panel_state(args)
+    pids = status['pids']
+    if len(pids) == 1:
+        print(f'panel: port {status["port"]} running {pids[0]}')
+    else:
+        print(f'panel: port {status["port"]} stopped')
+    # Stopped output deliberately has no `url:` line: there is no page to open, and a test asserts it.
+    if status['token']:
+        print(f'url: {status["token"]}')
+    elif len(pids) == 1:
+        print('url: (no token in the log yet; a fresh start prints it once)')
+    check = status['check']
+    if check['ok']:
+        print(f'check: http {check["status"]}')
+    else:
+        print(f'check: unreachable: {check["reason"]}')
+    print(f'state: {status["state"] or "(DSH_SUPERAGENT_STATE_DIR unset)"}')
+    print('no orchestrator: the panel host runs dsh-web-app only (no dsh-superagent), so there are no components to report')
+    return 0 if len(pids) <= 1 else 1
+
+
+def wait_ready_panel(args, deadline):
+    """Poll until exactly one panel process serves an authenticated 200 page; False on timeout."""
+    while time.monotonic() < deadline:
+        pids = panel_pids(args)
+        if len(pids) == 1 and panel_check(args.log, args.url)['ok']:
+            return True
+        time.sleep(1)
+    return False
+
+
 def report(pids, current, url, profile, manually_stopped, log_path=None):
     """Print a one-screen summary and return the exit code."""
     print(f'profile: {profile}')
@@ -334,7 +427,14 @@ def open_command(url):
 
 def cmd_open(args):
     """Open the tokenised panel URL in the operator's browser."""
-    pids = service_pids(args.profile, args.port, args.patch)
+    pids = panel_pids(args) if args.mode == 'panel' else service_pids(args.profile, args.port, args.patch)
+    if not pids and args.mode == 'panel':
+        # The old standalone panel auto-started on `service open`; keep that convenience for the
+        # instance, but never do it for a deployment: starting a deployment is an explicit action.
+        code = cmd_start(args)
+        if code != 0:
+            return code
+        pids = panel_pids(args)
     if not pids:
         return fail(
             f'the superagent service is not running for profile {args.profile}, so there is no panel to open',
@@ -344,6 +444,19 @@ def cmd_open(args):
         return fail(
             f'no panel token in {args.log}',
             'the token is printed once at startup; run "superagent-service restart", then this command again')
+    # Keep the old panel's injectable opener seam: tests and SSH sessions set this to a command
+    # (for example `true`) so no desktop browser is launched. The token URL is printed either way.
+    opener = os.environ.get('WHEELCHAIR_AGENT_OPEN', '').strip()
+    if opener:
+        print(panel)
+        argv = shlex.split(opener) + [panel]
+        try:
+            subprocess.run(argv, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError) as error:
+            return fail(f'could not run the opener set in WHEELCHAIR_AGENT_OPEN ({error})',
+                        'open the URL printed above by hand')
+        print(f'opened: {panel}')
+        return 0
     argv = open_command(panel)
     if argv is None:
         print(panel)
@@ -360,6 +473,8 @@ def cmd_open(args):
 
 
 def cmd_status(args):
+    if args.mode == 'panel':
+        return print_panel_status(args)
     pids = service_pids(args.profile, args.port, args.patch)
     current = read_state(args.url) if pids else None
     return report(pids, current, args.url, args.profile, False, args.log)
@@ -400,11 +515,17 @@ def cmd_start(args):
     if not subprocess.run(['which', 'tmux'], capture_output=True).returncode == 0:
         return fail('tmux is not on PATH', 'install tmux (apt install tmux), then rerun')
 
-    pids = service_pids(args.profile, args.port, args.patch)
+    pids = panel_pids(args) if args.mode == 'panel' else service_pids(args.profile, args.port, args.patch)
     if len(pids) > 1:
         return fail(f'{len(pids)} service processes are running for profile {args.profile}',
                     'stop them first: superagent-service stop')
     if len(pids) == 1:
+        if args.mode == 'panel':
+            if panel_check(args.log, args.url)['ok']:
+                print(f'OK: already running (pid {pids[0]}); nothing started')
+                return print_panel_status(args)
+            return fail(f'pid {pids[0]} is running but not serving the panel at {args.url}',
+                        'wait a few seconds and retry, or restart: superagent-service restart')
         current = read_state(args.url)
         if runtime_up(current):
             print(f'OK: already running (pid {pids[0]}); nothing started')
@@ -412,7 +533,19 @@ def cmd_start(args):
         return fail(f'pid {pids[0]} is running but not serving {args.url}',
                     'wait a few seconds and retry, or restart: superagent-service restart')
 
-    if read_state(args.url) is not None:
+    if args.mode == 'panel':
+        # A port owner that is not this profile (most often the old standalone host during an
+        # upgrade) must be refused by pid evidence, not by an HTTP guess: an old host answers 200
+        # but does not carry the dsh page, and starting dsh on top of it only gets EADDRINUSE.
+        holder = pid_on_port(args.port)
+        if holder is not None and holder not in pids:
+            return fail(
+                f'port {args.port} is already in use by pid {holder}, which is not profile {args.profile}',
+                f'stop that process first: kill -INT {holder}')
+        if panel_check(args.log, args.url)['ok']:
+            return fail(f'something answers at {args.url} but is not profile {args.profile}',
+                        'check what owns that port: ss -lptn "sport = :<port>"')
+    elif read_state(args.url) is not None:
         return fail(f'something answers at {args.url} but is not profile {args.profile}',
                     'check what owns that port: ss -lptn "sport = :<port>"')
 
@@ -425,7 +558,18 @@ def cmd_start(args):
     # from SPV_QUEUE_DIR (the registry is the only deployment source), so a restarted instance knows which
     # deployment it is without guessing from the global state dir.
     identity = ''
-    if args.queue_dir:
+    if args.mode == 'panel':
+        # The overlay reads the port through this variable, and the webui plugin keeps its state under
+        # the panel's own directory; there is no dsh-superagent entry to receive a config value.
+        identity += f'WHEELCHAIR_PANEL_PORT={args.port} '
+        # tmux keeps the environment of the server that was already running, not the environment of
+        # this command. Re-export what the panel resolves its profile and data root from so a panel
+        # started from a sandbox (or from a shell with a custom DSH_HOME) boots the same instance.
+        for name in ('DSH_HOME', 'WHEELCHAIR_AGENT_HOME', 'SPV_PROJECTS_ROOT', 'HOME', 'PATH'):
+            value = os.environ.get(name)
+            if value:
+                identity += f'{name}={shlex.quote(value)} '
+    elif args.queue_dir:
         identity += f'SPV_QUEUE_DIR={shlex.quote(str(args.queue_dir))} '
     if args.state_dir:
         identity += f'DSH_SUPERAGENT_STATE_DIR={shlex.quote(str(args.state_dir))} '
@@ -439,6 +583,13 @@ def cmd_start(args):
     print(f'note: starting; log at {log}')
 
     deadline = time.monotonic() + args.timeout
+    if args.mode == 'panel':
+        if not wait_ready_panel(args, deadline):
+            print(f'FAIL: the panel did not answer at {args.url} within {args.timeout:g}s; the process was left running', file=sys.stderr)
+            print(f'fix: read the log: tail -40 {log}', file=sys.stderr)
+            return 1
+        print('OK: running')
+        return print_panel_status(args)
     code, current = wait_ready(args, deadline)
     if code is None:
         print(f'FAIL: no runtime answer within {args.timeout:g}s; the process was left running', file=sys.stderr)
@@ -453,7 +604,7 @@ def cmd_start(args):
 
 
 def cmd_stop(args):
-    pids = service_pids(args.profile, args.port, args.patch)
+    pids = panel_pids(args) if args.mode == 'panel' else service_pids(args.profile, args.port, args.patch)
     if not pids:
         print('OK: not running; nothing to stop')
         return 0
@@ -487,8 +638,10 @@ def cmd_restart(args):
 def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('action', choices=['start', 'stop', 'restart', 'status', 'open', 'probe'])
+    parser.add_argument('--mode', choices=['superagent', 'panel'], default='superagent',
+                        help='superagent: health lives at /orchestrator/api/state; panel: a dsh-web-app page with no orchestrator')
     parser.add_argument('--profile', default=os.environ.get('DSH_SUPERAGENT_PROFILE') or DEFAULT_PROFILE,
-                        help=f'DSH profile that loads dsh-superagent (default: {DEFAULT_PROFILE})')
+                        help=f'DSH profile (default: {DEFAULT_PROFILE})')
     parser.add_argument('--url', default=os.environ.get('DSH_SUPERAGENT_URL') or DEFAULT_URL,
                         help=f'management API base URL (default: {DEFAULT_URL})')
     parser.add_argument('--port', type=int, default=None,
@@ -510,6 +663,8 @@ def main():
     parser.add_argument('--log', type=Path, default=None,
                         help='log file (default: $DSH_HOME/.artifacts/<profile>.log)')
     args = parser.parse_args()
+    if args.mode == 'panel' and args.action == 'probe':
+        return fail('probe is for superagent deployments; the panel has no orchestrator or SPV preset', 'run: wheelchair-agent panel status')
 
     args.patch = Path(args.patch).expanduser().resolve() if args.patch else None
     args.session = args.session or f'dsh-{args.profile}'
