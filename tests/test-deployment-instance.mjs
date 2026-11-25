@@ -384,6 +384,60 @@ async function fakeProcEntry(root, pid, argv, ppid = 1) {
   await writeFile(join(dir, 'status'), `Name:\tfake\nPPid:\t${ppid}\n`)
 }
 
+/**
+ * 一个只记录 argv 的假 service manager。裸 `service status`/`start` 会真的拉起 python3 去探端口，
+ * 这里换成记录器：测试既不碰真实服务，也能断言 CLI 究竟把哪份部署交给了 service manager。
+ */
+async function fakeServiceManager(box) {
+  const bin = join(box.base, 'bin')
+  await mkdir(bin, { recursive: true })
+  const log = join(box.base, 'service-argv.log')
+  await writeFile(join(bin, 'python3'), '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$FAKE_SERVICE_LOG"\nexit 0\n')
+  await chmod(join(bin, 'python3'), 0o755)
+  return { log, path: `${bin}:${process.env.PATH}` }
+}
+
+async function testServiceTargetsOwnDeployment() {
+  const box = await sandbox()
+  assert.equal(cli(box, ['deployment', 'add', 'tools/alpha']).status, 0)
+  assert.equal(cli(box, ['deployment', 'add', 'tools/beta']).status, 0)
+  const alpha = instancePath('tools/alpha', { env: envFor(box) })
+  const alphaQueue = join(box.state, 'alpha', 'spv')
+  const betaQueue = join(box.state, 'beta', 'spv')
+  const fake = await fakeServiceManager(box)
+  const calls = async () => (await readFile(fake.log, 'utf8')).trim().split('\n').filter(Boolean)
+
+  // 一个知道自己属于 tools/alpha 的进程（`wheelchair-agent spv` 导出给启动器的 SPV_QUEUE_DIR）裸跑
+  // start：落在 alpha 的实例上，而不是"没有 project 的基服务"，也不再是 `--project` 缺失的错误。
+  const start = cli(box, ['service', 'start'], { SPV_QUEUE_DIR: alphaQueue, PATH: fake.path, FAKE_SERVICE_LOG: fake.log })
+  assert.equal(start.status, 0)
+  assert.doesNotMatch(start.stderr, /needs --project/)
+  const [startLine] = await calls()
+  assert.match(startLine, /superagent-service\.py start --profile superagent --patch /)
+  assert.ok(startLine.includes(`--patch ${alpha}`), `start targets the alpha overlay: ${startLine}`)
+  assert.ok(startLine.includes(`--queue-dir ${alphaQueue}`), `start carries the alpha queue: ${startLine}`)
+
+  // 裸 status 同样只看自己那份部署，不再打"所有部署"的总表。
+  const status = cli(box, ['service', 'status'], { SPV_QUEUE_DIR: alphaQueue, PATH: fake.path, FAKE_SERVICE_LOG: fake.log })
+  assert.equal(status.status, 0)
+  assert.doesNotMatch(status.stdout, /^deployments:$/m)
+  assert.doesNotMatch(status.stdout, /profile: superagent/)
+  assert.match((await calls()).at(-1), /superagent-service\.py status --profile superagent /)
+
+  // 显式 --project 压过环境里的身份。
+  cli(box, ['service', 'status', '--project', 'tools/beta'], {
+    SPV_QUEUE_DIR: alphaQueue, PATH: fake.path, FAKE_SERVICE_LOG: fake.log,
+  })
+  assert.ok((await calls()).at(-1).includes(`--queue-dir ${betaQueue}`), '--project wins over SPV_QUEUE_DIR')
+
+  // 没有身份时行为不变：start 仍然拒绝，status 仍然走老的总表。
+  const anonymous = cli(box, ['service', 'start'], { PATH: fake.path, FAKE_SERVICE_LOG: fake.log })
+  assert.equal(anonymous.status, 2)
+  assert.match(anonymous.stderr, /service start needs --project <p> or --all/)
+  assert.equal((await calls()).length, 3, 'an anonymous start never reaches the service manager')
+  pass('a process that knows its deployment targets itself; one without an identity still must name a target')
+}
+
 async function testServiceStatusListsDeployments() {
   const box = await sandbox()
   assert.equal(cli(box, ['deployment', 'add', 'tools/alpha']).status, 0)
@@ -468,6 +522,7 @@ try {
   await testRestartAllDryRun()
   await testRestartAllDryRunFromInsideSession()
   await testServiceStatusListsDeployments()
+  await testServiceTargetsOwnDeployment()
   await testRestartCommandPassesProject()
   process.stdout.write(`ok (${passed} passed)\n`)
 } catch (error) {

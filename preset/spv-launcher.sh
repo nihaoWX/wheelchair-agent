@@ -30,6 +30,10 @@ fi
 # 确保后端在跑。status 的退出码语义：0 正常、1 未运行或不健康、2 组件报错、3 等 setup。
 # 只有 0 才跳过 start；其余都试一次 start，让脚本自己决定能不能救回来。
 #
+# 这里故意不写 --project：`wheelchair-agent spv` 会把本部署的 SPV_QUEUE_DIR 导出给本脚本，CLI 用它
+# 认出"我属于哪份部署"，裸 status/start 就落在自己那份实例上（`#48` 起没有无 project 的基服务）。
+# 因此直接 `spv` 调用（没有 SPV_QUEUE_DIR）时只能报告"不知道属于哪份部署"，不会去猜。
+#
 # 优先用 `wheelchair-agent service`（规范形式），退回 `superagent-service`（兼容名）：两者是同一个
 # 实现，但只有前者在 CLI 装好时一定存在，而本脚本也可能被单独调用。
 ensure_service() {
@@ -55,7 +59,12 @@ ensure_service() {
   fi
 
   echo 'warning: superagent did not start, so no task dispatched here would run.' >&2
-  echo "warning: diagnose with \"$SERVICE_CMD status\", then restart this session." >&2
+  if [ -n "${SPV_QUEUE_DIR:-}" ]; then
+    echo "warning: diagnose with \"$SERVICE_CMD status\", then restart this session." >&2
+  else
+    echo 'warning: this launcher does not know which deployment it belongs to, so it could not name one.' >&2
+    echo 'warning: start the session with "wheelchair-agent spv --project <p>" instead of running this script directly.' >&2
+  fi
   return 0
 }
 

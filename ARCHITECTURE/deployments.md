@@ -56,8 +56,10 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
   冲突即报错、不自动改。每个部署的 stateDir 独立（`~/.dsh/state/superagent/<slug>`），所以会话、工单、
   worker 都互不可见。
 - `wheelchair-agent service start|stop|restart|open`：**必须**说清目标——`--project <p>` 动一份，`--all` 动全部；
-  两者都没有就报错并指路 `deployment list`（没有"无 project 的基服务"了）。裸 `service status` 仍可跑：
-  它照旧打印本机的服务行，并在注册表多于一条时追加一句按部署分组的 `deployments:` 段。
+  两者都没有就报错并指路 `deployment list`（没有"无 project 的基服务"了）。唯一例外是"本进程知道自己属于哪份
+  部署"：`wheelchair-agent spv` 会把 `SPV_QUEUE_DIR` 交给启动器，所以启动器裸跑 `service status`/`start`
+  作用在自己那份实例上（反查注册表，不是默认部署）。没有 `SPV_QUEUE_DIR` 的普通终端仍然必须说清目标；
+  裸 `service status` 照旧打印本机的服务行，并在注册表多于一条时追加一句按部署分组的 `deployments:` 段。
 - 重启分两种，都带 `--project`：
   - `/restart-wheelchair-agent`（= `restart-all --project <本部署>`）：目标**从本实例的 `SPV_QUEUE_DIR` 反查注册表**，
     所以斜杠命令一个参数都不用敲；只停/起这一份实例、resume 这一份的会话，**不跑 install**（preset/webui/core

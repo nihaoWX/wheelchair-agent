@@ -282,7 +282,9 @@ export function defineSpvTools(root, state, config = {}) {
                 additionalProperties: false,
                 required: ['project', 'queueDir', 'pending', 'unread'],
                 properties: {
-                  project: { type: ['string', 'null'] },
+                  // dsh 的 schema 子集只接受单个 type 字符串（type 数组会让整个 preset mount 失败），
+                  // 可空字段必须写成 oneOf。
+                  project: { oneOf: [{ type: 'string' }, { type: 'null' }] },
                   queueDir: { type: 'string' },
                   pending: { type: 'integer' },
                   unread: { type: 'integer' },
