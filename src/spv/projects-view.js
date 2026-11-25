@@ -5,15 +5,38 @@
  * `GET /orchestrator/api/{state,overview,tickets}`。任何一份部署失败/超时只影响它自己的
  * worker 卡片（`state.kind = "unavailable"`），不会让整个路由失败或长时间挂住。
  */
+import { readFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-import { listDeployments } from '../shared/deployments.js'
+import { deploymentSlug, listDeployments } from '../shared/deployments.js'
 import { listSpvProjects, projectsRootOf, spvProjectsPath } from '../shared/spv-projects.js'
 
 /** 单份部署的请求上限；并发发出，所以整张卡最多等这么久。 */
 export const PROJECT_PROBE_TIMEOUT_MS = 2000
 
 const API_HEADERS = { accept: 'application/json', 'x-orchestrator-request': '1' }
+
+/** `dsh web` prints this once per start; the token is the only way into the harness page. */
+const TOKEN_URL = /https?:\/\/[^\s]*[?&]token=[A-Za-z0-9._-]+/g
+
+/**
+ * The tokenised URL of one deployment's own full UI.
+ *
+ * A deployment's panel is authenticated per process, so the token lives in its startup log and
+ * nowhere else. Reading the log here (rather than probing the live page) keeps the projects route
+ * cheap and lets a card offer a jump link exactly when that deployment has printed one.
+ */
+export function deploymentUrl(project, { env = process.env } = {}) {
+  const dshHome = String(env.DSH_HOME ?? '').trim() || join(homedir(), '.dsh')
+  const log = join(dshHome, '.artifacts', `wca-${deploymentSlug(project)}.log`)
+  try {
+    const matches = [...readFileSync(log, 'utf8').matchAll(TOKEN_URL)]
+    return matches.length === 0 ? null : matches[matches.length - 1][0]
+  } catch {
+    return null
+  }
+}
 
 function reasonOf(error) {
   if (error?.name === 'AbortError') return `timed out after ${PROJECT_PROBE_TIMEOUT_MS}ms`
@@ -131,7 +154,10 @@ export async function projectCards({ env = process.env, home, stateDir } = {}) {
       return {
         project: worker,
         path: join(projectsRoot, worker),
-        deployment: deployment === undefined || deployment.port === null ? null : { port: deployment.port },
+        deployment:
+          deployment === undefined || deployment.port === null
+            ? null
+            : { port: deployment.port, url: deploymentUrl(worker, { env }) },
         state,
       }
     }),

@@ -6,12 +6,11 @@
  * 面板路由的「正在跑」用两个真 node:http 假部署 API：一个正常返回，一个永不响应（验证 2s 超时）。
  */
 import assert from 'node:assert/strict'
-import { execFileSync, spawn } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
 import { createServer } from 'node:http'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { setTimeout as sleep } from 'node:timers/promises'
 
 import {
   bindWorkerToSpvProject,
@@ -339,53 +338,12 @@ async function testPanelRoute() {
     check('path is projectsRoot/worker', first.path, join(box.projects, 'tools/alpha'))
     assert.ok(elapsed < 6000, `probes should be bounded; took ${elapsed}ms`)
 
-    // 独立面板进程：同一个 core 路由；fake API 仍在父进程里。
-    const port = await freePort()
-    const child = spawn(process.execPath, [CLI, 'panel', '--foreground', '--port', String(port)], {
-      cwd: box.base,
-      env: envFor(box, { SPV_PANEL_PORT: String(port) }),
-      stdio: ['ignore', 'pipe', 'pipe'],
-    })
-    try {
-      await waitFor(async () => {
-        try {
-          const response = await fetch(`http://127.0.0.1:${port}/wheelchair-projects`, { headers: { accept: 'application/json' } })
-          return response.ok
-        } catch {
-          return false
-        }
-      }, 8000)
-      const response = await fetch(`http://127.0.0.1:${port}/wheelchair-projects`, { headers: { accept: 'application/json' } })
-      check('standalone route status', response.status, 200)
-      const body = await response.json()
-      check('standalone route cards', body.spvProjects.length, 1)
-      check('standalone route workers', body.spvProjects[0].workers.length, 2)
-    } finally {
-      child.kill('SIGTERM')
-      await sleep(150)
-    }
+    // The standalone route lives in the real dsh instance; tests/test-panel.mjs covers it end to end.
   } finally {
     ok.close()
     hang.closeAllConnections?.()
     hang.close()
   }
-}
-
-async function freePort() {
-  const server = createServer()
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
-  const { port } = server.address()
-  await new Promise(resolve => server.close(resolve))
-  return port
-}
-
-async function waitFor(predicate, timeoutMs) {
-  const started = Date.now()
-  while (Date.now() - started < timeoutMs) {
-    if (await predicate()) return true
-    await sleep(100)
-  }
-  throw new Error(`condition not met within ${timeoutMs}ms`)
 }
 
 async function main() {
