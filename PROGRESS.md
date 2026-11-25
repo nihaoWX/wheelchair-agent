@@ -17,11 +17,13 @@ superagent 不耦合；队列归**每份部署**自己（`<stateDir>/spv/`），
 裸 `restart-all`、默认项目的 `spv`、`resolveRoot` 的 legacy 回退、watcher 的全量轮询），见
 `ARCHITECTURE/deployments.md`。
 
-**面板**：dsh web 里左侧栏 `wheelchair-agent`（功能宿主，不是 iframe），当前三个功能——收件箱、设置、
-插口（hooks 的只读视图）。`webui.style` = `fluid`（默认）/ `minimal`；各页共用 1200px 宽度变量，
-收件箱无左侧日期栏。
-面板 URL 每次服务重启都换 token，只能从 `wheelchair-agent service status` 的 `panel:` 行或
-`wheelchair-agent service open` 取（见 `docs/PITFALLS/dsh-web-panel-token-is-per-instance.md`）。
+**面板**：两个宿主、同一份 `webui/lib/client.js`（`#52`, `25b8e29`）。①独立面板 `wheelchair-agent panel`
+（`127.0.0.1:3080`，`panel.port` 可改，`--detach` 常驻 + `panel stop/status`），`service open` 只开它，
+`service status` 把面板与各部署分行列；②dsh 插件宿主保留（面板仍出现在 dsh web 左侧栏）。功能仍是
+收件箱、设置、插口三段；`webui.style` = `fluid`（默认）/ `minimal`；各页共用 1200px 宽度变量，收件箱无
+左侧日期栏。**后台行为（收件箱轮询、`builtin:autoMerge`、`builtin:archiveSession`、冷安装提醒、hook
+runner）故意只留在 dsh 插件宿主**——没开面板也照常合并与提醒。dsh 内嵌面板的 URL 仍每实例一 token
+（见 `docs/PITFALLS/dsh-web-panel-token-is-per-instance.md`），独立面板不需要 token。
 
 **服务**：当前跑在用户级瞬时 unit `wca-svc.service`（app.slice，不在任何 logind session scope 里），
 不是从终端直接起的 tmux server。`wheelchair-agent service stop/start` 会把它拉回调用者 scope，慎用。
@@ -51,7 +53,28 @@ superagent 不耦合；队列归**每份部署**自己（`<stateDir>/spv/`），
 
 # Completed
 
-- **SPV 起不来（dsh schema 子集）+ 启动器保活（本次，未提交）**：`src/spv/tools.js:285` 的
+- **独立面板（`#52`, `25b8e29`）**：`webui/lib/` 里的三个 JSON 路由抽成不 import `@deepseek-ai/*` 的
+  `src/spv/panel-routes.js`，新增 `wheelchair-agent panel [start|stop|status] [--port] [--detach]`
+  （`src/spv/panel.js`，`127.0.0.1:3080`、`panel.port` 设置键、`<data root>/panel.pid`、自己的
+  Host/Origin 栅栏）与 `src/spv/panel-shell.js`（`window.__ModuleLoader__` + 槽位/locale 垫片 + vendored
+  React 18.3.1 UMD，`webui/vendor/` 带 LICENSE 与版本 SHA）。**`webui/lib/client.js` 一个字节没改**，
+  Before/After 截图在 `webui/docs/panel-standalone-{before,after}-1440.png`。`service open` 只开面板、
+  `service status` 分列面板与部署、`service stop --all` 不停面板。后台行为（轮询/自动合并/归档/提醒/
+  hook runner）**故意留在 dsh 插件宿主**。我的自验：`npm test` 全绿；真起面板 3999 端口 →
+  `/client.js` 与仓库文件 `cmp` **字节一致**、`/` 200、`/vendor/react.production.min.js` 200、外域
+  `Origin`/伪造 `Host` 都 403、`GET /wheelchair-settings` 里 `effective` 有 `panel.port: 3080`、
+  `PUT` 写入 + stale revision 409、`panel stop` 后端口释放。
+- **每份部署自己的仓库（`#51`, `315b17f`）**：注册表条目加可选 `repository`（`deployment add --repo`
+  或从项目 checkout 的 GitHub origin 推断，https/`git@`/scp 三种写法），`deployment list` 显示；
+  新增 `deployment setup --project <p>`：走实例面板 API（loopback + `x-orchestrator-request: 1`，
+  无 token）写 `source:github`，PUT 后轮询 `GET /orchestrator/api/state` 直到 setup 重新 configured
+  （默认 90s/2s）；`service start` 成功后若 setup 为空就给一行指路。我的自验：`npm test` 368 全绿；
+  手验 `--repo` 推断、冲突报错指路 remove/add、非法 repo 与无 origin 的明确报错；`DEPLOYMENT_USAGE`
+  首行漏 `setup`（已在 `#52` 顺手修）。
+- **`spv` 去掉假语义（`#50`, `31c105e`）**：`spv` 是整台机器唯一的会话，`--project`/`--all` 一律
+  UsageError；启动前启动每份已注册部署的后端并清掉继承来的 `SPV_QUEUE_DIR`/`DSH_SUPERAGENT_STATE_DIR`；
+  注册表缺失只打一行 note 不阻断；`mergeNoticeText` 打出的冷安装配方改成 `--project` 形式。
+- **SPV 起不来（dsh schema 子集）+ 启动器保活（`#49`, `6dde246`）**：`src/spv/tools.js:285` 的
   `project: { type: ['string','null'] }` 用的是 type 数组，而 dsh 只接受单个 type 字符串，整份 preset 在
   `failed to create agent` 时被拒（`#48` 的 `1ba0587` 引入）——改成 `oneOf: [{type:'string'},{type:'null'}]`。
   `tests/test-preset.mjs` 新增 schema 子集 walker（`type/oneOf/properties/required/additionalProperties/
@@ -61,7 +84,7 @@ superagent 不耦合；队列归**每份部署**自己（`<stateDir>/spv/`），
   `--project` 也无 `--all` 时先用 `ownDeployment()`（读 `SPV_QUEUE_DIR`，与 `restart-command.js` 同一套）
   反查本进程所属部署；`wheelchair-agent spv` 会把该变量导出给启动器，所以启动器裸跑 status/start 就落在
   自己那份实例上。没有身份的普通终端行为不变（裸 start/stop 仍 exit 2，测试 `test-deployments.mjs` 未动）；
-  直接敲 `spv` 时如实报告"不知道属于哪份部署"并指路 `wheelchair-agent spv --project <p>`。
+  直接敲 `spv` 时如实报告"不知道属于哪份部署"（`#50` 之后启动器回到薄壳，`spv` 本身不再带部署身份）。
   验证：`npm test` 63 passed / 0 failed（`test-deployment-instance.mjs` 新增假 python3 记录器，
   断言 `--patch`/`--queue-dir` 指向 alpha、`--project` 压过环境、匿名 start 不触达 service manager）；
   冷安装后 `SPV_QUEUE_DIR=… spv --version` 自动起后端并打印 `superagent: ready`；
@@ -168,13 +191,16 @@ superagent 不耦合；队列归**每份部署**自己（`<stateDir>/spv/`），
 
 # In Progress
 
-- **本次修复已提交（`git log` 顶部 `fix(preset)`，未推送）**：`src/spv/tools.js`（`oneOf`）、`tests/test-preset.mjs`（schema 子集
-  walker）、`bin/wheelchair-agent.mjs`（按 `SPV_QUEUE_DIR` 反查本部署）、`preset/spv-launcher.sh`（无身份时
-  如实报告）、`tests/test-deployment-instance.mjs`（假 python3 观察 service manager 的 argv）与三份 HARNESS
-  文档；`npm test` 63 passed / 0 failed，已冷安装、`install.sh --check` 全绿、SPV TUI 实测可起。
-- **冷安装已做过一次**（`#48` 之后那次）：`deployment migrate` 认领旧安装 → `bash install.sh --project
-  tools/wheelchair-agent` → `service start --project tools/wheelchair-agent` 都成功，`install.sh --check`
-  全绿。之后 `deployment add <project>` 才能加第二份部署（尚未做）。
+- **下一次冷安装**（`#49`–`#52` 全在等它）：`service stop` → 退出 SPV → `bash install.sh --project
+  tools/wheelchair-agent` → `service start --project tools/wheelchair-agent` → `wheelchair-agent spv`。
+  装完 `install.sh --check --project tools/wheelchair-agent` 应全绿，`deployment list` 应显示一条
+  `tools/wheelchair-agent port 3082`；随后 `wheelchair-agent panel --detach` + `service open` 才是独立面板。
+- **下一步（未派）**：`INSTRUCTIONS.md` 的「spv 项目」模型 + 面板「项目」卡片（只读）——
+  `<data root>/spv-projects.json`、`spv-project add|list|remove`、`deployment add --spv`、卡片数据来自每份
+  部署的 `GET /orchestrator/api/{overview,tickets}`，实例挂了显示 `unavailable`。
+- **四份部署尚未注册**：`tools/manuscripts_skills`→`nihaoWX/manuscripts_skills`、`tools/pitfalls-manager`、
+  `tools/svg_grid`、`tools/wheelchair-agent`（3082），端口 3083/3084/3085；每份要 `deployment add` +
+  `install.sh --project` + `service start --project` + `deployment setup --project`（`#51`）。
 - **`merge.autoMerge` 仍是关的**：`settings.json` 里还没有这个键（默认 `false`），要在面板打开，
   且第一次真正合并前建议先用一张低风险 PR 试。
 
@@ -226,8 +252,8 @@ superagent 不耦合；队列归**每份部署**自己（`<stateDir>/spv/`），
    然后是 CLI 侧 `dispatch`/`outbox`/`check`/`health`/`cron`/`inbox` 存储；`session`/`restart` 链放最后（它管杀进程，
    出事最贵）。每张票的 parity 门都是"对应测试文件零改动 + 用户可见输出逐字一致"。
 
-1. 操作者执行一次冷安装（`deployment migrate` → `build-core.sh` → `install.sh --project` → `service start --project`），
-   `#37`–`#48` 一起生效。
+1. 操作者执行一次冷安装（`service stop` → 退出 SPV → `build-core.sh`（若 core 未建）→ `install.sh --project` →
+   `service start --project` → `spv`），`#37`–`#52` 一起生效；装完 `panel --detach` + `service open` 才是独立面板。
 2. 重派 `service-detach`（带禁令），并把 `service open` 作为最后一步并入 `/restart-wheelchair-agent`
    （`src/spv/restart.js` + `tests/test-restart.mjs`，见 `docs/PITFALLS/dsh-web-panel-token-is-per-instance.md`
    的「改法」一节）。

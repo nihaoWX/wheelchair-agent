@@ -29,17 +29,18 @@
 
 | 命令 | 做什么 | 实现 |
 |---|---|---|
-| `wheelchair-agent spv [--project <p>] [dsh-tui 参数...]` | 拉起后端（幂等）后启动 SPV 会话，其余参数透传给 `dsh-tui`；目标部署按 `--project` → cwd 落在 `<projectsRoot>/<project>` → 报错列清单三级推断，并把该部署的 `DSH_SUPERAGENT_STATE_DIR`/`SPV_QUEUE_DIR` 交给实例 | `runSpvSession` 把 `preset/spv-launcher.sh` 当受监督子进程跑（`src/spv/restart-ux.js`） |
+| `wheelchair-agent spv [dsh-tui 参数...]` | 整台机器**唯一**的 SPV 会话：先幂等拉起每份已注册部署的后端，再把其余参数透传给 `dsh-tui`。**没有部署选择器**（`--project`/`--all` 报 UsageError）——会话不属于任何部署，派单按任务的 `project` 路由、回信靠注册表聚合；启动前清掉继承来的 `SPV_QUEUE_DIR`/`DSH_SUPERAGENT_STATE_DIR`。注册表缺失只打一行指路 note，不阻断启动 | `runSpvSession` 把 `preset/spv-launcher.sh` 当受监督子进程跑（`src/spv/restart-ux.js`） |
 | `wheelchair-agent prepare` | 面板的 prepare 命令：clone 项目 → 受管 `AGENTS.md` → `tools/` 私有远端 | `exec sh commands/prepare.sh "$@"` |
-| `wheelchair-agent service <start\|stop\|restart\|status\|open> [--project <p>\|--all]` | 服务启停与面板；必须说清目标（`#48` 起没有无 project 的基服务）。唯一例外：本进程带着 `SPV_QUEUE_DIR`（`wheelchair-agent spv` 导出的身份）时，裸 `status`/`start` 作用在自己那份部署上——启动器就靠它保活 | `import src/spv/deployment.js` → `commands/superagent-service.py` |
+| `wheelchair-agent service <start\|stop\|restart\|status\|open> [--project <p>\|--all]` | `start/stop/restart` 必须说清目标（`#48` 起没有无 project 的基服务）；裸 `status` 逐个列出所有注册部署**加面板那一行**。`open` 只开**独立面板**（不属于任何部署，不接受 `--project`/`--all`，也不读实例日志里的 token URL）。唯一例外：本进程带着 `SPV_QUEUE_DIR` 时裸 `status`/`start` 作用在自己那份部署上 | `import src/spv/deployment.js` → `commands/superagent-service.py` |
+| `wheelchair-agent panel [start\|stop\|status] [--port <n>] [--detach]` | 独立面板本体：`127.0.0.1` + 默认 **3080**（`settings.json` 的 `panel.port` 可改），serve 未改动的 `webui/lib/client.js` + 三个 JSON 路由；自己的 Host/Origin 栅栏；**不含**收件箱轮询/自动合并/冷安装提醒（那些在每份部署的 dsh 插件里）。`--detach` 常驻并写 `<data root>/panel.pid` | `import src/spv/panel.js`（`panel-shell.js` 提供 `__ModuleLoader__`/react/槽位垫片） |
 | `wheelchair-agent jobctl <submit\|status\|log\|verify\|cancel>` | 长任务交给 systemd | `exec python3 commands/jobctl.py "$@"` |
 | `wheelchair-agent dispatch --project <p> --task <t> [--thread <n>] [--preset <id>]` | 往队列写一个任务 | `import src/spv/dispatch.js` |
 | `wheelchair-agent status [--thread <n>]` | 非阻塞看队列 | `import src/spv/outbox.js` |
-| `wheelchair-agent inbox` | 打印面板在哪里（dsh Web UI 的 `wheelchair-agent` 面板）；不再起独立页 | — |
+| `wheelchair-agent inbox` | 打印收件箱在哪里与面板 URL（独立面板 `127.0.0.1:3080/`）；不起任何页面 | — |
 | `wheelchair-agent inbox watch [--once] [--interval <秒>]` | 轮询 `tools/*` 的 `gh pr list`，把 PR 写进收件箱 | `import src/spv/inbox.js` |
 | `wheelchair-agent work <gc\|restored>` | 回收可重建的票目录；`restored <ticket>` 打印重建命令 | `import src/shared/work.js` |
 | `wheelchair-agent restart-all --project <p> \| --all [--dry-run] [--force] [--no-install] [--detach]` | `--project`：只停/起那一份实例并 resume 它的会话，**不装**（`/restart-wheelchair-agent` 的实现）；`--all`：逐份停 → 等会话租约 → 装一次 → 逐份起 → 同终端 `--resume` 拉回会话（`/restart-wheelchair-agent --all`） | `import src/spv/deployment-restart.js` / `src/spv/restart.js` |
-| `wheelchair-agent deployment <list\|add\|remove\|migrate>` | 项目 → 部署注册表：路由、实例 overlay、端口分配；`remove` 删最后一条要 `--force`；`migrate` 认领旧安装 | `import src/spv/deployment.js` |
+| `wheelchair-agent deployment <list\|add\|remove\|migrate\|setup>` | 项目 → 部署注册表：路由、实例 overlay、端口分配、可选 `repository`（`--repo` 或从项目 checkout 的 GitHub origin 推断）；`setup --project <p>` 走该实例的面板 API 把 `source:github` 指到自己的仓库；`remove` 删最后一条要 `--force`；`migrate` 认领旧安装 | `import src/spv/deployment.js` / `deployment-setup.js` |
 | `wheelchair-agent session release [--session <id>] [--dry-run]` | 释放占着 `session.lock` 的残留进程 | `import src/spv/session.js` |
 | `wheelchair-agent hook <events\|list\|add\|enable\|disable\|rm\|rename\|test\|log\|prompt>` | 插口表与脚本的读写；`prompt <事件>` 打印可复制的"叫 agent 加一条"提示词 | `import src/spv/hook.js` |
 | `wheelchair-agent where [--json]` | 这套安装把东西装到哪了（数据根、preset、wrapper、队列、日志） | `import src/shared/home.js` |

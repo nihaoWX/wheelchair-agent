@@ -33,6 +33,41 @@ its own loader row in `~/.dsh/profiles/superagent/cordis.patch.yml` (written by 
   `@deepseek-ai/dsh-client-ui-primitives` (the dsh plugin guide forbids loading Harness Client
   packages as modules). This repository has no TypeScript and no build chain.
 
+## Two hosts, one bundle (`#52`)
+
+The page has two hosts. They serve **the same** `lib/client.js` (byte-identical, never forked) and the
+same three JSON routes; only the surrounding page chrome differs.
+
+- **Host A — the dsh plugin** (`lib/index.js`). `inject = ['webServer', 'connection']`; it registers
+  the routes on the composition's `webServer` behind `ctx.connection.requestRejection` (dsh's
+  Host/Origin and login fence), and it is where **every background behaviour lives**: the inbox
+  poller, the hook runner, `builtin:autoMerge`, `builtin:archiveSession` and the cold-install notice.
+  This is deliberate — a deployment keeps merging and reporting while no panel is open.
+- **Host B — `wheelchair-agent panel`** (`src/spv/panel.js` + `src/spv/panel-shell.js`). A plain
+  `node:http` server bound to `127.0.0.1` only, default port **3080** (per run with `--port`,
+  persistently with the `panel.port` setting). It has its own fence — the request must carry the
+  loopback `Host`, and any browser `Origin` must be same-origin — but **no** poller, no effects,
+  nothing that changes a ticket. `--detach` keeps it resident (`<data root>/panel.pid`);
+  `panel stop` / `panel status` manage it; `service open` starts it if needed and opens the URL;
+  `service status` lists the panel separately from the deployments, and `service stop --all` never
+  stops it.
+
+The JSON routes and their handlers are the shared core `src/spv/panel-routes.js`, copied into the
+installed package as `lib/core/panel-routes.js` (and into the preset as `src/spv/panel-routes.js`) by
+`install.sh`. Nothing in the core imports `@deepseek-ai/*`.
+
+The shell (`panel-shell.js`) gives the bundle what the dsh page gives it, and nothing else:
+`window.__ModuleLoader__.load({ id, factory })`, `require('react')` / `require('react/jsx-runtime')`
+(React 18.3.1 UMD builds vendored under `webui/vendor/`, with their licences and a README recording
+the pinned version and tarball SHA), a small `jsx-runtime` shim, and a minimal `ctx` with `effect`,
+`locale.register`, `slots.inject` and `slots.register` — enough for the `sidebar.panellist` row and
+the `main` page the bundle declares. The dsh session sidebar and top bar are replaced by a 48 px
+rail; everything inside the page is the untouched client bundle.
+
+Proof for that claim: `webui/docs/panel-standalone-before-1440.png` and `...-after-1440.png` (same
+data root, 1440×1000, dark theme). A change that makes the two differ in more than the rail is a
+regression, not a redesign.
+
 ## Features and the review model
 
 The page is a **feature host**, not a PR list: the nav lists features (review inbox, Settings and
