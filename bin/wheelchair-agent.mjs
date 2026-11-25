@@ -60,9 +60,10 @@ commands:
   prepare                      the panel's prepare command: clone the project, install a managed
                                AGENTS.md, give tools/<name> a private GitHub remote
   service <start|stop|restart|status|open> [--project <p>|--all]
-                               start, stop, restart or inspect a deployment's instance; a bare command
-                               identifies the deployment from the current checkout, --all does every
-                               registered deployment, and "service open" opens only the standalone panel
+                               start, stop, restart or inspect a deployment's instance; a bare
+                               start|stop|restart|status identifies the deployment from the current
+                               checkout, --all does every registered deployment, and "service open"
+                               opens only the standalone panel
   panel [start|stop|status] [--port <n>] [--detach]
                                run the standalone panel (127.0.0.1, default 3080) that serves the
                                inbox/settings/hooks routes without any superagent deployment
