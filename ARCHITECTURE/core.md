@@ -76,10 +76,19 @@ webui 的事），只把**数据模型**交给二进制：键表与默认值、`
 
 ## 构建与安装
 
-- `bash build/build-core.sh` → `build/artifacts/wheelchair-agent-core-linux-x64`（strip 过，已在 `.gitignore`）。
-- `install.sh` 把它拷到 `~/.local/bin/wheelchair-agent-core`（与薄壳同目录），`--check` 用 `cmp` 比对
-  checkout 与已装副本。**install.sh 从不跑 cargo**：产物缺失就 FAIL 并打印 `bash build/build-core.sh`。
-  注意 `--check` 只比对"checkout 里的产物"与"已装副本"，**看不出产物比 `crates/**` 源码旧**——改完 Rust 必须自己重跑 `build-core.sh`，否则新键（例如 `#52` 的 `panel.port`）在装好的机器上不存在，而 `--check` 仍然全绿。产物戳与这条检查已派票补上（见 `PROGRESS.md` 的 Known Issues）。
+- `bash build/build-core.sh` → `build/artifacts/wheelchair-agent-core-linux-x64`（strip 过，已在 `.gitignore`）
+  **+ `build/artifacts/core-stamp.json`**（`src/shared/core-stamp.js` 写：`version`、`commit`、`builtAt`、
+  `sources`（`crates/**/*.rs` + `Cargo.toml` + `Cargo.lock` 按路径排序后的 sha256）、`cargo` 版本、
+  `artifact{file,sha256,size}`）。摘要只看**内容**：`touch` 一个 `.rs` 不算陈旧，改一个字算。
+- `install.sh` 把它拷到 `~/.local/bin/wheelchair-agent-core`（与薄壳同目录）。**install.sh 从不跑 cargo**：
+  产物或戳缺失就 FAIL 并打印 `bash build/build-core.sh`。三道关（`#57`）：
+  1. `--check` 先比"戳里的源码摘要 vs 当前 `crates/**`"——不一致就 FAIL，文案是
+     `the Rust core artifact predates the current Rust sources; run "bash build/build-core.sh"`（exit 2）；
+  2. 再用 `cmp` 比对 checkout 产物与已装副本；
+  3. 真装在**写数据根之前**就拒绝陈旧产物，`--allow-stale-core` 只告警放行（逃生口，永不默认）。
+- `src/shared/install-stamp.js` 的 `core` 组件把戳里的 `sources` 一起折进指纹，所以"两份一样旧的副本"
+  也不会显得一致——这正是 `#52` 加 `panel.port` 后 `--check` 仍全绿的成因。没有戳的旧 checkout 退化为
+  mtime 比较并打印一行 note。
 - `src/shared/queue.js` 的 `runCore` 先找 checkout 里的 `build/artifacts/…`，找不到才用 PATH 上的
   `wheelchair-agent-core`；两者都没有就抛错，**不退回 JS**（`work.js` 与 `schema.js` 经它调用）。
 - CI（`.github/workflows/ci.yml`）在 JS 检查之前先 build 一次，再跑 `cargo test --release --workspace`。

@@ -53,11 +53,22 @@ runner）故意只留在 dsh 插件宿主**——没开面板也照常合并与�
 
 # Completed
 
+- **`#57` 合并（`09c187f`，`fix(core): fail --check when the built core predates its Rust sources`）**：
+  `build/build-core.sh` 编完写 `build/artifacts/core-stamp.json`（源码摘要 + commit + cargo 版本 + 产物
+  sha256/size）；`install.sh --check` 先比"戳里的源码摘要 vs 现在 `crates/**`"，陈旧就 FAIL 并打印
+  `bash build/build-core.sh`（exit 2），再用 `cmp` 比已装副本；真装在写数据根前拒绝陈旧产物，
+  `--allow-stale-core` 只告警。`install-stamp.js` 的 `core` 组件把 `sources` 折进指纹，所以"两份一样旧"
+  也不再显得一致——这正是 `#52` 加 `panel.port` 后 `--check` 仍全绿的真因。缺戳的旧 checkout 退化为
+  mtime 比较并打一行 note。我的验证：worktree 内 build + `npm test` **465 passed / 0 failed**；给
+  `crates/wca-core/src/lib.rs` 加一行注释后 `core-stamp.js check` 退出 3、`install.sh --check` 打出
+  `the Rust core artifact predates the current Rust sources`，`git checkout` 还原后回到 0；只 `touch`
+  不改内容不算陈旧（摘要只看内容）。合并后我把 `build-core.sh` 丢掉的执行位补回、两个测试夹具里的
+  8 空格缩进改回 4 空格。
 - **`#55`/`#56` 合并（`30820cd`/`7387131`）**：裸 `service status|start|stop|restart` 改为按 cwd 推断
   部署（认不出则 exit 2 列注册表），`panel.port` 与"PUT `values` 是覆盖补丁"补了回归测试。
   合并时我修了两件事：把 `#56` 的 squash 标题改成它真正做的事（源码里 `panel.port` 早在 `#52` 就在
   schema 里，`#56` 只加测试与文档指针）；我自己关于"部分 PUT 会重置别键"的报告是**误判**，真正的
-  症状是产物陈旧（见下一条 Known Issues）。
+  症状是产物陈旧（已由 `#57` 修好）。
 - **四份部署 + 自动合并开关 + 文档第一批去重（运维，`23aa57e` 之后）**：注册
   `tools/manuscripts_skills`（3083）/`tools/pitfalls-manager`（3084）/`tools/svg_grid`（3085），各自
   `service start --project` 后 `deployment setup --project` 写进 GitHub 仓库，四份全部 `runtime: ready`；
@@ -283,14 +294,12 @@ runner）故意只留在 dsh 插件宿主**——没开面板也照常合并与�
   **第一批已收**：`preset.md` 的「重启整套部署」整段（约 2.2KB 重述，且里面"`resume.txt` 是唯一来源"
   自 `#36` 起已作废）换成三行指针 + 两条易错提醒；`webui/index.md` 的路由清单从"三条"改成四条并指向
   `src/spv/panel-routes.js`，`hooks.md` 拆分后遗留的"面板段"歧义也一并改准。
-- **编译产物可能比源码旧，而 `install.sh --check` 看不出来**（实测：`crates/**` 在 `#52` 加了
-  `panel.port`，checkout 里的产物是 12 小时前编的，装好的二进制因此不认识这个键；`--check` 只比对
-  "checkout 产物 vs 已装副本"，两边都旧就等于一致）。已派票 `07bd008ab1124add8b6f80f24524a901`：
-  `build-core.sh` 写产物戳（源码摘要）、`--check` 与真装都拒绝陈旧产物、`--allow-stale-core` 逃生口。
-  在修好之前，改过 `crates/**` 就必须手动 `bash build/build-core.sh` 再装。
-- **代码注释里有 8 处指向 `ARCHITECTURE/hooks.md`**（`src/shared/hooks.js:4/:87/:776/:994`、
-  `hook-events.js:6`、`settings.js:18`、`src/spv/hook.js:4`、`commands/prepare.sh:384`）：文档拆成四册后
-  这些指针要分别指向 `hooks/{contract,execution,runtime}.md`，属于代码改动，等下一张票一起改。
+- **编译产物曾可能比源码旧而 `--check` 看不出来**（`crates/**` 在 `#52` 加了 `panel.port`，checkout 的
+  产物是 12 小时前编的，装好的二进制因此不认识这个键）——`#57` 已修：产物戳 + 三道关。以后改过
+  `crates/**` 仍要记得 `bash build/build-core.sh`，但现在忘了会被 `--check` 与真装拦下。
+- **文档里仍有约 55 处规则重述**（见上一条），`#56` 已把 8 处代码注释指针改到
+  `hooks/{contract,execution,runtime}.md`；只剩 `src/shared/hooks.js:4` 一句"`ARCHITECTURE/hooks.md`
+  是完整说明"改成了指向 `hooks/` 四册。
 
 # Next Steps
 
@@ -298,8 +307,9 @@ runner）故意只留在 dsh 插件宿主**——没开面板也照常合并与�
    `dispatch`/`outbox`/`check`/`health`/`cron`/`inbox` 存储；`session`/`restart` 链放最后（它管杀进程，
    出事最贵）。每张票的 parity 门都是"对应测试文件零改动 + 用户可见输出逐字一致"。
 
-1. 操作者执行一次冷安装（`service stop` → 退出 SPV → `build-core.sh`（若 core 未建）→ `install.sh --project` →
-   `service start --project` → `spv`），`#37`–`#52` 一起生效；装完 `panel --detach` + `service open` 才是独立面板。
+1. 操作者执行一次冷安装（`service stop --project tools/wheelchair-agent` → 退出 SPV → `install.sh --project` →
+   `service start --project` → `spv`），`#37`–`#57` 一起生效；`#57` 起 `--check` 会先比产物戳，core 陈旧会被
+   拦下（逃生口 `--allow-stale-core` 只告警）。
 2. 重派 `service-detach`（带禁令），并把 `service open` 作为最后一步并入 `/restart-wheelchair-agent`
    （`src/spv/restart.js` + `tests/test-restart.mjs`，见 `docs/PITFALLS/dsh-web-panel-token-is-per-instance.md`
    的「改法」一节）。

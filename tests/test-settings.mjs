@@ -249,7 +249,7 @@ async function loadHostApply(box) {
     ['src/spv/archive-effect.js', 'lib/core/archive-effect.js'],
     ['src/spv/auto-merge-effect.js', 'lib/core/auto-merge-effect.js'],
     ['src/shared/core-stamp.js', 'lib/shared/core-stamp.js'],
-        ['src/shared/deployments.js', 'lib/shared/deployments.js'],
+    ['src/shared/deployments.js', 'lib/shared/deployments.js'],
     ['src/shared/home.js', 'lib/shared/home.js'],
     ['src/shared/hook-events.js', 'lib/shared/hook-events.js'],
     ['src/shared/hooks.js', 'lib/shared/hooks.js'],

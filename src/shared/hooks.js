@@ -1,7 +1,7 @@
 /**
  * 插口（hook）引擎：**在项目事件上自动跑一段脚本**，跑完就把结果写进记录，绝不影响 core path。
  *
- * 两条路径，必须分清（`ARCHITECTURE/hooks.md` 是完整说明）：
+ * 两条路径，必须分清（`ARCHITECTURE/hooks.md` 是总览，细节在 `ARCHITECTURE/hooks/` 的四册里）：
  *   - **core path**：review 落盘、notice 进 SPV 队列、合并后的 `git pull --ff-only`、队列 rename 式消费——
  *     这些永远发生，不可配置、不可取消。它们的实现分别在 `src/spv/inbox.js`、`src/spv/injector.js` 与
  *     `src/superagent/spv.js`，本文件**不碰**。
