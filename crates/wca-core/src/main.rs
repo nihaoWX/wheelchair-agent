@@ -10,6 +10,7 @@ use std::process::ExitCode;
 use serde::de::DeserializeOwned;
 use serde::Serialize;
 use serde_json::Value;
+use wca_core::hooks::{self, HooksRequest};
 use wca_core::queue::{self, QueueRequest};
 use wca_core::schema::{self, SchemaCheckRequest};
 use wca_core::settings::{self, SettingsRequest};
@@ -22,12 +23,13 @@ fn main() -> ExitCode {
         [command] if command == "queue-op" => queue_op(),
         [command] if command == "schema-check" => schema_check(),
         [command] if command == "settings" => settings_op(),
+        [command] if command == "hooks" => hooks_op(),
         [command] if command == "schema" => schema(),
         [] => usage(
-            "missing subcommand; expected \"work-plan\", \"queue-op\", \"schema-check\", \"schema\" or \"settings\"",
+            "missing subcommand; expected \"work-plan\", \"queue-op\", \"schema-check\", \"settings\", \"hooks\" or \"schema\"",
         ),
         [command] => usage(&format!(
-            "unknown subcommand {:?}; expected \"work-plan\", \"queue-op\", \"schema-check\", \"schema\" or \"settings\"",
+            "unknown subcommand {:?}; expected \"work-plan\", \"queue-op\", \"schema-check\", \"settings\", \"hooks\" or \"schema\"",
             command
         )),
         _ => usage("expected exactly one subcommand"),
@@ -103,6 +105,26 @@ fn settings_op() -> ExitCode {
         }
     };
     match settings::run(&request) {
+        Ok(data) => {
+            emit(&Envelope::success(data));
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            emit_failure(&error.code, &error.message);
+            ExitCode::from(1)
+        }
+    }
+}
+
+fn hooks_op() -> ExitCode {
+    let request: HooksRequest = match read_request() {
+        Ok(request) => request,
+        Err(message) => {
+            emit_failure("invalid_request", &message);
+            return ExitCode::from(1);
+        }
+    };
+    match hooks::run(&request) {
         Ok(data) => {
             emit(&Envelope::success(data));
             ExitCode::SUCCESS
