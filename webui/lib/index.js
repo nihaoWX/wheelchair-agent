@@ -32,7 +32,7 @@ import {
   resolveInboxRoot,
   startInboxWatcher,
 } from './core/inbox.js'
-import { ITEMS_PATH, REVIEW_PATH, createPanelHandlers, panelRouteTable } from './core/panel-routes.js'
+import { ITEMS_PATH, PROJECTS_PATH, REVIEW_PATH, createPanelHandlers, panelRouteTable } from './core/panel-routes.js'
 import { startHookRunner } from './core/hook-runner.js'
 import { createArchiveSessionEffect } from './core/archive-effect.js'
 import { AUTO_MERGE_TIMEOUT_MS, createAutoMergeEffect } from './core/auto-merge-effect.js'
@@ -150,7 +150,8 @@ export function apply(ctx, config = {}) {
       if (rejected(ctx, req, res)) return
       await route.handler(req, res)
     }
-    const label = route.path === ITEMS_PATH ? 'GET' : route.path === REVIEW_PATH ? 'POST' : 'GET/PUT'
+    const label =
+      route.path === ITEMS_PATH || route.path === PROJECTS_PATH ? 'GET' : route.path === REVIEW_PATH ? 'POST' : 'GET/PUT'
     ctx.effect(
       () => ctx.webServer.register({ kind: 'exact', path: route.path, handler: guarded }),
       `wheelchair-agent-webui: ${label} ${route.path}`,

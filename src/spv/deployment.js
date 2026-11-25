@@ -27,6 +27,13 @@ import {
   writeInstance,
 } from '../shared/deployments.js'
 import { resolveLegacyStateDir } from '../shared/home.js'
+import {
+  bindWorkerToSpvProject,
+  findSpvProjectOfWorker,
+  listSpvProjects,
+  resolveSpvRootForWorker,
+  unbindWorkerFromSpvProjects,
+} from '../shared/spv-projects.js'
 import { checkProject } from './dispatch.js'
 import { setupDeployment } from './deployment-setup.js'
 
@@ -41,11 +48,13 @@ commands:
   list [--json]
                                show every registered deployment
   add <project> [--profile <id>] [--state-dir <dir>] [--queue-dir <dir>]
-      [--port <n>] [--installed-sha <sha>] [--repo <owner/name>]
+      [--port <n>] [--installed-sha <sha>] [--repo <owner/name>] [--spv <root>]
                                record a deployment and render its instance overlay;
                                defaults: stateDir <base>/<slug>, queueDir <stateDir>/spv,
                                port = first unused from 3082, repo inferred from the
-                               project checkout's origin (or pass --repo)
+                               project checkout's origin (or pass --repo);
+                               --spv binds the worker to an spv project (inferred when exactly
+                               one registered spv root is its ancestor)
   setup --project <p>          point that deployment's own dsh-superagent instance at the
                                repository recorded here, through its panel API; run it after
                                "service start --project <p>" (setup waits up to 90s)
@@ -120,10 +129,18 @@ function noPositionals(positionals, command) {
 }
 
 /** 一条部署的稳定单行形式；null 打印成 `-`，方便脚本用空格切分。 */
-function describe(entry) {
+function describe(entry, spvRoot) {
   return `project ${entry.project} profile=${entry.profile} stateDir=${entry.stateDir} ` +
     `queueDir=${entry.queueDir} port=${entry.port ?? '-'} installedSha=${entry.installedSha ?? '-'} ` +
-    `repository=${entry.repository ?? '-'}`
+    `repository=${entry.repository ?? '-'} spv=${spvRoot ?? '-'}`
+}
+
+/** worker → spv 根的映射；文件坏了就大声报错（它是操作者的文件）。 */
+function spvRootsByWorker(env) {
+  const registry = listSpvProjects({ env })
+  const map = new Map()
+  for (const entry of registry.spvProjects) for (const worker of entry.workers) map.set(worker, entry.root)
+  return map
 }
 
 function sameRepository(left, right) {
@@ -211,7 +228,12 @@ function list({ env, json, out }) {
     return 0
   }
   if (json) {
-    out.write(`${JSON.stringify({ version: registry.version, registry: registry.file, deployments: registry.deployments }, null, 2)}\n`)
+    const spvRoots = spvRootsByWorker(env)
+    const deployments = registry.deployments.map(entry => ({
+      ...entry,
+      spv: spvRoots.get(entry.project) ?? null,
+    }))
+    out.write(`${JSON.stringify({ version: registry.version, registry: registry.file, deployments }, null, 2)}\n`)
     return 0
   }
   out.write(`registry: ${registry.file}\n`)
@@ -223,7 +245,8 @@ function list({ env, json, out }) {
     )
     return 0
   }
-  for (const entry of registry.deployments) out.write(`${describe(entry)}\n`)
+  const spvRoots = spvRootsByWorker(env)
+  for (const entry of registry.deployments) out.write(`${describe(entry, spvRoots.get(entry.project))}\n`)
   return 0
 }
 
@@ -231,6 +254,18 @@ function list({ env, json, out }) {
 function add(positionals, flags, { env, out }) {
   const project = checkProject(exactlyOne(positionals, 'tools/<name>'))
   const registry = listDeployments({ env })
+  const explicitSpv = String(flags['--spv'] ?? '').trim()
+  const binding = resolveSpvRootForWorker(project, { env, root: explicitSpv === '' ? undefined : explicitSpv })
+  if (binding.root !== null) {
+    const other = findSpvProjectOfWorker(project, { env })
+    if (other !== undefined && other.root !== binding.root) {
+      throw new Error(
+        `worker ${JSON.stringify(project)} is already bound to spv project ${JSON.stringify(other.root)}; a worker ` +
+          `can belong to only one spv project. Remove it there with "wheelchair-agent spv-project remove ` +
+          `${other.root}" (or bind this deployment explicitly with --spv ${binding.root}, after unbinding).`,
+      )
+    }
+  }
   const existing = registry.deployments.find(entry => entry.project === project)
   const stateDir = String(flags['--state-dir'] ?? '').trim() || existing?.stateDir || deploymentStateDir(project, env)
   const expectedQueue = join(stateDir, 'spv')
@@ -291,6 +326,11 @@ function add(positionals, flags, { env, out }) {
     { env },
   )
   const instance = writeInstance(result.entry, { env })
+  if (binding.root !== null) {
+    const bound = bindWorkerToSpvProject(project, binding, { env })
+    if (bound.changed) out.write(`spv-project ${bound.root}\n`)
+    else out.write(`spv-project ${bound.root} already binds ${project}; nothing changed\n`)
+  }
   if (result.created) {
     out.write(`registered ${describe(result.entry)}\n`)
   } else if (result.changed.length === 0) {
@@ -347,9 +387,13 @@ function remove(positionals, flags, { env, out }) {
         '"wheelchair-agent deployment add <project>" (or migrate) registers one again\n',
     )
   }
+  // 先确认 spv 表可读（坏文件要在大声报错时保持注册表原样），再删部署并解绑。
+  const bound = findSpvProjectOfWorker(project, { env })
   // 先给人看一眼要删的是哪一条（与 list 同样的一行），再动文件。
-  out.write(`${describe(entry)}\n`)
+  out.write(`${describe(entry, bound?.root)}\n`)
   const result = removeDeployment(project, { env })
+  const unbound = unbindWorkerFromSpvProjects(project, { env })
+  if (unbound.changed) out.write(`unbound ${project} from spv project ${unbound.roots.join(', ')}\n`)
   out.write(
     `removed ${project}; the deployment itself (profile, service, port) is untouched; it still reads its own queue. ` +
       `${result.remaining} deployment(s) remain in ${result.file}.\n`,
@@ -441,6 +485,7 @@ export async function runDeploymentCommand(argv, { env = process.env, out = proc
         '--queue-dir': 'queue-dir',
         '--port': 'port',
         '--installed-sha': 'installed-sha',
+        '--spv': 'spv',
       },
     })
     if (parsed.help) {

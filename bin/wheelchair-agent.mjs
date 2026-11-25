@@ -73,6 +73,9 @@ commands:
   deployment <list|add|remove|migrate|setup>
                                show or edit the project -> deployment registry; dispatch uses it to
                                pick the queue of the project's own deployment
+  spv-project <list|add|remove>
+                               show or edit the spv project registry (each spv root and the worker
+                               projects it owns); "deployment add --spv" maintains the same binding
   inbox                        print where the review inbox lives (the dsh Web UI panel)
   inbox add --title <text> --body <markdown|@file> [--thread <name>]
                                push one SPV decision letter into the inbox and print its id
@@ -813,6 +816,18 @@ async function commandDeployment(argv) {
   }
 }
 
+/** `spv-project`：维护数据根下的 spv 项目表；参数错误同样转成 exit 2。 */
+function commandSpvProject(argv) {
+  return load('src', 'spv', 'spv-project.js').then(({ runSpvProjectCommand }) => {
+    try {
+      runSpvProjectCommand(argv)
+    } catch (error) {
+      if (error?.code === 'SPV_PROJECT_USAGE') throw new UsageError(error.message)
+      throw error
+    }
+  })
+}
+
 /**
  * `status`：非阻塞看队列。注册表是唯一来源，所以默认逐个列出所有部署的队列；`--project` 只看一份。
  * 队列目录尚未建立（服务没启动）时报 `missingQueue`，与单部署时代一致。
@@ -1520,6 +1535,9 @@ try {
       break
     case 'deployment':
       await commandDeployment(rest)
+      break
+    case 'spv-project':
+      await commandSpvProject(rest)
       break
     case 'inbox':
       await commandInbox(rest)
