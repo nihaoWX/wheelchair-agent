@@ -14,7 +14,7 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -36,8 +36,11 @@ import {
 } from '../src/spv/deployment-restart.js'
 import { encodeSegment, projectKey } from '../src/spv/session.js'
 import { apply as applyRestartCommand, USAGE as RESTART_COMMAND_USAGE } from '../src/spv/restart-command.js'
+import { mergeNoticeText } from '../src/spv/inbox.js'
+import { resolveRoots } from '../src/spv/paths.js'
 
 const CLI = fileURLToPath(new URL('../bin/wheelchair-agent.mjs', import.meta.url))
+const PYTHON = spawnSync('sh', ['-c', 'command -v python3'], { encoding: 'utf8' }).stdout.trim()
 const SANDBOXES = []
 
 let passed = 0
@@ -438,6 +441,95 @@ async function testServiceTargetsOwnDeployment() {
   pass('a process that knows its deployment targets itself; one without an identity still must name a target')
 }
 
+async function testSpvHasNoDeploymentSelectorAndAggregatesEveryQueue() {
+  const box = await sandbox()
+  assert.equal(cli(box, ['deployment', 'add', 'tools/alpha']).status, 0)
+  assert.equal(cli(box, ['deployment', 'add', 'tools/beta']).status, 0)
+
+  const help = cli(box, ['--help'])
+  assert.equal(help.status, 0, help.stderr)
+  assert.match(help.stdout, /spv \[dsh-tui args\.\.\.\]/)
+  assert.doesNotMatch(help.stdout, /spv \[--project/)
+
+  const rejected = cli(box, ['spv', '--project', 'tools/alpha'])
+  assert.equal(rejected.status, 2)
+  assert.match(rejected.stderr, /spv does not take "--project"/)
+  assert.match(rejected.stderr, /global SPV session, not a deployment/)
+
+  // A fake launcher records exactly what `spv` hands the supervised child. The backend start runs the real
+  // manager, so PATH has python3 only: no dsh/tmux means it fails fast and cannot touch a live service.
+  const bin = join(box.base, 'path-bin')
+  await mkdir(bin, { recursive: true })
+  await symlink(PYTHON, join(bin, 'python3'))
+  await symlink('/bin/sh', join(bin, 'sh'))
+  const launcher = join(box.base, 'fake-launcher.sh')
+  const recorded = join(box.base, 'launcher-env.txt')
+  await writeFile(
+    launcher,
+    '#!/bin/sh\n{\n  printf "SPV_QUEUE_DIR=%s\\n" "${SPV_QUEUE_DIR-}"\n' +
+      '  printf "DSH_SUPERAGENT_STATE_DIR=%s\\n" "${DSH_SUPERAGENT_STATE_DIR-}"\n' +
+      '  printf "ARGV=%s\\n" "$*"\n} > "$FAKE_LAUNCHER_ENV"\nexit 0\n',
+  )
+  await chmod(launcher, 0o755)
+  const run = cli(box, ['spv'], {
+    WHEELCHAIR_AGENT_LAUNCHER: launcher,
+    FAKE_LAUNCHER_ENV: recorded,
+    SPV_QUEUE_DIR: join(box.state, 'alpha', 'spv'),
+    DSH_SUPERAGENT_STATE_DIR: join(box.state, 'alpha'),
+    PATH: bin,
+  })
+  assert.equal(run.status, 0, `${run.stdout}${run.stderr}`)
+  const seen = await readFile(recorded, 'utf8')
+  assert.match(seen, /^SPV_QUEUE_DIR=$/m, `spv must not export a queue identity:\n${seen}`)
+  assert.match(seen, /^DSH_SUPERAGENT_STATE_DIR=$/m, `spv must not export a deployment state dir:\n${seen}`)
+
+  // With no override the same registry must aggregate every deployment into the injector/status roots.
+  const saved = { home: process.env.WHEELCHAIR_AGENT_HOME, state: process.env.DSH_SUPERAGENT_STATE_DIR, queue: process.env.SPV_QUEUE_DIR }
+  try {
+    process.env.WHEELCHAIR_AGENT_HOME = box.data
+    process.env.DSH_SUPERAGENT_STATE_DIR = box.state
+    delete process.env.SPV_QUEUE_DIR
+    const roots = resolveRoots({})
+    assert.deepEqual(
+      roots.map(item => item.root).sort(),
+      [join(box.state, 'alpha', 'spv'), join(box.state, 'beta', 'spv')].sort(),
+      'a registry-only session watches both deployment queues',
+    )
+  } finally {
+    if (saved.home === undefined) delete process.env.WHEELCHAIR_AGENT_HOME; else process.env.WHEELCHAIR_AGENT_HOME = saved.home
+    if (saved.state === undefined) delete process.env.DSH_SUPERAGENT_STATE_DIR; else process.env.DSH_SUPERAGENT_STATE_DIR = saved.state
+    if (saved.queue === undefined) delete process.env.SPV_QUEUE_DIR; else process.env.SPV_QUEUE_DIR = saved.queue
+  }
+  pass('spv takes no deployment selector, exports no queue/state identity, and aggregation still sees both queues')
+}
+
+async function testStaleSingleDeploymentTextIsGone() {
+  const box = await sandbox()
+  const notice = mergeNoticeText({
+    item: { id: 'acme-beta-7', pr: 7, title: 'thing' },
+    repo: 'acme/beta',
+    project: 'tools/beta',
+    localPath: '/tmp/checkout',
+    pulledSha: 'deadbeef',
+    pending: { kind: 'unknown' },
+  })
+  assert.match(notice, /service stop --project '?tools\/beta'?/)
+  assert.match(notice, /install\.sh --project '?tools\/beta'?/)
+  assert.match(notice, /service start --project '?tools\/beta'?/)
+  assert.match(notice, /^  wheelchair-agent spv$/m)
+  assert.doesNotMatch(notice, /^  wheelchair-agent service (?:stop|start)$/m)
+
+  await mkdir(box.data, { recursive: true })
+  await writeFile(join(box.data, 'deployments.json'), JSON.stringify({ version: 1, deployments: [] }))
+  const listed = cli(box, ['deployment', 'list'])
+  assert.equal(listed.status, 0, listed.stderr)
+  assert.match(listed.stdout, /the registry is the only source/)
+  assert.match(listed.stdout, /deployment migrate/)
+  assert.match(listed.stdout, /install\.sh --project tools\/<name>/)
+  assert.doesNotMatch(listed.stdout, /single-deployment default/)
+  pass('cold-install notice and the empty-registry list name every project and no longer invent a base deployment')
+}
+
 async function testServiceStatusListsDeployments() {
   const box = await sandbox()
   assert.equal(cli(box, ['deployment', 'add', 'tools/alpha']).status, 0)
@@ -521,6 +613,8 @@ try {
   await testRestartProjectDryRunAndErrors()
   await testRestartAllDryRun()
   await testRestartAllDryRunFromInsideSession()
+  await testSpvHasNoDeploymentSelectorAndAggregatesEveryQueue()
+  await testStaleSingleDeploymentTextIsGone()
   await testServiceStatusListsDeployments()
   await testServiceTargetsOwnDeployment()
   await testRestartCommandPassesProject()

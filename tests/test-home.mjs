@@ -72,11 +72,10 @@ async function sandbox() {
 
 /** Run the CLI with a fake HOME and no inherited wheelchair-agent state. */
 function cli(box, args, extra = {}) {
-  return spawnSync(process.execPath, [CLI, ...args], {
-    cwd: box.base,
-    encoding: 'utf8',
-    env: { ...process.env, ...box.env, ...extra },
-  })
+  const env = { ...process.env, ...box.env, ...extra }
+  // A live SPV session exports SPV_QUEUE_DIR; this suite asserts the no-registry/no-override case.
+  if (!('SPV_QUEUE_DIR' in extra)) delete env.SPV_QUEUE_DIR
+  return spawnSync(process.execPath, [CLI, ...args], { cwd: box.base, encoding: 'utf8', env })
 }
 
 /** Write the old layout: every artifact at its pre-upgrade location under the superagent state dir. */

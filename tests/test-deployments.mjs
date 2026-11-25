@@ -291,10 +291,17 @@ async function testCommandsRequireARegisteredDeployment() {
   assert.equal(restartBare.status, 2)
   assert.match(restartBare.stderr, /restart-all needs --project <p> or --all/)
 
-  const spvBare = await cli(box, ['spv'])
+  // `spv` is the one global session: no registry is a notice, not a blocker; nothing selects a deployment.
+  const missingLauncher = join(box.base, 'missing-launcher')
+  const spvBare = await cli(box, ['spv'], { WHEELCHAIR_AGENT_LAUNCHER: missingLauncher })
   assert.equal(spvBare.status, 1)
-  assert.match(spvBare.stderr, /no deployment registry at /)
-  assert.match(spvBare.stderr, /deployment migrate/)
+  assert.match(spvBare.stdout, /no deployments are registered yet/)
+  assert.match(spvBare.stderr, /SPV launcher is missing at /)
+
+  const spvProject = await cli(box, ['spv', '--project', 'tools/alpha'])
+  assert.equal(spvProject.status, 2)
+  assert.match(spvProject.stderr, /spv does not take "--project"/)
+  assert.match(spvProject.stderr, /global SPV session/)
 
   const added = await cli(box, ['deployment', 'add', 'tools/alpha', '--state-dir', box.stateA, '--queue-dir', box.queueA, '--port', '3101'])
   assert.equal(added.status, 0, added.stderr)
@@ -311,32 +318,24 @@ async function testCommandsRequireARegisteredDeployment() {
   assert.equal(restartMissing.status, 1)
   assert.match(restartMissing.stderr, /deployment add tools\/nope/)
 
-  const spvMissing = await cli(box, ['spv', '--project', 'tools/nope'])
-  assert.equal(spvMissing.status, 1)
-  assert.match(spvMissing.stderr, /deployment add tools\/nope/)
+  // A registered deployment does not give `spv` a selector either; the launcher check is the next failure.
+  const spvRegistered = await cli(box, ['spv'], { WHEELCHAIR_AGENT_LAUNCHER: missingLauncher })
+  assert.equal(spvRegistered.status, 1)
+  assert.match(spvRegistered.stderr, /SPV launcher is missing at /)
+  assert.doesNotMatch(spvRegistered.stderr, /cannot infer which deployment/)
 
-  // cwd 不在 <projectsRoot>/<project> 下：列出已登记部署，而不是默认 tools/wheelchair-agent。
-  const spvInfer = await cli(box, ['spv'])
-  assert.equal(spvInfer.status, 1)
-  assert.match(spvInfer.stderr, /cannot infer which deployment/)
-  assert.match(spvInfer.stderr, /registered deployments: tools\/alpha/)
-
-  // 认领旧安装之后，显式 --project 通过注册表校验（启动器缺失是环境错误，不是推断错误）。
+  // After adopting an old install the launcher is still the only blocker; cwd never scopes the session.
   await cli(box, ['deployment', 'remove', 'tools/alpha', '--force'])
   await cli(box, ['deployment', 'migrate'])
-  const explicit = await cli(box, ['spv', '--project', 'tools/wheelchair-agent'],
-    { WHEELCHAIR_AGENT_LAUNCHER: join(box.base, 'missing-launcher') })
-  assert.equal(explicit.status, 1)
-  assert.match(explicit.stderr, /SPV launcher is missing at /)
-
-  // cwd 落在 <projectsRoot>/<project> 下时无需 --project，也能推断出该部署。
+  const adopted = await cli(box, ['spv'], { WHEELCHAIR_AGENT_LAUNCHER: missingLauncher })
+  assert.equal(adopted.status, 1)
+  assert.match(adopted.stderr, /SPV launcher is missing at /)
   const checkout = join(box.home, 'bioagentforge', 'tools', 'wheelchair-agent')
   await mkdir(checkout, { recursive: true })
-  const inferred = await cli(box, ['spv'],
-    { WHEELCHAIR_AGENT_LAUNCHER: join(box.base, 'missing-launcher') }, { cwd: checkout })
-  assert.equal(inferred.status, 1)
-  assert.match(inferred.stderr, /SPV launcher is missing at /)
-  assert.doesNotMatch(inferred.stderr, /cannot infer which deployment/)
+  const fromCheckout = await cli(box, ['spv'], { WHEELCHAIR_AGENT_LAUNCHER: missingLauncher }, { cwd: checkout })
+  assert.equal(fromCheckout.status, 1)
+  assert.match(fromCheckout.stderr, /SPV launcher is missing at /)
+  assert.deepEqual(fromCheckout.stderr, adopted.stderr, 'cwd no longer changes what spv targets')
 }
 
 // ---------------------------------------------------------------- 按项目路由
