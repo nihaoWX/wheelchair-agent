@@ -107,6 +107,7 @@ files); `lib/client.js` hot-reloads through dsh's client-bundle watcher.
 |---|---|---|
 | `webui.style` | `fluid` | Panel variant: `fluid` (tonal card wash, layered shadows and motion) or `minimal` (flat cards, no tint, shadow or motion). Read when the panel loads; a save applies without a reload. |
 | `inbox.intervalSeconds` | `60` | Seconds between inbox polls. Every tick runs one `gh pr list` per repository. `0` pauses automatic refresh (the CLI still works). Env `SPV_INBOX_INTERVAL_SECONDS`; plugin config `intervalSeconds`. |
+| `panel.port` | `3080` | 独立面板监听端口（整数，1–65535）。改完要重启面板才生效；`panel --port <n>` 只覆盖本次运行。schema 的唯一定义在 Rust core 的 `settings` 子命令里（`#52` 加键） |
 | `merge.autoMerge` | `false` | When on, `ticket.delivered` tries to squash-merge the ticket PR after five gates (one open PR matching the clone's branch and repository, not a draft, `MERGEABLE`, non-empty all-SUCCESS `statusCheckRollup`, no HARNESS files). Any failing gate logs one line and does not merge. |
 | `merge.installRepo` | `wheelchair-agent` | Merges of this repository queue the cold-install notice instead of a plain pull. `owner/name` or `name`. Env `SPV_INSTALL_REPO`. |
 | `injection.intervalMs` | `1000` | How often the SPV-session result injector checks the outbox. |
@@ -171,3 +172,10 @@ merge + stale revision, corrupt files, unknown keys, template/preset rules, prec
 codes, consumer integration (injector, `appendReview`, poller, `work gc`, mount sweep), the pure
 client helpers loaded through a fake `window.__ModuleLoader__`, and the host route behind the
 connection fence. It runs in `npm test`, in CI, and on its own with `node tests/test-settings.mjs`.
+
+## `PUT /wheelchair-settings` 的 `values` 是覆盖补丁（`#56`）
+
+请求里的 `values` 只改**出现的键**，没出现的键保留文件里的现值与来源（用户设过的仍是用户设置，
+`filled` 也不变）。面板自己总是发全量，所以这个差别只在 `curl`/脚本发一个键时才看得见——早先一次
+部分写入会把别的键交给 `filled` 重新补成默认值，看起来像"被重置"。revision 校验、409、非法值与
+只读键保护都不受影响。

@@ -79,6 +79,7 @@ webui 的事），只把**数据模型**交给二进制：键表与默认值、`
 - `bash build/build-core.sh` → `build/artifacts/wheelchair-agent-core-linux-x64`（strip 过，已在 `.gitignore`）。
 - `install.sh` 把它拷到 `~/.local/bin/wheelchair-agent-core`（与薄壳同目录），`--check` 用 `cmp` 比对
   checkout 与已装副本。**install.sh 从不跑 cargo**：产物缺失就 FAIL 并打印 `bash build/build-core.sh`。
+  注意 `--check` 只比对"checkout 里的产物"与"已装副本"，**看不出产物比 `crates/**` 源码旧**——改完 Rust 必须自己重跑 `build-core.sh`，否则新键（例如 `#52` 的 `panel.port`）在装好的机器上不存在，而 `--check` 仍然全绿。产物戳与这条检查已派票补上（见 `PROGRESS.md` 的 Known Issues）。
 - `src/shared/queue.js` 的 `runCore` 先找 checkout 里的 `build/artifacts/…`，找不到才用 PATH 上的
   `wheelchair-agent-core`；两者都没有就抛错，**不退回 JS**（`work.js` 与 `schema.js` 经它调用）。
 - CI（`.github/workflows/ci.yml`）在 JS 检查之前先 build 一次，再跑 `cargo test --release --workspace`。
