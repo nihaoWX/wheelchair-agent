@@ -31,7 +31,7 @@ import { checkProject } from './dispatch.js'
 import { setupDeployment } from './deployment-setup.js'
 
 /** `deployment --help` 与参数错误的固定文案；命令本身不解释单个部署怎么安装。 */
-export const DEPLOYMENT_USAGE = `usage: wheelchair-agent deployment <list|add|remove|migrate> [options]
+export const DEPLOYMENT_USAGE = `usage: wheelchair-agent deployment <list|add|remove|migrate|setup> [options]
 
 The registry (~/.wheelchair-agent/deployments.json, moved by WHEELCHAIR_AGENT_HOME) maps a project
 to the deployment that reads its tasks. It is the only source of truth: dispatch writes into the

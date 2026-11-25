@@ -42,6 +42,12 @@ const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh')
 const PRESET_DIR = INSTALLED ? SELF_DIR : join(DSH_HOME, '.agent-presets', 'spv')
 const STATE_DIR = process.env.DSH_SUPERAGENT_STATE_DIR || join(DSH_HOME, 'state', 'superagent')
 const PROJECTS_ROOT = process.env.SPV_PROJECTS_ROOT || join(homedir(), 'bioagentforge')
+/** The installed webui package keeps the same `lib/client.js` + `vendor/` layout as the checkout. */
+const PROFILE_ID = String(process.env.DSH_SUPERAGENT_PROFILE ?? '').trim() || 'superagent'
+const WEBUI_ROOT = INSTALLED
+  ? join(DSH_HOME, 'profiles', PROFILE_ID, 'node_modules', 'wheelchair-agent-webui')
+  : join(ROOT, 'webui')
+process.env.WHEELCHAIR_AGENT_WEBUI ??= WEBUI_ROOT
 
 const USAGE = `usage: wheelchair-agent <command> [options]
 
@@ -56,6 +62,9 @@ commands:
   service <start|stop|restart|status|open> [--project <p>|--all]
                                start, stop, restart or inspect a deployment's instance; --all does
                                every registered deployment, and bare "service status" lists them all
+  panel [start|stop|status] [--port <n>] [--detach]
+                               run the standalone panel (127.0.0.1, default 3080) that serves the
+                               inbox/settings/hooks routes without any superagent deployment
   jobctl <submit|status|log|verify|cancel>
                                hand a long job to systemd so it outlives the worker's turn
   dispatch --project <p> --task <t> [--thread <n>] [--preset <id>]
@@ -179,6 +188,25 @@ reader actually resolves a path, not here.
 
 options:
   --json    print one JSON object for scripting`
+
+const PANEL_USAGE = `usage: wheelchair-agent panel [start|stop|status] [--port <n>] [--detach]
+
+The standalone wheelchair-agent panel: the same inbox, settings and hooks JSON routes and page,
+served on 127.0.0.1 without any superagent instance. Inbox polling, auto-merge, cold-install notices
+and the hook runner stay in each deployment's dsh plugin; the panel only displays and handles the
+operator's actions.
+
+commands:
+  start (default)              run in the foreground until SIGINT/SIGTERM
+  --detach                     start detached from this terminal and return
+  stop                         stop the recorded panel process
+  status                       print the panel port and whether it is running
+
+options:
+  --port <n>                   override this run's port (default: settings.json "panel.port", 3080)
+  --foreground                 run in the foreground even when another flag is absent
+
+A person opens it with "wheelchair-agent service open".`
 
 const RESTART_USAGE = `usage: wheelchair-agent restart-all [--dry-run] [--force] [--no-install] [--detach]
                                     [--session <id>] [--project <p>|--all]
@@ -490,13 +518,14 @@ async function serviceArgsFor(entry, rest) {
 }
 
 /**
- * `service`：每份部署都有自己的实例，所以 start|stop|restart|open 必须说清目标（--project 或 --all）；
+ * `service`：每份部署都有自己的实例，所以 start|stop|restart 必须说清目标（--project 或 --all）；
  * 裸 `service status`（以及 `status --all`）逐个列出所有注册部署。没有 --project 也没有 --all 时不再
  * 静默使用基 stateDir/3082。
  *
- * 例外是"本进程知道自己属于哪份部署"：`wheelchair-agent spv` 会给启动器和它 exec 的 TUI 导出
- * `SPV_QUEUE_DIR`，启动器正是用它裸跑 `service status` / `service start` 来保活自己那份实例。这不是
- * 默认部署——没有 `SPV_QUEUE_DIR` 的普通终端仍然必须说清目标。
+ * 例外是"本进程知道自己属于哪份部署"：启动器用它裸跑 `service status` / `service start` 来保活自己
+ * 那份实例。这不是默认部署——没有 `SPV_QUEUE_DIR` 的普通终端仍然必须说清目标。
+ *
+ * `service open` 只开独立面板：面板不属于任何部署，也不读实例日志里的 token URL。
  */
 async function commandService(argv) {
   const { project, all, rest } = takeServiceTarget(argv)
@@ -507,12 +536,39 @@ async function commandService(argv) {
     const own = ownDeployment()
     if (own.entry !== null) target = own.entry.project
   }
+  if (action === 'open') {
+    if (project !== undefined || all || rest.length > 1) {
+      throw new UsageError(
+        'service open opens the standalone panel and takes no deployment selector: the panel is not part of ' +
+          'any deployment. Use "wheelchair-agent service status" to list deployments.',
+      )
+    }
+    const { openPanel } = await load('src', 'spv', 'panel.js')
+    process.exit(await openPanel())
+  }
   if (target === undefined && !all && action !== 'status') {
     throw new UsageError(
       `service ${action} needs --project <p> or --all: there is no deployment without a project, and this ` +
         'CLI no longer starts or stops one implicitly. Run "wheelchair-agent deployment list" to see the ' +
         'registered deployments.',
     )
+  }
+  if (target === undefined && !all && action === 'status') {
+    const { panelStatusLine } = await load('src', 'spv', 'panel.js')
+    process.stdout.write(`${panelStatusLine()}\n`)
+    let registry = null
+    try {
+      registry = (await requiredRegistry()).registry
+    } catch (error) {
+      process.stdout.write(`note: deployments cannot be listed: ${error.message}\n`)
+      return
+    }
+    if (registry.deployments.length === 0) return
+    const code = runServiceManager(['status'])
+    const block = await deploymentStatusBlock(registry.deployments)
+    if (block !== '') process.stdout.write(`\n${block}`)
+    if (code !== 0) process.exit(code)
+    return
   }
   const { deployments, registry } = await requiredRegistry()
   const { checkProject } = await load('src', 'spv', 'dispatch.js')
@@ -529,15 +585,16 @@ async function commandService(argv) {
         '(adopt the existing installation) or "wheelchair-agent deployment add <project>", then start it.',
     )
   }
-  if (target === undefined && action === 'status') {
-    // The old `profile:/url:/pids:/runtime:` lines still describe the machine's service; when more than one
-    // deployment is registered, one compact line per deployment follows. A bare status never guesses a
-    // deployment for a stop/start.
-    const code = runServiceManager(['status'])
-    const block = await deploymentStatusBlock(entries)
-    if (block !== '') process.stdout.write(`\n${block}`)
-    if (code !== 0) process.exit(code)
-    return
+  if (action === 'status') {
+    const { panelStatusLine } = await load('src', 'spv', 'panel.js')
+    process.stdout.write(`${panelStatusLine()}\n`)
+    let status = 0
+    for (const entry of entries) {
+      if (entries.length > 1) process.stdout.write(`== ${entry.project} ==\n`)
+      const code = runServiceManager(await serviceArgsFor(entry, ['status']))
+      if (code !== 0 && status === 0) status = code
+    }
+    process.exit(status)
   }
   let status = 0
   for (const entry of entries) {
@@ -554,6 +611,56 @@ async function commandService(argv) {
     }
   }
   process.exit(status)
+}
+
+/**
+ * `panel`：独立面板，不属于任何部署。默认前台运行；`--detach` 后台常驻；`stop` 停掉；`status` 看端口与 pid。
+ * 端口来自 settings.json 的 `panel.port`（默认 3080），`--port` 只覆盖本次运行。
+ */
+async function commandPanel(argv) {
+  const { panelPort, readPanelState, runPanelForeground, startPanelDetached, stopPanel, panelStatusLine } =
+    await load('src', 'spv', 'panel.js')
+  let action = 'foreground'
+  let detach = false
+  let port
+  const words = []
+  for (let index = 0; index < argv.length; index += 1) {
+    const word = argv[index]
+    if (word === '--detach') detach = true
+    else if (word === '--foreground') detach = false
+    else if (word === '--port') {
+      const value = argv[index + 1]
+      if (value === undefined) throw new UsageError('panel --port needs a number')
+      index += 1
+      port = Number(value)
+      if (!Number.isInteger(port) || port < 0 || port > 65535) throw new UsageError(`invalid --port ${JSON.stringify(value)}`)
+    } else if (word.startsWith('--port=')) {
+      port = Number(word.slice('--port='.length))
+      if (!Number.isInteger(port) || port < 0 || port > 65535) throw new UsageError(`invalid --port ${JSON.stringify(word.slice(7))}`)
+    } else if (word === '-h' || word === '--help') {
+      process.stdout.write(PANEL_USAGE)
+      return
+    } else if (word.startsWith('-')) throw new UsageError(`unknown panel option ${JSON.stringify(word)}`)
+    else words.push(word)
+  }
+  if (words.length > 1) throw new UsageError('panel takes one of start|stop|status')
+  if (words[0] === 'stop') action = 'stop'
+  else if (words[0] === 'status') action = 'status'
+  else if (words[0] === 'start') action = detach ? 'detach' : 'foreground'
+  else if (words[0] !== undefined) throw new UsageError(`unknown panel command ${JSON.stringify(words[0])}`)
+  else if (detach) action = 'detach'
+  if (action === 'status') {
+    process.stdout.write(`${panelStatusLine()}\n`)
+    return
+  }
+  if (action === 'stop') process.exit(await stopPanel())
+  if (action === 'detach') {
+    const state = await startPanelDetached({ port })
+    process.stdout.write(`panel listening on http://127.0.0.1:${state.port}/ (pid ${state.pid})\n`)
+    return
+  }
+  const chosen = port === undefined ? panelPort() : port
+  process.exit(await runPanelForeground({ port: chosen === 0 ? 0 : chosen }))
 }
 
 /** One line per registered deployment for a multi-deployment `service status`; `''` when there is one. */
@@ -1395,6 +1502,9 @@ try {
       break
     case 'prepare':
       commandPrepare(rest)
+      break
+    case 'panel':
+      await commandPanel(rest)
       break
     case 'service':
       await commandService(rest)
