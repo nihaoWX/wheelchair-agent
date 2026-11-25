@@ -239,6 +239,8 @@ async function loadHostApply(box) {
   await writeFile(join(app, 'package.json'), '{"type":"module"}\n', 'utf8')
   for (const [source, target] of [
     ['src/spv/inbox.js', 'lib/core/inbox.js'],
+    ['src/spv/panel-routes.js', 'lib/core/panel-routes.js'],
+    ['src/spv/panel-page.js', 'lib/core/panel-page.js'],
     ['src/spv/ownership.js', 'lib/core/ownership.js'],
     ['src/spv/dispatch.js', 'lib/core/dispatch.js'],
     ['src/spv/hook-runner.js', 'lib/core/hook-runner.js'],
@@ -395,6 +397,7 @@ function defaultPrIssueNotice(item, comment) {
 // ------------------------------------------------------------------- fixtures
 
 const EXPECTED_DEFAULTS = {
+  'panel.port': 3080,
   'webui.style': 'fluid',
   'inbox.intervalSeconds': 60,
   'merge.installRepo': 'wheelchair-agent',

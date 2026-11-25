@@ -27,25 +27,21 @@
  */
 import {
   INBOX_INTERVAL_DEFAULT,
-  createInboxHandler,
   defaultProjectsRoot,
   resolveInboxIntervalSeconds,
   resolveInboxRoot,
   startInboxWatcher,
 } from './core/inbox.js'
+import { ITEMS_PATH, REVIEW_PATH, createPanelHandlers, panelRouteTable } from './core/panel-routes.js'
 import { startHookRunner } from './core/hook-runner.js'
 import { createArchiveSessionEffect } from './core/archive-effect.js'
 import { AUTO_MERGE_TIMEOUT_MS, createAutoMergeEffect } from './core/auto-merge-effect.js'
 import { DEFAULT_STATE_DIR, resolveRoot } from './core/paths.js'
-import { buildHookPanel } from './shared/hooks.js'
-import { SETTINGS_PATH, createSettingsHandler, ensureSettingsFile, resolveSettings } from './shared/settings.js'
+import { resolveSettings } from './shared/settings.js'
 import { planWork, resolveWorkRoot } from './shared/work.js'
 
 export const name = 'wheelchair-agent-webui'
 export const inject = ['webServer', 'connection']
-
-const ITEMS_PATH = '/wheelchair-inbox/items'
-const REVIEW_PATH = '/wheelchair-inbox/review'
 
 /** The composition's connection service (typed locally: its package is browser-side). */
 function connectionOf(ctx) {
@@ -141,53 +137,25 @@ export function apply(ctx, config = {}) {
   // Resolve once at mount so the first run performs the one-shot migration; the handler and the poller
   // then re-resolve per request/tick, so a mount that had to fall back picks up a later migration.
   resolveInboxRoot()
-  // First run on an upgraded machine: ship the self-contained settings file (all defaults, marked in
-  // `filled`) so the panel never has to explain a missing file. A failure is a warning, not a mount
-  // failure; the Settings page still works with fallback values and reports the write problem on save.
-  try {
-    ensureSettingsFile()
-  } catch (error) {
-    ctx.logger?.warn?.(`wheelchair-agent-webui: cannot create the settings file (${error?.message ?? error})`)
+  // The routes and their handlers are the shared, dsh-independent core (`./core/panel-routes.js`);
+  // this host adds only the connection fence and registers them on the composition's webServer. The
+  // standalone `wheelchair-agent panel` serves the same core over node:http.
+  const core = createPanelHandlers({ config: settingsConfig(config) })
+  if (core.settingsFileError !== null) {
+    ctx.logger?.warn?.(`wheelchair-agent-webui: cannot create the settings file (${core.settingsFileError?.message ?? core.settingsFileError})`)
   }
   const rootOf = () => resolveInboxRoot()
-  const handler = createInboxHandler({ rootOf })
-  const settingsHandler = createSettingsHandler({
-    config: settingsConfig(config),
-    // The panel reads one snapshot: the settings store owns the write path and the hook view is a
-    // read-only projection of the same snapshot plus records/hooks.jsonl. A broken projection falls
-    // back to `hookView: null` so the Settings section still loads.
-    decorate: snapshot => {
-      try {
-        return { ...snapshot, hookView: buildHookPanel({ settings: snapshot, env: process.env }) }
-      } catch (error) {
-        return {
-          ...snapshot,
-          hookView: null,
-          hookViewError: error instanceof Error ? error.message : String(error),
-        }
-      }
-    },
-  })
-  const guarded = async (req, res) => {
-    if (rejected(ctx, req, res)) return
-    await handler(req, res)
+  for (const route of panelRouteTable(core)) {
+    const guarded = async (req, res) => {
+      if (rejected(ctx, req, res)) return
+      await route.handler(req, res)
+    }
+    const label = route.path === ITEMS_PATH ? 'GET' : route.path === REVIEW_PATH ? 'POST' : 'GET/PUT'
+    ctx.effect(
+      () => ctx.webServer.register({ kind: 'exact', path: route.path, handler: guarded }),
+      `wheelchair-agent-webui: ${label} ${route.path}`,
+    )
   }
-  const guardedSettings = async (req, res) => {
-    if (rejected(ctx, req, res)) return
-    await settingsHandler(req, res)
-  }
-  ctx.effect(
-    () => ctx.webServer.register({ kind: 'exact', path: ITEMS_PATH, handler: guarded }),
-    `wheelchair-agent-webui: GET ${ITEMS_PATH}`,
-  )
-  ctx.effect(
-    () => ctx.webServer.register({ kind: 'exact', path: REVIEW_PATH, handler: guarded }),
-    `wheelchair-agent-webui: POST ${REVIEW_PATH}`,
-  )
-  ctx.effect(
-    () => ctx.webServer.register({ kind: 'exact', path: SETTINGS_PATH, handler: guardedSettings }),
-    `wheelchair-agent-webui: GET/PUT ${SETTINGS_PATH}`,
-  )
 
   // The live interval seam: called before every schedule. A configured value is still validated once
   // (invalid config warns and falls back to 60s rather than failing the panel); the settings file is

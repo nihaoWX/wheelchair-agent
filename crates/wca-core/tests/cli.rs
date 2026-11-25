@@ -201,6 +201,7 @@ fn settings_defaults_are_ordered_and_complete() {
     assert_eq!(
         keys,
         vec![
+            "panel.port",
             "webui.style",
             "inbox.intervalSeconds",
             "merge.installRepo",

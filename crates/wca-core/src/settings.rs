@@ -67,6 +67,17 @@ struct Spec {
 /// receives a copy through the `specs` operation so there is no second implementation to drift.
 const SPECS: &[Spec] = &[
     Spec {
+        key: "panel.port",
+        kind: Kind::Integer,
+        default: Default::Integer(3080),
+        env: Some("SPV_PANEL_PORT"),
+        min: Some(1),
+        max: Some(65535),
+        options: None,
+        label_zh: "独立面板端口",
+        label_en: "Standalone panel port",
+    },
+    Spec {
         key: "webui.style",
         kind: Kind::String,
         default: Default::Text("fluid"),
@@ -927,6 +938,7 @@ mod tests {
         assert_eq!(
             keys,
             vec![
+                "panel.port",
                 "webui.style",
                 "inbox.intervalSeconds",
                 "merge.installRepo",
@@ -938,10 +950,11 @@ mod tests {
                 "work.sweepOnMount",
             ]
         );
-        assert_eq!(default_value(&SPECS[0]), json("\"fluid\""));
-        assert_eq!(default_value(&SPECS[1]), json("60"));
-        assert_eq!(default_value(&SPECS[7]), json("0"));
-        assert_eq!(default_value(&SPECS[8]), json("true"));
+        assert_eq!(default_value(&SPECS[0]), json("3080"));
+        assert_eq!(default_value(&SPECS[1]), json("\"fluid\""));
+        assert_eq!(default_value(&SPECS[2]), json("60"));
+        assert_eq!(default_value(&SPECS[8]), json("0"));
+        assert_eq!(default_value(&SPECS[9]), json("true"));
     }
 
     #[test]
@@ -950,13 +963,13 @@ mod tests {
         assert_eq!(
             data["values"],
             json(
-                "{\"webui.style\":\"fluid\",\"inbox.intervalSeconds\":60,\"merge.installRepo\":\"wheelchair-agent\",\"merge.autoMerge\":false,\"injection.intervalMs\":1000,\"injection.maxBodyChars\":12000,\"work.keep\":0,\"work.keepDays\":0,\"work.sweepOnMount\":true}"
+                "{\"panel.port\":3080,\"webui.style\":\"fluid\",\"inbox.intervalSeconds\":60,\"merge.installRepo\":\"wheelchair-agent\",\"merge.autoMerge\":false,\"injection.intervalMs\":1000,\"injection.maxBodyChars\":12000,\"work.keep\":0,\"work.keepDays\":0,\"work.sweepOnMount\":true}"
             )
         );
         assert_eq!(
             data["filled"],
             json(
-                "[\"webui.style\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.keep\",\"work.keepDays\",\"work.sweepOnMount\"]"
+                "[\"panel.port\",\"webui.style\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.keep\",\"work.keepDays\",\"work.sweepOnMount\"]"
             )
         );
     }
@@ -1055,7 +1068,7 @@ mod tests {
         assert_eq!(
             data["fill"]["filled"],
             json(
-                "[\"webui.style\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.keepDays\",\"work.sweepOnMount\"]"
+                "[\"panel.port\",\"webui.style\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.keepDays\",\"work.sweepOnMount\"]"
             )
         );
         assert_eq!(data["values"], json("{\"work.keep\":3}"));
@@ -1135,7 +1148,7 @@ mod tests {
         assert_eq!(
             data["filled"],
             json(
-                "[\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.sweepOnMount\"]"
+                "[\"panel.port\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.sweepOnMount\"]"
             )
         );
     }
