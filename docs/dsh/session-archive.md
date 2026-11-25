@@ -346,5 +346,4 @@ paused 不执行且恢复后不补跑；running/stopping job 让路且只按 `wo
 - 没有做真机运行验证（按工单要求不启停服务）：`ctx.jobs.list(sessionId)` 在插件作用域的可读性、
   `stopActivity: false` 的实际拒绝时机只有读码与注入测试证据。jobs 不可读时降级为"不归档"，最坏结果
   只是回到现状（侧栏继续显示）。
-- `ARCHITECTURE/hooks.md` 的内建行清单未更新（本工单禁止改 HARNESS），需要维护者补 `builtin:archiveSession`
-  一行。
+- `builtin:archiveSession` 已补进 `ARCHITECTURE/hooks/contract.md` §2（本工单当时禁止改 HARNESS，由维护者补）。

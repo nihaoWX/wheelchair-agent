@@ -261,10 +261,15 @@ runner）故意只留在 dsh 插件宿主**——没开面板也照常合并与�
   哪份部署，只能如实提示改用 `wheelchair-agent spv --project <p>`（见 `ARCHITECTURE/cli.md`「保留独立命令名」）。
   两条路二选一：把 `spv` 改成薄壳（则必须在项目目录里或带 `--project` 才能起），或让启动器在只有一个注册
   部署时也直接用它（与 `#48`「不猜默认部署」冲突，需操作者定夺）。
-- **HARNESS 里仍有 23 处规则重述**（冷安装契约 4 份、面板必须是真包 4 份、`hooks.md` 与
-  `ARCHITECTURE/webui/hooks.md` 互相重述）：移动已完成，去重是下一件事，优先级低于功能；动之前先看是否某处已有更权威的一份。
-- **`hooks.md` / `restart.md` 各 28KB 单文件**：同为单主题，暂不拆；要拆的切点在「执行契约」与
-  「Releasing a stuck session」之前。
+- **HARNESS 里仍有规则重述**：一次全树审计量到 14 条规则、66 处出现（47 处在 `ARCHITECTURE/**`、
+  19 处在代码与 UI 文案），去掉 11 处合法指针后还剩约 55 处重述（此前记的"23 处"漏了文件内重复）。
+  单一出处已定：冷安装契约 `layout.md`、面板必须是真包 `webui/index.md`、受管 AGENTS.md 六条 `preset.md`、
+  队列 rename 协议 `spv-source.md`、不动线上服务 `restart/lease.md`、`queueDir ≡ <stateDir>/spv`
+  `deployments.md`、重启顺序 `restart/order.md`、`delivered` 非终态与内建行 `hooks/contract.md`、
+  revision/409 `webui/settings.md`、一个 hook 读者 `hooks/runtime.md`。清理按这份清单逐条做。
+- **代码注释里有 8 处指向 `ARCHITECTURE/hooks.md`**（`src/shared/hooks.js:4/:87/:776/:994`、
+  `hook-events.js:6`、`settings.js:18`、`src/spv/hook.js:4`、`commands/prepare.sh:384`）：文档拆成四册后
+  这些指针要分别指向 `hooks/{contract,execution,runtime}.md`，属于代码改动，等下一张票一起改。
 
 # Next Steps
 

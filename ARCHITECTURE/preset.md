@@ -198,7 +198,7 @@ TERM → 等待 → KILL 释放。持有者只有本进程/祖先链时拒绝；
 （`--dry-run` 会标记 `(superagent service; not released)`）——服务不是本命令该停的，跳过它又会留下锁；
 跳过的本进程/祖先在其余持有者释放后仍持有租约时报告 `FAIL` 并退出 1，不谎报 `released`。
 每一步连同命令与退出码写进 `<root>/logs/restart-all.log`（默认
-`~/.wheelchair-agent/logs/restart-all.log`）。详见 `ARCHITECTURE/restart.md`。
+`~/.wheelchair-agent/logs/restart-all.log`）。详见 `ARCHITECTURE/restart/order.md`（顺序）与 `restart/operations.md`（日志）。
 
 ## 标准工具从哪来
 

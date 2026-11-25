@@ -334,7 +334,8 @@ survives a re-install unchanged.
 `/wheelchair-inbox/{items,review}` 与 `/wheelchair-settings` 三条 JSON 路由。
 
 **面板的布局、样式变体（`webui.style` = `fluid` 默认 / `minimal` 逃生口）、宽度节奏、审查记录的渲染细节，全部
-在本文件与 `settings.md` / `hooks.md` / `screenshots.md` 里。**
+在本文件与 `settings.md` / `hooks.md`（面板段）/ `screenshots.md` 里；插口的引擎契约在
+`ARCHITECTURE/hooks/` 四册，`ARCHITECTURE/webui/hooks.md` 只讲这一段怎么渲染。**
 
 ## See also
 

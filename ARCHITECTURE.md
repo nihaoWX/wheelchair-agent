@@ -33,8 +33,8 @@
 | 一个核心 + 两个适配器、子命令表、面板值为什么是命令名 | `ARCHITECTURE/cli.md` |
 | 目录布局全树、三条机械可查的规则、`install.sh` 的冷安装契约 | `ARCHITECTURE/layout.md` |
 | 面板：功能宿主、加载方式、审查模型、布局与样式、设置页、插口段、截图 | `ARCHITECTURE/webui/index.md`（+ `settings.md` / `hooks.md` / `screenshots.md`） |
-| 插口（hooks）的事件表、内建行、设置形状、执行契约 | `ARCHITECTURE/hooks.md` |
-| `/restart-wheelchair-agent` 重启链与冷安装顺序 | `ARCHITECTURE/restart.md` |
+| 插口（hooks）：事件表、内建行、设置与执行契约、cursor/队列原语、CLI 与实现位置 | `ARCHITECTURE/hooks.md`（+ `hooks/{contract,execution,runtime,surfaces}.md`） |
+| `/restart-wheelchair-agent` 重启链与冷安装顺序 | `ARCHITECTURE/restart.md`（+ `restart/{order,narrator,lease,operations}.md`） |
 | spv Source（本机队列接入 superagent）与数据根边界 | `ARCHITECTURE/spv-source.md` |
 | 票目录回收（`work gc`）与挂载时的自动回收 | `ARCHITECTURE/work-gc.md` |
 | SPV preset 怎么装/起/用、标准工具从哪来、模块解析、superagent profile 配置现状 | `ARCHITECTURE/preset.md` |
