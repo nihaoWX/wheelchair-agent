@@ -20,7 +20,7 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -39,8 +39,15 @@ import {
   sha256Text,
   writeStamp,
 } from '../src/shared/install-stamp.js'
+import {
+  CORE_STAMP_FILE,
+  coreSourcesDigest,
+  inspectCore,
+  readCoreStamp,
+} from '../src/shared/core-stamp.js'
 
 const MODULE = fileURLToPath(new URL('../src/shared/install-stamp.js', import.meta.url))
+const CORE_STAMP_CLI = fileURLToPath(new URL('../src/shared/core-stamp.js', import.meta.url))
 const PRESET_YML = fileURLToPath(new URL('../preset/agent.cordis.yml', import.meta.url))
 
 let pass = 0
@@ -383,6 +390,68 @@ try {
   await writeFile(core, Buffer.from('elf'))
   const stampFile = join(sandbox, 'cli-data', INSTALL_STAMP_FILE)
   const locationArgs = ['--preset', presetDir, '--webui', webuiDir, '--bin', binDir, '--core', core]
+
+  await check('core stamp: source digest changes with a Rust file and the stamp detects it', async () => {
+    const root = join(sandbox, 'core-root')
+    await mkdir(join(root, 'crates', 'wca-core', 'src'), { recursive: true })
+    await writeFile(join(root, 'Cargo.toml'), '[workspace]\n')
+    await writeFile(join(root, 'Cargo.lock'), '# lock\n')
+    await writeFile(join(root, 'crates', 'wca-core', 'src', 'lib.rs'), 'pub fn one() {}\n')
+    const artifact = join(root, 'core-artifact')
+    await writeFile(artifact, Buffer.from('elf-one'))
+    const stampFile = join(root, CORE_STAMP_FILE)
+    const written = spawnSync(process.execPath, [CORE_STAMP_CLI, 'write', '--root', root, '--artifact', artifact, '--stamp', stampFile], { encoding: 'utf8' })
+    assert.equal(written.status, 0, written.stderr)
+    const stamp = readCoreStamp(stampFile)
+    assert.equal(stamp.sources, coreSourcesDigest(root))
+    assert.equal(stamp.artifact.file, 'core-artifact')
+    assert.equal(spawnSync(process.execPath, [CORE_STAMP_CLI, 'check', '--root', root, '--artifact', artifact, '--stamp', stampFile], { encoding: 'utf8' }).status, 0)
+
+    await writeFile(join(root, 'crates', 'wca-core', 'src', 'lib.rs'), 'pub fn two() {}\n')
+    const stale = inspectCore({ root, artifact, stampFile })
+    assert.equal(stale.stale, true)
+    assert.equal(stale.reason, 'sources-changed')
+    const check = spawnSync(process.execPath, [CORE_STAMP_CLI, 'check', '--root', root, '--artifact', artifact, '--stamp', stampFile], { encoding: 'utf8' })
+    assert.equal(check.status, 3)
+    assert.match(check.stdout, /build\/build-core\.sh/)
+  })
+
+  await check('core stamp: install fingerprint includes the stamp source digest', async () => {
+    const root = join(sandbox, 'core-fingerprint-root')
+    await mkdir(join(root, 'crates', 'inner', 'src'), { recursive: true })
+    await writeFile(join(root, 'Cargo.toml'), '[workspace]\n')
+    await writeFile(join(root, 'crates', 'inner', 'src', 'lib.rs'), 'pub fn a() {}\n')
+    const artifact = join(root, 'core')
+    await writeFile(artifact, Buffer.from('elf'))
+    const stampFile = join(root, CORE_STAMP_FILE)
+    const write = spawnSync(process.execPath, [CORE_STAMP_CLI, 'write', '--root', root, '--artifact', artifact, '--stamp', stampFile], { encoding: 'utf8' })
+    assert.equal(write.status, 0, write.stderr)
+    const withStamp = fingerprintComponents({ coreBinary: artifact, coreStamp: stampFile }).components.core
+    const without = fingerprintComponents({ coreBinary: artifact }).components.core
+    assert.notEqual(withStamp.digest, without.digest)
+    assert.ok(Object.hasOwn(withStamp.files, CORE_STAMP_FILE))
+    await writeFile(join(root, 'crates', 'inner', 'src', 'lib.rs'), 'pub fn b() {}\n')
+    const rewritten = spawnSync(process.execPath, [CORE_STAMP_CLI, 'write', '--root', root, '--artifact', artifact, '--stamp', stampFile], { encoding: 'utf8' })
+    assert.equal(rewritten.status, 0, rewritten.stderr)
+    const changed = fingerprintComponents({ coreBinary: artifact, coreStamp: stampFile }).components.core
+    assert.notEqual(changed.digest, withStamp.digest)
+    assert.equal(changed.files[CORE_COMPONENT_FILE], withStamp.files[CORE_COMPONENT_FILE])
+  })
+
+  await check('core stamp: mtime fallback still judges a pre-stamp artifact', async () => {
+    const root = join(sandbox, 'core-mtime-root')
+    await mkdir(join(root, 'crates', 'inner'), { recursive: true })
+    await writeFile(join(root, 'Cargo.toml'), '[workspace]\n')
+    await writeFile(join(root, 'crates', 'inner', 'lib.rs'), 'pub fn x() {}\n')
+    const artifact = join(root, 'core')
+    await writeFile(artifact, Buffer.from('elf'))
+    const old = new Date('2000-01-01T00:00:00Z')
+    await utimes(artifact, old, old)
+    const result = inspectCore({ root, artifact, stampFile: join(root, 'no-stamp.json') })
+    assert.equal(result.stale, true)
+    assert.equal(result.reason, 'mtime-newer')
+    assert.equal(result.fallback, true)
+  })
 
   await check('cli: fingerprint prints one compact JSON line on stdout', async () => {
     const result = cli(['fingerprint', ...locationArgs])
