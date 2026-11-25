@@ -3,7 +3,7 @@
  * 以及它有哪些**内建行**（core path 拥有的行，永远不可取消）。
  *
  * 这是唯一实现：`src/shared/hooks.js` 执行它、`src/spv/hook.js` 打印它、`hook prompt` 从它生成中文提示词、
- * stage 3 的面板也读它（见 `ARCHITECTURE/hooks.md`）。**不要在任何地方抄第二份**——一个事件的说明只写在这里。
+ * stage 3 的面板也读它（见 `ARCHITECTURE/hooks/contract.md`）。**不要在任何地方抄第二份**——一个事件的说明只写在这里。
  *
  * 为什么单独一个文件、而不是塞进 `hooks.js`：设置存储（`src/shared/settings.js`）在保存时必须校验
  * `hooks.items[].event` 与 `hooks.labels` 的键，而执行器（`hooks.js`）又要 import 设置存储去读当前值。

@@ -2538,6 +2538,69 @@ async function testInboxMarkupAndWidth() {
   assert.equal(broken.datetime, undefined)
 }
 
+/**
+ * `panel.port` 是正式设置（行、默认值、无未知键警告），以及 PUT 的部分 `values` 是覆盖补丁：
+ * 只改出现的键，未出现的用户设置与 `filled` 来源原样保留。两者都是安装后实测踩到的回归，
+ * 锁在这里防止再次退化成"未知键被丢弃"和"部分写入重置其他键"。
+ */
+async function testPanelPortAndPartialPut() {
+  const box = await sandbox()
+  const shipped = defaultSettings(DEFAULT_SETTINGS)
+  // 老机器上的文件：默认值都写进了 values/filled，包括后来才加入 schema 的 panel.port。
+  await writeJson(settingsPath(box), {
+    version: SETTINGS_VERSION,
+    revision: 0,
+    values: shipped.values,
+    filled: Object.keys(shipped.values),
+    templates: {},
+  })
+  const read = resolveSettings({ home: box.root, stateDir: box.state, env: {} })
+  assert.equal(read.warning, undefined, 'a file carrying panel.port has no unknown-key warning')
+  assert.equal(read.effective['panel.port'], 3080)
+  const panelRow = read.rows.find(row => row.key === 'panel.port')
+  assert.ok(panelRow, 'panel.port has a settings row')
+  assert.equal(panelRow.default, 3080)
+  assert.equal(panelRow.value, 3080)
+  assert.equal(panelRow.source, 'default', 'a filled default still reports source=default')
+
+  const handler = createSettingsHandler({ home: box.root, stateDir: box.state, env: {} })
+  const get = await call(handler)
+  assert.equal(get.status, 200)
+  assert.equal(get.body.warning, undefined, 'GET does not warn about panel.port')
+  assert.equal(get.body.values['panel.port'] === undefined || get.body.values['panel.port'] === 3080, true)
+
+  const first = await call(handler, {
+    method: 'PUT',
+    body: { revision: get.body.revision, values: { 'merge.autoMerge': true, 'inbox.intervalSeconds': 30 } },
+  })
+  assert.equal(first.status, 200)
+  assert.equal(first.body.values['merge.autoMerge'], true)
+  assert.equal(first.body.values['inbox.intervalSeconds'], 30)
+
+  const second = await call(handler, {
+    method: 'PUT',
+    body: { revision: first.body.revision, values: { 'work.keep': 3 } },
+  })
+  assert.equal(second.status, 200)
+  assert.deepEqual(
+    second.body.values,
+    { 'merge.autoMerge': true, 'inbox.intervalSeconds': 30, 'work.keep': 3 },
+    'a partial PUT only adds the keys it names',
+  )
+  const stored = await readJson(settingsPath(box))
+  assert.equal(stored.values['merge.autoMerge'], true, 'a partial PUT keeps the earlier user value')
+  assert.equal(stored.values['inbox.intervalSeconds'], 30, 'a partial PUT keeps the earlier user value')
+  assert.equal(stored.values['work.keep'], 3)
+  assert.equal(stored.values['panel.port'], 3080)
+  for (const key of ['merge.autoMerge', 'inbox.intervalSeconds', 'work.keep']) {
+    assert.equal(stored.filled.includes(key), false, `${key} stays a user override, not a filled default`)
+  }
+  const roundTrip = resolveSettings({ home: box.root, stateDir: box.state, env: {} })
+  assert.equal(roundTrip.effective['merge.autoMerge'], true)
+  assert.equal(roundTrip.effective['inbox.intervalSeconds'], 30)
+  assert.equal(roundTrip.effective['work.keep'], 3)
+}
+
 // --------------------------------------------------------------------- main
 
 try {
@@ -2546,6 +2609,7 @@ try {
   await testStyleSetting()
   await testEnsureSettingsFile()
   await testSaveMergeAndStaleRevision()
+  await testPanelPortAndPartialPut()
   await testCorruptAndHandEditedFiles()
   testTemplateValidation()
   await testPresetCrudAndReset()

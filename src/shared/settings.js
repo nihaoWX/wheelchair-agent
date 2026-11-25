@@ -15,7 +15,7 @@
  * 占位符按模板声明，保存时校验；未知占位符和缺失的必填占位符都直接报错——收件箱的接收方需要评论与线程
  * 这两个事实才能行动。
  *
- * 插口（hook）：`hooks` 是同一文件的顶层字段（形状见 `ARCHITECTURE/hooks.md`）。事件 id 与内建行来自
+ * 插口（hook）：`hooks` 是同一文件的顶层字段（形状与执行契约见 `ARCHITECTURE/hooks/execution.md`）。事件 id 与内建行来自
  * `src/shared/hook-events.js`，本文件只负责**校验、合并、落盘**，不执行任何脚本。它与其他字段共享同一条
  * 乐观并发规则：过期 revision 是 409，磁盘一个字节都不动；坏子块则按字段 warning 后跳过，文件仍然可用。
  *
@@ -1255,6 +1255,9 @@ const PUT_FIELDS = ['revision', 'values', 'templates', 'hooks', 'reset']
  *
  * - `GET`  → 200 完整快照（no-store；每次请求都重读文件）；
  * - `PUT`  → `{ revision, values?, templates?, hooks?, reset? }`；预设 CRUD、插口行与 reset 都搭这一次 PUT；
+ *            `values` 是**覆盖补丁**：只改出现的键，未出现的键保留文件里的现值与来源。面板自己总发全量，
+ *            但 curl/脚本发一个键时不能把操作者设过的其它值静默重置；合并由 `saveSettings` 与 core 的
+ *            `save_values` 完成，GET/PUT 因此共用同一种解释。
  *            过期 revision → 409 `{code:"conflict", revision, message}` 且不写；
  *            非法值 → 400 `{code:"SETTINGS_INVALID", message}`；体积/类型错误分别 413/415。
  *
