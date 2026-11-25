@@ -101,8 +101,8 @@ function envFor(box, extra = {}) {
   }
 }
 
-function cli(box, argv, extra = {}) {
-  const result = spawnSync(process.execPath, [CLI, ...argv], { env: envFor(box, extra), encoding: 'utf8' })
+function cli(box, argv, extra = {}, options = {}) {
+  const result = spawnSync(process.execPath, [CLI, ...argv], { env: envFor(box, extra), cwd: options.cwd, encoding: 'utf8' })
   return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
 }
 
@@ -433,12 +433,14 @@ async function testServiceTargetsOwnDeployment() {
   })
   assert.ok((await calls()).at(-1).includes(`--queue-dir ${betaQueue}`), '--project wins over SPV_QUEUE_DIR')
 
-  // 没有身份时行为不变：start 仍然拒绝，status 仍然走老的总表。
+  // 既没有 cwd 身份也没有 SPV_QUEUE_DIR 时，裸命令不再回退到旧式无 patch 服务。
   const anonymous = cli(box, ['service', 'start'], { PATH: fake.path, FAKE_SERVICE_LOG: fake.log })
   assert.equal(anonymous.status, 2)
-  assert.match(anonymous.stderr, /service start needs --project <p> or --all/)
+  assert.match(anonymous.stderr, /cannot infer a deployment from /)
+  assert.match(anonymous.stderr, /Registered deployments: tools\/alpha, tools\/beta/)
+  assert.match(anonymous.stderr, /Pass --project <p> or --all/)
   assert.equal((await calls()).length, 3, 'an anonymous start never reaches the service manager')
-  pass('a process that knows its deployment targets itself; one without an identity still must name a target')
+  pass('a process that knows its deployment targets itself; a bare command outside every checkout is a usage error')
 }
 
 async function testSpvHasNoDeploymentSelectorAndAggregatesEveryQueue() {
@@ -530,6 +532,35 @@ async function testStaleSingleDeploymentTextIsGone() {
   pass('cold-install notice and the empty-registry list name every project and no longer invent a base deployment')
 }
 
+async function testServiceStatusInfersFromCwd() {
+  const box = await sandbox()
+  assert.equal(cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'test/alpha', '--port', '3904']).status, 0)
+  const projectsRoot = join(box.home, 'bioagentforge')
+  const checkout = join(projectsRoot, 'tools', 'alpha')
+  const nested = join(checkout, 'src', 'deep')
+  await mkdir(nested, { recursive: true })
+  const fake = await fakeServiceManager(box)
+  const calls = async () => (await readFile(fake.log, 'utf8')).trim().split('\n').filter(Boolean)
+  // The fake manager prints the fields the real manager would print; the argv proves which overlay it was
+  // pointed at, so this covers "the right pid/runtime for this instance" without touching a real service.
+  await writeFile(join(box.base, 'bin', 'python3'), '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$FAKE_SERVICE_LOG"\ncase "$*" in *status*) printf \'pids:    4242\\nruntime: ready\\n\';; esac\nexit 0\n')
+  await chmod(join(box.base, 'bin', 'python3'), 0o755)
+
+  const status = cli(box, ['service', 'status'], { PATH: fake.path, FAKE_SERVICE_LOG: fake.log }, { cwd: nested })
+  assert.equal(status.status, 0)
+  const line = (await calls()).at(-1)
+  assert.ok(line.includes(`--patch ${instancePath('tools/alpha', { env: envFor(box) })}`), `cwd picks alpha: ${line}`)
+  assert.ok(line.includes('status'))
+  assert.match(status.stdout, /^pids:    4242$/m)
+  assert.match(status.stdout, /^runtime: ready$/m)
+  assert.doesNotMatch(status.stdout, /pids:    \(none\)/)
+
+  // An explicit selector still wins over cwd.
+  cli(box, ['service', 'status', '--project', 'tools/alpha'], { PATH: fake.path, FAKE_SERVICE_LOG: fake.log }, { cwd: box.base })
+  assert.ok((await calls()).at(-1).includes('--project') === false, 'the manager never receives --project')
+  pass('a bare service status inside a project checkout (even nested) targets that deployment')
+}
+
 async function testServiceStatusListsDeployments() {
   const box = await sandbox()
   assert.equal(cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'test/alpha']).status, 0)
@@ -540,26 +571,27 @@ async function testServiceStatusListsDeployments() {
   await fakeProcEntry(procRoot, 100, ['dsh', '--profile', 'superagent', '--patch', alpha])
   await fakeProcEntry(procRoot, 300, ['dsh', '--profile', 'superagent'])
 
-  const status = cli(box, ['service', 'status'], { WHEELCHAIR_PROC_ROOT: procRoot })
+  // `--all` keeps the old aggregate: legacy lines, one line per deployment, ordered by project.
+  const status = cli(box, ['service', 'status', '--all'], { WHEELCHAIR_PROC_ROOT: procRoot })
+  assert.ok([0, 1].includes(status.status), `status is a view, not a health gate: ${status.status}`)
+  assert.match(status.stdout, /^panel:/m)
+  assert.match(status.stdout, /^== tools\/alpha ==$/m)
+  assert.match(status.stdout, /^== tools\/beta ==$/m)
   assert.match(status.stdout, /profile: superagent/)
-  assert.match(status.stdout, /^deployments:$/m)
-  assert.match(status.stdout, /^  tools\/alpha  port 3082  running  100$/m)
-  assert.match(status.stdout, /^  tools\/beta  port 3083  stopped  -$/m)
-  assert.match(status.stdout, /note:.*--project <p>/)
-  const alphaIndex = status.stdout.indexOf('  tools/alpha  port')
-  const betaIndex = status.stdout.indexOf('  tools/beta  port')
-  assert.ok(alphaIndex > 0 && betaIndex > alphaIndex, 'the deployment lines follow the old lines, ordered by project')
+  assert.match(status.stdout, /url:     http:\/\/127\.0\.0\.1:3082/)
+
+  // Bare `status` outside every checkout cannot guess a deployment any more: exit 2, list, no legacy view.
+  const outside = cli(box, ['service', 'status'], { WHEELCHAIR_PROC_ROOT: procRoot }, { cwd: box.base })
+  assert.equal(outside.status, 2)
+  assert.doesNotMatch(outside.stdout, /profile: superagent/)
+  assert.match(outside.stderr, /cannot infer a deployment from /)
+  assert.match(outside.stderr, /Registered deployments: tools\/alpha, tools\/beta/)
+  assert.match(outside.stderr, /Pass --project <p> or --all/)
 
   const single = cli(box, ['service', 'status', '--project', 'tools/beta'], { WHEELCHAIR_PROC_ROOT: procRoot })
   assert.doesNotMatch(single.stdout, /^deployments:$/m)
 
-  // The legacy service is a registry entry too: when it is already the process described by the old lines,
-  // it is not reported a second time.
-  assert.equal(cli(box, ['deployment', 'add', 'tools/wheelchair-agent', '--repo', 'nihaoWX/wheelchair-agent']).status, 0)
-  const legacyStatus = cli(box, ['service', 'status'], { WHEELCHAIR_PROC_ROOT: procRoot })
-  assert.doesNotMatch(legacyStatus.stdout, /^  tools\/wheelchair-agent  port/m)
-  assert.match(legacyStatus.stdout, /^  tools\/alpha  port 3082  running  100$/m)
-  pass('service status keeps the legacy lines and adds one line per deployment, without duplicating the legacy service')
+  pass('service status --all keeps the old per-deployment aggregate; bare status outside a checkout is a usage error')
 }
 
 async function testRestartCommandPassesProject() {
@@ -615,6 +647,7 @@ try {
   await testRestartAllDryRunFromInsideSession()
   await testSpvHasNoDeploymentSelectorAndAggregatesEveryQueue()
   await testStaleSingleDeploymentTextIsGone()
+  await testServiceStatusInfersFromCwd()
   await testServiceStatusListsDeployments()
   await testServiceTargetsOwnDeployment()
   await testRestartCommandPassesProject()

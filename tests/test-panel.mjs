@@ -202,7 +202,9 @@ async function testServiceOpen() {
       check('panel stop closes what service open started', closed.status === 0, closed.stderr)
     }
     const status = cli(box, ['service', 'status'])
-    check('service status reports the panel without a registry', status.status === 0 && /panel:\s+port \d+\s+stopped/.test(status.stdout), status.stderr || status.stdout)
+    const panelStatus = cli(box, ['panel', 'status'])
+    check('panel status reports the standalone panel', panelStatus.status === 0 && /panel:\s+port \d+\s+stopped/.test(panelStatus.stdout), panelStatus.stderr || panelStatus.stdout)
+    check('service status without a deployment or a registry is a usage error', status.status === 2 && /cannot infer a deployment/.test(status.stderr) && /Pass --project <p> or --all/.test(status.stderr), status.stderr || status.stdout)
   } finally {
     cli(box, ['panel', 'stop'])
     rmSync(box.base, { recursive: true, force: true })

@@ -287,7 +287,9 @@ async function testCommandsRequireARegisteredDeployment() {
 
   const serviceStart = await cli(box, ['service', 'start'])
   assert.equal(serviceStart.status, 2)
-  assert.match(serviceStart.stderr, /service start needs --project <p> or --all/)
+  assert.match(serviceStart.stderr, /cannot infer a deployment from /)
+  assert.match(serviceStart.stderr, /no deployment registry at /)
+  assert.match(serviceStart.stderr, /Pass --project <p> or --all/)
 
   const restartBare = await cli(box, ['restart-all', '--dry-run'])
   assert.equal(restartBare.status, 2)
@@ -310,7 +312,8 @@ async function testCommandsRequireARegisteredDeployment() {
 
   const serviceStopBare = await cli(box, ['service', 'stop'])
   assert.equal(serviceStopBare.status, 2)
-  assert.match(serviceStopBare.stderr, /service stop needs --project <p> or --all/)
+  assert.match(serviceStopBare.stderr, /cannot infer a deployment from /)
+  assert.match(serviceStopBare.stderr, /Pass --project <p> or --all/)
 
   const serviceMissing = await cli(box, ['service', 'start', '--project', 'tools/nope'])
   assert.equal(serviceMissing.status, 1)

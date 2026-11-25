@@ -82,8 +82,10 @@ def serves(argv, profile, patch=None):
     """Return whether these argv belong to the main DSH service process for `profile` and `patch`.
 
     A deployment is one `dsh` instance: all of them share a profile, so the loaded `--patch` file is
-    what tells them apart. `patch=None` means the legacy single service (no `--patch` at all);
-    `patch=ANY_PATCH` matches every instance of the profile (the install probe needs that).
+    what tells them apart. `patch=None` means a hand-started single service (no `--patch` at all);
+    the `wheelchair-agent` CLI no longer calls this module that way (every deployment supplies its
+    instance overlay), so keep it only as a manual escape hatch. `patch=ANY_PATCH` matches every
+    instance of the profile (the install probe needs that).
     """
     matched = False
     expecting = None
