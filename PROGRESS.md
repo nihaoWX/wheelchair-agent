@@ -53,6 +53,16 @@ runner）故意只留在 dsh 插件宿主**——没开面板也照常合并与�
 
 # Completed
 
+- **spv 项目 + 面板「项目」段（`#53`, `16d0a97`）**：`<data root>/spv-projects.json`
+  （`{version:1,spvProjects:[{root,workers}]}`，坏 JSON 报错且一字不改、相同内容不写盘）+
+  `spv-project list|add|remove` + `deployment add --spv`（唯一祖先可推断才自动）+
+  `deployment remove` 同步解绑。四条校验都有测试：spv 根不能是已登记 worker 项目、两个 spv 根不能嵌套、
+  worker 必须在根之下、一个 worker 只绑一个 spv。面板第四个 section「项目」只读：
+  core 路由 `GET /wheelchair-projects`（两宿主都有）+ `src/spv/projects-view.js` 并发探测每份部署
+  `GET /orchestrator/api/{state,overview,tickets?state=working}`，**单份 2s 超时**、失败只把那一行标
+  `unavailable`、30s 刷新。自验：`npm test` 全绿；临时数据根手验 `add`/幂等/嵌套/worker 当根/`--force`
+  五种报错文案；真起面板 3998 + 假部署 API 3084 → `state.kind:"ok"` 带 `running` 与 `queued`;
+  截图 `webui/docs/panel-projects-1440.png`。
 - **独立面板（`#52`, `25b8e29`）**：`webui/lib/` 里的三个 JSON 路由抽成不 import `@deepseek-ai/*` 的
   `src/spv/panel-routes.js`，新增 `wheelchair-agent panel [start|stop|status] [--port] [--detach]`
   （`src/spv/panel.js`，`127.0.0.1:3080`、`panel.port` 设置键、`<data root>/panel.pid`、自己的

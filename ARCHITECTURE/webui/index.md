@@ -82,6 +82,8 @@ const SECTIONS = [
     descriptionKey: 'feature.settings.description', Component: SettingsSection },
   { id: 'hooks', labelKey: 'section.hooks', titleKey: 'feature.hooks.title',
     descriptionKey: 'feature.hooks.description', Component: HooksSection },
+  { id: 'projects', labelKey: 'section.projects', titleKey: 'feature.projects.title',
+    descriptionKey: 'feature.projects.description', Component: ProjectsSection },
 ]
 ```
 
@@ -91,6 +93,15 @@ Adding a feature is exactly one array entry plus its React component:
    to both dictionaries);
 2. implement the component; it owns its heading controls and data. The feature panel itself owns
    the bordered surface, title/description row and toolbar.
+
+### Projects (read-only, `#53`)
+
+The fourth section is the only one with no write path: one card per **spv project**, each listing the
+worker projects bound to it, the port of the deployment that owns each worker (or "not deployed"),
+and what is running there. Data comes from one core route, `GET /wheelchair-projects`, so both hosts
+have it; per-deployment probes are concurrent with a **2s** cap and a failure only marks that worker's
+row `unavailable`. It refreshes every 30s. The registry, the four validation rules and the CLI are in
+`ARCHITECTURE/spv-projects.md`; the panel never writes that file.
 
 ### Two letter types
 
