@@ -113,6 +113,18 @@ run_install_raw() {
     bash "$INSTALL" "$@"
   ) >"$SB/stdout" 2>"$SB/stderr"
 }
+# Fabricate an artifact and/or stamp without touching this checkout. Both are documented test seams
+# (`SPV_INSTALL_CORE_ARTIFACT` / `SPV_INSTALL_CORE_STAMP`), unset in every normal install.
+run_install_core() {
+  artifact=$1
+  stamp=$2
+  shift 2
+  (
+    export SPV_INSTALL_CORE_ARTIFACT="$artifact" SPV_INSTALL_CORE_STAMP="$stamp"
+    run_install_raw "$@"
+  )
+}
+
 run_install() {
   has_project=0
   has_fingerprint=0
@@ -559,6 +571,50 @@ check '(19) the zero-match error says so' "$(grep -c 'does not match a registere
 check '(19) the zero-match error lists the registry' "$(grep -c 'registered deployments: tools/other, tools/wheelchair-agent' "$SB/stderr")" 1
 check '(19) the refused inference left the registry alone' "$(sha256sum "$DEPLOYMENTS" | cut -d' ' -f1)" "$before_none"
 rm -rf "$SB/home/bioagentforge"
+
+# ---- case 20: a stale core artifact is not silently "consistent"
+FAKE_CORE=$SB/fake-core
+cp "$REPO/build/artifacts/wheelchair-agent-core-linux-x64" "$FAKE_CORE"
+chmod 0755 "$FAKE_CORE"
+FAKE_STAMP=$SB/fake-core-stamp.json
+cat > "$FAKE_STAMP" <<'JSON'
+{"version":1,"commit":"deadbeef","builtAt":"2000-01-01T00:00:00.000Z","sources":"sha256:0000000000000000000000000000000000000000000000000000000000000000","cargo":"cargo 0.0.0","artifact":{"file":"fake-core","sha256":"sha256:1111111111111111111111111111111111111111111111111111111111111111"}}
+JSON
+before_stale=$(install_snapshot)
+run_install_core "$FAKE_CORE" "$FAKE_STAMP" --check --project tools/wheelchair-agent
+check '(20) --check fails for a stale core artifact' "$?" 2
+check '(20) stale --check names the build command' "$(grep -c 'predates the current Rust sources; run "bash build/build-core.sh"' "$SB/stdout")" 1
+check '(20) stale --check wrote nothing' "$(install_snapshot)" "$before_stale"
+
+run_install_core "$FAKE_CORE" "$FAKE_STAMP" --project tools/wheelchair-agent
+check '(20) a real install refuses a stale core artifact' "$?" 1
+check '(20) stale install says it refused' "$(grep -c 'refusing to install it' "$SB/stdout")" 1
+check '(20) stale install wrote nothing' "$(install_snapshot)" "$before_stale"
+
+run_install_core "$FAKE_CORE" "$FAKE_STAMP" --fingerprint
+check '(20) --fingerprint stays successful while stale' "$?" 0
+check '(20) --fingerprint wrote nothing' "$(install_snapshot)" "$before_stale"
+
+# A pre-stamp checkout has no core-stamp.json: an artifact older than the Rust sources must still fail.
+OLD_CORE=$SB/old-core
+cp "$REPO/build/artifacts/wheelchair-agent-core-linux-x64" "$OLD_CORE"
+chmod 0755 "$OLD_CORE"
+touch -t 200001010000 "$OLD_CORE"
+run_install_core "$OLD_CORE" "$SB/no-such-stamp.json" --check --project tools/wheelchair-agent
+check '(20) --check falls back to mtime without a stamp' "$?" 2
+check '(20) mtime fallback is named' "$(grep -c 'mtime fallback' "$SB/stdout")" 1
+check '(20) mtime fallback still names the build command' "$(grep -c 'build/build-core.sh' "$SB/stdout")" 3
+
+# The fresh artifact this checkout built must pass, if the build wrote a stamp.
+if [ -f "$REPO/build/artifacts/core-stamp.json" ]; then
+  run_install_raw --check --project tools/wheelchair-agent
+  check '(20) a freshly built artifact passes --check' "$?" 0
+  check '(20) fresh --check reports source agreement' "$(grep -c 'core artifact was built from these Rust sources' "$SB/stdout")" 1
+fi
+
+run_install_core "$FAKE_CORE" "$FAKE_STAMP" --project tools/wheelchair-agent --allow-stale-core
+check '(20) --allow-stale-core installs anyway' "$?" 0
+check '(20) the escape hatch warns' "$(grep -c 'WARNING: installing a stale Rust core artifact' "$SB/stderr")" 1
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

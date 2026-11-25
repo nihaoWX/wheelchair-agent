@@ -22,10 +22,11 @@
  *
  * CLI (when run as a script):
  *   node src/shared/install-stamp.js fingerprint --preset D --webui D --bin D --core F
- *   node src/shared/install-stamp.js component <preset|webui|bin|core> <path>
+ *   node src/shared/install-stamp.js component <preset|webui|bin|core> <path> [--core-stamp F]
  *   node src/shared/install-stamp.js write --stamp F --preset D --webui D --bin D --core F \
- *        --preset-dir P --commit SHA
- *   node src/shared/install-stamp.js verify --stamp F --preset D --webui D --bin D --core F
+ *        [--core-stamp F] --preset-dir P --commit SHA
+ *   node src/shared/install-stamp.js verify --stamp F --preset D --webui D --bin D --core F \
+ *        [--core-stamp F]
  *
  * Exit codes: 0 ok; 1 verify found a difference; 2 bad arguments; 3 the stamp is unreadable;
  * 4 the stamp is missing. `fingerprint` prints one compact JSON line on stdout, because
@@ -45,6 +46,7 @@ import {
 } from 'node:fs'
 import { basename, dirname, join, relative, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { CORE_STAMP_FILE, readCoreStamp } from './core-stamp.js'
 
 /** Bumped when the stamp shape (not the file content) changes; a mismatch forces a reinstall once. */
 export const INSTALL_STAMP_VERSION = 1
@@ -324,9 +326,11 @@ function componentOf(files) {
  *
  * Missing directories and files never throw: the preset/webui/bin components hash their (possibly
  * empty) file map, `bin` records the literal string `missing`, and an absent core binary is a
- * `{digest: null, missing: true, files: {}}` sentinel.
+ * `{digest: null, missing: true, files: {}}` sentinel. When `coreStamp` is supplied, the core component
+ * also folds in that stamp's Rust-source digest, so a rebuilt source change is visible even when the
+ * binary itself did not change.
  */
-export function fingerprintComponents({ presetDir, webuiDir, binDir, coreBinary } = {}) {
+export function fingerprintComponents({ presetDir, webuiDir, binDir, coreBinary, coreStamp } = {}) {
   const preset = componentOf(filesOfDir(presetDir, presetFileDigest))
   const webui = componentOf(filesOfDir(webuiDir, sha256File))
 
@@ -356,6 +360,12 @@ export function fingerprintComponents({ presetDir, webuiDir, binDir, coreBinary 
   }
   if (corePresent) {
     const files = { [CORE_COMPONENT_FILE]: sha256File(coreBinary) }
+    // `install.sh` passes the artifact stamp explicitly. Including its source digest makes a rebuilt
+    // source change visible even when the binary itself did not change (or two stale copies agree).
+    if (typeof coreStamp === 'string' && coreStamp !== '') {
+      const stamp = readCoreStamp(coreStamp)
+      if (stamp !== null) files[CORE_STAMP_FILE] = sha256Text(stamp.sources)
+    }
     core = { digest: digestOfFiles(files), missing: false, files }
   } else {
     core = { digest: null, missing: true, files: {} }
@@ -492,13 +502,13 @@ export function readStamp(file) {
 const USAGE = [
   'usage: node src/shared/install-stamp.js <command> [options]',
   '',
-  '  fingerprint --preset D --webui D --bin D --core F',
+  '  fingerprint --preset D --webui D --bin D --core F [--core-stamp F]',
   '      print the install fingerprint as one compact JSON line',
-  '  component <preset|webui|bin|core> <path>',
+  '  component <preset|webui|bin|core> <path> [--core-stamp F]',
   '      print one component digest ("missing" for an absent core)',
-  '  write --stamp F --preset D --webui D --bin D --core F --preset-dir P --commit SHA',
+  '  write --stamp F --preset D --webui D --bin D --core F [--core-stamp F] --preset-dir P --commit SHA',
   '      write the install stamp atomically (prints nothing)',
-  '  verify --stamp F --preset D --webui D --bin D --core F',
+  '  verify --stamp F --preset D --webui D --bin D --core F [--core-stamp F]',
   '      exit 0 "same"; exit 1 "changed <components>"; exit 3 unreadable; exit 4 missing',
 ].join('\n')
 
@@ -522,6 +532,10 @@ function parseFlags(argv) {
 }
 
 /** Read the four required location flags. */
+function coreStampOf(flags) {
+  return typeof flags['core-stamp'] === 'string' ? flags['core-stamp'] : undefined
+}
+
 function locationsOf(flags) {
   const missing = ['preset', 'webui', 'bin', 'core'].filter(name => typeof flags[name] !== 'string')
   if (missing.length > 0) throw new Error(`missing ${missing.map(name => `--${name}`).join(', ')}`)
@@ -530,6 +544,7 @@ function locationsOf(flags) {
     webuiDir: flags.webui,
     binDir: flags.bin,
     coreBinary: flags.core,
+    coreStamp: coreStampOf(flags),
   }
 }
 
@@ -544,8 +559,10 @@ function runCli(argv) {
     if (command === 'component') {
       const name = argv[1]
       const target = argv[2]
-      if (!COMPONENT_NAMES.includes(name) || typeof target !== 'string' || argv.length !== 3) {
-        throw new Error('component needs <preset|webui|bin|core> <path>')
+      const rest = argv.slice(3)
+      const extra = rest.length === 0 ? {} : parseFlags(rest)
+      if (!COMPONENT_NAMES.includes(name) || typeof target !== 'string' || rest.length % 2 !== 0) {
+        throw new Error('component needs <preset|webui|bin|core> <path> [--core-stamp F]')
       }
       if (name === 'core') {
         let present = false
@@ -564,6 +581,7 @@ function runCli(argv) {
         webuiDir: name === 'webui' ? target : undefined,
         binDir: name === 'bin' ? target : undefined,
         coreBinary: name === 'core' ? target : undefined,
+        coreStamp: name === 'core' ? coreStampOf(extra) : undefined,
       })
       const component = fingerprint.components[name]
       if (component.digest === null) {

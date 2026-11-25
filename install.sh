@@ -61,8 +61,11 @@
 #   - --check compares the *fingerprint* (src/shared/install-stamp.js), not bytes, so a comment-only
 #     merge is not stale. The same fingerprint is recorded in $DATA_ROOT/installed.json and read by the
 #     cold-install notice, so all three agree on what "the installed copy" is.
+#   - the core component fingerprint also includes `core-stamp.json`'s source digest (build/build-core.sh),
+#     so a stale artifact cannot look consistent with an equally stale installed copy, and --check fails
+#     when the artifact predates `crates/**` (mtime fallback for pre-stamp build trees).
 #
-# Usage: bash install.sh [--check] [--preset-dir ABS] [--project tools/<name>]
+# Usage: bash install.sh [--check] [--preset-dir ABS] [--project tools/<name>] [--allow-stale-core]
 #        bash install.sh --fingerprint [--preset-dir ABS]
 #        bash install.sh --help
 #
@@ -99,11 +102,15 @@ LEGACY_STATE_DIR=${DSH_SUPERAGENT_STATE_DIR:-$DSH_HOME_DIR/state/superagent}
 # The planner binary `src/shared/work.js` spawns. A checkout runs the artifact directly; an installed
 # preset finds the copy on PATH.
 CORE_ARTIFACT_REL=build/artifacts/wheelchair-agent-core-linux-x64
-CORE_ARTIFACT=$SELF_DIR/$CORE_ARTIFACT_REL
+# Internal test seams: the stale-artifact cases need a fabricated artifact/stamp without rebuilding
+# this checkout. Unset in every normal invocation, exactly like SPV_INSTALL_PROBE.
+CORE_ARTIFACT=${SPV_INSTALL_CORE_ARTIFACT:-$SELF_DIR/$CORE_ARTIFACT_REL}
+CORE_STAMP=${SPV_INSTALL_CORE_STAMP:-$SELF_DIR/build/artifacts/core-stamp.json}
 CORE_BIN=$BIN_DIR/wheelchair-agent-core
 
 CHECK=0
 FINGERPRINT=0
+ALLOW_STALE_CORE=0
 PRESET_DIR_OVERRIDE=''
 PROJECT_NAME=''
 while [ "$#" -gt 0 ]; do
@@ -112,6 +119,8 @@ while [ "$#" -gt 0 ]; do
     --check) CHECK=1 ;;
     # Internal: print the payload fingerprint as JSON on stdout for src/spv/inbox.js. Read-only.
     --fingerprint) FINGERPRINT=1 ;;
+    # Escape hatch for a deliberate stale-binary install; prints a warning and is never the default.
+    --allow-stale-core) ALLOW_STALE_CORE=1 ;;
     --project)
       shift
       if [ "$#" -eq 0 ]; then
@@ -143,13 +152,14 @@ while [ "$#" -gt 0 ]; do
         exit 2
       fi ;;
     -h|--help)
-      printf 'usage: bash install.sh [--check] [--preset-dir ABS] [--project tools/<name>]\n'
+      printf 'usage: bash install.sh [--check] [--preset-dir ABS] [--project tools/<name>] [--allow-stale-core]\n'
       printf '       bash install.sh --fingerprint [--preset-dir ABS]\n'
       printf '  --check        read-only self-check; exit 2 when anything is not installed as expected\n'
       printf '  --fingerprint  internal, read-only: print the install fingerprint as JSON on stdout\n'
       printf '  --preset-dir   compare against (or fingerprint for) this preset directory instead of the default\n'
       printf '  --project      required unless this checkout uniquely matches a registered deployment; records\n'
       printf '                 that project as the deployment in the registry after a successful install\n'
+      printf '  --allow-stale-core  install even when the Rust core artifact predates the Rust sources (warns)\n'
       printf 'exit 0 installed or checks pass; 1 install failed; 2 check failed or bad argument;\n'
       printf '     3 refused because the install targets are in use (cold installs only)\n'
       exit 0 ;;
@@ -371,6 +381,65 @@ require_core_artifact() {
   return 1
 }
 
+# Compare the artifact against the Rust sources it should have been built from. The stamp is the
+# primary answer; a checkout built before stamps existed falls back to mtimes and says so. This is
+# read-only: no cargo, no temp files, nothing written.
+core_freshness() {
+  local args=(--root "$SELF_DIR" --artifact "$CORE_ARTIFACT" --stamp "$CORE_STAMP")
+  node "$SELF_DIR/src/shared/core-stamp.js" check "${args[@]}" 2>&1
+}
+
+# --check: stale is a failed check, but the message must name staleness and the build command rather
+# than "differs from this checkout" (two equally stale copies used to look consistent).
+check_core_freshness() {
+  require_core_artifact || return
+  local out status
+  out=$(core_freshness)
+  status=$?
+  case $status in
+    0)
+      if [ -f "$CORE_STAMP" ]; then
+        ok "core artifact was built from these Rust sources"
+      else
+        ok 'core artifact is newer than these Rust sources (mtime fallback)'
+      fi ;;
+    3)
+      fail 'the Rust core artifact predates the current Rust sources; run "bash build/build-core.sh"'
+      printf '     %s\n' "$out"
+      fix 'run: bash build/build-core.sh, then rerun: bash install.sh --check' ;;
+    4)
+      fail 'the Rust core artifact is missing; run "bash build/build-core.sh"'
+      fix 'run: bash build/build-core.sh' ;;
+    *)
+      fail "the Rust core artifact could not be compared with the Rust sources: $out"
+      fix 'run: bash build/build-core.sh, then rerun this command' ;;
+  esac
+}
+
+# Real install: refuse a stale artifact before anything is written, unless the operator explicitly
+# opts in. The escape hatch warns loudly and still records the old artifact in the install stamp.
+enforce_fresh_core() {
+  local out status
+  out=$(core_freshness)
+  status=$?
+  case $status in
+    0) return 0 ;;
+    3|4)
+      if [ "$ALLOW_STALE_CORE" -eq 1 ]; then
+        printf 'WARNING: installing a stale Rust core artifact (--allow-stale-core): %s\n' "$out" >&2
+        return 0
+      fi
+      fail 'the Rust core artifact predates the current Rust sources; refusing to install it'
+      printf '     %s\n' "$out"
+      fix 'run: bash build/build-core.sh, then rerun this script (or pass --allow-stale-core deliberately)'
+      return 1 ;;
+    *)
+      fail "the Rust core artifact could not be compared with the Rust sources: $out"
+      fix 'run: bash build/build-core.sh, then rerun this script'
+      return 1 ;;
+  esac
+}
+
 # Render the preset into $1.
 #
 # The preset directory is the installed SPV-side package: the rendered ymls, the SPV-side JS
@@ -399,7 +468,7 @@ render_into() {
     fix "check that $SELF_DIR/bin/wheelchair-agent.mjs exists and is readable, then rerun this script"
     return 1
   fi
-  for file in shared/deployments.js shared/home.js shared/hook-events.js shared/hooks.js shared/install-stamp.js shared/queue.js shared/schema.js shared/settings.js shared/spv-projects.js shared/work.js spv/auto-merge-effect.js spv/check.js spv/cron-plugin.js spv/cron.js spv/deployment-restart.js spv/deployment-setup.js spv/deployment.js spv/dispatch.js spv/health.js spv/hook.js spv/inbox.js spv/injector.js spv/outbox.js spv/ownership.js spv/projects-view.js spv/panel-routes.js spv/panel-shell.js spv/panel.js spv/spv-project.js spv/paths.js spv/restart-command.js spv/restart-ux.js spv/restart.js spv/session.js spv/tools.js; do
+  for file in shared/core-stamp.js shared/deployments.js shared/home.js shared/hook-events.js shared/hooks.js shared/install-stamp.js shared/queue.js shared/schema.js shared/settings.js shared/spv-projects.js shared/work.js spv/auto-merge-effect.js spv/check.js spv/cron-plugin.js spv/cron.js spv/deployment-restart.js spv/deployment-setup.js spv/deployment.js spv/dispatch.js spv/health.js spv/hook.js spv/inbox.js spv/injector.js spv/outbox.js spv/ownership.js spv/projects-view.js spv/panel-routes.js spv/panel-shell.js spv/panel.js spv/spv-project.js spv/paths.js spv/restart-command.js spv/restart-ux.js spv/restart.js spv/session.js spv/tools.js; do
     if ! cp "$SELF_DIR/src/$file" "$dest/src/$file"; then
       fail "cannot copy src/$file from this checkout"
       fix "check that $SELF_DIR/src/$file exists and is readable, then rerun this script"
@@ -491,7 +560,7 @@ render_webui_into() {
   done
   # `settings.js` lives in `lib/shared/` (not `lib/core/`) for the same reason `queue.js` does: the copied
   # `lib/core/inbox.js` imports `../shared/settings.js`, and `lib/core/` is for the src/spv files.
-  for pair in "spv/inbox.js:lib/core/inbox.js" "spv/dispatch.js:lib/core/dispatch.js" "spv/hook-runner.js:lib/core/hook-runner.js" "spv/ownership.js:lib/core/ownership.js" "spv/projects-view.js:lib/core/projects-view.js" "spv/panel-routes.js:lib/core/panel-routes.js" "spv/paths.js:lib/core/paths.js" "spv/archive-effect.js:lib/core/archive-effect.js" "spv/auto-merge-effect.js:lib/core/auto-merge-effect.js" "shared/deployments.js:lib/shared/deployments.js" "shared/home.js:lib/shared/home.js" "shared/hook-events.js:lib/shared/hook-events.js" "shared/hooks.js:lib/shared/hooks.js" "shared/install-stamp.js:lib/shared/install-stamp.js" "shared/queue.js:lib/shared/queue.js" "shared/schema.js:lib/shared/schema.js" "shared/settings.js:lib/shared/settings.js" "shared/spv-projects.js:lib/shared/spv-projects.js" "shared/work.js:lib/shared/work.js"; do
+  for pair in "spv/inbox.js:lib/core/inbox.js" "spv/dispatch.js:lib/core/dispatch.js" "spv/hook-runner.js:lib/core/hook-runner.js" "spv/ownership.js:lib/core/ownership.js" "spv/projects-view.js:lib/core/projects-view.js" "spv/panel-routes.js:lib/core/panel-routes.js" "spv/paths.js:lib/core/paths.js" "spv/archive-effect.js:lib/core/archive-effect.js" "spv/auto-merge-effect.js:lib/core/auto-merge-effect.js" "shared/core-stamp.js:lib/shared/core-stamp.js" "shared/deployments.js:lib/shared/deployments.js" "shared/home.js:lib/shared/home.js" "shared/hook-events.js:lib/shared/hook-events.js" "shared/hooks.js:lib/shared/hooks.js" "shared/install-stamp.js:lib/shared/install-stamp.js" "shared/queue.js:lib/shared/queue.js" "shared/schema.js:lib/shared/schema.js" "shared/settings.js:lib/shared/settings.js" "shared/spv-projects.js:lib/shared/spv-projects.js" "shared/work.js:lib/shared/work.js"; do
     src=${pair%%:*}
     target=${pair##*:}
     if ! cp "$SELF_DIR/src/$src" "$dest/$target"; then
@@ -586,7 +655,7 @@ check_preset() {
     fix 'run: bash tools/wheelchair-agent/install.sh'
   fi
   actual=$(find "$PRESET_DIR" -type f | sed "s|^$PRESET_DIR/||" | sort | tr '\n' ' ')
-  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/deployments.js src/shared/home.js src/shared/hook-events.js src/shared/hooks.js src/shared/install-stamp.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/spv-projects.js src/shared/work.js src/spv/auto-merge-effect.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/deployment-restart.js src/spv/deployment-setup.js src/spv/deployment.js src/spv/dispatch.js src/spv/health.js src/spv/hook.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/ownership.js src/spv/projects-view.js src/spv/panel-routes.js src/spv/panel-shell.js src/spv/panel.js src/spv/spv-project.js src/spv/paths.js src/spv/restart-command.js src/spv/restart-ux.js src/spv/restart.js src/spv/session.js src/spv/tools.js "
+  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/core-stamp.js src/shared/deployments.js src/shared/home.js src/shared/hook-events.js src/shared/hooks.js src/shared/install-stamp.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/spv-projects.js src/shared/work.js src/spv/auto-merge-effect.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/deployment-restart.js src/spv/deployment-setup.js src/spv/deployment.js src/spv/dispatch.js src/spv/health.js src/spv/hook.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/ownership.js src/spv/projects-view.js src/spv/panel-routes.js src/spv/panel-shell.js src/spv/panel.js src/spv/spv-project.js src/spv/paths.js src/spv/restart-command.js src/spv/restart-ux.js src/spv/restart.js src/spv/session.js src/spv/tools.js "
   local missing extras
   missing=$(comm -23 <(printf '%s' "$expected" | tr ' ' '\n' | sort) <(printf '%s' "$actual" | tr ' ' '\n' | sort) | tr '\n' ' ')
   extras=$(comm -13 <(printf '%s' "$expected" | tr ' ' '\n' | sort) <(printf '%s' "$actual" | tr ' ' '\n' | sort) | tr '\n' ' ')
@@ -789,8 +858,10 @@ check_core_binary() {
   local artifact_digest installed_digest
   # The fixed component file name is the basename on both sides, so the artifact and the installed copy
   # compare without caring where they live.
-  artifact_digest=$(node "$SELF_DIR/src/shared/install-stamp.js" component core "$CORE_ARTIFACT" 2>/dev/null)
-  installed_digest=$(node "$SELF_DIR/src/shared/install-stamp.js" component core "$CORE_BIN" 2>/dev/null)
+  local core_stamp_args=()
+  if [ -f "$CORE_STAMP" ]; then core_stamp_args=(--core-stamp "$CORE_STAMP"); fi
+  artifact_digest=$(node "$SELF_DIR/src/shared/install-stamp.js" component core "$CORE_ARTIFACT" "${core_stamp_args[@]}" 2>/dev/null)
+  installed_digest=$(node "$SELF_DIR/src/shared/install-stamp.js" component core "$CORE_BIN" "${core_stamp_args[@]}" 2>/dev/null)
   if [ -n "$artifact_digest" ] && [ "$artifact_digest" = "$installed_digest" ]; then
     ok "core binary matches this checkout ($CORE_BIN)"
   else
@@ -808,8 +879,10 @@ check_install_stamp() {
     note 'no install stamp yet; the next successful install writes one, and cold-install notices stay unconditional until then'
     return
   fi
+  local core_stamp_args=()
+  if [ -f "$CORE_STAMP" ]; then core_stamp_args=(--core-stamp "$CORE_STAMP"); fi
   out=$(node "$SELF_DIR/src/shared/install-stamp.js" verify \
-    --stamp "$stamp" --preset "$PRESET_DIR" --webui "$WEBUI_TARGET" --bin "$BIN_DIR" --core "$CORE_BIN" 2>&1)
+    --stamp "$stamp" --preset "$PRESET_DIR" --webui "$WEBUI_TARGET" --bin "$BIN_DIR" --core "$CORE_BIN" "${core_stamp_args[@]}" 2>&1)
   status=$?
   case $status in
     0) ok 'install stamp matches the installed files' ;;
@@ -1018,9 +1091,12 @@ write_install_stamp() {
     return 1
   fi
   commit=$(git -C "$SELF_DIR" rev-parse HEAD 2>/dev/null || true)
+  local core_stamp_args=()
+  if [ -f "$CORE_STAMP" ]; then core_stamp_args=(--core-stamp "$CORE_STAMP"); fi
   if ! node "$SELF_DIR/src/shared/install-stamp.js" write \
       --stamp "$stamp" \
       --preset "$root/preset" --webui "$root/webui" --bin "$root/bin" --core "$CORE_ARTIFACT" \
+      "${core_stamp_args[@]}" \
       --preset-dir "$PRESET_DIR" --commit "$commit" >/dev/null 2>&1; then
     rm -rf "$root"
     fail "could not write the install stamp at $stamp"
@@ -1265,11 +1341,13 @@ if [ "$FINGERPRINT" -eq 1 ]; then
     printf '\n%d problem(s) blocked the fingerprint.\n' "$PROBLEMS" >&2
     exit 1
   fi
+  fingerprint_core_args=()
+  if [ -f "$CORE_STAMP" ]; then fingerprint_core_args=(--core-stamp "$CORE_STAMP"); fi
   node "$SELF_DIR/src/shared/install-stamp.js" fingerprint \
     --preset "$fingerprint_root/preset" \
     --webui "$fingerprint_root/webui" \
     --bin "$fingerprint_root/bin" \
-    --core "$CORE_ARTIFACT"
+    --core "$CORE_ARTIFACT" "${fingerprint_core_args[@]}"
   exit $?
 fi
 
@@ -1305,6 +1383,7 @@ if [ "$CHECK" -eq 1 ]; then
   check_launcher
   check_service
   check_jobctl
+  check_core_freshness
   check_core_binary
   check_install_stamp
   check_service_path
@@ -1340,6 +1419,10 @@ if [ -n "$SERVICE_PIDS" ] || [ -n "$SPV_PIDS" ]; then
 fi
 
 if ! require_core_artifact; then
+  printf '\n1 problem(s) blocked the install.\n'
+  exit 1
+fi
+if ! enforce_fresh_core; then
   printf '\n1 problem(s) blocked the install.\n'
   exit 1
 fi

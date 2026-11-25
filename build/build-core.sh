@@ -22,4 +22,11 @@ cargo build --release
 mkdir -p "$ARTIFACT_DIR"
 cp "$REPO/target/release/wheelchair-agent-core" "$ARTIFACT"
 strip "$ARTIFACT"
+# Record which Rust sources (and, when available, which commit) produced this artifact. install.sh
+# compares the stamp instead of only installed bytes, so a rebuilt checkout and an installed copy that
+# agree with each other but predate the sources can no longer pass --check silently.
+commit=$(git -C "$REPO" rev-parse HEAD 2>/dev/null || printf 'unknown')
+cargo_version=$(cargo --version 2>/dev/null || printf 'unknown')
+node "$REPO/src/shared/core-stamp.js" write --root "$REPO" --artifact "$ARTIFACT" \
+  --commit "$commit" --cargo "$cargo_version" >/dev/null
 printf '%s\n' "$ARTIFACT"
