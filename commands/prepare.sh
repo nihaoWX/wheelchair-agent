@@ -381,7 +381,7 @@ fi
 
 # --- hook spool: ticket.started ---------------------------------------------------------------
 #
-# The service-side hook runner is the only executor (see ARCHITECTURE/hooks.md). prepare never runs a hook
+# The service-side hook runner is the only executor (see ARCHITECTURE/hooks/runtime.md). prepare never runs a hook
 # inline: it writes one atomic JSON file under <data root>/records/hook-events/ and exits, so a slow
 # or failing script can never delay or fail a Ticket. Pure POSIX sh: no node, no python.
 json_escape() {
