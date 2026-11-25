@@ -21,6 +21,8 @@ window.__ModuleLoader__.load({
 		const REVIEW_URL = "/wheelchair-inbox/review";
 		/** The one settings endpoint: GET the snapshot, PUT one staged change set with its revision. */
 		const SETTINGS_URL = "/wheelchair-settings";
+		const PROJECTS_URL = "/wheelchair-projects";
+		const PROJECTS_REFRESH_MS = 30000;
 
 		/** Copy for the panel, the inbox section and the Markdown chrome. */
 		const zh = {
@@ -34,6 +36,24 @@ window.__ModuleLoader__.load({
 			"section.settings": "设置",
 			"feature.settings.title": "设置",
 			"feature.settings.description": "调整面板的外观，以及只因为 wheelchair-agent 存在而存在的旋钮：收件箱刷新、合并处理、消息注入、派单模板与工作回收。保存后立即生效，不需要重启服务或 SPV 会话。",
+			"section.projects": "项目",
+			"feature.projects.title": "项目",
+			"feature.projects.description": "查看每个 spv 项目、它绑定的 worker 项目，以及这些 worker 的部署与正在跑的工单/worker。这个段只读；修改请用 wheelchair-agent spv-project 与 deployment 命令。",
+			"projects.kind": "SPV 项目",
+			"projects.loading": "正在读取项目…",
+			"projects.loadFailed": "读取项目失败：{message}",
+			"projects.empty": "还没有登记 spv 项目。用「wheelchair-agent spv-project add <root>」登记一个。",
+			"projects.workerCount": "{count} 个 worker",
+			"projects.noWorkers": "没有绑定 worker 项目",
+			"projects.undeployed": "未部署",
+			"projects.port": "端口 {port}",
+			"projects.idle": "空闲",
+			"projects.running": "正在跑 {count} 个工单 · {workers} 个 worker",
+			"projects.queued": "排队 {count}",
+			"projects.unavailable": "不可用：{reason}",
+			"projects.rootMissing": "spv 根不存在",
+			"projects.setup": "配置未完成：{problem}",
+			"projects.status": "{count} 个 spv 项目 · 更新于 {time}",
 			"section.hooks": "插口",
 			"feature.hooks.title": "插口",
 			"feature.hooks.description": "查看每个事件是什么意思、什么时候触发、脚本能拿到什么，以及它下面有哪些内建行和自定义行。内建行属于 core path，只能改名；新增插口是一段给 agent 的提示词，不是在这里写 shell。",
@@ -277,6 +297,24 @@ window.__ModuleLoader__.load({
 			"section.settings": "Settings",
 			"feature.settings.title": "Settings",
 			"feature.settings.description": "Adjust how the panel looks, plus the knobs that exist because wheelchair-agent exists: inbox refresh, merge handling, message injection, dispatch text and work reclaim. Changes apply immediately; no service or SPV-session restart is needed.",
+			"section.projects": "Projects",
+			"feature.projects.title": "Projects",
+			"feature.projects.description": "See each spv project, the worker projects it owns, and what is deployed and running under those workers. This section is read-only; use the wheelchair-agent spv-project and deployment commands to change it.",
+			"projects.kind": "SPV project",
+			"projects.loading": "Loading projects…",
+			"projects.loadFailed": "Could not load projects: {message}",
+			"projects.empty": "No spv project is recorded yet. Add one with 「wheelchair-agent spv-project add <root>」.",
+			"projects.workerCount": "{count} worker(s)",
+			"projects.noWorkers": "No worker project is bound",
+			"projects.undeployed": "not deployed",
+			"projects.port": "port {port}",
+			"projects.idle": "idle",
+			"projects.running": "{count} running ticket(s) · {workers} worker(s)",
+			"projects.queued": "{count} queued",
+			"projects.unavailable": "unavailable: {reason}",
+			"projects.rootMissing": "the spv root does not exist",
+			"projects.setup": "setup incomplete: {problem}",
+			"projects.status": "{count} spv project(s) · updated {time}",
 			"section.hooks": "Hooks",
 			"feature.hooks.title": "Hooks",
 			"feature.hooks.description": "See what each event means, when it fires, what a script receives, and which built-in and custom rows belong to it. Built-in rows are the core path and can only be renamed; adding a hook is a prompt for an agent, not a shell box here.",
@@ -1394,6 +1432,31 @@ window.__ModuleLoader__.load({
 				width: 4px;
 				background: var(--wca-spine, var(--dsw-alias-label-tertiary));
 			}
+			.wca-letter[data-kind="project"] { --wca-spine: var(--dsw-alias-state-business-primary); }
+			.wca-project-workers { display: flex; flex-direction: column; gap: 10px; padding-top: 4px; }
+			.wca-project-worker {
+				display: flex;
+				flex-direction: column;
+				gap: 5px;
+				padding-top: 10px;
+				border-top: 1px solid var(--dsw-alias-border-l2);
+			}
+			.wca-project-worker:first-child { border-top: 0; padding-top: 0; }
+			.wca-project-worker-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+			.wca-project-worker-head strong { font-size: 13px; font-weight: 600; }
+			.wca-project-path {
+				font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+				font-size: 12px;
+				overflow-wrap: anywhere;
+			}
+			.wca-project-running {
+				margin: 0;
+				padding-left: 18px;
+				color: var(--dsw-alias-label-secondary);
+				font-size: 13px;
+				line-height: 20px;
+			}
+			.wca-project-running li { overflow-wrap: anywhere; }
 			.wca-letter[data-kind="pr"] { --wca-tint: var(--dsw-alias-button-primary-fill); }
 			.wca-letter[data-kind="spv_message"] {
 				--wca-tint: var(--dsw-alias-state-business-primary);
@@ -5744,6 +5807,255 @@ window.__ModuleLoader__.load({
 		//#endregion
 
 
+		//#region projects
+		//
+		// A read-only view over the spv project registry. The host route probes every registered
+		// deployment's own panel API concurrently (2s each) and turns a failure into that worker's
+		// unavailable reason, so one stopped deployment never stalls this page.
+
+		function ProjectsSection(props) {
+			const t = props.t;
+			const feature = props.feature;
+			const [payload, setPayload] = react.useState(null);
+			const [error, setError] = react.useState("");
+			const [loading, setLoading] = react.useState(true);
+			const [updatedAt, setUpdatedAt] = react.useState(null);
+			react.useEffect(() => {
+				let alive = true;
+				const load = async (silent) => {
+					if (!silent) setLoading(true);
+					try {
+						const response = await fetch(PROJECTS_URL, {
+							headers: { accept: "application/json" },
+							cache: "no-store"
+						});
+						const body = await response.json().catch(() => ({}));
+						if (!response.ok) throw new Error(body?.error ?? `HTTP ${response.status}`);
+						if (!alive) return;
+						setPayload(body);
+						setUpdatedAt(new Date());
+						setError("");
+					} catch (failure) {
+						if (!alive) return;
+						setError(t("projects.loadFailed", { message: failure instanceof Error ? failure.message : String(failure) }));
+					} finally {
+						if (alive) setLoading(false);
+					}
+				};
+				load(false);
+				const timer = setInterval(() => {
+					if (typeof document === "undefined" || document.visibilityState !== "hidden") load(true);
+				}, PROJECTS_REFRESH_MS);
+				return () => {
+					alive = false;
+					clearInterval(timer);
+				};
+			}, [t]);
+			const projects = Array.isArray(payload?.spvProjects) ? payload.spvProjects : [];
+			const status =
+				error !== ""
+					? error
+					: loading || payload === null
+						? t("projects.loading")
+						: t("projects.status", {
+								count: projects.length,
+								time: updatedAt === null ? "" : updatedAt.toLocaleTimeString(undefined, { hour12: false })
+							});
+			const titleId = `wca-feature-${feature.id}`;
+			return jsxs(
+				"section",
+				{
+					className: "wca-feature",
+					"aria-labelledby": titleId,
+					children: [
+						jsx(
+							"header",
+							{
+								className: "wca-feature-head",
+								children: jsxs(
+									"div",
+									{
+										className: "wca-feature-heading",
+										children: [
+											jsx("h2", { id: titleId, className: "wca-feature-title", children: t(feature.titleKey) }, "title"),
+											jsx("p", { className: "wca-feature-desc", children: t(feature.descriptionKey) }, "desc")
+										]
+									},
+									"heading"
+								)
+							},
+							"head"
+						),
+						jsxs(
+							"div",
+							{
+								className: "wca-feature-body",
+								children: [
+									jsx(
+										"p",
+										{
+											className: "wca-status",
+											"data-tone": error !== "" ? "error" : undefined,
+											role: error !== "" ? "alert" : undefined,
+											children: status
+										},
+										"status"
+									),
+									payload !== null && projects.length === 0
+										? jsx("p", { className: "wca-empty", children: t("projects.empty") }, "empty")
+										: null,
+									projects.length > 0
+										? jsx(
+												"div",
+												{
+													className: "wca-cards",
+													children: projects.map(project =>
+														jsx(ProjectCard, { t, project }, String(project.root))
+													)
+												},
+												"cards"
+											)
+										: null
+								]
+							},
+							"body"
+						)
+					]
+				},
+				"feature"
+			);
+		}
+
+		function ProjectCard(props) {
+			const t = props.t;
+			const project = props.project;
+			const workers = Array.isArray(project.workers) ? project.workers : [];
+			return jsxs(
+				"article",
+				{
+					className: "wca-letter",
+					"data-kind": "project",
+					children: [
+						jsx(
+							"div",
+							{
+								className: "wca-letter-head",
+								children: jsx(
+									"div",
+									{
+										className: "wca-letter-origin",
+										children: [
+											jsx("span", { className: "wca-kind", children: t("projects.kind") }, "kind"),
+											jsx("span", { className: "wca-tag", children: t("projects.workerCount", { count: workers.length }) }, "count")
+										]
+									},
+									"origin"
+								)
+							},
+							"head"
+						),
+						jsx("h3", { className: "wca-letter-title wca-project-path", children: String(project.root ?? "") }, "root"),
+						project.exists === false
+							? jsx("p", { className: "wca-meta", children: t("projects.rootMissing") }, "missing")
+							: null,
+						jsx(
+							"div",
+							{
+								className: "wca-letter-body",
+								children:
+									workers.length === 0
+										? jsx("p", { className: "wca-meta", children: t("projects.noWorkers") }, "none")
+										: jsx(
+												"div",
+												{
+													className: "wca-project-workers",
+													children: workers.map(worker =>
+														jsx(ProjectWorkerRow, { t, worker }, String(worker.project))
+													)
+												},
+												"workers"
+											)
+							},
+							"body"
+						)
+					]
+				},
+				"card"
+			);
+		}
+
+		function ProjectWorkerRow(props) {
+			const t = props.t;
+			const worker = props.worker;
+			const state = worker.state ?? { kind: "unavailable", reason: "no state was returned" };
+			const unavailable = state.kind !== "ok";
+			const running = Array.isArray(state.running) ? state.running : [];
+			const workers = Number.isInteger(state.workers) ? state.workers : running.length;
+			return jsxs(
+				"div",
+				{
+					className: "wca-project-worker",
+					children: [
+						jsxs(
+							"div",
+							{
+								className: "wca-project-worker-head",
+								children: [
+									jsx("strong", { children: String(worker.project ?? "") }, "project"),
+									worker.deployment === null || worker.deployment === undefined
+										? jsx("span", { className: "wca-tag", children: t("projects.undeployed") }, "port")
+										: jsx(
+												"span",
+												{ className: "wca-tag", children: t("projects.port", { port: worker.deployment.port }) },
+												"port"
+											),
+									jsx(
+										"span",
+										{
+											className: "wca-tag",
+											"data-tone": unavailable ? "error" : running.length > 0 || workers > 0 ? "success" : undefined,
+											children: unavailable
+												? t("projects.unavailable", { reason: state.reason })
+												: running.length > 0 || workers > 0
+													? t("projects.running", { count: running.length, workers })
+													: t("projects.idle")
+										},
+										"state"
+									)
+								]
+							},
+							"head"
+						),
+						jsx("p", { className: "wca-meta wca-project-path", children: String(worker.path ?? "") }, "path"),
+						running.length > 0
+							? jsx(
+									"ul",
+									{
+										className: "wca-project-running",
+										children: running.map(ticket =>
+											jsx("li", { children: String(ticket.title ?? "") || String(ticket.id ?? "") }, String(ticket.id))
+										)
+									},
+									"running"
+								)
+							: null,
+						Number.isInteger(state.queued) && state.queued > 0
+							? jsx("p", { className: "wca-meta", children: t("projects.queued", { count: state.queued }) }, "queued")
+							: null,
+						typeof state.setupProblem === "string" && state.setupProblem !== ""
+							? jsx(
+									"p",
+									{ className: "wca-meta", children: t("projects.setup", { problem: state.setupProblem }) },
+									"setup"
+								)
+							: null
+					]
+				},
+				"worker"
+			);
+		}
+		//#endregion
+
 		/**
 		* The features this page hosts. Adding a feature is exactly one array entry plus its
 		* component; the feature nav and the active body are generated from this list.
@@ -5769,6 +6081,13 @@ window.__ModuleLoader__.load({
 				titleKey: "feature.hooks.title",
 				descriptionKey: "feature.hooks.description",
 				Component: HooksSection
+			},
+			{
+				id: "projects",
+				labelKey: "section.projects",
+				titleKey: "feature.projects.title",
+				descriptionKey: "feature.projects.description",
+				Component: ProjectsSection
 			}
 		];
 

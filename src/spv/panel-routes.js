@@ -19,9 +19,11 @@ import {
   resolveSettings,
 } from '../shared/settings.js'
 import { createInboxHandler, resolveInboxRoot, resolveInboxIntervalSeconds } from './inbox.js'
+import { projectCards } from './projects-view.js'
 
 export const ITEMS_PATH = '/wheelchair-inbox/items'
 export const REVIEW_PATH = '/wheelchair-inbox/review'
+export const PROJECTS_PATH = '/wheelchair-projects'
 export { SETTINGS_PATH }
 
 /**
@@ -60,10 +62,26 @@ export function createPanelHandlers({ env = process.env, home, stateDir, config 
     config,
     decorate: snapshot => (typeof decorate === 'function' ? decorate(snapshot) : hookViewOf(snapshot)),
   })
+  const projects = async (req, res) => {
+    if (req.method !== 'GET') {
+      res.writeHead(405, { 'content-type': 'application/json; charset=utf-8', allow: 'GET' })
+      res.end(`${JSON.stringify({ error: 'method not allowed' })}\n`)
+      return
+    }
+    try {
+      const body = await projectCards({ env, home, stateDir })
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(`${JSON.stringify(body)}\n`)
+    } catch (error) {
+      res.writeHead(500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(`${JSON.stringify({ error: error instanceof Error ? error.message : String(error) })}\n`)
+    }
+  }
   return {
     items: inbox,
     review: inbox,
     settings,
+    projects,
     rootOf,
     settingsFileError,
     // `config` is the settings-shaped map ({"inbox.intervalSeconds": n}); the plugin's own
@@ -85,5 +103,6 @@ export function panelRouteTable(handlers) {
     { path: ITEMS_PATH, handler: handlers.items },
     { path: REVIEW_PATH, handler: handlers.review },
     { path: SETTINGS_PATH, handler: handlers.settings },
+    { path: PROJECTS_PATH, handler: handlers.projects },
   ]
 }
