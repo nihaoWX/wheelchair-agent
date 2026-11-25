@@ -321,7 +321,7 @@ It never rewrites an existing `settings.json` (the helper opens with `wx`), so a
 survives a re-install unchanged.
 
 
-## 与 `ARCHITECTURE.md` 的边界：面板是功能宿主（摘自 ARCHITECTURE.md）
+## 面板的边界：功能宿主，不是 iframe
 
 面板是 **`wheelchair-agent` 的功能宿主**（不是 iframe）：左侧栏一项 `wheelchair-agent`，页面是原生 React 组件，
 渲染在 host 的 `main` slot，继承 host 的 theme token 与 `ctx.locale`。当前两个功能：**收件箱**（PR 与 SPV 决策信；
@@ -331,7 +331,8 @@ survives a re-install unchanged.
 面板是**独立包** `wheelchair-agent-webui`（`dsh-client-modules` 只认裸包名，子路径成不了 loader 行），
 `install.sh` 把它拷进 superagent profile 的 `node_modules` 并 append 一行 loader。`webui/lib/client.js` 是手写的
 预构建 bundle（无 JSX、无构建链、只用 `--dsw-alias-*` token、`wca-` 前缀）；host 半身 `webui/lib/index.js` 注册
-`/wheelchair-inbox/{items,review}` 与 `/wheelchair-settings` 三条 JSON 路由。
+`/wheelchair-inbox/{items,review}`、`/wheelchair-settings`、`/wheelchair-projects` 四条 JSON 路由
+（路由表在 `src/spv/panel-routes.js`，两个宿主共用同一份）。
 
 **面板的布局、样式变体（`webui.style` = `fluid` 默认 / `minimal` 逃生口）、宽度节奏、审查记录的渲染细节，全部
 在本文件与 `settings.md` / `hooks.md`（面板段）/ `screenshots.md` 里；插口的引擎契约在

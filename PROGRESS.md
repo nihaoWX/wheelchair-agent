@@ -53,6 +53,14 @@ runner）故意只留在 dsh 插件宿主**——没开面板也照常合并与�
 
 # Completed
 
+- **四份部署 + 自动合并开关 + 文档第一批去重（运维，`23aa57e` 之后）**：注册
+  `tools/manuscripts_skills`（3083）/`tools/pitfalls-manager`（3084）/`tools/svg_grid`（3085），各自
+  `service start --project` 后 `deployment setup --project` 写进 GitHub 仓库，四份全部 `runtime: ready`；
+  注册 spv 项目 `/home/nihao/bioagentforge` 绑四个 worker；`merge.autoMerge` 从 `false` 改成 `true`
+  （`~/.wheelchair-agent/settings.json` revision 3）。同时发现两个设置面 bug 已派票
+  （`d15a826a7cda43bf921ddfe7dd8c8ea7`：`panel.port` 不在 `KEY_SPECS` 里所以被当未知键丢掉、部分
+  `PUT /wheelchair-settings` 会把没出现的键重置成默认值并记进 `filled`）。
+
 - **Rust 第四步：插口数据面（`#54`, `9c98064`）**：`crates/wca-core/src/hooks.rs` + 子命令 `hooks`
   （`payload|eventId|timeout|cwd|env|record|records|cursor-read|cursor-write|texts`）。搬的是数据面
   （payload 采样、事件 id、超时夹取、cwd/env 推导、`hooks.jsonl` 追加与读取、游标读写、12000 code point
@@ -267,6 +275,9 @@ runner）故意只留在 dsh 插件宿主**——没开面板也照常合并与�
   队列 rename 协议 `spv-source.md`、不动线上服务 `restart/lease.md`、`queueDir ≡ <stateDir>/spv`
   `deployments.md`、重启顺序 `restart/order.md`、`delivered` 非终态与内建行 `hooks/contract.md`、
   revision/409 `webui/settings.md`、一个 hook 读者 `hooks/runtime.md`。清理按这份清单逐条做。
+  **第一批已收**：`preset.md` 的「重启整套部署」整段（约 2.2KB 重述，且里面"`resume.txt` 是唯一来源"
+  自 `#36` 起已作废）换成三行指针 + 两条易错提醒；`webui/index.md` 的路由清单从"三条"改成四条并指向
+  `src/spv/panel-routes.js`，`hooks.md` 拆分后遗留的"面板段"歧义也一并改准。
 - **代码注释里有 8 处指向 `ARCHITECTURE/hooks.md`**（`src/shared/hooks.js:4/:87/:776/:994`、
   `hook-events.js:6`、`settings.js:18`、`src/spv/hook.js:4`、`commands/prepare.sh:384`）：文档拆成四册后
   这些指针要分别指向 `hooks/{contract,execution,runtime}.md`，属于代码改动，等下一张票一起改。

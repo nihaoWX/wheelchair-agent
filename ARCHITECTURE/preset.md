@@ -163,33 +163,15 @@ wheelchair-agent session release --session <id>     # 释放卡住的会话租�
 
 ### 重启整套部署
 
-`/restart-wheelchair-agent` 是这条命令的会话内入口：它只做守卫检查、arm 一个 detached orchestrator，
-然后告诉你会话即将结束。真正干活的 `wheelchair-agent spv` 终端**不会关**：它 tail
-`<root>/logs/restart-all.log`（默认 `~/.wheelchair-agent/logs/restart-all.log`）、逐行打印重启步骤（去掉时间戳；`restart-all:` 开头的内部行不进终端），完成后
-在**同一终端**重新拉起 TUI，并用 `~/.dsh-tui/resume.txt` 里的 session id（唯一来源；trim 后必须是 UUID）
-`--resume` 回到**同一个 SPV 对话**。操作者第一次启动的参数保持原样，但**重启时的重新拉起会先丢掉旧的**
-`--resume`/`-c`/`--continue`（旧 id 会进错会话，裸 `-c` 在 resume.txt 不可用时会直接退出），一律以
-resume.txt 为准。文件缺失/不可读/内容不是 id 时只打印一行说明，然后开新会话（不会卡死）；dsh-tui 拒绝
-resume 时再打印一行，去掉 `--resume` 重试一次。tmux session `dsh-spv` 只是**兜底**：那个终端已经没了
-（关掉，或 CLI 随 TUI 一起退出）时，编排器等一小段时间拿不到 claim 就退回 tmux，兜底同样带 `--resume`；
-没有 tmux 时 claim 成功照样不报错，没人 claim 才失败退出。兜底文件出现**不算成功**：只有日志里的
-`restart complete (exit 0)` 才算，tmux 没起来会按失败退出。首次升级后的第一个旧会话没有 supervising
-`wheelchair-agent spv`，只能从 tmux 回来；之后重新开一个 `wheelchair-agent spv` 才有原地返回。
-`/update`、`/restart`、`/backend` 交接会结束 supervising CLI，要再开一次 `wheelchair-agent spv`；
-不要给 `wheelchair-agent spv` 传 `--patch`，否则 CLI 自己进 kill chain，叙述者就没了。重启顺序固定为
-**服务停止 → SPV 链 SIGTERM/等待/SIGKILL →
-`install.sh` 冷安装 → 服务启动 → 本终端重开 TUI**；这个顺序是 `install.sh` 的冷安装守卫唯一接受的
-（服务或活着的 SPV 会话占用时它会拒绝，且半安装的服务比停着的服务更糟）。它只接受 `--force`：打断
-正在跑的 worker 与排队的 ticket（会先打印打断了什么）。安装失败或服务起不来时只打印原因、日志路径和
-手工修复命令，不 relaunch。
+`/restart-wheelchair-agent` 与 `wheelchair-agent restart-all` 的完整顺序、前置守卫、kill set、
+租约等待、tmux 兜底与失败恢复都写在 `ARCHITECTURE/restart.md`（分册
+`restart/{order,narrator,lease,operations}.md`），这里不再重述。只有两条最容易写错，提醒一句：
 
-kill set 不只按 `--patch` 认进程：还会扫 `/proc/<pid>/fd`，把**内核**认定的会话租约持有者
-（`<session dir>/session.lock` / `session.v4.jsonl.zstd` 的打开 fd）一并算进去；链杀完之后等待这些 fd
-关闭（`WHEELCHAIR_RESTART_LEASE_MS`，默认 15s），打印 `restart: waiting for pid <pid> to release the
-session…`。等不到就**不带 `--resume`** 开新会话，并打印 `restart: the previous session is still mounted
-by pid <pid>; starting a fresh session`，所以不会再撞上 dsh-tui 的 "mounted by another TUI terminal" 而掉进
-safe-mode。服务停掉之后、链杀之前，如果 `tmux has-session -t =dsh-spv` 成功还会先
-`tmux kill-session -t =dsh-spv` 清掉上次兜底留下的陈旧会话（失败只警告；CLI 自己在 `dsh-spv` 里时绝不杀）。
+1. 恢复目标是**发命令的那个会话**：`--session` 优先，其次该部署的 `deployment-session.json`，
+   `~/.dsh-tui/resume.txt` 只是最后的兜底（`#36` 起；早期版本的"resume.txt 是唯一来源"已作废）。
+2. 顺序固定：`guard → service stop → 停 SPV 会话链 → install.sh --project → service start → 拉回 TUI`，
+   任何一对调换都会留下半装状态或杀掉叙述者自己。
+
 手工处理卡住的租约用 `wheelchair-agent session release [--session <id>] [--dry-run]`：默认取
 `~/.dsh-tui/resume.txt` 里的会话（与 restart-all 同样跨项目解析）；resume.txt 有 id 但找不到目录时直接失败，
 不会改挑别的会话；只有 resume.txt 缺失/无效/不可读时才退回当前 workspace 最新的会话。
