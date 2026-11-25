@@ -20,9 +20,9 @@
  * `../src/`。`INSTALLED` 用「同目录有没有 preset.yml」区分这两种布局，不猜、不向上找。
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join } from 'node:path'
+import { dirname, join, sep } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const SELF_DIR = dirname(fileURLToPath(import.meta.url))
@@ -60,8 +60,9 @@ commands:
   prepare                      the panel's prepare command: clone the project, install a managed
                                AGENTS.md, give tools/<name> a private GitHub remote
   service <start|stop|restart|status|open> [--project <p>|--all]
-                               start, stop, restart or inspect a deployment's instance; --all does
-                               every registered deployment, and bare "service status" lists them all
+                               start, stop, restart or inspect a deployment's instance; a bare command
+                               identifies the deployment from the current checkout, --all does every
+                               registered deployment, and "service open" opens only the standalone panel
   panel [start|stop|status] [--port <n>] [--detach]
                                run the standalone panel (127.0.0.1, default 3080) that serves the
                                inbox/settings/hooks routes without any superagent deployment
@@ -474,6 +475,55 @@ function takeServiceTarget(argv) {
   return { project, all, rest }
 }
 
+/**
+ * The deployment this process is sitting in: the cwd (or one of its parents) is the registered
+ * checkout `<PROJECTS_ROOT>/<project>`. The longest matching checkout wins. Unlike the old
+ * `patch=None` service this never guesses "the base service": every deployment now runs with its own
+ * `--patch` overlay, so an unmatched cwd is a usage error, not a silent false negative.
+ */
+async function deploymentFromCwd(cwd = process.cwd()) {
+  let registry
+  try {
+    ({ registry } = await requiredRegistry())
+  } catch (error) {
+    throw new UsageError(
+      `cannot infer a deployment from ${cwd}: ${error.message} Pass --project <p> or --all after ` +
+        'registering the deployment.',
+    )
+  }
+  const projects = registry.deployments.map(entry => entry.project)
+  const listing = projects.length === 0 ? '(none)' : projects.join(', ')
+  let here
+  try {
+    here = realpathSync(cwd)
+  } catch {
+    here = cwd
+  }
+  let match = null
+  let matchLength = -1
+  for (const entry of registry.deployments) {
+    let checkout
+    try {
+      checkout = realpathSync(join(PROJECTS_ROOT, entry.project))
+    } catch {
+      continue
+    }
+    if (here !== checkout && !here.startsWith(`${checkout}${sep}`)) continue
+    if (checkout.length > matchLength) {
+      match = entry
+      matchLength = checkout.length
+    }
+  }
+  if (match === null) {
+    throw new UsageError(
+      `cannot infer a deployment from ${cwd}: it is not inside any registered project checkout ` +
+        `(${join(PROJECTS_ROOT, '<project>')}). Registered deployments: ${listing}. ` +
+        'Pass --project <p> or --all.',
+    )
+  }
+  return match
+}
+
 /** 同步运行 service manager，保留它的输出与退出码（不 execve：跑完还要打提示）。 */
 function runServiceManager(args) {
   if (!existsSync(SERVICE)) {
@@ -525,8 +575,9 @@ async function serviceArgsFor(entry, rest) {
  * 裸 `service status`（以及 `status --all`）逐个列出所有注册部署。没有 --project 也没有 --all 时不再
  * 静默使用基 stateDir/3082。
  *
- * 例外是"本进程知道自己属于哪份部署"：启动器用它裸跑 `service status` / `service start` 来保活自己
- * 那份实例。这不是默认部署——没有 `SPV_QUEUE_DIR` 的普通终端仍然必须说清目标。
+ * 没有 `--project` / `--all` 时先按 cwd 推断：cwd 必须位于 `<PROJECTS_ROOT>/<project>` 之下（嵌套目录
+ * 也算，最长匹配）。推断失败是 usage error（exit 2，列出注册表），不再静默去看不存在的旧式无
+ * `--patch` 服务。启动器导出的 `SPV_QUEUE_DIR` 只作为第二兜底。
  *
  * `service open` 只开独立面板：面板不属于任何部署，也不读实例日志里的 token URL。
  */
@@ -534,10 +585,18 @@ async function commandService(argv) {
   const { project, all, rest } = takeServiceTarget(argv)
   const action = rest[0] ?? 'status'
   let target = project
-  if (target === undefined && !all) {
-    const { ownDeployment } = await load('src', 'spv', 'ownership.js')
-    const own = ownDeployment()
-    if (own.entry !== null) target = own.entry.project
+  if (target === undefined && !all && action !== 'open') {
+    // A bare `service ...` first identifies the deployment by the checkout it runs in; a launcher
+    // that exported SPV_QUEUE_DIR keeps its old self-identification as a secondary hint.
+    const fromCwd = await deploymentFromCwd().catch(error => error)
+    if (fromCwd instanceof Error) {
+      const { ownDeployment } = await load('src', 'spv', 'ownership.js')
+      const own = ownDeployment()
+      if (own.entry !== null) target = own.entry.project
+      else throw fromCwd
+    } else {
+      target = fromCwd.project
+    }
   }
   if (action === 'open') {
     if (project !== undefined || all || rest.length > 1) {
@@ -551,27 +610,10 @@ async function commandService(argv) {
   }
   if (target === undefined && !all && action !== 'status') {
     throw new UsageError(
-      `service ${action} needs --project <p> or --all: there is no deployment without a project, and this ` +
-        'CLI no longer starts or stops one implicitly. Run "wheelchair-agent deployment list" to see the ' +
-        'registered deployments.',
+      `service ${action} needs --project <p> or --all: this command is not inside a registered project ` +
+        'checkout, and the CLI no longer falls back to a legacy deployment without an instance overlay. ' +
+        'Run "wheelchair-agent deployment list" to see the registered deployments.',
     )
-  }
-  if (target === undefined && !all && action === 'status') {
-    const { panelStatusLine } = await load('src', 'spv', 'panel.js')
-    process.stdout.write(`${panelStatusLine()}\n`)
-    let registry = null
-    try {
-      registry = (await requiredRegistry()).registry
-    } catch (error) {
-      process.stdout.write(`note: deployments cannot be listed: ${error.message}\n`)
-      return
-    }
-    if (registry.deployments.length === 0) return
-    const code = runServiceManager(['status'])
-    const block = await deploymentStatusBlock(registry.deployments)
-    if (block !== '') process.stdout.write(`\n${block}`)
-    if (code !== 0) process.exit(code)
-    return
   }
   const { deployments, registry } = await requiredRegistry()
   const { checkProject } = await load('src', 'spv', 'dispatch.js')
@@ -666,26 +708,6 @@ async function commandPanel(argv) {
   process.exit(await runPanelForeground({ port: chosen === 0 ? 0 : chosen }))
 }
 
-/** One line per registered deployment for a multi-deployment `service status`; `''` when there is one. */
-async function deploymentStatusBlock(entries) {
-  if (entries.length < 2) return ''
-  const { instancePath } = await load('src', 'shared', 'deployments.js')
-  const { readProcTable, servesProfile } = await load('src', 'spv', 'restart.js')
-  const { hasPatchArg, selectInstanceProcesses } = await load('src', 'spv', 'deployment-restart.js')
-  const table = readProcTable({})
-  const legacyRunning = table.some(row =>
-    entries.some(entry => entry.project === 'tools/wheelchair-agent' && servesProfile(row.argv, entry.profile) && !hasPatchArg(row.argv)))
-  const lines = ['deployments:']
-  for (const entry of entries) {
-    const instance = instancePath(entry.project)
-    const matches = selectInstanceProcesses(table, { profile: entry.profile, patch: instance })
-    if (entry.project === 'tools/wheelchair-agent' && legacyRunning && matches.length === 0) continue
-    const pid = matches.length > 0 ? String(matches[0].pid ?? matches[0]) : '-'
-    lines.push(`  ${entry.project}  port ${entry.port ?? '-'}  ${matches.length > 0 ? 'running' : 'stopped'}  ${pid}`)
-  }
-  lines.push('note:   use --project <p> (or --all) to target one deployment; the service lines above describe the legacy service')
-  return `${lines.join('\n')}\n`
-}
 
 /*
  * `spv` is the one global SPV session: it is not a deployment, and a project has no spv of its own. It takes
