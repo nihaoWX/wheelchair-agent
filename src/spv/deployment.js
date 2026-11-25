@@ -138,7 +138,7 @@ function defaultPort(env) {
   return 3082
 }
 
-/** `deployment list`。注册表缺失/为空都不是错误：它们是单部署时代与分部署模式之间的两种状态。 */
+/** `deployment list`。注册表缺失/为空都不是错误：两种状态都只打印指路文案（注册表是唯一来源）。 */
 function list({ env, json, out }) {
   const registry = listDeployments({ env })
   if (!registry.exists) {
@@ -148,8 +148,10 @@ function list({ env, json, out }) {
     }
     out.write(`registry: ${registry.file}\n`)
     out.write(
-      'no deployments recorded yet: this install still uses the single-deployment default. Record the ' +
-        'current deployment with "wheelchair-agent deployment migrate" before dispatching to it by project.\n',
+      'no deployments recorded yet: the registry is the only source, so nothing can read a queue and no ' +
+        'service can start. Adopt an old single-deployment install with "wheelchair-agent deployment ' +
+        'migrate", or register a project with "wheelchair-agent deployment add tools/<name>" (a fresh install ' +
+        'does this with "bash install.sh --project tools/<name>").\n',
     )
     return 0
   }
@@ -160,8 +162,9 @@ function list({ env, json, out }) {
   out.write(`registry: ${registry.file}\n`)
   if (registry.deployments.length === 0) {
     out.write(
-      'no deployments recorded: add the first one with "wheelchair-agent deployment add tools/<name>" ' +
-        '(or "wheelchair-agent deployment migrate" for the current single deployment).\n',
+      'no deployments recorded: the registry is the only source. Adopt an old install with ' +
+        '"wheelchair-agent deployment migrate", or register a project with "wheelchair-agent deployment add ' +
+        'tools/<name>" (a fresh install does this with "bash install.sh --project tools/<name>").\n',
     )
     return 0
   }

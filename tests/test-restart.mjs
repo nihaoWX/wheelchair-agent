@@ -346,6 +346,7 @@ function cliEnv(box, overrides = {}) {
     DSH_HOME: box.dshHome,
     DSH_SUPERAGENT_STATE_DIR: box.state,
     DSH_SUPERAGENT_URL: box.url,
+    FAKE_STATE: box.state,
     // The session root is explicit so a live `~/.dsh` can never supply the lease/session under test.
     DSH_TUI_SESSION_ROOT: join(box.dshHome, 'sessions'),
     WHEELCHAIR_AGENT_HOME: box.root,
@@ -485,7 +486,7 @@ function markerJson({
   sessionId = 'null',
 } = {}) {
   return [
-    'cat > "$DSH_SUPERAGENT_STATE_DIR/restart-armed.json" <<JSON',
+    'cat > "$FAKE_STATE/restart-armed.json" <<JSON',
     `{"pid": ${pid}, "armedPid": $$, "startedAt": "$(date -u +%Y-%m-%dT%H:%M:%SZ)", "log": "$log", ` +
       `"logOffset": $offset, "checkout": ${checkout}, "tmux": "dsh-spv", ` +
       `"service": "http://127.0.0.1:3082", "force": false, "noInstall": ${noInstall}, ` +
@@ -1149,7 +1150,7 @@ ${markerJson()}
 exit 0
 `,
   )
-  const result = await cli(box, ['spv', '--project', 'tools/wheelchair-agent'], {
+  const result = await cli(box, ['spv'], {
     env: {
       WHEELCHAIR_AGENT_LAUNCHER: launcher,
       FAKE_MARKER_PID: String(process.pid),
@@ -1210,7 +1211,7 @@ printf '[2026-11-15T00:00:01.000Z] restart complete (exit 0)\\n' >> "$log"
 exit 0
 `,
   )
-  const result = await cli(box, ['spv', '--project', 'tools/wheelchair-agent'], {
+  const result = await cli(box, ['spv'], {
     env: {
       WHEELCHAIR_AGENT_LAUNCHER: launcher,
       FAKE_MARKER_PID: String(process.pid),
@@ -1241,7 +1242,7 @@ printf 'supervised:%s\\n' "\${WHEELCHAIR_AGENT_SUPERVISED:-unset}" >> "$FAKE_CAL
 exit 0
 `,
   )
-  const result = await cli(box, ['spv', '--project', 'tools/wheelchair-agent'], {
+  const result = await cli(box, ['spv'], {
     env: {
       WHEELCHAIR_AGENT_LAUNCHER: launcher,
       WHEELCHAIR_RESTART_CHAIN: '111 222',
@@ -1276,7 +1277,7 @@ exit 0
 `,
   )
   const started = Date.now()
-  const result = await cli(box, ['spv', '--project', 'tools/wheelchair-agent'], {
+  const result = await cli(box, ['spv'], {
     env: {
       WHEELCHAIR_AGENT_LAUNCHER: launcher,
       FAKE_CHECKOUT: box.checkout,
@@ -1311,7 +1312,7 @@ ${markerJson()}
 exit 0
 `,
   )
-  const result = await cli(box, ['spv', '--project', 'tools/wheelchair-agent'], {
+  const result = await cli(box, ['spv'], {
     env: {
       WHEELCHAIR_AGENT_LAUNCHER: launcher,
       FAKE_MARKER_PID: String(process.pid),
@@ -1350,7 +1351,7 @@ printf '[2026-11-15T00:00:01.000Z] step 1/5: wheelchair-agent service stop -> ex
 exit 0
 `,
   )
-  const result = await cli(box, ['spv', '--project', 'tools/wheelchair-agent'], {
+  const result = await cli(box, ['spv'], {
     env: {
       WHEELCHAIR_AGENT_LAUNCHER: launcher,
       FAKE_MARKER_PID: String(process.pid),
@@ -1385,16 +1386,17 @@ async function testSpvStaleMarkerIgnored() {
   const launcher = await writeLauncher(
     box,
     `
-[ -f "$DSH_SUPERAGENT_STATE_DIR/restart-armed.json" ] && printf 'marker-present\\n' >> "$FAKE_CALLS"
+[ -f "$FAKE_STATE/restart-armed.json" ] && printf 'marker-present\\n' >> "$FAKE_CALLS"
 printf 'launcher-first\\n' >> "$FAKE_CALLS"
 exit 0
 `,
   )
-  const result = await cli(box, ['spv', '--project', 'tools/wheelchair-agent'], {
+  const result = await cli(box, ['spv'], {
     env: { WHEELCHAIR_AGENT_LAUNCHER: launcher, WHEELCHAIR_RESTART_NARRATE_MS: '3000' },
   })
   assert.equal(result.status, 0)
-  assert.equal(output(result), '', 'a normal exit produces no narrator output')
+  // Starting a registered backend is outside this assertion; a missing backend only warns on stderr.
+  assert.equal(result.stdout, '', 'a normal exit produces no narrator output')
   assert.deepEqual(
     await calls(box),
     ['marker-present', 'launcher-first'],
@@ -1419,11 +1421,11 @@ printf 'launcher-first\\n' >> "$FAKE_CALLS"
 exit 7
 `,
   )
-  const result = await cli(box, ['spv', '--project', 'tools/wheelchair-agent'], {
+  const result = await cli(box, ['spv'], {
     env: { WHEELCHAIR_AGENT_LAUNCHER: launcher, WHEELCHAIR_RESTART_NARRATE_MS: '3000' },
   })
   assert.equal(result.status, 7, 'the child status becomes the CLI status')
-  assert.equal(output(result), '')
+  assert.equal(result.stdout, '')
   assert.deepEqual(await calls(box), ['launcher-first'])
 }
 
@@ -1440,11 +1442,11 @@ mkdir -p "$WHEELCHAIR_AGENT_HOME/logs"
 offset=$(wc -c < "$log")
 ${markerJson()}
 printf '[2026-11-15T00:00:01.000Z] restart complete (exit 0)\\n' >> "$log"
-printf '{"pid":1,"at":"2026-11-15T00:00:00.000Z","tmux":"dsh-spv"}\\n' > "$DSH_SUPERAGENT_STATE_DIR/restart-fallback.json"
+printf '{"pid":1,"at":"2026-11-15T00:00:00.000Z","tmux":"dsh-spv"}\\n' > "$FAKE_STATE/restart-fallback.json"
 exit 0
 `,
   )
-  const result = await cli(box, ['spv', '--project', 'tools/wheelchair-agent'], {
+  const result = await cli(box, ['spv'], {
     env: {
       WHEELCHAIR_AGENT_LAUNCHER: launcher,
       FAKE_MARKER_PID: String(process.pid),
@@ -1479,11 +1481,11 @@ ${markerJson()}
   printf '[2026-11-15T00:00:01.100Z] FAIL: tmux session dsh-spv is not present 2s after the relaunch; the TUI did not come back\\n'
   printf '[2026-11-15T00:00:01.200Z] restart failed (exit 1); the log above says which step failed\\n'
 } >> "$log"
-printf '{"pid":1,"at":"2026-11-15T00:00:00.000Z","tmux":"dsh-spv"}\\n' > "$DSH_SUPERAGENT_STATE_DIR/restart-fallback.json"
+printf '{"pid":1,"at":"2026-11-15T00:00:00.000Z","tmux":"dsh-spv"}\\n' > "$FAKE_STATE/restart-fallback.json"
 exit 0
 `,
   )
-  const result = await cli(box, ['spv', '--project', 'tools/wheelchair-agent'], {
+  const result = await cli(box, ['spv'], {
     env: {
       WHEELCHAIR_AGENT_LAUNCHER: launcher,
       FAKE_MARKER_PID: String(process.pid),
@@ -1517,7 +1519,7 @@ printf '[2026-11-15T00:00:01.000Z] step 1/5: wheelchair-agent service stop -> ex
 exit 0
 `,
   )
-  const result = await cli(box, ['spv', '--project', 'tools/wheelchair-agent'], {
+  const result = await cli(box, ['spv'], {
     env: {
       WHEELCHAIR_AGENT_LAUNCHER: launcher,
       FAKE_MARKER_PID: String(deadPid),
@@ -1758,7 +1760,7 @@ printf '[2026-11-15T00:00:01.000Z] restart complete (exit 0)\\n' >> "$log"
 exit 0
 `,
   )
-  const result = await cli(box, ['spv', '--project', 'tools/wheelchair-agent'], {
+  const result = await cli(box, ['spv'], {
     env: {
       WHEELCHAIR_AGENT_LAUNCHER: launcher,
       FAKE_MARKER_PID: String(process.pid),
@@ -1795,7 +1797,7 @@ printf '[2026-11-15T00:00:01.000Z] restart complete (exit 0)\\n' >> "$log"
 exit 0
 `,
   )
-  const result = await cli(box, ['spv', '--project', 'tools/wheelchair-agent'], {
+  const result = await cli(box, ['spv'], {
     env: {
       WHEELCHAIR_AGENT_LAUNCHER: launcher,
       FAKE_MARKER_PID: String(process.pid),
@@ -1832,7 +1834,7 @@ printf '[2026-11-15T00:00:01.000Z] restart complete (exit 0)\\n' >> "$log"
 exit 0
 `,
   )
-  const chosenResult = await cli(chosen, ['spv', '--project', 'tools/wheelchair-agent', '--resume', other], {
+  const chosenResult = await cli(chosen, ['spv', '--resume', other], {
     env: {
       WHEELCHAIR_AGENT_LAUNCHER: chosenLauncher,
       FAKE_MARKER_PID: String(process.pid),
@@ -1868,7 +1870,7 @@ printf '[2026-11-15T00:00:01.000Z] restart complete (exit 0)\\n' >> "$log"
 exit 0
 `,
   )
-  const result = await cli(box, ['spv', '--project', 'tools/wheelchair-agent'], {
+  const result = await cli(box, ['spv'], {
     env: {
       WHEELCHAIR_AGENT_LAUNCHER: launcher,
       FAKE_MARKER_PID: String(process.pid),
@@ -1908,7 +1910,7 @@ printf '[2026-11-15T00:00:01.000Z] restart complete (exit 0)\\n' >> "$log"
 exit 0
 `,
   )
-  const result = await cli(box, ['spv', '--project', 'tools/wheelchair-agent', '-c'], {
+  const result = await cli(box, ['spv', '-c'], {
     env: {
       WHEELCHAIR_AGENT_LAUNCHER: launcher,
       FAKE_MARKER_PID: String(process.pid),
@@ -1950,7 +1952,7 @@ printf '[2026-11-15T00:00:01.000Z] restart complete (exit 0)\\n' >> "$log"
 exit 0
 `,
   )
-  const result = await cli(box, ['spv', '--project', 'tools/wheelchair-agent'], {
+  const result = await cli(box, ['spv'], {
     env: {
       WHEELCHAIR_AGENT_LAUNCHER: launcher,
       FAKE_MARKER_PID: String(process.pid),
@@ -2667,7 +2669,7 @@ printf 'call:%s\\n' "$*" >> "$FAKE_CALLS"
 exit 0
 `,
   )
-  const blocked = await cli(box, ['spv', '--project', 'tools/wheelchair-agent', '--resume', uuid], {
+  const blocked = await cli(box, ['spv', '--resume', uuid], {
     env: {
       WHEELCHAIR_AGENT_LAUNCHER: launcher,
       WHEELCHAIR_RESTART_LEASE_MS: '150',
@@ -2696,7 +2698,7 @@ printf 'call:%s\\n' "$*" >> "$FAKE_CALLS"
 exit 0
 `,
   )
-  const resumed = await cli(free, ['spv', '--project', 'tools/wheelchair-agent', '--resume', uuid], {
+  const resumed = await cli(free, ['spv', '--resume', uuid], {
     env: { WHEELCHAIR_AGENT_LAUNCHER: freeLauncher, WHEELCHAIR_RESTART_LEASE_MS: '150' },
   })
   assert.equal(resumed.status, 0, output(resumed))
@@ -2857,7 +2859,7 @@ exit 0
 `,
   )
   const started = Date.now()
-  const result = await cli(box, ['spv', '--project', 'tools/wheelchair-agent'], {
+  const result = await cli(box, ['spv'], {
     env: {
       WHEELCHAIR_AGENT_LAUNCHER: launcher,
       FAKE_MARKER_PID: String(process.pid),
@@ -2913,7 +2915,7 @@ exit 0
 `,
   )
   const started = Date.now()
-  const result = await cli(box, ['spv', '--project', 'tools/wheelchair-agent', '--resume', uuid], {
+  const result = await cli(box, ['spv', '--resume', uuid], {
     env: {
       WHEELCHAIR_AGENT_LAUNCHER: launcher,
       WHEELCHAIR_RESTART_NARRATE_MS: '3000',

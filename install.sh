@@ -878,14 +878,14 @@ in_use_lines() {
 # checkout path contains spaces, and only the holders actually present are told to stop.
 refusal_commands() {
   if [ -n "$SERVICE_PIDS" ]; then
-    printf '  %q service stop\n' "$CLI"
+    printf '  %q service stop --all\n' "$CLI"
   fi
   if [ -n "$SPV_PIDS" ]; then
     printf '  # exit the SPV session (Ctrl-D); it cannot be stopped from here\n'
   fi
-  printf '  bash %q\n' "$SELF_DIR/install.sh"
+  printf '  bash %q --project %s\n' "$SELF_DIR/install.sh" "${PROJECT_NAME:-<project>}"
   if [ -n "$SERVICE_PIDS" ]; then
-    printf '  %q service start\n' "$CLI"
+    printf '  %q service start --all\n' "$CLI"
   fi
   printf '  %q spv\n' "$CLI"
 }
@@ -1349,9 +1349,9 @@ if [ "$PROBLEMS" -gt 0 ]; then
   exit 1
 fi
 
-printf '\nDone. Start the superagent service, then the SPV session:\n'
-printf '  wheelchair-agent service start   # the backend that executes tickets\n'
-printf '  wheelchair-agent spv             # the agent you talk to\n'
+printf '\nDone. Start the deployment backends, then the SPV session:\n'
+printf '  wheelchair-agent service start --all   # every registered backend that executes tickets\n'
+printf '  wheelchair-agent spv                   # supervises all deployments; one SPV manages them\n'
 # Only when the preset really landed: printing a command for a file that is not there would send the
 # operator to a prepare command that fails on every ticket.
 if [ -f "$PRESET_DIR/prepare.sh" ]; then

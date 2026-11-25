@@ -20,9 +20,9 @@
  * `../src/`。`INSTALLED` 用「同目录有没有 preset.yml」区分这两种布局，不猜、不向上找。
  */
 import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, realpathSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join, sep } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const SELF_DIR = dirname(fileURLToPath(import.meta.url))
@@ -48,7 +48,7 @@ const USAGE = `usage: wheelchair-agent <command> [options]
 The single entry point for the SPV session and the superagent service.
 
 commands:
-  spv [--project <p>] [dsh-tui args...]
+  spv [dsh-tui args...]
                                start the SPV session (backend first; narrates a restart and comes back here);
                                --project picks the deployment, otherwise cwd under <projectsRoot>/<project>
   prepare                      the panel's prepare command: clone the project, install a managed
@@ -570,57 +570,70 @@ async function deploymentStatusBlock(entries) {
 }
 
 /*
- * `spv` 的目标推断：显式 --project 优先；否则 cwd 落在某个已登记项目的 checkout 下（`<projectsRoot>/<project>`）
- * 就用它；两者都没有时列出已登记部署并报错。不再默认 tools/wheelchair-agent。
+ * `spv` is the one global SPV session: it is not a deployment, and a project has no spv of its own. It takes
+ * no deployment selector — `--project` would read as "start this path's spv", which is meaningless. Multi-
+ * deployment routing does not need the session to identify itself: dispatch routes by each task's project,
+ * and results aggregate through `resolveRoots()` over the whole registry.
+ *
+ * Because the session carries no queue/state override, a stale `SPV_QUEUE_DIR` inherited from the launching
+ * shell is removed too; otherwise the injector and `spv_status` would silently watch one queue.
  */
-async function resolveSessionTarget(project) {
-  const { deployments, registry } = await requiredRegistry()
-  const { checkProject } = await load('src', 'spv', 'dispatch.js')
-  if (project !== undefined) {
-    const wanted = checkProject(project)
-    const entry = registry.deployments.find(item => item.project === wanted)
-    if (entry === undefined) throw deployments.missingDeploymentError(wanted, registry.file)
-    return entry
-  }
-  let cwd
-  try {
-    cwd = realpathSync(process.cwd())
-  } catch {
-    cwd = process.cwd()
-  }
-  const candidates = []
-  for (const entry of registry.deployments) {
-    let local
-    try {
-      local = realpathSync(join(PROJECTS_ROOT, entry.project))
-    } catch {
-      continue
+async function commandSpv(argv) {
+  const rest = []
+  for (const word of argv) {
+    if (word === '--project' || word.startsWith('--project=') || word === '--all') {
+      throw new UsageError(
+        `spv does not take ${JSON.stringify(word.split('=')[0])}: it is the one global SPV session, not a ` +
+          'deployment. Use "wheelchair-agent service ... --project <p>" to target a deployment.',
+      )
     }
-    if (cwd === local || cwd.startsWith(local + sep)) candidates.push({ entry, local })
+    rest.push(word)
   }
-  if (candidates.length === 0) {
-    const listed = registry.deployments.map(item => item.project).join(', ')
-    throw new Error(
-      `cannot infer which deployment this session belongs to: ${process.cwd()} is not under any registered ` +
-        `project checkout (${PROJECTS_ROOT}/<project>). Run "wheelchair-agent spv --project <project>"; ` +
-        `registered deployments: ${listed}.`,
+
+
+  const { registry } = await requiredRegistry().catch(error => {
+    // No registry is not fatal here: an SPV session can still start and inspect/route once deployments exist.
+    if (error?.name === 'Error' && /^no deployment registry at /.test(String(error.message))) {
+      return { registry: undefined }
+    }
+    throw error
+  })
+  if (registry === undefined) {
+    process.stdout.write(
+      'note: no deployments are registered yet, so no backend was started. Register one before dispatching: ' +
+        '"wheelchair-agent deployment migrate" (adopt an old install) or "wheelchair-agent deployment add ' +
+        'tools/<name>" / "bash install.sh --project tools/<name>".\n',
+    )
+  } else if (registry.deployments.length === 0) {
+    process.stdout.write(
+      'note: the deployment registry is empty, so no backend was started. Add one before dispatching: ' +
+        '"wheelchair-agent deployment add tools/<name>" (or "deployment migrate" for an old install).\n',
     )
   }
-  candidates.sort((a, b) => b.local.length - a.local.length)
-  return candidates[0].entry
-}
 
-async function commandSpv(argv) {
-  const { project, rest } = takeServiceTarget(argv)
-  if (rest.some(word => word === '--all')) throw new UsageError('spv does not take --all')
-  const entry = await resolveSessionTarget(project)
   const configured = String(process.env.WHEELCHAIR_AGENT_LAUNCHER ?? '').trim()
   const launcher = configured === '' ? LAUNCHER : configured
   if (!existsSync(launcher)) {
     process.stderr.write(`wheelchair-agent: the SPV launcher is missing at ${launcher}\n`)
-    process.stderr.write('fix: run "bash install.sh" from the wheelchair-agent checkout\n')
+    process.stderr.write('fix: run "bash install.sh --project <project>" from the wheelchair-agent checkout\n')
     process.exit(1)
   }
+  if (registry !== undefined && registry.deployments.length > 0) {
+    for (const entry of registry.deployments) {
+      try {
+        const args = await serviceArgsFor(entry, ['start'])
+        if (runServiceManager(args) !== 0) {
+          process.stderr.write(
+            `warning: the backend for ${entry.project} did not start; run "wheelchair-agent service status ` +
+              `--project ${entry.project}" to diagnose it.\n`,
+          )
+        }
+      } catch (error) {
+        process.stderr.write(`warning: ${entry.project}: ${error.message}\n`)
+      }
+    }
+  }
+
   const { resolveResume, runSpvSession } = await load('src', 'spv', 'restart-ux.js')
   const { resolveSession, resumeIdFromArgv } = await load('src', 'spv', 'session.js')
   // The initial session hint (when the operator starts with --resume) is passed to the loop; it resolves
@@ -630,17 +643,13 @@ async function commandSpv(argv) {
   const session = resumeId === undefined
     ? undefined
     : resolveSession({ env: process.env, cwd: process.cwd(), id: resumeId })
-  // Export the deployment identity to the launcher (and thus the dsh instance): the Source, the watcher and
-  // /restart-wheelchair-agent all resolve this instance from SPV_QUEUE_DIR, never from a global default.
-  const env = {
-    ...process.env,
-    DSH_SUPERAGENT_STATE_DIR: entry.stateDir,
-    SPV_QUEUE_DIR: entry.queueDir,
-  }
+  const env = { ...process.env }
+  delete env.SPV_QUEUE_DIR
+  delete env.DSH_SUPERAGENT_STATE_DIR
   process.exitCode = await runSpvSession({
     launcher,
     launcherArgv: rest,
-    stateDir: entry.stateDir,
+    stateDir: STATE_DIR,
     sessionDir: session?.dir,
     presetPatch: join(PRESET_DIR, 'preset-default.patch.yml'),
     cwd: process.cwd(),

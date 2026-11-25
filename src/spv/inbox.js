@@ -870,7 +870,7 @@ export async function detectInstallPending({ localPath, dataRoot } = {}) {
  * `no-stamp` / `unknown` keep the historical unconditional text, so a machine that has never installed
  * with a stamp still warns.
  */
-function mergeNoticeText({ item, repo, localPath, pulledSha, pending }) {
+export function mergeNoticeText({ item, repo, project, localPath, pulledSha, pending }) {
   if (pending?.kind === 'same') return null
   const lines = [
     `PR #${item.pr} merged in ${repo}.`,
@@ -880,13 +880,16 @@ function mergeNoticeText({ item, repo, localPath, pulledSha, pending }) {
   if (pending?.kind === 'stale') {
     lines.push(`The installed copy differs from this checkout in: ${describeInstallChanges(pending)}.`)
   }
+  // `project` is that repository's registered project name; every command must name it, because this repo no
+  // longer has a base deployment that a bare `service`/`install.sh` would implicitly mean.
+  const targeted = shellQuote(String(project ?? '<project>'))
   lines.push(
     '',
-    'Stop the install holders, install from that checkout, then start again:',
-    '  wheelchair-agent service stop',
+    `Stop only ${project ?? 'that deployment'}'s holders, install from that checkout, then start again:`,
+    `  wheelchair-agent service stop --project ${targeted}`,
     '  # exit the SPV session (Ctrl-D); it cannot be stopped from here',
-    `  cd ${shellQuote(localPath)} && bash install.sh`,
-    '  wheelchair-agent service start',
+    `  bash ${shellQuote(localPath)}/install.sh --project ${targeted}`,
+    `  wheelchair-agent service start --project ${targeted}`,
     '  wheelchair-agent spv',
   )
   return lines.join('\n')
@@ -901,7 +904,7 @@ function mergeNoticeText({ item, repo, localPath, pulledSha, pending }) {
  * `mergeHandledAt` and does neither the pull nor the notice again. The notice id is derived from the item
  * id, so even a retry after a partial write overwrites one outbox file rather than stacking notices.
  */
-async function handleMergedPull({ item, repo, name, localPath, existing, observedAt, settings, log = () => {} }) {
+async function handleMergedPull({ item, repo, name, project, localPath, existing, observedAt, settings, log = () => {} }) {
   const at = new Date().toISOString()
   const mergeObservedAt = existing?.mergeObservedAt || observedAt
   let pulledSha = existing?.pulledSha
@@ -959,7 +962,7 @@ async function handleMergedPull({ item, repo, name, localPath, existing, observe
           source: 'spv',
           thread: 'main',
           kind: 'notice',
-          text: mergeNoticeText({ item, repo, localPath, pulledSha, pending }),
+          text: mergeNoticeText({ item, repo, project, localPath, pulledSha, pending }),
           at: new Date().toISOString(),
           address: { thread: 'main' },
         })
@@ -1225,6 +1228,7 @@ export async function pollOnce({ root = resolveInboxRoot(), projectsRoot = defau
               item: next,
               repo,
               name,
+              project,
               localPath,
               existing,
               observedAt: new Date().toISOString(),
