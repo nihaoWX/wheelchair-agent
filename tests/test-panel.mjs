@@ -1,20 +1,23 @@
 /**
- * The standalone panel: a real process on a throwaway data root. No dsh, no deployment, no live
- * service: the test only proves the same three routes answer and that the UI can act on them.
+ * The standalone panel is its own dsh instance: the "panel" profile (dsh-base + dsh-web-app + the
+ * wheelchair-agent webui package) plus the installed `panel.patch.yml`. This test installs into a
+ * throwaway DSH_HOME with the same seams `tests/test-install.sh` uses, then starts the real instance
+ * on 3997 and checks the browser-facing facts: the harness page, the authenticated inbox route, the
+ * status contract, and that stopping closes the port.
  *
  * Run with `node tests/test-panel.mjs`.
  */
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { createServer } from 'node:net'
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
 const CLI = join(ROOT, 'bin', 'wheelchair-agent.mjs')
+const PORT = 3997
 let PASS = 0
 let FAIL = 0
 
@@ -33,47 +36,103 @@ function check(name, condition, detail = '') {
 
 function makeBox() {
   const base = mkdtempSync(join(tmpdir(), 'wheelchair-panel-'))
-  const box = { base, home: join(base, 'home'), dsh: join(base, 'dsh'), state: join(base, 'state') }
-  for (const dir of [box.home, box.dsh, box.state]) mkdirSync(dir, { recursive: true })
+  const box = {
+    base,
+    home: join(base, 'home'),
+    dsh: join(base, 'dsh'),
+    tools: join(base, 'tools'),
+    queue: join(base, 'queue'),
+    bin: join(base, 'bin'),
+  }
+  for (const dir of [box.home, box.tools, box.queue, join(box.dsh, 'profiles', 'superagent')]) {
+    mkdirSync(dir, { recursive: true })
+  }
+  writeFileSync(join(box.tools, 'dsh-tui'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+  writeFileSync(
+    join(box.tools, 'fake-probe'),
+    '#!/bin/sh\nprintf "service_pids=\\nspv_pids=\\nservice_port=3082\\npreset_patch=/fake/preset-default.patch.yml\\n"\n',
+    { mode: 0o755 },
+  )
   return box
 }
+
 function envFor(box, extra = {}) {
   const env = { ...process.env }
   for (const key of [
     'SPV_QUEUE_DIR', 'SPV_SUPERAGENT_URL', 'SPV_SUPERAGENT_PORT', 'DSH_SUPERAGENT_PORT',
     'SPV_SERVICE_PORT', 'DSH_SUPERAGENT_PROFILE', 'SPV_PANEL_PORT', 'WHEELCHAIR_AGENT_OPEN',
-    'DSH_SUPERAGENT_URL', 'SPV_PROJECTS_ROOT',
+    'DSH_SUPERAGENT_URL', 'SPV_PROJECTS_ROOT', 'DSH_BIN',
   ]) delete env[key]
   return {
     ...env,
     HOME: box.home,
     DSH_HOME: box.dsh,
+    SPV_BIN_DIR: box.bin,
+    SPV_QUEUE_DIR: box.queue,
+    SPV_PROJECTS_ROOT: join(box.home, 'bioagentforge'),
     WHEELCHAIR_AGENT_HOME: join(box.home, '.wheelchair-agent'),
-    DSH_SUPERAGENT_STATE_DIR: box.state,
+    DSH_SUPERAGENT_STATE_DIR: join(box.dsh, 'state', 'superagent'),
+    SPV_INSTALL_PROBE: join(box.tools, 'fake-probe'),
+    SPV_SERVICE_PORT: '3082',
+    PATH: `${box.tools}:${process.env.PATH ?? ''}`,
     ...extra,
   }
 }
+
 function cli(box, argv, extra = {}) {
   const result = spawnSync(process.execPath, [CLI, ...argv], {
     env: envFor(box, extra),
     encoding: 'utf8',
-    timeout: 20_000,
+    timeout: 30_000,
   })
   return { status: result.status, stdout: result.stdout, stderr: result.stderr }
 }
 
-async function waitFor(read, predicate, timeoutMs = 8000) {
+function install(box) {
+  const artifact = join(ROOT, 'build', 'artifacts', 'wheelchair-agent-core-linux-x64')
+  assert.ok(existsSync(artifact), `the core artifact is missing (run bash build/build-core.sh): ${artifact}`)
+  const result = spawnSync('bash', [join(ROOT, 'install.sh'), '--project', 'tools/wheelchair-agent'], {
+    cwd: ROOT,
+    env: envFor(box, { SPV_INSTALL_CORE_ARTIFACT: artifact }),
+    encoding: 'utf8',
+    timeout: 120_000,
+  })
+  assert.equal(result.status, 0, `install.sh failed:\n${result.stdout}\n${result.stderr}`)
+}
+
+async function waitFor(read, predicate, timeoutMs = 30_000) {
   const deadline = Date.now() + timeoutMs
   while (Date.now() < deadline) {
-    const value = read()
+    const value = await read()
     if (predicate(value)) return value
-    await new Promise(resolve => setTimeout(resolve, 80))
+    await new Promise(resolve => setTimeout(resolve, 100))
   }
   return read()
 }
 
-async function startForeground(box, extraArgs = []) {
-  const child = spawn(process.execPath, [CLI, 'panel', '--foreground', '--port', '0', ...extraArgs], {
+async function fetchWithCookie(url, cookie = '') {
+  return fetch(url, {
+    redirect: 'manual',
+    cache: 'no-store',
+    headers: cookie === '' ? {} : { cookie },
+    signal: AbortSignal.timeout(5_000),
+  })
+}
+
+function cookieOf(response) {
+  const raw = response.headers.getSetCookie?.() ?? []
+  const first = raw[0] ?? response.headers.get('set-cookie') ?? ''
+  return first.split(';')[0]
+}
+
+async function startForeground(box) {
+  try {
+    await fetch(`http://127.0.0.1:${PORT}/`, { signal: AbortSignal.timeout(300) })
+    throw new Error(`port ${PORT} is already in use`)
+  } catch (error) {
+    if (error.message === `port ${PORT} is already in use`) throw error
+  }
+  const child = spawn(process.execPath, [CLI, 'panel', '--foreground', '--port', String(PORT)], {
     env: envFor(box),
     stdio: ['ignore', 'pipe', 'pipe'],
   })
@@ -82,204 +141,140 @@ async function startForeground(box, extraArgs = []) {
   child.stderr.setEncoding('utf8')
   child.stdout.on('data', chunk => { output += chunk })
   child.stderr.on('data', chunk => { output += chunk })
-  const port = await waitFor(() => {
-    const match = output.match(/panel listening on http:\/\/127\.0\.0\.1:(\d+)\//)
-    return match === null ? null : Number(match[1])
-  }, value => value !== null)
-  assert.notEqual(port, null, `panel did not start: ${output}`)
-  return { child, port, outputOf: () => output }
+  const token = await waitFor(
+    () => {
+      const match = output.match(/https?:\/\/127\.0\.0\.1:\d+\/\?token=[A-Za-z0-9._-]+/)
+      return match === null ? null : match[0]
+    },
+    value => value !== null,
+  )
+  assert.notEqual(token, null, `the panel did not print a token URL:\n${output}`)
+  return { child, token, outputOf: () => output }
 }
 
-async function json(port, path, options = {}) {
-  const response = await fetch(`http://127.0.0.1:${port}${path}`, { cache: 'no-store', ...options })
-  const payload = await response.json().catch(() => ({}))
-  return { status: response.status, payload }
-}
-
-async function closePanel(box, port) {
-  cli(box, ['panel', 'stop'])
-  const deadline = Date.now() + 5000
-  while (Date.now() < deadline) {
-    try {
-      await fetch(`http://127.0.0.1:${port}/`, { signal: AbortSignal.timeout(300) })
-    } catch {
-      return true
-    }
-    await new Promise(resolve => setTimeout(resolve, 80))
-  }
-  return false
-}
-
-async function testPanelRoutes() {
+async function testProfile() {
   const box = makeBox()
-  const { child, port } = await startForeground(box)
   try {
-    const page = await fetch(`http://127.0.0.1:${port}/`)
+    install(box)
+    const profile = join(box.dsh, 'profiles', 'panel')
+    const manifest = JSON.parse(readFileSync(join(profile, 'package.json'), 'utf8'))
+    const bundles = manifest?.dsh?.profile?.bundles ?? []
+    check('the panel profile exists', existsSync(profile))
+    check('the panel profile bundles dsh-web-app', bundles.includes('@deepseek-ai/dsh-web-app'), bundles.join(','))
+    check('the panel profile bundles dsh-base', bundles.includes('@deepseek-ai/dsh-base'), bundles.join(','))
+    const patch = readFileSync(join(profile, 'cordis.patch.yml'), 'utf8')
+    const manifestText = readFileSync(join(profile, 'package.json'), 'utf8')
+    check('the panel profile never declares dsh-superagent', !manifestText.includes('dsh-superagent'), manifestText)
+    check('the panel patch never mounts dsh-superagent', !patch.includes('dsh-superagent'), patch)
+    check('the panel patch mounts wheelchair-webui', /name:\s*['"]wheelchair-agent-webui['"]/.test(patch), patch)
+    check(
+      'the panel profile records the dsh version it was built for',
+      JSON.parse(readFileSync(join(profile, 'panel-instance.json'), 'utf8')).dshVersion ===
+        spawnSync('dsh', ['--version'], { encoding: 'utf8' }).stdout.trim(),
+    )
+    const overlay = join(box.dsh, '.agent-presets', 'spv', 'panel.patch.yml')
+    check('the panel overlay is installed with the preset', existsSync(overlay))
+    check('the panel overlay keeps the webui background off', /background:\s*false/.test(readFileSync(overlay, 'utf8')))
+    check('the panel overlay has no dsh-superagent entry', !readFileSync(overlay, 'utf8').includes('dsh-superagent'))
+    return box
+  } catch (error) {
+    no('profile setup', error.message)
+    return box
+  }
+}
+
+async function testRunningPanel(box) {
+  const before = cli(box, ['deployment', 'list'])
+  const started = await startForeground(box)
+  try {
+    const tokenUrl = started.token
+    const first = await fetchWithCookie(tokenUrl)
+    const cookie = cookieOf(first)
+    check('the token URL redirects into the harness', first.status === 303 || first.status === 302, String(first.status))
+    const page = await fetchWithCookie(`http://127.0.0.1:${PORT}/`, cookie)
     const html = await page.text()
-    check(
-      'panel serves the bundle shell',
-      page.ok && html.includes('id="root"') && html.includes('/client.js') && html.includes('/vendor/react.production.min.js') && !html.includes('@deepseek-ai/'),
-      html.slice(0, 160),
-    )
-    const bundle = await fetch(`http://127.0.0.1:${port}/client.js`)
-    const bundleText = await bundle.text()
-    check(
-      'panel serves the real dsh client bundle',
-      bundle.ok && bundleText === readFileSync(join(ROOT, 'webui', 'lib', 'client.js'), 'utf8'),
-      `status ${bundle.status} bytes ${bundleText.length}`,
-    )
-    for (const asset of ['react.production.min.js', 'react-dom.production.min.js', 'LICENSE.react', 'LICENSE.react-dom', 'README.md']) {
-      const served = await fetch(`http://127.0.0.1:${port}/vendor/${asset}`)
-      check(`panel serves vendor/${asset}`, served.ok && (await served.text()).length > 0, `status ${served.status}`)
-    }
+    check('the harness page answers 200', page.status === 200, `${page.status} ${html.slice(0, 120)}`)
+    check('the page is the dsh web app mount point', html.includes('id="root"') || html.includes('__DSH_BOOT__'), html.slice(0, 300))
+    check('the page loads our client bundle', html.includes('wheelchair-agent-webui'), html.slice(0, 500))
+    const inbox = await fetchWithCookie(`http://127.0.0.1:${PORT}/wheelchair-inbox/items`, cookie)
+    const payload = await inbox.json().catch(() => null)
+    check('the inbox route answers 200 JSON', inbox.status === 200 && payload !== null, `${inbox.status}`)
+    check('the inbox route returns an items array', Array.isArray(payload?.items), JSON.stringify(payload))
 
-    const empty = await json(port, '/wheelchair-inbox/items')
-    check('inbox starts empty', empty.status === 200 && Array.isArray(empty.payload.items) && empty.payload.items.length === 0, JSON.stringify(empty.payload))
+    const status = cli(box, ['panel', 'status', '--port', String(PORT)])
+    check('panel status exits 0 while running', status.status === 0, status.stderr)
+    check('panel status names the port and pid', new RegExp(`panel: port ${PORT} running \\d+`).test(status.stdout), status.stdout)
+    check('panel status prints the tokenised url', /^url: https?:\/\/127\.0\.0\.1:3997\/\?token=/m.test(status.stdout), status.stdout)
+    check('panel status proves GET / answers 200', /check: http 200/.test(status.stdout), status.stdout)
+    check('panel status says there is no orchestrator', /no orchestrator:/.test(status.stdout), status.stdout)
+    check('the running panel did not change the deployment registry', cli(box, ['deployment', 'list']).stdout === before.stdout)
 
-    const add = cli(box, ['inbox', 'add', '--title', 'panel smoke', '--body', 'body from a test'])
-    check('inbox add works beside the panel', add.status === 0, add.stderr)
-    const listed = await json(port, '/wheelchair-inbox/items')
-    check('panel lists the new letter', listed.payload.items?.length === 1 && listed.payload.items[0].title === 'panel smoke', JSON.stringify(listed.payload))
-    const id = listed.payload.items[0].id
-    const review = await json(port, '/wheelchair-inbox/review', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ id, kind: 'approve', text: 'reviewed from the standalone panel' }),
+    const stop = cli(box, ['panel', 'stop', '--port', String(PORT)])
+    check('panel stop exits 0', stop.status === 0, stop.stderr)
+    const { child } = started
+    await new Promise(resolve => {
+      if (child.exitCode !== null) return resolve()
+      const timer = setTimeout(resolve, 15_000)
+      child.once('exit', () => { clearTimeout(timer); resolve() })
     })
-    check('panel approves a letter', review.status === 200 && review.payload.ok === true, JSON.stringify(review.payload))
-
-    const snapshot = await json(port, '/wheelchair-settings')
-    check('settings expose the panel port default', snapshot.payload.effective?.['panel.port'] === 3080, JSON.stringify(snapshot.payload.values))
-    const saved = await json(port, '/wheelchair-settings', {
-      method: 'PUT',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ revision: snapshot.payload.revision, values: { 'inbox.intervalSeconds': 15 } }),
-    })
-    check('settings write through the panel', saved.status === 200 && saved.payload.values?.['inbox.intervalSeconds'] === 15, JSON.stringify(saved.payload))
-    const settingsFile = join(box.home, '.wheelchair-agent', 'settings.json')
-    check('settings persist in the data root', existsSync(settingsFile) && JSON.parse(readFileSync(settingsFile, 'utf8')).values?.['inbox.intervalSeconds'] === 15, settingsFile)
-
-    const hooksBefore = await json(port, '/wheelchair-settings')
-    const firstRow = hooksBefore.payload.hookView?.items?.[0] ?? hooksBefore.payload.hookView?.builtin?.[0]
-    check('hooks view is present in the panel', firstRow !== undefined, JSON.stringify(Object.keys(hooksBefore.payload.hookView ?? {})))
-    if (firstRow !== undefined) {
-      const renamed = await json(port, '/wheelchair-settings', {
-        method: 'PUT',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ revision: hooksBefore.payload.revision, hooks: { labels: { [firstRow.id]: 'Renamed by the panel test' } } }),
-      })
-      const row = [...(renamed.payload.hookView?.items ?? []), ...(renamed.payload.hookView?.builtin ?? [])]
-        .find(item => item.id === firstRow.id)
-      check('hooks rename writes through the panel', renamed.status === 200 && (row?.label === 'Renamed by the panel test' || row?.customLabel === 'Renamed by the panel test'), JSON.stringify(row))
-    }
-
-    const status = cli(box, ['panel', 'status'])
-    check('panel status names the running port', status.status === 0 && status.stdout.includes(`running`) && status.stdout.includes(String(port)), status.stdout)
-
-    child.kill('SIGTERM')
-    await new Promise(resolve => child.once('exit', resolve))
-    const released = await closePanel(box, port)
-    check('panel stop releases the port', released)
-    check('panel stop removes the pid file', !existsSync(join(box.home, '.wheelchair-agent', 'panel.pid')))
+    const closed = await waitFor(
+      async () => {
+        try {
+          await fetch(`http://127.0.0.1:${PORT}/`, { signal: AbortSignal.timeout(500) })
+          return false
+        } catch {
+          return true
+        }
+      },
+      value => value === true,
+    )
+    check('panel stop closes the port', closed === true)
+    const after = cli(box, ['panel', 'status', '--port', String(PORT)])
+    check('stopped status exits 0', after.status === 0, after.stderr)
+    check('stopped status says stopped', /panel: port 3997 stopped/.test(after.stdout), after.stdout)
+    check('stopped status prints no url line', !/^url:/m.test(after.stdout), after.stdout)
   } finally {
-    if (child.exitCode === null) child.kill('SIGKILL')
-    rmSync(box.base, { recursive: true, force: true })
+    if (started.child.exitCode === null) started.child.kill('SIGTERM')
   }
 }
 
-async function testServiceOpen() {
-  const box = makeBox()
-  try {
-    const probe = await new Promise(resolve => { const server = createServer(); server.listen(0, '127.0.0.1', () => { const { port } = server.address(); server.close(() => resolve(port)) }) })
-    const opened = cli(box, ['service', 'open'], { WHEELCHAIR_AGENT_OPEN: 'true', SPV_PANEL_PORT: String(probe) })
-    const url = opened.stdout.match(/http:\/\/127\.0\.0\.1:(\d+)\//)
-    check('service open starts the panel and prints its URL', opened.status === 0 && url !== null, opened.stderr || opened.stdout)
-    if (url !== null) {
-      const port = Number(url[1])
-      const page = await fetch(`http://127.0.0.1:${port}/`)
-      check('service open leaves a serving panel', page.ok)
-      const closed = cli(box, ['panel', 'stop'])
-      check('panel stop closes what service open started', closed.status === 0, closed.stderr)
-    }
-    const status = cli(box, ['service', 'status'])
-    const panelStatus = cli(box, ['panel', 'status'])
-    check('panel status reports the standalone panel', panelStatus.status === 0 && /panel:\s+port \d+\s+stopped/.test(panelStatus.stdout), panelStatus.stderr || panelStatus.stdout)
-    check('service status without a deployment or a registry is a usage error', status.status === 2 && /cannot infer a deployment/.test(status.stderr) && /Pass --project <p> or --all/.test(status.stderr), status.stderr || status.stdout)
-  } finally {
-    cli(box, ['panel', 'stop'])
-    rmSync(box.base, { recursive: true, force: true })
-  }
-}
-
-async function testInstalledLayout() {
-  const box = makeBox()
-  const preset = join(box.dsh, '.agent-presets', 'spv')
-  const webui = join(box.dsh, 'profiles', 'superagent', 'node_modules', 'wheelchair-agent-webui')
-  mkdirSync(preset, { recursive: true })
-  writeFileSync(join(preset, 'preset.yml'), 'id: spv\n', 'utf8')
-  cpSync(join(ROOT, 'bin', 'wheelchair-agent.mjs'), join(preset, 'cli.js'))
-  cpSync(join(ROOT, 'src'), join(preset, 'src'), { recursive: true })
-  mkdirSync(join(webui, 'lib'), { recursive: true })
-  cpSync(join(ROOT, 'webui', 'lib', 'client.js'), join(webui, 'lib', 'client.js'))
-  cpSync(join(ROOT, 'webui', 'vendor'), join(webui, 'vendor'), { recursive: true })
-  const child = spawn(process.execPath, [join(preset, 'cli.js'), 'panel', '--foreground', '--port', '0'], {
+function installCheck(box) {
+  return spawnSync('bash', [join(ROOT, 'install.sh'), '--check', '--project', 'tools/wheelchair-agent'], {
+    cwd: ROOT,
     env: envFor(box),
-    stdio: ['ignore', 'pipe', 'pipe'],
+    encoding: 'utf8',
+    timeout: 120_000,
   })
-  let output = ''
-  child.stdout.setEncoding('utf8')
-  child.stdout.on('data', chunk => { output += chunk })
-  child.stderr.setEncoding('utf8')
-  child.stderr.on('data', chunk => { output += chunk })
-  try {
-    const port = await waitFor(() => output.match(/http:\/\/127\.0\.0\.1:(\d+)\//)?.[1], value => value !== undefined, 8000)
-    check('installed preset runs the panel without a checkout', port !== undefined, output.slice(0, 200))
-    if (port !== undefined) {
-      const page = await fetch(`http://127.0.0.1:${port}/`)
-      const html = await page.text()
-      check('installed preset serves the bundle from the profile', page.ok && html.includes('/client.js'), html.slice(0, 120))
-      const bundle = await fetch(`http://127.0.0.1:${port}/client.js`)
-      check('installed preset serves client.js', bundle.ok && (await bundle.text()).includes('__ModuleLoader__'), `status ${bundle.status}`)
-    }
-  } finally {
-    child.kill('SIGTERM')
-    await new Promise(resolve => child.once('exit', resolve))
-    rmSync(box.base, { recursive: true, force: true })
-  }
 }
 
-/** The core's import graph must not reach a dsh package; the panel has to run without one. */
-function testCoreImportGraph() {
-  const seen = new Set()
-  const offenders = []
-  const visit = file => {
-    if (seen.has(file) || !existsSync(file)) return
-    seen.add(file)
-    const source = readFileSync(file, 'utf8')
-    const pattern = /(?:^|\n)\s*(?:import|export)\s+(?:[^'"]*?\sfrom\s+)?['"]([^'"]+)['"]/g
-    for (const match of source.matchAll(pattern)) {
-      const specifier = match[1]
-      if (specifier.startsWith('@deepseek-ai/')) offenders.push(`${file} -> ${specifier}`)
-      if (!specifier.startsWith('.')) continue
-      const target = resolve(dirname(file), specifier)
-      visit(target)
-      if (!/\.js$/.test(target)) visit(`${target}.js`)
-    }
-  }
-  visit(join(ROOT, 'src', 'spv', 'panel.js'))
-  visit(join(ROOT, 'src', 'spv', 'panel-routes.js'))
-  visit(join(ROOT, 'src', 'spv', 'panel-shell.js'))
-  check('panel core never imports @deepseek-ai/*', offenders.length === 0, offenders.join(', '))
-  check('panel core import graph is broader than the three files', seen.size > 5, `${seen.size} files`)
+async function testCheck(box) {
+  const checkRun = installCheck(box)
+  check('install.sh --check exits 0 after installing the panel', checkRun.status === 0, checkRun.stdout + checkRun.stderr)
+  const overlay = join(box.dsh, '.agent-presets', 'spv', 'panel.patch.yml')
+  writeFileSync(overlay, `${readFileSync(overlay, 'utf8')}\n# comment-only edit\n`)
+  const commentOnly = installCheck(box)
+  check('a comment-only overlay edit is not stale', commentOnly.status === 0, commentOnly.stdout + commentOnly.stderr)
+  const marker = join(box.dsh, 'profiles', 'panel', 'panel-instance.json')
+  const recorded = JSON.parse(readFileSync(marker, 'utf8'))
+  writeFileSync(marker, `${JSON.stringify({ ...recorded, dshVersion: '0.0.0-old' }, null, 2)}\n`)
+  const stale = installCheck(box)
+  check('a changed panel dsh version fails --check', stale.status === 2, stale.stdout)
+  check('the version failure names the recorded version', /installed for dsh 0\.0\.0-old/.test(stale.stdout), stale.stdout)
+  writeFileSync(marker, `${JSON.stringify(recorded, null, 2)}\n`)
 }
 
 async function main() {
-  testCoreImportGraph()
-  await testInstalledLayout()
-  await testPanelRoutes()
-  await testServiceOpen()
+  const box = await testProfile()
+  if (FAIL === 0) {
+    await testRunningPanel(box)
+    await testCheck(box)
+  }
+  rmSync(box.base, { recursive: true, force: true })
   process.stdout.write(`\n${PASS} passed, ${FAIL} failed\n`)
-  if (FAIL > 0) process.exitCode = 1
+  process.exit(FAIL === 0 ? 0 : 1)
 }
 
-await main()
+main().catch(error => {
+  process.stderr.write(`${error.stack ?? error}\n`)
+  process.exit(1)
+})

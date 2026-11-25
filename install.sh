@@ -93,6 +93,10 @@ TARGET_RESTART_URL="file://$PRESET_DIR/src/spv/restart-command.js"
 PROFILE_ID=${DSH_SUPERAGENT_PROFILE:-superagent}
 PROFILE_DIR=$DSH_HOME_DIR/profiles/$PROFILE_ID
 WEBUI_TARGET=$PROFILE_DIR/node_modules/wheelchair-agent-webui
+# The panel instance is its own dsh profile, not a deployment: no dsh-superagent, its own state dir.
+PANEL_PROFILE_ID=panel
+PANEL_PROFILE_DIR=$DSH_HOME_DIR/profiles/$PANEL_PROFILE_ID
+PANEL_WEBUI_TARGET=$PANEL_PROFILE_DIR/node_modules/wheelchair-agent-webui
 SERVICE_PROFILE=$PROFILE_ID
 SERVICE_PORT=${SPV_SERVICE_PORT:-3082}
 SERVICE_URL=${DSH_SUPERAGENT_URL:-http://127.0.0.1:$SERVICE_PORT}
@@ -345,6 +349,16 @@ require_node() {
   ok "node $(node --version)"
 }
 
+# The panel profile records which dsh built it: a dsh upgrade can change how dsh-web-app behaves, so
+# `--check` must report the pair as stale until the next install records the new version.
+panel_dsh_version() {
+  if command -v dsh >/dev/null 2>&1; then
+    dsh --version 2>/dev/null | head -n 1
+  else
+    printf 'missing'
+  fi
+}
+
 require_dsh_tui() {
   if ! command -v dsh-tui >/dev/null 2>&1; then
     fail 'dsh-tui is not on PATH, so the launcher would have nothing to start'
@@ -468,7 +482,7 @@ render_into() {
     fix "check that $SELF_DIR/bin/wheelchair-agent.mjs exists and is readable, then rerun this script"
     return 1
   fi
-  for file in shared/core-stamp.js shared/deployments.js shared/home.js shared/hook-events.js shared/hooks.js shared/install-stamp.js shared/queue.js shared/schema.js shared/settings.js shared/spv-projects.js shared/work.js spv/auto-merge-effect.js spv/check.js spv/cron-plugin.js spv/cron.js spv/deployment-restart.js spv/deployment-setup.js spv/deployment.js spv/dispatch.js spv/health.js spv/hook.js spv/inbox.js spv/injector.js spv/outbox.js spv/ownership.js spv/projects-view.js spv/panel-routes.js spv/panel-shell.js spv/panel.js spv/spv-project.js spv/paths.js spv/restart-command.js spv/restart-ux.js spv/restart.js spv/session.js spv/tools.js; do
+  for file in shared/core-stamp.js shared/deployments.js shared/home.js shared/hook-events.js shared/hooks.js shared/install-stamp.js shared/queue.js shared/schema.js shared/settings.js shared/spv-projects.js shared/work.js spv/auto-merge-effect.js spv/check.js spv/cron-plugin.js spv/cron.js spv/deployment-restart.js spv/deployment-setup.js spv/deployment.js spv/dispatch.js spv/health.js spv/hook.js spv/inbox.js spv/injector.js spv/outbox.js spv/ownership.js spv/projects-view.js spv/panel-routes.js spv/panel-instance.js spv/spv-project.js spv/paths.js spv/restart-command.js spv/restart-ux.js spv/restart.js spv/session.js spv/tools.js; do
     if ! cp "$SELF_DIR/src/$file" "$dest/src/$file"; then
       fail "cannot copy src/$file from this checkout"
       fix "check that $SELF_DIR/src/$file exists and is readable, then rerun this script"
@@ -483,6 +497,11 @@ render_into() {
     fi
     chmod 0755 "$dest/commands/$file" || { fail "cannot make $dest/commands/$file executable"; return 1; }
   done
+  if ! cp "$SELF_DIR/preset/panel.patch.yml" "$dest/panel.patch.yml"; then
+    fail 'cannot copy preset/panel.patch.yml from this checkout'
+    fix "check that $SELF_DIR/preset/panel.patch.yml exists and is readable, then rerun this script"
+    return 1
+  fi
   if ! cp "$SELF_DIR/commands/prepare.sh" "$dest/prepare.sh"; then
     fail 'cannot copy commands/prepare.sh from this checkout'
     fix "check that $SELF_DIR/commands/prepare.sh exists and is readable, then rerun this script"
@@ -569,20 +588,6 @@ render_webui_into() {
       return 1
     fi
   done
-  # The standalone panel serves the vendored React UMD builds next to the bundle; the install stamp
-  # hashes them like the rest of the webui package, so `--check` notices a stale copy.
-  if ! mkdir -p "$dest/vendor"; then
-    fail "cannot create $dest/vendor"
-    fix 'check that the staging directory is writable, then rerun this script'
-    return 1
-  fi
-  for file in react.production.min.js react-dom.production.min.js LICENSE.react LICENSE.react-dom README.md; do
-    if ! cp "$SELF_DIR/webui/vendor/$file" "$dest/vendor/$file"; then
-      fail "cannot copy webui/vendor/$file from this checkout"
-      fix "check that $SELF_DIR/webui/vendor/$file exists and is readable, then rerun this script"
-      return 1
-    fi
-  done
   return 0
 }
 
@@ -655,7 +660,7 @@ check_preset() {
     fix 'run: bash tools/wheelchair-agent/install.sh'
   fi
   actual=$(find "$PRESET_DIR" -type f | sed "s|^$PRESET_DIR/||" | sort | tr '\n' ' ')
-  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/core-stamp.js src/shared/deployments.js src/shared/home.js src/shared/hook-events.js src/shared/hooks.js src/shared/install-stamp.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/spv-projects.js src/shared/work.js src/spv/auto-merge-effect.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/deployment-restart.js src/spv/deployment-setup.js src/spv/deployment.js src/spv/dispatch.js src/spv/health.js src/spv/hook.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/ownership.js src/spv/projects-view.js src/spv/panel-routes.js src/spv/panel-shell.js src/spv/panel.js src/spv/spv-project.js src/spv/paths.js src/spv/restart-command.js src/spv/restart-ux.js src/spv/restart.js src/spv/session.js src/spv/tools.js "
+  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md panel.patch.yml agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/core-stamp.js src/shared/deployments.js src/shared/home.js src/shared/hook-events.js src/shared/hooks.js src/shared/install-stamp.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/spv-projects.js src/shared/work.js src/spv/auto-merge-effect.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/deployment-restart.js src/spv/deployment-setup.js src/spv/deployment.js src/spv/dispatch.js src/spv/health.js src/spv/hook.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/ownership.js src/spv/projects-view.js src/spv/panel-routes.js src/spv/panel-instance.js src/spv/spv-project.js src/spv/paths.js src/spv/restart-command.js src/spv/restart-ux.js src/spv/restart.js src/spv/session.js src/spv/tools.js "
   local missing extras
   missing=$(comm -23 <(printf '%s' "$expected" | tr ' ' '\n' | sort) <(printf '%s' "$actual" | tr ' ' '\n' | sort) | tr '\n' ' ')
   extras=$(comm -13 <(printf '%s' "$expected" | tr ' ' '\n' | sort) <(printf '%s' "$actual" | tr ' ' '\n' | sort) | tr '\n' ' ')
@@ -782,6 +787,96 @@ check_webui() {
     fail "the webui loader row is missing from $patch, so dsh never mounts the package"
     fix 'run: bash install.sh'
   fi
+}
+
+# The panel profile is the one profile this project creates. Its contract is small and checkable:
+# two bundles, our webui package, no dsh-superagent, and the dsh version it was installed for. The
+# overlay it is started with lives in the preset and is covered by check_preset's digest.
+check_panel_profile() {
+  local problems current
+  current=$(panel_dsh_version)
+  if [ ! -d "$PANEL_PROFILE_DIR" ]; then
+    fail "the panel profile is not installed at $PANEL_PROFILE_DIR"
+    fix 'run: bash install.sh'
+    return
+  fi
+  problems=$(node - "$PANEL_PROFILE_DIR" "$current" <<'NODE'
+const fs = require('fs')
+const path = require('path')
+const [dir, current] = process.argv.slice(2)
+const problems = []
+const read = file => fs.readFileSync(path.join(dir, file), 'utf8')
+let manifest = null
+try {
+  manifest = JSON.parse(read('package.json'))
+} catch (error) {
+  problems.push(`package.json is missing or unreadable: ${error.message}`)
+}
+if (manifest !== null) {
+  const bundles = manifest?.dsh?.profile?.bundles
+  if (!Array.isArray(bundles) || !bundles.includes('@deepseek-ai/dsh-base')) {
+    problems.push('package.json must list @deepseek-ai/dsh-base in dsh.profile.bundles')
+  }
+  if (!Array.isArray(bundles) || !bundles.includes('@deepseek-ai/dsh-web-app')) {
+    problems.push('package.json must list @deepseek-ai/dsh-web-app in dsh.profile.bundles')
+  }
+  if (JSON.stringify(manifest).includes('dsh-superagent')) {
+    problems.push('the panel profile must never declare dsh-superagent')
+  }
+}
+try {
+  const marker = JSON.parse(read('panel-instance.json'))
+  if (marker.dshVersion !== current) {
+    problems.push(`the panel profile was installed for dsh ${marker.dshVersion}, current dsh is ${current}`)
+  }
+} catch (error) {
+  problems.push(`panel-instance.json is missing or unreadable: ${error.message}`)
+}
+try {
+  const patch = read('cordis.patch.yml')
+  if (!/name:\s*['"]wheelchair-agent-webui['"]/.test(patch)) {
+    problems.push('cordis.patch.yml has no wheelchair-agent-webui loader row')
+  }
+  if (patch.includes('dsh-superagent')) {
+    problems.push('cordis.patch.yml must not mount dsh-superagent')
+  }
+} catch (error) {
+  problems.push(`cordis.patch.yml is missing or unreadable: ${error.message}`)
+}
+if (!fs.existsSync(path.join(dir, 'cordis.yml'))) problems.push('cordis.yml is missing')
+if (!fs.existsSync(path.join(dir, 'node_modules', 'wheelchair-agent-webui', 'package.json'))) {
+  problems.push('the webui package is not installed under node_modules')
+}
+process.stdout.write(problems.join('\n'))
+process.exitCode = problems.length === 0 ? 0 : 1
+NODE
+)
+  if [ -z "$problems" ]; then
+    ok "panel profile matches its contract ($PANEL_PROFILE_DIR, dsh $current)"
+  else
+    printf '%s\n' "$problems" | sed 's/^/     /'
+    fail "the panel profile at $PANEL_PROFILE_DIR is not usable as installed"
+    fix 'run: bash install.sh'
+  fi
+  local staged
+  staged=$(mktemp -d) || {
+    fail 'could not create a temporary directory for the panel webui check'
+    return
+  }
+  if render_webui_into "$staged" >/dev/null 2>&1; then
+    local staged_digest installed_digest
+    staged_digest=$(node "$SELF_DIR/src/shared/install-stamp.js" component webui "$staged" 2>/dev/null)
+    installed_digest=$(node "$SELF_DIR/src/shared/install-stamp.js" component webui "$PANEL_WEBUI_TARGET" 2>/dev/null)
+    if [ -n "$staged_digest" ] && [ "$staged_digest" = "$installed_digest" ]; then
+      ok "panel webui package matches its sources ($PANEL_WEBUI_TARGET)"
+    else
+      fail "the installed panel webui package at $PANEL_WEBUI_TARGET differs from this checkout"
+      fix 'run: bash install.sh'
+    fi
+  else
+    fail 'the webui package cannot be rendered for the panel check'
+  fi
+  rm -rf "$staged"
 }
 
 # Compare one installed file with what this checkout would write there.
@@ -1176,6 +1271,73 @@ register_deployment() {
   return 1
 }
 
+# Write a file only when its content changes, keeping re-runs idempotent and the profile's mtimes quiet.
+install_panel_file() {
+  local dest=$1 tmp
+  tmp=$(mktemp) || { fail "cannot create a temporary file for $dest"; return 1; }
+  if ! cat > "$tmp"; then rm -f "$tmp"; fail "cannot stage $dest"; return 1; fi
+  if [ -f "$dest" ] && cmp -s "$tmp" "$dest"; then rm -f "$tmp"; return 0; fi
+  if mv "$tmp" "$dest"; then return 0; fi
+  rm -f "$tmp"
+  fail "cannot write $dest"
+  fix "check that $dest is writable, then rerun this script"
+  return 1
+}
+
+# Create or refresh the standalone panel profile: dsh-base + dsh-web-app + our webui package, and
+# never dsh-superagent. This profile is ours, so unlike the operator-created superagent profile it
+# may be created from scratch; the bundles still resolve from the dsh installation, so no node_modules
+# dependency declaration is needed for them.
+install_panel_profile() {
+  local version version_json
+  version=$(panel_dsh_version)
+  version_json=$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$version") || {
+    fail 'cannot encode the dsh version for the panel profile'
+    return 1
+  }
+  if ! mkdir -p "$PANEL_PROFILE_DIR/node_modules"; then
+    fail "cannot create $PANEL_PROFILE_DIR/node_modules"
+    fix "check that $DSH_HOME_DIR/profiles is writable, then rerun this script"
+    return 1
+  fi
+  install_panel_file "$PANEL_PROFILE_DIR/package.json" <<'JSON' || return 1
+{
+  "name": "dsh-profile-panel",
+  "private": true,
+  "dependencies": {},
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app"
+      ]
+    }
+  }
+}
+JSON
+  install_panel_file "$PANEL_PROFILE_DIR/panel-instance.json" <<JSON || return 1
+{
+  "dshVersion": $version_json
+}
+JSON
+  if [ ! -f "$PANEL_PROFILE_DIR/cordis.yml" ]; then
+    install_panel_file "$PANEL_PROFILE_DIR/cordis.yml" <<'YAML' || return 1
+[]
+YAML
+  fi
+  if [ ! -f "$PANEL_PROFILE_DIR/pnpm-workspace.yaml" ]; then
+    install_panel_file "$PANEL_PROFILE_DIR/pnpm-workspace.yaml" <<'YAML' || return 1
+packages:
+  - .
+
+nodeLinker: hoisted
+autoInstallPeers: false
+YAML
+  fi
+  ensure_webui_loader_in "$PANEL_PROFILE_DIR" panel || return 1
+  install_webui_package "$PANEL_PROFILE_DIR" "$PANEL_WEBUI_TARGET" panel
+}
+
 install_preset() {
   local staged backup
   staged=$(mktemp -d) || { fail 'could not create a staging directory'; return 1; }
@@ -1238,22 +1400,28 @@ install_bin() {
 # copied into node_modules and the profile's package.json is deliberately untouched, so a pnpm install
 # against the profile may prune it; `--check` detects that and rerunning this script restores it.
 install_webui() {
-  local staged backup
-  if [ ! -d "$PROFILE_DIR" ]; then
-    fail "the dsh profile superagent is not installed at $PROFILE_DIR"
-    fix 'start the superagent profile once ("wheelchair-agent service start") so dsh creates it, then rerun this script'
+  install_webui_package "$PROFILE_DIR" "$WEBUI_TARGET" superagent
+}
+
+# Install the webui package into one dsh profile. The superagent profile and the panel profile mount
+# the same package; only the destination differs.
+install_webui_package() {
+  local profile_dir=$1 target=$2 label=$3 staged backup
+  if [ ! -d "$profile_dir" ]; then
+    fail "the dsh profile $label is not installed at $profile_dir"
+    fix 'run: bash install.sh'
     return 1
   fi
-  if ! mkdir -p "$PROFILE_DIR/node_modules"; then
-    fail "cannot create $PROFILE_DIR/node_modules"
-    fix "check that $PROFILE_DIR is writable, then rerun this script"
+  if ! mkdir -p "$profile_dir/node_modules"; then
+    fail "cannot create $profile_dir/node_modules"
+    fix "check that $profile_dir is writable, then rerun this script"
     return 1
   fi
   # Stage next to the target (same filesystem), so the final move is an atomic rename rather than a copy
   # that could leave a half-written package behind.
-  staged=$(mktemp -d "$PROFILE_DIR/node_modules/.wheelchair-agent-webui.stage.XXXXXX") || {
-    fail "could not create a staging directory under $PROFILE_DIR/node_modules"
-    fix "check that $PROFILE_DIR/node_modules is writable, then rerun this script"
+  staged=$(mktemp -d "$profile_dir/node_modules/.wheelchair-agent-webui.stage.XXXXXX") || {
+    fail "could not create a staging directory under $profile_dir/node_modules"
+    fix "check that $profile_dir/node_modules is writable, then rerun this script"
     return 1
   }
   if ! render_webui_into "$staged"; then
@@ -1261,29 +1429,29 @@ install_webui() {
     [ "$PROBLEMS" -gt 0 ] || fail 'the webui package could not be rendered'
     return 1
   fi
-  if [ -d "$WEBUI_TARGET" ] && diff -r "$staged" "$WEBUI_TARGET" >/dev/null 2>&1; then
-    ok "up to date: $WEBUI_TARGET"
+  if [ -d "$target" ] && diff -r "$staged" "$target" >/dev/null 2>&1; then
+    ok "up to date: $target"
     rm -rf "$staged"
     return 0
   fi
-  backup="$PROFILE_DIR/node_modules/.wheelchair-agent-webui.previous.$$"
-  if [ -d "$WEBUI_TARGET" ]; then
-    mv "$WEBUI_TARGET" "$backup" || {
+  backup="$profile_dir/node_modules/.wheelchair-agent-webui.previous.$$"
+  if [ -d "$target" ]; then
+    mv "$target" "$backup" || {
       rm -rf "$staged"
-      fail "cannot move $WEBUI_TARGET aside"
-      fix "check that $PROFILE_DIR/node_modules is writable and no other process is installing, then rerun this script"
+      fail "cannot move $target aside"
+      fix "check that $profile_dir/node_modules is writable and no other process is installing, then rerun this script"
       return 1
     }
   fi
-  if mv "$staged" "$WEBUI_TARGET"; then
+  if mv "$staged" "$target"; then
     rm -rf "$backup"
-    ok "installed webui package: $WEBUI_TARGET"
+    ok "installed webui package: $target"
     return 0
   fi
-  [ -d "$backup" ] && mv "$backup" "$WEBUI_TARGET"
+  [ -d "$backup" ] && mv "$backup" "$target"
   rm -rf "$staged"
-  fail "cannot move the staged webui package into $WEBUI_TARGET"
-  fix "check that $PROFILE_DIR/node_modules is writable and no other process is installing, then rerun this script"
+  fail "cannot move the staged webui package into $target"
+  fix "check that $profile_dir/node_modules is writable and no other process is installing, then rerun this script"
   return 1
 }
 
@@ -1293,10 +1461,14 @@ install_webui() {
 # Idempotent: `loader_row_present` makes a re-run a no-op, and appending (never rewriting) keeps the
 # operator's existing patch intact.
 ensure_webui_loader() {
-  local patch=$PROFILE_DIR/cordis.patch.yml
-  if [ ! -d "$PROFILE_DIR" ]; then
-    fail "cannot add the webui loader row: $PROFILE_DIR does not exist"
-    fix 'start the superagent profile once, then rerun this script'
+  ensure_webui_loader_in "$PROFILE_DIR" superagent
+}
+
+ensure_webui_loader_in() {
+  local profile_dir=$1 label=$2 patch=$1/cordis.patch.yml
+  if [ ! -d "$profile_dir" ]; then
+    fail "cannot add the webui loader row: $profile_dir does not exist"
+    fix 'run: bash install.sh'
     return 1
   fi
   if loader_row_present "$patch"; then
@@ -1379,6 +1551,7 @@ if [ "$CHECK" -eq 1 ]; then
   check_data_root
   check_preset
   check_webui
+  check_panel_profile
   check_cli
   check_launcher
   check_service
@@ -1438,6 +1611,7 @@ fi
 install_preset
 install_webui
 ensure_webui_loader
+install_panel_profile
 install_bin "$CLI" render_cli
 install_bin "$CORE_BIN" render_core_binary
 install_bin "$LAUNCHER" render_launcher

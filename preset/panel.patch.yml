@@ -1,0 +1,22 @@
+# Machine configuration for the standalone `panel` profile.
+#
+# The panel is its own dsh instance, not a deployment: it loads dsh-base, dsh-web-app and the
+# wheelchair-agent-webui plugin, and deliberately no orchestrator bundle (that would create a second
+# orchestrator with its own sources and tickets). `wheelchair-agent panel start` passes this file
+# with --patch and exports the two values below before starting dsh:
+#
+#   WHEELCHAIR_PANEL_PORT       settings "panel.port" (3080 by default), or --port for one run
+#   DSH_SUPERAGENT_STATE_DIR    <data root>/panel, the instance's own state directory
+#
+# The !!js expression is evaluated by dsh while it composes the profile, so a comment-only edit here
+# does not trigger the install fingerprint's "stale" notice.
+- id: webserver
+  config:
+    host: 127.0.0.1
+    port: !!js Number(process.env.WHEELCHAIR_PANEL_PORT ?? 3080)
+# The four sections read the shared data root and each deployment's HTTP API. Pollers, auto-merge,
+# cold-install notices and the hook runner belong to the deployments; a second reader here would
+# duplicate that work and fire every hook twice.
+- id: wheelchair-webui
+  config:
+    background: false

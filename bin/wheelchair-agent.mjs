@@ -64,9 +64,10 @@ commands:
                                start|stop|restart|status identifies the deployment from the current
                                checkout, --all does every registered deployment, and "service open"
                                opens only the standalone panel
-  panel [start|stop|status] [--port <n>] [--detach]
-                               run the standalone panel (127.0.0.1, default 3080) that serves the
-                               inbox/settings/hooks routes without any superagent deployment
+  panel [start|stop|status] [--port <n>] [--foreground]
+                               run the standalone panel (127.0.0.1, default 3080): its own dsh
+                               instance with the full harness UI, serving the inbox/settings/hooks/
+                               projects routes without belonging to any superagent deployment
   jobctl <submit|status|log|verify|cancel>
                                hand a long job to systemd so it outlives the worker's turn
   dispatch --project <p> --task <t> [--thread <n>] [--preset <id>]
@@ -194,22 +195,23 @@ reader actually resolves a path, not here.
 options:
   --json    print one JSON object for scripting`
 
-const PANEL_USAGE = `usage: wheelchair-agent panel [start|stop|status] [--port <n>] [--detach]
+const PANEL_USAGE = `usage: wheelchair-agent panel [start|stop|status] [--port <n>] [--foreground]
 
-The standalone wheelchair-agent panel: the same inbox, settings and hooks JSON routes and page,
-served on 127.0.0.1 without any superagent instance. Inbox polling, auto-merge, cold-install notices
-and the hook runner stay in each deployment's dsh plugin; the panel only displays and handles the
-operator's actions.
+The standalone wheelchair-agent panel is its own dsh instance: the "panel" profile (dsh-base +
+dsh-web-app + wheelchair-agent-webui) with a small overlay, running in tmux session "wca-panel".
+It gives the same four sections (inbox, settings, hooks, projects) the full harness UI, but it is
+not a deployment: it is absent from the deployment registry, and "service stop --all" never
+touches it. Inbox polling, auto-merge, cold-install notices and the hook runner stay in each
+deployment's dsh plugin; this instance disables them and only serves the routes and the page.
 
 commands:
-  start (default)              run in the foreground until SIGINT/SIGTERM
-  --detach                     start detached from this terminal and return
-  stop                         stop the recorded panel process
-  status                       print the panel port and whether it is running
+  start (default)              start in tmux like a deployment; idempotent
+  stop                         stop this instance; other deployments are untouched
+  status                       print port, pid, the tokenised URL and a one-shot liveness check
 
 options:
   --port <n>                   override this run's port (default: settings.json "panel.port", 3080)
-  --foreground                 run in the foreground even when another flag is absent
+  --foreground                 run in this terminal instead of tmux (tests and debugging)
 
 A person opens it with "wheelchair-agent service open".`
 
@@ -525,6 +527,32 @@ async function deploymentFromCwd(cwd = process.cwd()) {
   return match
 }
 
+/** The installed overlay that turns the panel profile into the panel instance. */
+function panelOverlayPath() {
+  return join(PRESET_DIR, 'panel.patch.yml')
+}
+
+/** Service-manager arguments for the panel instance (never a deployment overlay). */
+async function panelArgs(action, { port } = {}) {
+  const panel = await load('src', 'spv', 'panel-instance.js')
+  const overlay = panelOverlayPath()
+  if (!existsSync(overlay)) {
+    throw new Error(
+      `the panel overlay is missing at ${overlay}: run "bash install.sh --project <project>" to install the ` +
+        'panel profile, overlay and webui package.',
+    )
+  }
+  const chosen = port ?? panel.panelPort()
+  if (!panel.validPort(chosen)) throw new UsageError(`invalid panel port ${JSON.stringify(chosen)}`)
+  return panel.panelServiceArgs({
+    action,
+    overlay,
+    port: chosen,
+    stateDir: panel.panelStateDir(),
+    log: panel.panelLogPath({ dshHome: DSH_HOME }),
+  })
+}
+
 /** 同步运行 service manager，保留它的输出与退出码（不 execve：跑完还要打提示）。 */
 function runServiceManager(args) {
   if (!existsSync(SERVICE)) {
@@ -580,7 +608,7 @@ async function serviceArgsFor(entry, rest) {
  * 也算，最长匹配）。推断失败是 usage error（exit 2，列出注册表），不再静默去看不存在的旧式无
  * `--patch` 服务。启动器导出的 `SPV_QUEUE_DIR` 只作为第二兜底。
  *
- * `service open` 只开独立面板：面板不属于任何部署，也不读实例日志里的 token URL。
+ * `service open` 只开独立面板：面板不属于任何部署；它打开的 token URL 与部署实例取自同一条路径。
  */
 async function commandService(argv) {
   const { project, all, rest } = takeServiceTarget(argv)
@@ -606,8 +634,7 @@ async function commandService(argv) {
           'any deployment. Use "wheelchair-agent service status" to list deployments.',
       )
     }
-    const { openPanel } = await load('src', 'spv', 'panel.js')
-    process.exit(await openPanel())
+    process.exit(runServiceManager(await panelArgs('open')))
   }
   if (target === undefined && !all && action !== 'status') {
     throw new UsageError(
@@ -632,9 +659,14 @@ async function commandService(argv) {
     )
   }
   if (action === 'status') {
-    const { panelStatusLine } = await load('src', 'spv', 'panel.js')
-    process.stdout.write(`${panelStatusLine()}\n`)
+    // The panel is listed first and separately from the deployments: it is an instance of its own,
+    // not a deployment, and its status block names its port, pid and tokenised URL.
     let status = 0
+    try {
+      status = runServiceManager(await panelArgs('status'))
+    } catch (error) {
+      process.stdout.write(`panel: not configured (${error.message})\n`)
+    }
     for (const entry of entries) {
       if (entries.length > 1) process.stdout.write(`== ${entry.project} ==\n`)
       const code = runServiceManager(await serviceArgsFor(entry, ['status']))
@@ -660,29 +692,29 @@ async function commandService(argv) {
 }
 
 /**
- * `panel`：独立面板，不属于任何部署。默认前台运行；`--detach` 后台常驻；`stop` 停掉；`status` 看端口与 pid。
+ * `panel`：独立面板，不属于任何部署。默认像部署一样在 tmux 里启动（幂等）；`--foreground` 在当前终端
+ * 运行（测试和调试），`stop` 停掉，`status` 看端口、pid、token URL 与一次活性检查。
  * 端口来自 settings.json 的 `panel.port`（默认 3080），`--port` 只覆盖本次运行。
  */
 async function commandPanel(argv) {
-  const { panelPort, readPanelState, runPanelForeground, startPanelDetached, stopPanel, panelStatusLine } =
-    await load('src', 'spv', 'panel.js')
-  let action = 'foreground'
-  let detach = false
+  const panel = await load('src', 'spv', 'panel-instance.js')
+  let action = 'start'
+  let foreground = false
   let port
   const words = []
   for (let index = 0; index < argv.length; index += 1) {
     const word = argv[index]
-    if (word === '--detach') detach = true
-    else if (word === '--foreground') detach = false
+    if (word === '--detach') foreground = false
+    else if (word === '--foreground') foreground = true
     else if (word === '--port') {
       const value = argv[index + 1]
       if (value === undefined) throw new UsageError('panel --port needs a number')
       index += 1
       port = Number(value)
-      if (!Number.isInteger(port) || port < 0 || port > 65535) throw new UsageError(`invalid --port ${JSON.stringify(value)}`)
+      if (!panel.validPort(port)) throw new UsageError(`invalid --port ${JSON.stringify(value)}`)
     } else if (word.startsWith('--port=')) {
       port = Number(word.slice('--port='.length))
-      if (!Number.isInteger(port) || port < 0 || port > 65535) throw new UsageError(`invalid --port ${JSON.stringify(word.slice(7))}`)
+      if (!panel.validPort(port)) throw new UsageError(`invalid --port ${JSON.stringify(word.slice(7))}`)
     } else if (word === '-h' || word === '--help') {
       process.stdout.write(PANEL_USAGE)
       return
@@ -692,23 +724,34 @@ async function commandPanel(argv) {
   if (words.length > 1) throw new UsageError('panel takes one of start|stop|status')
   if (words[0] === 'stop') action = 'stop'
   else if (words[0] === 'status') action = 'status'
-  else if (words[0] === 'start') action = detach ? 'detach' : 'foreground'
+  else if (words[0] === 'start') action = 'start'
   else if (words[0] !== undefined) throw new UsageError(`unknown panel command ${JSON.stringify(words[0])}`)
-  else if (detach) action = 'detach'
-  if (action === 'status') {
-    process.stdout.write(`${panelStatusLine()}\n`)
-    return
-  }
-  if (action === 'stop') process.exit(await stopPanel())
-  if (action === 'detach') {
-    const state = await startPanelDetached({ port })
-    process.stdout.write(`panel listening on http://127.0.0.1:${state.port}/ (pid ${state.pid})\n`)
-    return
-  }
-  const chosen = port === undefined ? panelPort() : port
-  process.exit(await runPanelForeground({ port: chosen === 0 ? 0 : chosen }))
-}
 
+  const chosen = port ?? panel.panelPort()
+  if (action === 'stop') {
+    const args = await panelArgs('stop', { port: chosen })
+    process.exit(runServiceManager(args))
+  }
+  if (action === 'status') {
+    process.exit(runServiceManager(await panelArgs('status', { port: chosen })))
+  }
+  const overlay = panelOverlayPath()
+  if (!existsSync(overlay)) {
+    throw new Error(
+      `the panel overlay is missing at ${overlay}: run "bash install.sh --project <project>" to install the ` +
+        'panel profile, overlay and webui package.',
+    )
+  }
+  if (foreground) {
+    process.exit(await panel.runPanelForeground({
+      overlay,
+      port: chosen,
+      stateDir: panel.panelStateDir(),
+      log: panel.panelLogPath({ dshHome: DSH_HOME }),
+    }))
+  }
+  process.exit(runServiceManager(await panelArgs('start', { port: chosen })))
+}
 
 /*
  * `spv` is the one global SPV session: it is not a deployment, and a project has no spv of its own. It takes
