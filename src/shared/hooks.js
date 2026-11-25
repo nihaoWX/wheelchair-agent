@@ -27,13 +27,10 @@
 import { spawn } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
 import {
-  appendFileSync,
   chmodSync,
   closeSync,
-  existsSync,
   mkdirSync,
   openSync,
-  readFileSync,
   renameSync,
   statSync,
   unlinkSync,
@@ -42,11 +39,11 @@ import {
 } from 'node:fs'
 import { readFile, readdir, stat } from 'node:fs/promises'
 import { homedir } from 'node:os'
-import { basename, dirname, join } from 'node:path'
+import { basename, join } from 'node:path'
 
 import { EVENTS, BUILTIN_ROWS, builtinRowsFor, eventById } from './hook-events.js'
 import { assertNotTicketClone, dataPaths } from './home.js'
-import { dirsOf } from './queue.js'
+import { dirsOf, runCore } from './queue.js'
 import {
   HOOK_INTERVAL_DEFAULT,
   HOOK_INTERVAL_MAX,
@@ -251,16 +248,26 @@ export function readHooks({ env = process.env, home, stateDir, settings } = {}) 
   }
 }
 
-/** 一个事件的展示条目；未知名抛错（调用方要给操作者一个能照抄的清单）。 */
+/** 数据面的一次 core 调用；执行面（spawn/流式/信号）仍在下面。 */
+const hooksOp = request => runCore(['hooks'], JSON.stringify(request))
+
+const knownEventIds = () => EVENTS.map(item => item.id)
+
+/**
+ * 一个事件的展示条目；未知名抛错（调用方要给操作者一个能照抄的清单）。
+ * 事件表本身仍在 `hook-events.js`，这里只把未知事件的报错交给 core。
+ */
 export function requireEvent(eventId) {
   const entry = eventById(eventId)
-  if (entry === undefined) {
+  if (entry !== undefined) return entry
+  if (eventId === undefined) {
     const error = new Error(
-      `unknown hook event ${JSON.stringify(eventId)}; known ids are ${EVENTS.map(item => item.id).join(', ')}.`,
+      `unknown hook event undefined; known ids are ${knownEventIds().join(', ')}.`,
     )
     error.code = 'UNKNOWN_EVENT'
     throw error
   }
+  hooksOp({ op: 'eventId', event: eventId, known: false, knownEvents: knownEventIds(), require: true })
   return entry
 }
 
@@ -269,11 +276,16 @@ export function requireEvent(eventId) {
  * `ticket.started` 的示例目录（`hook test` 必须有一个真实存在的 cwd，否则 spawn 会失败）。
  */
 export function samplePayload(eventId, { now, workspace } = {}) {
-  const entry = requireEvent(eventId)
-  const payload = JSON.parse(JSON.stringify(entry.sample ?? {}))
-  if (now !== undefined) payload.at = now
-  if (workspace !== undefined && entry.id === 'ticket.started') payload.workspace = workspace
-  return payload
+  const entry = eventById(eventId)
+  if (entry === undefined) return requireEvent(eventId)
+  return hooksOp({
+    op: 'payload',
+    event: entry.id,
+    sample: entry.sample ?? {},
+    knownEvents: knownEventIds(),
+    ...(now === undefined ? {} : { now }),
+    ...(workspace === undefined ? {} : { workspace }),
+  }).payload
 }
 
 /**
@@ -291,48 +303,13 @@ export function samplePayload(eventId, { now, workspace } = {}) {
  * 返回 `undefined` 表示"这次没有可用的 id"：此时不写 cursor，事件不会被去重。宁可重放，不可静默丢失。
  */
 export function eventIdFor(eventId, payload = {}) {
-  const explicit = nonEmpty(payload?.eventId)
-  if (explicit !== undefined) return explicit
-  const entry = eventById(eventId)
-  if (entry === undefined) return nonEmpty(payload?.id)
-  switch (entry.id) {
-    case 'ticket.acknowledged':
-    case 'ticket.delivered':
-    case 'ticket.attention':
-      return nonEmpty(payload.messageId)
-    case 'inbox.approved':
-    case 'inbox.issue': {
-      // Namespace by event: inbox.approved and inbox.issue are different occurrences, and the notice's
-      // message id must never be reused (the queue reader derives ticket.attention from it; the cursor is
-      // global). A separate prefix also removes the latent approved/issue collision class entirely.
-      const prefix = entry.id
-      const itemId = nonEmpty(payload.itemId)
-      if (itemId !== undefined) {
-        return `${prefix}:${itemId}:${payload.reviewIndex === undefined ? 'latest' : payload.reviewIndex}`
-      }
-      const messageId = nonEmpty(payload.messageId)
-      return messageId === undefined ? undefined : `${prefix}:${messageId}`
-    }
-    case 'inbox.merged': {
-      const itemId = nonEmpty(payload.itemId)
-      if (itemId === undefined) return undefined
-      const anchor = nonEmpty(payload.mergeCommit) ?? nonEmpty(payload.pulledSha) ?? nonEmpty(payload.at)
-      return anchor === undefined ? `merge:${itemId}` : `merge:${itemId}:${anchor}`
-    }
-    case 'ticket.started': {
-      const ticketId = nonEmpty(payload.ticketId)
-      const at = nonEmpty(payload.at)
-      // 没有 at 就没有稳定的 occurrence：宁可不认领（不去重），也不要把同一张工单的两次启动合成一次。
-      if (ticketId === undefined || at === undefined) return undefined
-      return `${ticketId}:${at}`
-    }
-    case 'spv.dispatch': {
-      const taskId = nonEmpty(payload.taskId)
-      return taskId === undefined ? undefined : `dispatch:${taskId}`
-    }
-    default:
-      return undefined
-  }
+  return hooksOp({
+    op: 'eventId',
+    event: eventId ?? null,
+    payload,
+    known: eventById(eventId) !== undefined,
+    knownEvents: knownEventIds(),
+  }).eventId ?? undefined
 }
 
 /**
@@ -340,14 +317,7 @@ export function eventIdFor(eventId, payload = {}) {
  * 非法值（非数字、<1）在这一层退回上一层默认，而不是让一次运行永远挂着。
  */
 export function resolveHookTimeout(item, hooks) {
-  const candidates = [item?.timeoutMs, hooks?.scriptTimeoutMs, HOOK_TIMEOUT_DEFAULT]
-  for (const candidate of candidates) {
-    if (candidate === undefined || candidate === null) continue
-    const value = typeof candidate === 'number' ? candidate : Number(candidate)
-    if (!Number.isFinite(value) || !Number.isInteger(value) || value < 1) continue
-    return Math.min(value, HOOK_TIMEOUT_CAP)
-  }
-  return HOOK_TIMEOUT_DEFAULT
+  return hooksOp({ op: 'timeout', item: item ?? {}, hooks: hooks ?? {} }).timeoutMs
 }
 
 /**
@@ -357,20 +327,7 @@ export function resolveHookTimeout(item, hooks) {
  * 目录不存在时不在这里抛：子进程会以 ENOENT 失败，那一条记进记录，下一个 hook 照常跑。
  */
 export function hookCwd(eventId, payload = {}, opts = {}) {
-  const base = nonEmpty(opts.cwd) ?? process.cwd()
-  if (!String(eventId).startsWith('ticket.')) return base
-  return nonEmpty(opts.workspace) ?? nonEmpty(payload.workspace) ?? base
-}
-
-/** 名字是否像凭证（白名单之外的第二道闸；白名单与它任一拒绝就不传）。 */
-function isCredentialName(name) {
-  if (/^(GH_|GITHUB_|DSH_)/i.test(name)) return true
-  return CREDENTIAL_WORDS.test(name)
-}
-
-/** 名字是否在白名单内（`LC_*` 是前缀规则）。 */
-function isAllowedEnvName(name) {
-  return ENV_ALLOWED.has(name) || /^LC_[A-Z]+$/.test(name)
+  return hooksOp({ op: 'cwd', event: String(eventId), payload, opts }).cwd
 }
 
 /**
@@ -378,31 +335,26 @@ function isAllowedEnvName(name) {
  * `WCA_HOME` 是数据根；`WCA_TICKET` 只在负载真的有 `ticketId` 时出现。
  */
 export function hookEnv({ event, eventId, payload = {}, opts = {}, home, cwd } = {}) {
-  const source = isPlainObject(opts.env) ? opts.env : process.env
-  const env = {}
-  for (const [name, value] of Object.entries(source)) {
-    if (value === undefined || value === null) continue
-    if (!isAllowedEnvName(name) || isCredentialName(name)) continue
-    env[name] = String(value)
-  }
-  env.WCA_EVENT = String(event)
-  env.WCA_EVENT_AT = nonEmpty(payload.at) ?? nonEmpty(payload.eventAt) ?? new Date().toISOString()
-  if (eventId !== undefined && eventId !== null && String(eventId) !== '') {
-    env.WCA_EVENT_ID = String(eventId)
-  }
-  if (home !== undefined) env.WCA_HOME = home
-  const ticket = nonEmpty(payload.ticketId)
-  if (ticket !== undefined) env.WCA_TICKET = ticket
-  if (cwd !== undefined) env.WCA_CWD = cwd
-  return env
+  const source = isPlainObject(opts.env) ? opts.env : undefined
+  return hooksOp({
+    op: 'env',
+    event: String(event),
+    payload,
+    ...(source === undefined ? {} : { optsEnv: source }),
+    fallbackEnv: process.env,
+    ...(eventId === undefined ? {} : { eventId }),
+    ...(home === undefined ? {} : { home }),
+    ...(cwd === undefined ? {} : { cwd }),
+  }).env
 }
 
 // ------------------------------------------------------------------- records
 
 /** `<root>/records/hooks.jsonl`。数据根不可用时返回 `undefined`。 */
 export function hooksRecordPath({ env = process.env, home, stateDir } = {}) {
-  const { records } = pathsOf({ env, home, stateDir })
-  return records === undefined ? undefined : join(records, HOOKS_RECORD_FILE)
+  const { root } = pathsOf({ env, home, stateDir })
+  if (root === undefined) return undefined
+  return hooksOp({ op: 'record', root, pathOnly: true }).path
 }
 
 /**
@@ -410,15 +362,10 @@ export function hooksRecordPath({ env = process.env, home, stateDir } = {}) {
  * 而变成调用方的异常。
  */
 export function hookRecord(record, { env = process.env, home, stateDir } = {}) {
-  const records = pathsOf({ env, home, stateDir }).records
-  const file = records === undefined ? undefined : join(records, HOOKS_RECORD_FILE)
+  const { root } = pathsOf({ env, home, stateDir })
   try {
-    if (file === undefined) throw new Error('the data root could not be resolved')
-    mkdirSync(dirname(file), { recursive: true })
-    const existed = existsSync(file)
-    appendFileSync(file, `${JSON.stringify(record)}\n`, { encoding: 'utf8', mode: 0o644 })
-    // appendFileSync honours the umask when it creates the file; pin 0644 like the settings store does.
-    if (!existed) chmodSync(file, 0o644)
+    if (root === undefined) throw new Error('the data root could not be resolved')
+    hooksOp({ op: 'record', root, record })
     return true
   } catch (error) {
     try {
@@ -432,38 +379,20 @@ export function hookRecord(record, { env = process.env, home, stateDir } = {}) {
 
 /** 读全部记录（坏行跳过）；`file` 不存在时返回 `[]`。 */
 export function readHookRecords({ env = process.env, home, stateDir, tail, warn = stderrWarn } = {}) {
-  const file = hooksRecordPath({ env, home, stateDir })
-  if (file === undefined) return []
-  let text
-  try {
-    text = readFileSync(file, 'utf8')
-  } catch (error) {
-    if (error?.code === 'ENOENT') return []
-    // 读不动（权限、路径其实是目录……）不该让 `hook log` 崩：说一句，当作还没有记录。
-    warn(`cannot read the hook record ${file}: ${messageOf(error)}`)
-    return []
-  }
-  const records = []
-  for (const line of text.split('\n')) {
-    const trimmed = line.trim()
-    if (trimmed === '') continue
-    try {
-      const value = JSON.parse(trimmed)
-      if (isPlainObject(value)) records.push(value)
-    } catch {
-      // 崩溃留下的半行：跳过，不要让后面更早的记录也看不见。
-    }
-  }
-  if (tail !== undefined && tail > 0) return records.slice(-tail)
-  return records
+  const { root } = pathsOf({ env, home, stateDir })
+  if (root === undefined) return []
+  const data = hooksOp({ op: 'records', root, ...(tail === undefined ? {} : { tail }) })
+  if (data.warning !== undefined) warn(data.warning)
+  return data.records
 }
 
 // -------------------------------------------------------------------- cursor
 
 /** `<root>/records/events-cursor.json`；数据根不可用时 `undefined`。 */
 export function eventsCursorPath({ env = process.env, home, stateDir } = {}) {
-  const records = pathsOf({ env, home, stateDir }).records
-  return records === undefined ? undefined : join(records, EVENTS_CURSOR_FILE)
+  const { root } = pathsOf({ env, home, stateDir })
+  if (root === undefined) return undefined
+  return hooksOp({ op: 'cursor-read', root, pathOnly: true }).path
 }
 
 /** 空 cursor（null 原型：消息 id 是不可信输入，`__proto__` 不能变成原型赋值）。 */
@@ -473,59 +402,21 @@ function emptyCursor() {
 
 /** 读 cursor；坏文件/坏版本当作空 cursor 并给一条 warning（宁可重放一轮，也不要永远不跑）。 */
 export function readCursor({ env = process.env, home, stateDir, warn = () => {} } = {}) {
-  const file = eventsCursorPath({ env, home, stateDir })
   const cursor = emptyCursor()
-  if (file === undefined) return cursor
-  let text
-  try {
-    text = readFileSync(file, 'utf8')
-  } catch (error) {
-    if (error?.code !== 'ENOENT') warn(`cannot read the hook cursor ${file}: ${messageOf(error)}; replaying.`)
-    return cursor
-  }
-  let parsed
-  try {
-    parsed = JSON.parse(text)
-  } catch (error) {
-    warn(`the hook cursor ${file} is not valid JSON (${messageOf(error)}); replaying.`)
-    return cursor
-  }
-  if (!isPlainObject(parsed) || parsed.version !== CURSOR_VERSION || !isPlainObject(parsed.ids)) {
-    warn(`the hook cursor ${file} has an unsupported shape; replaying.`)
-    return cursor
-  }
-  for (const [id, at] of Object.entries(parsed.ids)) {
-    cursor.ids[id] = typeof at === 'string' ? at : new Date(0).toISOString()
-  }
-  if (typeof parsed.updatedAt === 'string') cursor.updatedAt = parsed.updatedAt
+  const { root } = pathsOf({ env, home, stateDir })
+  if (root === undefined) return cursor
+  const data = hooksOp({ op: 'cursor-read', root })
+  if (data.warning !== undefined) warn(data.warning)
+  for (const [id, at] of Object.entries(data.cursor.ids ?? {})) cursor.ids[id] = at
+  if (typeof data.cursor.updatedAt === 'string') cursor.updatedAt = data.cursor.updatedAt
   return cursor
 }
 
 /** 原子写 cursor：同目录临时文件 + rename（与设置存储同一手法）。 */
 export function writeCursor(cursor, { env = process.env, home, stateDir } = {}) {
-  const file = eventsCursorPath({ env, home, stateDir })
-  if (file === undefined) throw new Error('the data root could not be resolved')
-  mkdirSync(dirname(file), { recursive: true })
-  const temporary = `${file}.tmp-${process.pid}-${randomBytes(4).toString('hex')}`
-  const payload = {
-    version: CURSOR_VERSION,
-    updatedAt: new Date().toISOString(),
-    ids: Object.fromEntries(Object.entries(cursor.ids)),
-  }
-  try {
-    writeFileSync(temporary, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o644 })
-    // writeFileSync's mode is filtered by the umask; pin 0644 before the atomic rename.
-    chmodSync(temporary, 0o644)
-    renameSync(temporary, file)
-  } catch (error) {
-    try {
-      unlinkSync(temporary)
-    } catch {
-      // 临时文件可能根本没建出来。
-    }
-    throw error
-  }
-  return payload
+  const { root } = pathsOf({ env, home, stateDir })
+  if (root === undefined) throw new Error('the data root could not be resolved')
+  return hooksOp({ op: 'cursor-write', root, cursor }).cursor
 }
 
 /** 这个 occurrence id 是否已经处理过。 */
@@ -1155,17 +1046,18 @@ export async function readQueueEvents({
       return left.id.localeCompare(right.id)
     })
   const chosen = limit !== undefined && limit >= 0 ? events.slice(0, limit) : events
-  return chosen.map(entry => {
-    const text = String(entry.message.text ?? '')
-    // 按 Unicode code point 截断（不是 UTF-16 code unit）：代理对不会被切成半个字符，脚本仍能从 `file`
-    // 读到完整正文。12000 已经远大于一条正常结果，截断只是防止一个输出洪水把 stdin 撑爆。
-    const points = Array.from(text)
-    const truncated = points.length > QUEUE_TEXT_LIMIT
+  // 按 Unicode code point 截断（不是 UTF-16 code unit）：代理对不会被切成半个字符，脚本仍能从 `file`
+  // 读到完整正文。12000 已经远大于一条正常结果，截断只是防止一个输出洪水把 stdin 撑爆。
+  const bodies = chosen.length === 0
+    ? []
+    : hooksOp({ op: 'texts', texts: chosen.map(entry => String(entry.message.text ?? '')), limit: QUEUE_TEXT_LIMIT }).items
+  return chosen.map((entry, index) => {
+    const body = bodies[index] ?? { text: '', truncated: false }
     const payload = {
       messageId: entry.id,
       kind: entry.kind,
-      text: truncated ? points.slice(0, QUEUE_TEXT_LIMIT).join('') : text,
-      ...(truncated ? { textTruncated: true } : {}),
+      text: body.text,
+      ...(body.truncated ? { textTruncated: true } : {}),
       thread: threadOfMessage(entry.message),
       file: entry.file,
       at: entry.atIsValid ? entry.at : entry.sortAt,

@@ -13,6 +13,7 @@
 //! normal `Result` path, never a panic.
 
 pub mod git;
+pub mod hooks;
 pub mod plan;
 pub mod procscan;
 pub mod queue;
@@ -109,6 +110,10 @@ pub fn schema_bundle() -> Value {
         },
         "settings": {
             "request": schemars::schema_for!(settings::SettingsRequest),
+            "response": schemars::schema_for!(Envelope<Value>),
+        },
+        "hooks": {
+            "request": schemars::schema_for!(hooks::HooksRequest),
             "response": schemars::schema_for!(Envelope<Value>),
         },
     })

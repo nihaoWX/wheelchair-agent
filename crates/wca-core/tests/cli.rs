@@ -217,3 +217,39 @@ fn settings_defaults_are_ordered_and_complete() {
     assert_eq!(values["inbox.intervalSeconds"], 60);
     assert_eq!(values["work.sweepOnMount"], true);
 }
+
+#[test]
+fn hooks_rejects_malformed_requests_and_unknown_events_cleanly() {
+    for input in ["not json", "{\"op\":\"nope\"}", "{\"op\":\"payload\"}"] {
+        let (status, stdout, stderr) = run(&["hooks"], input);
+        assert_ne!(status, 0, "input must fail: {}", input);
+        assert!(
+            !stderr.contains("panicked"),
+            "no panic for {}: {}",
+            input,
+            stderr
+        );
+        let envelope: serde_json::Value =
+            serde_json::from_str(&stdout).expect("stdout is one JSON envelope");
+        assert_eq!(envelope["ok"], false, "input: {}", input);
+        assert_eq!(envelope["code"], "invalid_request", "input: {}", input);
+    }
+    let request = serde_json::json!({
+        "op": "eventId",
+        "event": "nope",
+        "known": false,
+        "knownEvents": ["ticket.started"],
+        "require": true
+    });
+    let (status, stdout, stderr) = run(&["hooks"], &request.to_string());
+    assert_ne!(status, 0);
+    assert!(!stderr.contains("panicked"), "no panic: {}", stderr);
+    let envelope: serde_json::Value =
+        serde_json::from_str(&stdout).expect("stdout is one JSON envelope");
+    assert_eq!(envelope["ok"], false);
+    assert_eq!(envelope["code"], "UNKNOWN_EVENT");
+    assert_eq!(
+        envelope["message"],
+        "unknown hook event \"nope\"; known ids are ticket.started."
+    );
+}
