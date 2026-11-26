@@ -57,6 +57,22 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
 
 # Completed
 
+- **`#59` 合并（`7c45916`，`Fix the refusal-notice crash, target deployments from their checkout, start backends on demand`）**：
+  三件事，都是操作者真机踩出来的：①`build/refusal-notice.mjs` 自 `#48` 起就在无参 `resolveRoot()` 上抛错，所以
+  每一条"冷安装被拒"的 SPV 通知其实都没送出过——现在收 `--project`（`install.sh` 传 `$PROJECT_NAME`），任何解析
+  失败降级为一行 `skipped: <原因>` + exit 0，refusal 仍是 exit 3。②`service` 删掉 `--project`（和 `spv` 同理：部署
+  就是你所处的项目 checkout），目标由 cwd 推断、`SPV_QUEUE_DIR` 兜底、`--all` 动全部；39 处教用户敲
+  `service … --project` 的文案一并清掉，`restart-all --project` 保留。③`spv` 不再一次拉起所有后端（一份都不起），
+  改成派单路径按需启动：`ensureDeploymentStarted()` 用与 `service start` 完全相同的 argv 起实例、等它自己的 URL
+  可答，**成功之后**才写 `pending/`（先写后起会被实例启动时的基线吞掉）；失败则不留下任何队列文件。
+  新增 `src/spv/service-instance.js`（argv 单一来源）、`tests/test-on-demand-start.mjs`（顺序/失败不留文件/已在跑
+  不重启/`spv` 不调管理器）、`tests/test-refusal-notice.mjs`。我的验证：worktree build + `npm test` **504 项全绿**；
+  手验无注册表时 `skipped:` exit 0、注册表内有项目时真写出 `outbox/<id>.json`、`service --project` 被拒并指路、
+  `/tmp` 里 `service start` exit 2 列注册表、`spv` 里已无任何 `start` 调用。
+  **我随后发现并派了收尾票**：`service start` 在 `setup: waiting — repositoryUnset` 时**实例已起来但 exit 3**，
+  `ensureDeploymentStarted()` 把它当成"起不来"，文案还是 `could not start`。要改成"先探活再看退出码"，并给出真正的
+  下一步（`deployment setup --project <p>`）。
+
 - **`#58` 合并（`aabe316`，`panel: run as its own dsh instance instead of the minimal host`）**：
   独立面板从手工 `node:http` 宿主改成一份自己的 dsh 实例；新增 `preset/panel.patch.yml`（`!!js` 读
   `WHEELCHAIR_PANEL_PORT`，`wheelchair-webui: {background: false}`）、`src/spv/panel-instance.js`、
@@ -87,7 +103,8 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
   症状是产物陈旧（已由 `#57` 修好）。
 - **四份部署 + 自动合并开关 + 文档第一批去重（运维，`23aa57e` 之后）**：注册
   `tools/manuscripts_skills`（3083）/`tools/pitfalls-manager`（3084）/`tools/svg_grid`（3085），各自
-  `service start --project` 后 `deployment setup --project` 写进 GitHub 仓库，四份全部 `runtime: ready`；
+  进各自 checkout `service start`（当时还要 `--project`，`#59` 起改由 cwd 决定）后 `deployment setup --project` 写进
+  GitHub 仓库，四份全部 `runtime: ready`；
   注册 spv 项目 `/home/nihao/bioagentforge` 绑四个 worker；`merge.autoMerge` 从 `false` 改成 `true`
   （`~/.wheelchair-agent/settings.json` revision 3）。同时发现两个设置面 bug 已派票
   （`d15a826a7cda43bf921ddfe7dd8c8ea7`：`panel.port` 不在 `KEY_SPECS` 里所以被当未知键丢掉、部分
@@ -252,7 +269,7 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
 # In Progress
 
 - **下一次冷安装**（`#49`–`#52` 全在等它）：`service stop` → 退出 SPV → `bash install.sh --project
-  tools/wheelchair-agent` → `service start --project tools/wheelchair-agent` → `wheelchair-agent spv`。
+  tools/wheelchair-agent` → `wheelchair-agent service start --all` → `wheelchair-agent spv`。
   装完 `install.sh --check --project tools/wheelchair-agent` 应全绿，`deployment list` 应显示一条
   `tools/wheelchair-agent port 3082`；随后 `wheelchair-agent panel --detach` + `service open` 才是独立面板。
 - **下一步（未派）**：`INSTRUCTIONS.md` 的「spv 项目」模型 + 面板「项目」卡片（只读）——
@@ -260,7 +277,7 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
   部署的 `GET /orchestrator/api/{overview,tickets}`，实例挂了显示 `unavailable`。
 - **四份部署尚未注册**：`tools/manuscripts_skills`→`nihaoWX/manuscripts_skills`、`tools/pitfalls-manager`、
   `tools/svg_grid`、`tools/wheelchair-agent`（3082），端口 3083/3084/3085；每份要 `deployment add` +
-  `install.sh --project` + `service start --project` + `deployment setup --project`（`#51`）。
+  `install.sh --project` + `service start` + `deployment setup --project`（`#51`）。
 - **`merge.autoMerge` 仍是关的**：`settings.json` 里还没有这个键（默认 `false`），要在面板打开，
   且第一次真正合并前建议先用一张低风险 PR 试。
 
@@ -323,8 +340,8 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
    `dispatch`/`outbox`/`check`/`health`/`cron`/`inbox` 存储；`session`/`restart` 链放最后（它管杀进程，
    出事最贵）。每张票的 parity 门都是"对应测试文件零改动 + 用户可见输出逐字一致"。
 
-1. 操作者执行一次冷安装（`service stop --project tools/wheelchair-agent` → 退出 SPV → `install.sh --project` →
-   `service start --project` → `spv`），`#37`–`#58` 一起生效；`#57` 起 `--check` 会先比产物戳，core 陈旧会被
+1. 操作者执行一次冷安装（`wheelchair-agent service stop --all` → 退出 SPV → `install.sh --project
+   tools/wheelchair-agent` → `service start --all` → `spv`），`#37`–`#59` 一起生效；`#57` 起 `--check` 会先比产物戳，core 陈旧会被
    拦下（逃生口 `--allow-stale-core` 只告警）；`#58` 起 install 还会建 `$DSH_HOME/profiles/panel/`，装完
    `wheelchair-agent service open` 打开的就是带完整 harness UI 的独立面板。
 2. 重派 `service-detach`（带禁令），并把 `service open` 作为最后一步并入 `/restart-wheelchair-agent`

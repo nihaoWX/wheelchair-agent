@@ -169,7 +169,7 @@ wheelchair-agent session release --session <id>     # 释放卡住的会话租�
 
 1. 恢复目标是**发命令的那个会话**：`--session` 优先，其次该部署的 `deployment-session.json`，
    `~/.dsh-tui/resume.txt` 只是最后的兜底（`#36` 起；早期版本的"resume.txt 是唯一来源"已作废）。
-2. 顺序固定：`guard → service stop → 停 SPV 会话链 → install.sh --project → service start → 拉回 TUI`，
+2. 顺序固定：`guard → service stop --all → 停 SPV 会话链 → install.sh --project → service start --all → 拉回 TUI`，
    任何一对调换都会留下半装状态或杀掉叙述者自己。
 
 手工处理卡住的租约用 `wheelchair-agent session release [--session <id>] [--dry-run]`：默认取

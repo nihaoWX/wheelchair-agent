@@ -55,18 +55,20 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
   `dsh --profile superagent --patch <data root>/deployments/<slug>.yml`；端口从 3082 起按注册表分配，
   冲突即报错、不自动改。每个部署的 stateDir 独立（`~/.dsh/state/superagent/<slug>`），所以会话、工单、
   worker 都互不可见。
-- `wheelchair-agent service start|stop|restart|open`：**必须**说清目标——`--project <p>` 动一份，`--all` 动全部；
-  两者都没有就报错并指路 `deployment list`（没有"无 project 的基服务"了）。唯一例外是"本进程知道自己属于哪份
-  部署"：`wheelchair-agent spv` 会把 `SPV_QUEUE_DIR` 交给启动器，所以启动器裸跑 `service status`/`start`
-  作用在自己那份实例上（反查注册表，不是默认部署）。没有 `SPV_QUEUE_DIR` 的普通终端仍然必须说清目标；
-  裸 `service status` 照旧打印本机的服务行，并在注册表多于一条时追加一句按部署分组的 `deployments:` 段。
+- `wheelchair-agent service start|stop|restart|open`：目标**由所在目录决定**（`#59` 删掉了 `--project`）——cwd 落在
+  `<projectsRoot>/<project>` 之下（含子目录、最长匹配）就动那份部署；`SPV_QUEUE_DIR`（启动器拉起的 shell）作第二兜底；
+  推不出就 exit 2 列出注册表并指路 `--all`。`--all` 动全部。裸 `service status` 不做推断：先打面板行，再逐份列出注册
+  部署。要动另一份而人不在它的 checkout 里，用 `restart-all --project <p>`（那个 `--project` 保留）。
 - 重启分两种，都带 `--project`：
   - `/restart-wheelchair-agent`（= `restart-all --project <本部署>`）：目标**从本实例的 `SPV_QUEUE_DIR` 反查注册表**，
     所以斜杠命令一个参数都不用敲；只停/起这一份实例、resume 这一份的会话，**不跑 install**（preset/webui/core
     是全局一份，装属于另一件事）。
-  - `restart-all --all`：全机器一圈——逐份 `service stop --project` → 停会话链等 lease → **装一次**
+  - `restart-all --all`：全机器一圈——`service stop --all` → 停会话链等 lease → **装一次**
     （`bash install.sh --project <installProject>`，installProject 由本 checkout 的 origin/路径反推，推不出就要求
-    显式 `--project`）→ 逐份 `service start --project` → 恢复 TUI。想装新代码就用它。
+    显式 `--project`）→ `service start --all` → 恢复 TUI。想装新代码就用它。
+- `wheelchair-agent spv` **不启动任何后端**（`#59`）：任务进的是各部署自己的队列文件，读它的是那份部署自己的实例，
+  所以派单路径（`spv_dispatch` / `dispatch`）先确保目标部署在跑、**成功之后**才写队列文件。没被用到的部署就一直不跑，
+  它的收件箱轮询/自动合并也随之不发生——这是有意的（"没用到就不启动"）。
 - `wheelchair-agent spv` 仍只有一个（spv 不是部署），它的目标由 cwd 落在
   `<projectsRoot>/<project>` 推断，推不出就报错列清单，**不再有 `--project`**（`#50` 删掉：项目没有自己的 spv）。
 - 面板（`service open` / `wheelchair-agent panel`）从 `#58` 起也是**一份自己的 dsh 实例**，但它**不是部署**：
@@ -98,7 +100,7 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
 | 阶段 | 交付 | 验收 |
 |---|---|---|
 | 1（已完成，`#42`/`#43`） | 注册表 + `deployment add|list|remove|migrate` + `dispatch`/`spv_dispatch` 走注册表 + 注入器/`spv_status` 聚合所有注册部署 + 安装契约记 project | 两份注册表条目下 `dispatch` 各写各的队列、两边的回信都回到同一个 spv 会话且不重复；没有条目时报错文案指明下一步；`npm test` 全绿（"注册表缺失时行为逐字不变"这半条在 `#48` 后被翻转成"给出指路错误"） |
-| 2（已完成：`#44` 实例 overlay + `#45` 重启/状态作用域 + `#48` 去单部署） | 每部署实例 overlay（`<data root>/deployments/<slug>.yml`：端口 + stateDir + queueDir）+ `service … --project|--all`（按注册表找实例、端口、会话、日志）+ `install.sh --project` 按项目分配 stateDir/端口 | 两个部署同时运行、各自面板可达、互不干扰；`/restart-wheelchair-agent` 仍能 resume 原会话；没有 `--project`/`--all` 的 `service`/`restart-all` 一律报错而不是动基服务 |
+| 2（已完成：`#44` 实例 overlay + `#45` 重启/状态作用域 + `#48` 去单部署 + `#59` 按 checkout 定位） | 每部署实例 overlay（`<data root>/deployments/<slug>.yml`：端口 + stateDir + queueDir）+ `service … [--all]`（目标由 cwd 决定，按注册表找实例、端口、会话、日志）+ `install.sh --project` 按项目分配 stateDir/端口 | 两个部署同时运行、各自面板可达、互不干扰；`/restart-wheelchair-agent` 仍能 resume 原会话；认不出部署的 `service` 报错指路，绝不猜基服务 |
 | 3（已完成，`#46`） | watcher 按项目归属 + `kind: review` 路由 | 任一面板审一封属于别的部署的信，注入落到正确部署的工单 |
 
 ### stage 2 第一片落地（`#44`）
@@ -111,10 +113,10 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
 - 端口：`allocatePort()` 从 3082 起取注册表里第一个未占用的号；**只看注册表，不探内核**——所以旧单部署
   仍在 3082 上跑时先做 `deployment migrate`（把 `tools/wheelchair-agent` 记成 3082），新部署自然从 3083 起。
   真冲突由 `service start` 报错，不自动改。
-- `service … --project <p>`：查注册表 → 找实例文件 → 用该部署的 `--profile/--patch/--session/--log/--url/--port`
-  调 `commands/superagent-service.py`；没有端口、没有实例文件都给出"下一步跑什么"的报错。`#48` 之后没有
-  `--project` 也没有 `--all` 就只有一条指路错误（`service start needs --project <p> or --all …`），裸 `service status`
-  例外——它仍照旧打印本机服务行，注册表多于一份时再追加 `deployments:` 段。
+- `service …`：先由 cwd（或 `SPV_QUEUE_DIR`）认出本部署（`#59`；`--project` 已删）→ 查注册表 → 找实例文件 →
+  用该部署的 `--profile/--patch/--session/--log/--url/--port` 调 `commands/superagent-service.py`；没有端口、
+  没有实例文件都给出"下一步跑什么"的报错。推不出部署时是一条指路错误（cd 进项目或 `--all`），裸 `service status`
+  例外——它不需要推断，照旧打印本机服务行并逐份列出注册部署。
 - `commands/superagent-service.py` 的进程匹配从"profile"细化到"profile + `--patch` 文件"（`serves(argv,
   profile, patch)`，`patch=None` = 旧的无 `--patch` 服务，`ANY_PATCH` = 该 profile 的所有实例，安装探针用）：
   同一个 profile 下多实例靠 patch 文件区分；监听端口上的进程也要 argv 对得上才算，避免"实例占了 3082 就
@@ -130,7 +132,7 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
 - 会话目标：`--session`（命令插件传发起命令的会话）→ 该部署 stateDir 下的 `deployment-session.json`
   （`SESSION_RECORD`）→ 放弃并打印"去那个部署的终端跑 `spv --resume <id>`"。**永远不读
   `~/.dsh-tui/resume.txt`**——那是全局"最后打开"指针，跨部署读它等于把别人的会话拖进来；测试里放哨兵 id 断言没被用。
-- `service status` 不带 `--project` 时仍是旧输出，注册表多于一份才追加 `deployments:` 段（每行
+- 裸 `service status` 逐份列出注册部署（每行
   `<project> port <n> running|stopped <pid|->`），旧服务本体不重复报两次。
 
 ### stage 3 落地（`#46`）
@@ -158,14 +160,14 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
   （`$SPV_QUEUE_DIR` 只剩测试/单次调试语义，文档里明写它不是部署来源）。
 - 安装：`install.sh --project` 必填，唯一允许的推断是 checkout 的 origin/路径**唯一**对上一个已登记部署；
   `--check`/`--fingerprint` 仍然只读（不写注册表、不写实例文件）。
-- 服务：`service start|stop|restart|open` 要 `--project` 或 `--all`；裸 `service status` 仍可看全局。
+- 服务：`service start|stop|restart|open` 的目��由 cwd 决定，`--all` 动全部；裸 `service status` 仍可看全局。
 - `spv`：`--project` → cwd 落在 `<projectsRoot>/<project>` → 报错列出已登记部署；**不再默认
   `tools/wheelchair-agent`**。它启动时把该部署的 `DSH_SUPERAGENT_STATE_DIR` 与 `SPV_QUEUE_DIR` 交给 TUI/实例，
   所以实例天然能认出自己。
 - 重启：`restart-all` 要 `--project` 或 `--all`；斜杠命令不给参数时从实例反查本部署。`--project` 只重启、不装；
   `--all` = 逐份 stop → 停链等 lease → **装一次**（`install.sh --project <installProject>`）→ 逐份 start → 恢复 TUI。
-  `--all --dry-run` 在会话里要加 `--detach` 才能出计划（`preflight` 的祖先检查），计划逐条列出每个项目的
-  `service stop|start --project` 与那次 install 的项目，**不含任何无 `--project` 的裸命令**。
+  `--all --dry-run` 在会话里要加 `--detach` 才能出计划（`preflight` 的祖先检查），计划是
+  `service stop --all` → 停链 → 一次 `install.sh --project <installProject>` → `service start --all`。
 - `deployment remove` 删最后一条要 `--force`（并警告这台机器将没有可用部署）；`deployment migrate` 只剩
   "认领旧安装"这一个语义。无注册表时 `service start`/`spv`/`restart-all` 都给一句指路话。
 - watcher：认不出自己 → 什么都不轮询（见 stage 3 那节）；未登记项目不再被任何实例轮询，那个"两边各 pull 一次"
@@ -188,4 +190,5 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
 
 `#48` 之后连"单部署形态"本身也退场了：`paths.js` 的 legacy 回退、watcher 的"没有注册表就轮询所有项目"、
 裸 `service`/`spv`/`restart-all` 这三套旧入口都已删除。代价是一台没有注册表条目的机器什么都跑不起来，
-所以升级顺序固定为 `deployment migrate`（认领旧安装）→ `install.sh --project …` → `service start --project …`。
+所以升级顺序固定为 `deployment migrate`（认领旧安装）→ `install.sh --project …` → 进项目目录 `service start`
+（或 `service start --all`）。

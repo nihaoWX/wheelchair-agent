@@ -32,5 +32,5 @@ gone (closed, or the CLI died with it), and it resumes the same way.
 | 卡住的会话怎么释放、`kill` 集合与安全规则 | `ARCHITECTURE/restart/lease.md` |
 | 升级与 dsh-tui 的交接、为什么脱钩、日志、检查与恢复 | `ARCHITECTURE/restart/operations.md` |
 
-一句话记住顺序：`guard → service stop → 停 SPV 会话链 → install.sh --project → service start → 把 TUI 拉回来`。
+一句话记住顺序：`guard → service stop --all → 停 SPV 会话链 → install.sh --project → service start --all → 把 TUI 拉回来`。
 每一对调换都会留下半装状态，或者让叙述者自己被杀掉。
