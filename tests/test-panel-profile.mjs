@@ -348,6 +348,63 @@ test('literal secrets are skipped with a note while credential references stay',
   assert.ok(patch.notes.some(note => note === 'the source profile pins a literal secret in llm-commandcode; the panel keeps the default'))
 })
 
+test('a block scalar body is copied verbatim, including # lines and apiKey-looking text', () => {
+  const patch = PANEL_PROFILE.buildPanelPatch({
+    sourceProfile: 'superagent',
+    patchText: [
+      '- id: prompt-plugin',
+      '  config:',
+      '    systemPrompt: |',
+      '      apiKey: this is prose, not a secret',
+      '      # not a comment either',
+      '',
+      '      keep these lines',
+      '- id: other-plugin',
+      '  config:',
+      '    apiKey: sk-real-secret',
+      '',
+    ].join('\n'),
+  })
+  assert.match(patch.content, /systemPrompt: \|\n      apiKey: this is prose, not a secret\n      # not a comment either\n\n      keep these lines\n/)
+  assert.doesNotMatch(patch.content, /sk-real-secret/)
+  assert.ok(patch.notes.some(note => note.includes('literal secret in other-plugin')))
+  assert.ok(!patch.notes.some(note => note.includes('literal secret in prompt-plugin')))
+})
+
+test('a folded block scalar is copied verbatim too', () => {
+  const patch = PANEL_PROFILE.buildPanelPatch({
+    sourceProfile: 'superagent',
+    patchText: [
+      '- id: folded-plugin',
+      '  config:',
+      '    instructions: >-',
+      '      # heading',
+      '      token: this is prose',
+      '',
+      '      last line',
+      '',
+    ].join('\n'),
+  })
+  assert.match(patch.content, /instructions: >-\n      # heading\n      token: this is prose\n\n      last line\n/)
+})
+
+test('a literal secret written as a list item is skipped with its child values', () => {
+  const patch = PANEL_PROFILE.buildPanelPatch({
+    sourceProfile: 'superagent',
+    patchText: [
+      '- id: list-plugin',
+      '  config:',
+      '    accounts:',
+      '      - apiKey: sk-list-secret',
+      '        label: someone',
+      '',
+    ].join('\n'),
+  })
+  assert.doesNotMatch(patch.content, /sk-list-secret/)
+  assert.doesNotMatch(patch.content, /label: someone/)
+  assert.ok(patch.notes.some(note => note === 'the source profile pins a literal secret in list-plugin; the panel keeps the default'))
+})
+
 test('a mixed insert keeps the non-spv item and an all-spv insert is omitted', () => {
   const mixed = PANEL_PROFILE.buildPanelPatch({
     sourceProfile: 'superagent',

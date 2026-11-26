@@ -202,8 +202,9 @@ The standalone wheelchair-agent panel is its own dsh instance: the "panel" profi
 overlay, running in tmux session "wca-panel". Its plugins mirror the deployment webui instances
 (settings "panel.profileFrom", default "superagent"), except dsh-superagent: the panel has no
 orchestrator and no Sources. It gives the same four sections (inbox, settings, hooks, projects)
-the full harness UI, but it is not a deployment: it is absent from the deployment registry, and
-"service stop --all" never touches it. Inbox polling, auto-merge, cold-install notices and the
+the full harness UI, but it is not a deployment: it is absent from the deployment registry;
+"service stop/start --all" do include it (stopped after the deployments, started last), and a
+panel failure never changes their exit code. Inbox polling, auto-merge, cold-install notices and the
 hook runner stay in each deployment's dsh plugin; this instance disables them and only serves
 the routes and the page.
 

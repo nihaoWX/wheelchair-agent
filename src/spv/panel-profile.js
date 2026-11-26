@@ -378,19 +378,64 @@ function patchInsertItems(lines) {
 }
 
 /**
- * Drop a literal secret key and its (possibly nested) value. Credential references such as
- * `apiKeyEnv: COMMANDCODE_API_KEY` do not match and are copied normally.
+ * Ranges that belong to a YAML block scalar (`key: |`, `key: >`, with any chomping indicator).
+ * Those lines are the user's prose, not patch structure: comments, `apiKey:`-looking text and
+ * blank lines inside the block must be copied verbatim.
  */
-function stripPatchComments(lines) {
-  return lines.filter(line => line.trim() !== '' && !line.trimStart().startsWith('#'))
+function blockScalarRanges(lines) {
+  const ranges = []
+  for (let index = 0; index < lines.length; index += 1) {
+    const header = lines[index].match(/^(\s*)[A-Za-z0-9_-]+:\s*[|>][+-]?\s*$/)
+    if (header === null) continue
+    const keyIndent = header[1].length
+    let end = index + 1
+    while (end < lines.length) {
+      const line = lines[end]
+      if (line.trim() === '') {
+        end += 1
+        continue
+      }
+      if (line.match(/^(\s*)/)[1].length <= keyIndent) break
+      end += 1
+    }
+    ranges.push([index + 1, end])
+    index = end - 1
+  }
+  return ranges
 }
 
+function isInRanges(index, ranges) {
+  return ranges.some(([start, end]) => index >= start && index < end)
+}
+
+/**
+ * Drop patch comments and blank separators, but never touch the body of a block scalar, where a
+ * leading `#` or an empty line is content.
+ */
+function stripPatchComments(lines) {
+  const ranges = blockScalarRanges(lines)
+  return lines.filter((line, index) => {
+    if (isInRanges(index, ranges)) return true
+    return line.trim() !== '' && !line.trimStart().startsWith('#')
+  })
+}
+
+/**
+ * Drop a literal secret key and its (possibly nested) value. Credential references such as
+ * `apiKeyEnv: COMMANDCODE_API_KEY` do not match and are copied normally. Block scalar bodies are
+ * not structure, so a `apiKey:`-looking line inside one is kept with the rest of the prose.
+ */
 function stripLiteralSecrets(lines) {
   const out = []
   const secrets = []
+  const ranges = blockScalarRanges(lines)
   for (let index = 0; index < lines.length; index += 1) {
     const line = lines[index]
-    const match = line.match(/^(\s*)([A-Za-z0-9_-]+):\s*(.*)$/)
+    if (isInRanges(index, ranges)) {
+      out.push(line)
+      continue
+    }
+    const match = line.match(/^(\s*)(?:-\s+)?([A-Za-z0-9_-]+):\s*(.*)$/)
     if (match && PANEL_LITERAL_SECRET_KEYS.includes(match[2])) {
       secrets.push(match[2])
       const indent = match[1].length
