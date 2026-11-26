@@ -64,6 +64,13 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
 
 # Completed
 
+- **`#65` 合并（`cd5012b`，`Rename the panel's dsh profile to wheelchair-agent`）**：面板 profile id
+  `panel` → `wheelchair-agent`，只改 id（overlay `preset/panel.patch.yml`、设置键 `panel.port`/`panel.profileFrom`、
+  tmux `wca-panel`、stateDir `<data root>/panel` 全不动）。`install.sh` 一次性 `mv` 旧目录（`panel-bundles.json`
+  与软链随之过去），两者都在时只用新目录并打 note、旧目录留给操作者；`--check` 只报"还在旧路径"、永不写。
+  我验的：`bash build/build-core.sh` + `npm test` **EXIT=0 全绿**（`test-install.sh` 39、`test-panel-profile` 200、
+  `test-panel` 39），新增 case 22 覆盖"只有旧目录时 `--check` 仍失败 + 报迁移"、"install 搬一次并保住
+  `panel-bundles.json`"、"两个目录并存时不删旧的"；卡片里说的 `ci` pass、合并前两次 `BEHIND`（`update-branch --rebase`）。
 - **`#64` 合并（`be60fcd`，`fix(spv): fill per-deployment admission and prepare before dispatch`）**：新部署
   "能起、能派、不能干活"——`policy.sources.spv.allowed` 为空让每个任务以 `not_a_member` 被静默 ignore
   （`spv_dispatch` 却报成功），`executor.prepare` 为空让工单在空目录里开跑。新增
@@ -331,10 +338,9 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
 
 # In Progress
 
-- **两张票在跑**：`worker-binding`（实例-worker 项目保护：一 project 一部署、worker 必须已部署、不许挂两个 spv
-  项目、派单解析不到唯一部署就失败）与 `panel-profile-rename`（profile id `panel` → `wheelchair-agent`，
-  只改 id、`install.sh` 自动 `mv` 旧目录、旧宿主仍能识别）。
-- **下一次冷安装**（`#59`–`#64` 全在等它）：退出 SPV → `wheelchair-agent service stop --all` →
+- **一张票在跑**：`worker-binding`（实例-worker 项目保护：一 project 一部署、worker 必须已部署、不许挂两个 spv
+  项目、派单解析不到唯一部署就失败）。
+- **下一次冷安装**（`#59`–`#65` 全在等它）：退出 SPV → `wheelchair-agent service stop --all` →
   `wheelchair-agent panel stop` → `bash install.sh --project tools/wheelchair-agent` →
   `wheelchair-agent service start --all` → `wheelchair-agent spv`。
 - **「项目」页还缺"正在跑什么工单"**：`/wheelchair-projects` 已有 spv 路径、绑定的 worker、端口、
@@ -403,8 +409,9 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
    出事最贵）。每张票的 parity 门都是"对应测试文件零改动 + 用户可见输出逐字一致"。
 
 1. 操作者执行一次冷安装（`wheelchair-agent service stop --all` → 退出 SPV → `install.sh --project
-   tools/wheelchair-agent` → `service start --all` → `spv`），`#37`–`#59` 一起生效；`#57` 起 `--check` 会先比产物戳，core 陈旧会被
-   拦下（逃生口 `--allow-stale-core` 只告警）；`#58` 起 install 还会建 `$DSH_HOME/profiles/panel/`，装完
+   tools/wheelchair-agent` → `service start --all` → `spv`），`#37`–`#65` 一起生效；`#57` 起 `--check` 会先比产物戳，core 陈旧会被
+   拦下（逃生口 `--allow-stale-core` 只告警）；`#58` 起 install 会建面板 profile（`#65` 起叫
+   `$DSH_HOME/profiles/wheelchair-agent/`，old `panel` 目录由这次 install 搬过去），装完
    `wheelchair-agent service open` 打开的就是带完整 harness UI 的独立面板。
 2. 重派 `service-detach`（带禁令），并把 `service open` 作为最后一步并入 `/restart-wheelchair-agent`
    （`src/spv/restart.js` + `tests/test-restart.mjs`，见 `docs/PITFALLS/dsh-web-panel-token-is-per-instance.md`

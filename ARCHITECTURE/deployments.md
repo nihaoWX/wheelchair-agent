@@ -87,7 +87,7 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
 - `wheelchair-agent spv` 仍只有一个（spv 不是部署），它的目标由 cwd 落在
   `<projectsRoot>/<project>` 推断，推不出就报错列清单，**不再有 `--project`**（`#50` 删掉：项目没有自己的 spv）。
 - 面板（`service open` / `wheelchair-agent panel`）从 `#58` 起也是**一份自己的 dsh 实例**，但它**不是部署**：
-  profile `panel` 不含 `dsh-superagent`，不进注册表，`deployment list` 不显示，
+  profile `wheelchair-agent`（`#65` 前叫 `panel`）不含 `dsh-superagent`，不进注册表，`deployment list` 不显示，
   端口取设置 `panel.port`（默认 3080），stateDir `<data root>/panel`。各部署的完整 UI 仍在各自端口，面板
   「项目」卡片用链接跳过去。
 - 面板在 `--all` 这一圈里（`#62`）：`service stop --all` 停完部署再停它，`start --all` 起完部署最后起它

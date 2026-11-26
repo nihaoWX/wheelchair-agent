@@ -181,7 +181,7 @@ wheelchair-agent/
 `~/.local/bin/wheelchair-agent` 是薄壳，`spv` / `superagent-service` / `jobctl` 是它的兼容名。
 superagent 侧的 `src/superagent/` **从不进 preset 目录**：那个 profile 用自己的 `node_modules` 软链加载它。
 `webui/` 是**第四种安装目标**：`install.sh` 把包拷进 `~/.dsh/profiles/superagent/node_modules/wheelchair-agent-webui/`，
-并往该 profile 的 `cordis.patch.yml` 追加一行 loader（见下）。`#58` 又加了**第五种**：`$DSH_HOME/profiles/panel/`
+并往该 profile 的 `cordis.patch.yml` 追加一行 loader（见下）。`#58` 又加了**第五种**：`$DSH_HOME/profiles/wheelchair-agent/`（`#65` 前叫 `panel`）
 （`package.json`、`cordis.yml`、`panel-instance.json`、`panel-bundles.json` + 同一份 webui 包），只给独立面板用，
 与任何部署无关；其中 `package.json` 的 `dsh.profile.bundles` 镜像来源 profile（`panel.profileFrom`，默认
 `superagent`，只去掉 `dsh-superagent`）；`cordis.patch.yml` 也由 sync 整文件生成，镜像来源 profile 的顶层行（跳过

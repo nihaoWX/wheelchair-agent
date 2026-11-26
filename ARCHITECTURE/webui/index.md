@@ -44,7 +44,7 @@ same JSON routes; they differ in what surrounds the page.
   poller, the hook runner, `builtin:autoMerge`, `builtin:archiveSession` and the cold-install notice.
   This is deliberate — a deployment keeps merging and reporting while no panel is open.
 - **Host B — `wheelchair-agent panel`**: its own **dsh instance**, not a hand-written server. The
-  installed profile `panel` (`$DSH_HOME/profiles/panel/`) carries `dsh-base`, `dsh-web-app` and the
+  installed profile `wheelchair-agent` (`$DSH_HOME/profiles/wheelchair-agent/`; renamed from `panel` in `#65`) carries `dsh-base`, `dsh-web-app` and the
   `wheelchair-agent-webui` package, and **never** `dsh-superagent` — so it has no orchestrator, no
   sources and no tickets. `preset/panel.patch.yml` is passed with `--patch` and supplies only the
   webserver binding (`127.0.0.1`, port `!!js Number(process.env.WHEELCHAIR_PANEL_PORT ?? 3080)`) and

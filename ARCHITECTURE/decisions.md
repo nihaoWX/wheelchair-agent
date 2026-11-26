@@ -331,7 +331,7 @@ gh 失败只 warning。
 `MISSING_CREDENTIAL`——看起来像"面板坏了"，实际是一行配置。
 
 **决定**：新增 `src/spv/panel-profile.js`，按设置 `panel.profileFrom`（默认 `superagent`）把来源 profile 的
-`dsh.profile.bundles` 与 `cordis.patch.yml` 顶层行镜像进 `~/.dsh/profiles/panel/`。排除项是三条可复述的规则：
+`dsh.profile.bundles` 与 `cordis.patch.yml` 顶层行镜像进面板自己的 profile 目录（当时叫 `~/.dsh/profiles/panel/`，`#65` 起改名 `wheelchair-agent`）。排除项是三条可复述的规则：
 `dsh-superagent`（会在面板里再开一份 orchestrator 与 Sources）、`webserver`（面板端口自己定）、`insert` 里
 `name` 以 `wheelchair-agent/` 开头的项（spv Source 等，要 dsh-superagent 才活）。面板自己的两行
 （`wheelchair-webui` 的 loader、`ui-settings-general`）由面板持有、固定在首末。字面秘密（`apiKey`/`token`/
@@ -343,7 +343,7 @@ gh 失败只 warning。
 
 **取舍**：镜像的是**文本行**而不是解析后的对象——patch 里有 `!!js` 标签与块标量，解析再序列化会改变形状，
 所以逐行复制、只做"跳过整块/整键"这种可解释的删除。代价是必须自己处理块标量（`|`/`>` 之后更深缩进的行逐字保留，
-否则会把用户 prose 里的 `#` 与 `apiKey:` 当注释和秘密删掉）。写目标只有 `profiles/panel/**`，
+否则会把用户 prose 里的 `#` 与 `apiKey:` 当注释和秘密删掉）。写目标只有面板自己的 profile 目录（当时 `profiles/panel/**`），
 `profiles/superagent` 只读；来源 profile 消失时 `start` 保留现状并打 note，不让面板因此起不来。
 
 
@@ -369,3 +369,23 @@ gh 失败只 warning。
 **取舍**：不把这条修进 dsh-superagent（让 `allowedSender` 对缺失的 part 也套默认值会更根本，但那是另一个仓库的
 行为变更，且会影响所有人）；因此**每份新部署都必须被我们的 CLI/工具碰过一次**才可用——`deployment add` 只复刻
 端口/stateDir/queueDir，实例级设置不在它的责任里，`setup` 与派单路径负责补齐。
+
+## 面板的 dsh profile 叫 `wheelchair-agent`，不叫 `panel`（`#65`，2026-11-26）
+
+**问题**：面板自 `#58` 起是一份自己的 dsh 实例，profile id 当初随手定了 `panel`。这个名字在 dsh 的命名空间里与
+"dsh 的交互方式"（`web`/`headless`/`tui`/`sdk`）撞概念，而且和我们的产品名不一致——操作者的要求是
+"这一份属于 wheelchair-agent，只是不属于任何 superagent 部署"。
+
+**决定**：profile id 改成 `wheelchair-agent`（`src/spv/panel-instance.js` 的 `PANEL_PROFILE_ID` 与
+`install.sh` 的同名变量保持一致），**只改 id**：overlay 文件名仍是 `preset/panel.patch.yml`，设置键仍是
+`panel.port` / `panel.profileFrom`，tmux 会话仍是 `wca-panel`，stateDir 仍是 `<data root>/panel`——那些是"面板"
+这个功能的标识，不是 profile 名。`install.sh` 负责一次性迁移：`profiles/panel` 存在而新名不存在 ⇒ `mv`
+（`panel-bundles.json` 与软链随之过去，打印 `moved the panel profile from panel to wheelchair-agent`）；
+两者都在 ⇒ 只用新目录并打 note，旧目录由操作者自己删；`--check` **永不写**，只报"还在旧路径，跑 install.sh 迁移"。
+
+**理由**：profile 名是机器可见的身份（`--profile <id>`、目录名、日志），改名后"面板属于谁"不再需要解释；
+而迁移放在安装里，是因为那是唯一已经会写 profile 的入口，`--check` 保持只读是它自己的契约。
+
+**取舍**：不自动删旧目录（`profiles/panel` 里可能有操作者手放的东西）；`#58` 之前那种
+`cli.js panel --foreground` 旧宿主识别保持不变，而"另一个 `dsh --profile panel` 实例"不属于那个形状——它由
+端口占用检查拦住并报出 pid，代价是操作者要自己 `kill -INT`。
