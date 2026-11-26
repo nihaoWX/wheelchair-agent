@@ -482,7 +482,7 @@ render_into() {
     fix "check that $SELF_DIR/bin/wheelchair-agent.mjs exists and is readable, then rerun this script"
     return 1
   fi
-  for file in shared/core-stamp.js shared/deployments.js shared/home.js shared/hook-events.js shared/hooks.js shared/install-stamp.js shared/queue.js shared/schema.js shared/settings.js shared/spv-projects.js shared/work.js spv/auto-merge-effect.js spv/check.js spv/cron-plugin.js spv/cron.js spv/deployment-restart.js spv/deployment-setup.js spv/deployment.js spv/dispatch.js spv/health.js spv/hook.js spv/inbox.js spv/injector.js spv/outbox.js spv/ownership.js spv/projects-view.js spv/panel-routes.js spv/panel-instance.js spv/panel-profile.js spv/spv-project.js spv/paths.js spv/restart-command.js spv/restart-ux.js spv/restart.js spv/service-instance.js spv/session.js spv/tools.js; do
+  for file in shared/core-stamp.js shared/deployments.js shared/home.js shared/hook-events.js shared/hooks.js shared/install-stamp.js shared/queue.js shared/schema.js shared/settings.js shared/spv-projects.js shared/work.js spv/auto-merge-effect.js spv/check.js spv/cron-plugin.js spv/cron.js spv/deployment-policy.js spv/deployment-restart.js spv/deployment-setup.js spv/deployment.js spv/dispatch.js spv/health.js spv/hook.js spv/inbox.js spv/injector.js spv/outbox.js spv/ownership.js spv/projects-view.js spv/panel-routes.js spv/panel-instance.js spv/panel-profile.js spv/spv-project.js spv/paths.js spv/restart-command.js spv/restart-ux.js spv/restart.js spv/service-instance.js spv/session.js spv/tools.js; do
     if ! cp "$SELF_DIR/src/$file" "$dest/src/$file"; then
       fail "cannot copy src/$file from this checkout"
       fix "check that $SELF_DIR/src/$file exists and is readable, then rerun this script"
@@ -579,7 +579,7 @@ render_webui_into() {
   done
   # `settings.js` lives in `lib/shared/` (not `lib/core/`) for the same reason `queue.js` does: the copied
   # `lib/core/inbox.js` imports `../shared/settings.js`, and `lib/core/` is for the src/spv files.
-  for pair in "spv/inbox.js:lib/core/inbox.js" "spv/dispatch.js:lib/core/dispatch.js" "spv/health.js:lib/core/health.js" "spv/service-instance.js:lib/core/service-instance.js" "spv/hook-runner.js:lib/core/hook-runner.js" "spv/ownership.js:lib/core/ownership.js" "spv/projects-view.js:lib/core/projects-view.js" "spv/panel-routes.js:lib/core/panel-routes.js" "spv/paths.js:lib/core/paths.js" "spv/archive-effect.js:lib/core/archive-effect.js" "spv/auto-merge-effect.js:lib/core/auto-merge-effect.js" "shared/core-stamp.js:lib/shared/core-stamp.js" "shared/deployments.js:lib/shared/deployments.js" "shared/home.js:lib/shared/home.js" "shared/hook-events.js:lib/shared/hook-events.js" "shared/hooks.js:lib/shared/hooks.js" "shared/install-stamp.js:lib/shared/install-stamp.js" "shared/queue.js:lib/shared/queue.js" "shared/schema.js:lib/shared/schema.js" "shared/settings.js:lib/shared/settings.js" "shared/spv-projects.js:lib/shared/spv-projects.js" "shared/work.js:lib/shared/work.js"; do
+  for pair in "spv/inbox.js:lib/core/inbox.js" "spv/dispatch.js:lib/core/dispatch.js" "spv/deployment-policy.js:lib/core/deployment-policy.js" "spv/health.js:lib/core/health.js" "spv/service-instance.js:lib/core/service-instance.js" "spv/hook-runner.js:lib/core/hook-runner.js" "spv/ownership.js:lib/core/ownership.js" "spv/projects-view.js:lib/core/projects-view.js" "spv/panel-routes.js:lib/core/panel-routes.js" "spv/paths.js:lib/core/paths.js" "spv/archive-effect.js:lib/core/archive-effect.js" "spv/auto-merge-effect.js:lib/core/auto-merge-effect.js" "shared/core-stamp.js:lib/shared/core-stamp.js" "shared/deployments.js:lib/shared/deployments.js" "shared/home.js:lib/shared/home.js" "shared/hook-events.js:lib/shared/hook-events.js" "shared/hooks.js:lib/shared/hooks.js" "shared/install-stamp.js:lib/shared/install-stamp.js" "shared/queue.js:lib/shared/queue.js" "shared/schema.js:lib/shared/schema.js" "shared/settings.js:lib/shared/settings.js" "shared/spv-projects.js:lib/shared/spv-projects.js" "shared/work.js:lib/shared/work.js"; do
     src=${pair%%:*}
     target=${pair##*:}
     if ! cp "$SELF_DIR/src/$src" "$dest/$target"; then
@@ -660,7 +660,7 @@ check_preset() {
     fix 'run: bash tools/wheelchair-agent/install.sh'
   fi
   actual=$(find "$PRESET_DIR" -type f | sed "s|^$PRESET_DIR/||" | sort | tr '\n' ' ')
-  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md panel.patch.yml agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/core-stamp.js src/shared/deployments.js src/shared/home.js src/shared/hook-events.js src/shared/hooks.js src/shared/install-stamp.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/spv-projects.js src/shared/work.js src/spv/auto-merge-effect.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/deployment-restart.js src/spv/deployment-setup.js src/spv/deployment.js src/spv/dispatch.js src/spv/health.js src/spv/hook.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/ownership.js src/spv/projects-view.js src/spv/panel-routes.js src/spv/panel-instance.js src/spv/panel-profile.js src/spv/spv-project.js src/spv/paths.js src/spv/restart-command.js src/spv/restart-ux.js src/spv/restart.js src/spv/service-instance.js src/spv/session.js src/spv/tools.js "
+  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md panel.patch.yml agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/core-stamp.js src/shared/deployments.js src/shared/home.js src/shared/hook-events.js src/shared/hooks.js src/shared/install-stamp.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/spv-projects.js src/shared/work.js src/spv/auto-merge-effect.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/deployment-policy.js src/spv/deployment-restart.js src/spv/deployment-setup.js src/spv/deployment.js src/spv/dispatch.js src/spv/health.js src/spv/hook.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/ownership.js src/spv/projects-view.js src/spv/panel-routes.js src/spv/panel-instance.js src/spv/panel-profile.js src/spv/spv-project.js src/spv/paths.js src/spv/restart-command.js src/spv/restart-ux.js src/spv/restart.js src/spv/service-instance.js src/spv/session.js src/spv/tools.js "
   local missing extras
   missing=$(comm -23 <(printf '%s' "$expected" | tr ' ' '\n' | sort) <(printf '%s' "$actual" | tr ' ' '\n' | sort) | tr '\n' ' ')
   extras=$(comm -13 <(printf '%s' "$expected" | tr ' ' '\n' | sort) <(printf '%s' "$actual" | tr ' ' '\n' | sort) | tr '\n' ' ')
@@ -1005,6 +1005,27 @@ service_pid() {
 # inside that process. `$PATH` here says nothing about it: the service may have been started from a
 # different shell, or before BIN_DIR was added. /proc/<pid>/environ is the only place that answers it.
 #
+# A deployment can be running and still unusable: an empty policy.sources.spv.allowed makes every dispatch
+# `not_a_member` (silently ignored), and an empty executor.prepare starts workers without a clone. Both are
+# per-deployment settings that `deployment setup` fills, so --check reports them as notes, not failures, and
+# stays read-only. The node helper only reads the registry and each panel's settings API.
+check_deployment_settings() {
+  local report status line
+  report=$(WHEELCHAIR_AGENT_HOME="$DATA_ROOT" node "$SELF_DIR/src/spv/deployment-policy.js" audit 2>&1)
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    note "could not check deployment settings: $report"
+    return
+  fi
+  if [ -z "$report" ]; then
+    note 'deployment settings: every registered deployment has an allowed identity and a prepare command'
+    return
+  fi
+  printf '%s\n' "$report" | while IFS= read -r line; do
+    [ -n "$line" ] && note "$line"
+  done
+}
+
 # A stopped service is not a failure: the operator may install before starting it. Say so and move on.
 check_service_path() {
   local pid path entry found=0
@@ -1589,6 +1610,7 @@ if [ "$CHECK" -eq 1 ]; then
   check_core_binary
   check_install_stamp
   check_service_path
+  check_deployment_settings
   panel_upgrade_note
   if [ "$PROBLEMS" -gt 0 ]; then
     printf '\n%d check(s) failed.\n' "$PROBLEMS"

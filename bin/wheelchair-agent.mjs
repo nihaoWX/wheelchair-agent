@@ -973,7 +973,7 @@ async function commandDispatch(argv) {
       '[--thread <name>] [--preset <id>]',
     flags: { '--project': 'project', '--task': 'task', '--thread': 'thread', '--preset': 'preset' },
   })
-  const { checkPreset, checkProject, checkTask, checkThread, ensureDeploymentStarted, submitTask } =
+  const { checkPreset, checkProject, checkTask, checkThread, ensureDeploymentStarted, ensureDispatchAllowed, submitTask } =
     await load('src', 'spv', 'dispatch.js')
   const { probe, serviceDown } = await load('src', 'spv', 'health.js')
   const { missingQueue, resolveRoot } = await load('src', 'spv', 'paths.js')
@@ -991,8 +991,11 @@ async function commandDispatch(argv) {
     const health = await probe()
     if (!health.alive) throw serviceDown(health)
   }
+  // 与 spv_dispatch 工具一样：策略检查先于写队列。补不上允许身份就失败，不会留下一个必被 ignore 的任务。
+  const admitted = await ensureDispatchAllowed(target)
   try {
     const record = await submitTask(dirsOf(root), { project, task, thread, preset })
+    if (admitted.note !== undefined) process.stdout.write(`note: ${admitted.note}\n`)
     process.stdout.write(`dispatched ${record.id} on thread "${record.thread}" for project ${record.project}\n`)
   } catch (error) {
     if (error.code === 'ENOENT') throw missingQueue(root)

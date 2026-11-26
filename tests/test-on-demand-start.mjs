@@ -28,6 +28,18 @@ const CLI = fileURLToPath(new URL('../bin/wheelchair-agent.mjs', import.meta.url
 const SANDBOXES = []
 const SERVER_PIDS = []
 
+/** 首次派活时 admission 会读一次 settings；替身面板必须已经带上 operator 和 prepare，否则会多出 PUT。 */
+const PANEL_SETTINGS = JSON.stringify({
+  blocks: {
+    policy: {
+      revision: 1,
+      value: { rules: [], sources: { spv: { allowed: [{ id: 'operator', name: 'local operator' }] } } },
+    },
+    executor: { revision: 1, value: { prepare: 'wheelchair-agent prepare' } },
+  },
+  sources: [],
+})
+
 async function sandbox() {
   const base = await mkdtemp(join(tmpdir(), 'wheelchair-agent-on-demand-test-'))
   SANDBOXES.push(base)
@@ -57,6 +69,15 @@ async function sandbox() {
  * start 不留下实例，`FAKE_SERVICE_START_OUTPUT` 让 start 打印管理器输出（paused 等分类靠它）。
  */
 async function writeManager(box) {
+  const panel = join(box.bin, 'fake-panel.mjs')
+  await writeFile(panel, `import { createServer } from 'node:http'
+const settings = ${JSON.stringify(PANEL_SETTINGS)}
+createServer((request, response) => {
+  response.statusCode = 200
+  response.setHeader('content-type', 'application/json')
+  response.end(request.url === '/orchestrator/api/settings' ? settings : '{}')
+}).listen(Number(process.argv[2]), '127.0.0.1')
+`)
   const file = join(box.bin, 'python3')
   await writeFile(
     file,
@@ -76,7 +97,7 @@ printf '%s\\n' "$*" >> "$FAKE_SERVICE_LOG"
 if [ "$action" = start ]; then
   if [ -n "$(ls -A "$queue/pending" 2>/dev/null)" ]; then : > "$FAKE_SWALLOWED"; fi
   if [ "\${FAKE_SERVICE_START_SERVER:-1}" = 1 ]; then
-    node -e "require('http').createServer((q,s)=>{s.statusCode=200;s.end('{}')}).listen($port,'127.0.0.1')" >/dev/null 2>&1 &
+    node "$FAKE_SERVICE_SERVER" "$port" >/dev/null 2>&1 &
     printf '%s\\n' "$!" > "$FAKE_SERVICE_PID"
     # 真 manager 的 start 会等到实例能答健康检查才返回（paused 也算 ready）；假 manager 照做，避免把
     # 「实例刚起还没监听」误当成启动失败。
@@ -112,6 +133,7 @@ function envFor(box, extra = {}) {
     FAKE_SERVICE_LOG: box.log,
     FAKE_SWALLOWED: box.swallowed,
     FAKE_SERVICE_PID: box.serverPid,
+    FAKE_SERVICE_SERVER: join(box.bin, 'fake-panel.mjs'),
     ...extra,
   }
 }
@@ -172,10 +194,10 @@ async function freePort() {
 
 /** Serve one fixed `/orchestrator/api/state` body on the deployment port for the duration of `fn`. */
 async function withStateServer(port, body, fn) {
-  const server = createServer((_request, response) => {
+  const server = createServer((request, response) => {
     response.statusCode = 200
-    response.setHeader('content-type', body.startsWith('{') ? 'application/json' : 'text/plain')
-    response.end(body)
+    response.setHeader('content-type', 'application/json')
+    response.end(request.url === '/orchestrator/api/settings' ? PANEL_SETTINGS : body)
   })
   await new Promise(done => server.listen(port, '127.0.0.1', done))
   try {
@@ -293,9 +315,10 @@ async function testRunningDeploymentIsNotStartedAgain() {
   const box = await sandbox()
   const port = await freePort()
   addDeployment(box, 'tools/alpha', port)
-  const server = createServer((_request, response) => {
+  const server = createServer((request, response) => {
     response.statusCode = 200
-    response.end('{"ok":true}')
+    response.setHeader('content-type', 'application/json')
+    response.end(request.url === '/orchestrator/api/settings' ? PANEL_SETTINGS : '{"ok":true}')
   })
   await new Promise(done => server.listen(port, '127.0.0.1', done))
   try {

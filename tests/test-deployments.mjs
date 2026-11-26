@@ -49,10 +49,20 @@ async function sandbox() {
 }
 
 /** 健康检查只要求“有 HTTP 响应”，所以一个总是 200 的空服务就足够，且不碰真实端口。 */
-const SERVICE = createServer((_request, response) => {
+const SERVICE_SETTINGS = JSON.stringify({
+  blocks: {
+    policy: {
+      revision: 1,
+      value: { rules: [], sources: { spv: { allowed: [{ id: 'operator', name: 'local operator' }] } } },
+    },
+    executor: { revision: 1, value: { prepare: 'wheelchair-agent prepare' } },
+  },
+  sources: [],
+})
+const SERVICE = createServer((request, response) => {
   response.statusCode = 200
   response.setHeader('content-type', 'application/json')
-  response.end('{"ok":true}')
+  response.end(request.url === '/orchestrator/api/settings' ? SERVICE_SETTINGS : '{"ok":true}')
 })
 await new Promise(resolve => SERVICE.listen(0, '127.0.0.1', resolve))
 const SERVICE_URL = `http://127.0.0.1:${SERVICE.address().port}`
@@ -126,11 +136,22 @@ async function pendingFiles(queue) {
 }
 
 /** 一个部署实例的替身：健康检查只要求“有 HTTP 响应”，起在动态端口上即可。 */
+const SETTINGS_BODY = JSON.stringify({
+  blocks: {
+    policy: {
+      revision: 3,
+      value: { rules: [], sources: { spv: { allowed: [{ id: 'operator', name: 'local operator' }] } } },
+    },
+    executor: { revision: 2, value: { prepare: 'wheelchair-agent prepare' } },
+  },
+  sources: [],
+})
+
 async function openInstance() {
-  const server = createServer((_request, response) => {
+  const server = createServer((request, response) => {
     response.statusCode = 200
     response.setHeader('content-type', 'application/json')
-    response.end('{"ok":true}')
+    response.end(request.url === '/orchestrator/api/settings' ? SETTINGS_BODY : '{"ok":true}')
   })
   await new Promise((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolve))
   return server
@@ -642,10 +663,29 @@ async function testRepositoryInferenceAndConflict() {
   assert.doesNotMatch(listed.stdout, /tools\/not-github|tools\/no-origin|tools\/missing-checkout/, 'rejected projects were not registered')
 }
 
-/** 一个只实现 setup 需要的三条路由的假面板；`mode` 决定 state 的返回。 */
-async function setupServer(mode, { repository = null } = {}) {
+/**
+ * 一个只实现 setup 需要的路由的假面板；`mode` 决定 state 的返回。
+ *
+ * 默认 policy 已经有 operator、prepare 也已设置，所以旧用例的「setup 只发一个 PUT」仍然成立；
+ * 传空的 policy/prepare 可以验证 setup 会补齐这两项。
+ */
+async function setupServer(mode, {
+  repository = null,
+  policy = {
+    rules: [{ id: 'keep-this-rule' }],
+    sources: {
+      github: { allowed: [{ id: 'nihaoWX', name: 'repository owner' }] },
+      spv: { allowed: [{ id: 'operator', name: 'local operator' }] },
+    },
+  },
+  prepare = 'wheelchair-agent prepare',
+  failPolicyPut = false,
+} = {}) {
   // 面板请求走 keep-alive；close() 只停止 accept，不掐断空闲 socket，测试进程会因此挂住。
-  const shutdown = () => {}
+  let currentPolicy = structuredClone(policy)
+  let currentPrepare = prepare
+  let policyRevision = 0
+  let executorRevision = 0
   const calls = []
   const server = createServer(async (request, response) => {
     const chunks = []
@@ -658,7 +698,31 @@ async function setupServer(mode, { repository = null } = {}) {
       response.end(JSON.stringify(value))
     }
     if (request.method === 'GET' && request.url === '/orchestrator/api/settings') {
-      json({ sources: [{ id: 'github', revision: 4, value: { enabled: true, config: { repository, cli: '/bin/sh' } } }] })
+      json({
+        blocks: {
+          policy: { revision: policyRevision, value: currentPolicy },
+          executor: { revision: executorRevision, value: { prepare: currentPrepare } },
+        },
+        sources: [{ id: 'github', revision: 4, value: { enabled: true, config: { repository, cli: '/bin/sh' } } }],
+      })
+      return
+    }
+    if (request.method === 'PUT' && request.url === '/orchestrator/api/settings/policy') {
+      if (failPolicyPut) {
+        response.statusCode = 500
+        response.setHeader('content-type', 'application/json')
+        response.end(JSON.stringify({ error: 'policy write failed' }))
+        return
+      }
+      currentPolicy = body.value
+      policyRevision += 1
+      json({ saved: true, revision: policyRevision })
+      return
+    }
+    if (request.method === 'PUT' && request.url === '/orchestrator/api/settings/executor') {
+      currentPrepare = body.value.prepare
+      executorRevision += 1
+      json({ saved: true, revision: executorRevision })
       return
     }
     if (request.method === 'PUT' && request.url === '/orchestrator/api/settings/source:github') {
@@ -677,6 +741,73 @@ async function setupServer(mode, { repository = null } = {}) {
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
   const close = () => { server.closeAllConnections(); server.close() }
   return { server, close, port: server.address().port, calls }
+}
+
+async function testDeploymentSetupFillsPolicyAndPrepare() {
+  // 空 policy + 空 prepare：setup 成功时要补上 operator 和默认 prepare，且 rules/其他来源原样保留。
+  const box = await sandbox()
+  const panel = await setupServer('success', {
+    policy: { rules: [{ id: 'keep-this-rule' }], sources: { github: { allowed: [{ id: 'nihaoWX', name: 'repository owner' }] } } },
+    prepare: '',
+  })
+  assert.equal(
+    (await cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'nihaoWX/alpha', '--port', String(panel.port)])).status,
+    0,
+  )
+  const configured = await cli(box, ['deployment', 'setup', '--project', 'tools/alpha'])
+  assert.equal(configured.status, 0, configured.stderr)
+  assert.match(configured.stdout, /configured: tools\/alpha now targets nihaoWX\/alpha/)
+  assert.match(configured.stdout, /was missing the "operator" allowed identity for source "spv"; added it/)
+  assert.match(configured.stdout, /had an empty executor\.prepare; set it to "wheelchair-agent prepare"/)
+
+  const policyPut = panel.calls.find(call => call.method === 'PUT' && call.url === '/orchestrator/api/settings/policy')
+  assert.ok(policyPut, 'setup wrote the policy block')
+  assert.deepEqual(policyPut.body, {
+    revision: 0,
+    value: {
+      rules: [{ id: 'keep-this-rule' }],
+      sources: {
+        github: { allowed: [{ id: 'nihaoWX', name: 'repository owner' }] },
+        spv: { allowed: [{ id: 'operator', name: 'local operator' }] },
+      },
+    },
+  })
+  const executorPut = panel.calls.find(call => call.method === 'PUT' && call.url === '/orchestrator/api/settings/executor')
+  assert.ok(executorPut, 'setup wrote the executor block')
+  assert.deepEqual(executorPut.body, { revision: 0, value: { prepare: 'wheelchair-agent prepare' } })
+  panel.close()
+
+  // 自定义 prepare 是操作者的值：一律不动，也不发 executor PUT。
+  const customBox = await sandbox()
+  const custom = await setupServer('success', { prepare: 'my own prepare' })
+  assert.equal(
+    (await cli(customBox, ['deployment', 'add', 'tools/alpha', '--repo', 'nihaoWX/alpha', '--port', String(custom.port)])).status,
+    0,
+  )
+  const kept = await cli(customBox, ['deployment', 'setup', '--project', 'tools/alpha'])
+  assert.equal(kept.status, 0, kept.stderr)
+  assert.doesNotMatch(kept.stdout, /set it to/)
+  assert.equal(custom.calls.filter(call => call.method === 'PUT' && call.url.endsWith('/executor')).length, 0)
+  custom.close()
+
+  // 补不齐时 setup 必须失败，不能先打印 configured。
+  const failBox = await sandbox()
+  const failing = await setupServer('success', {
+    policy: { rules: [], sources: {} },
+    prepare: '',
+    failPolicyPut: true,
+  })
+  assert.equal(
+    (await cli(failBox, ['deployment', 'add', 'tools/alpha', '--repo', 'nihaoWX/alpha', '--port', String(failing.port)])).status,
+    0,
+  )
+  const failed = await cli(failBox, ['deployment', 'setup', '--project', 'tools/alpha'])
+  assert.equal(failed.status, 1)
+  assert.match(failed.stderr, /dispatch settings could not be completed/)
+  assert.match(failed.stderr, /policy write failed/)
+  assert.doesNotMatch(failed.stdout, /^configured:/m)
+  assert.equal(failing.calls.filter(call => call.method === 'PUT' && call.url.endsWith('/executor')).length, 0)
+  failing.close()
 }
 
 async function testDeploymentSetup() {
@@ -792,6 +923,7 @@ try {
   await testMigrateRecordsTheCurrentDeployment()
   await testRepositoryInferenceAndConflict()
   await testDeploymentSetup()
+  await testDeploymentSetupFillsPolicyAndPrepare()
   await testOldRegistryEntriesReadAsNoRepository()
   await testServiceStartPrintsSetupHint()
   process.stdout.write('ok\n')
@@ -799,6 +931,7 @@ try {
   process.stderr.write(`not ok: ${error?.stack ?? error}\n`)
   process.exitCode = 1
 } finally {
+  SERVICE.closeAllConnections()
   SERVICE.close()
   for (const base of SANDBOXES) await rm(base, { recursive: true, force: true }).catch(() => {})
 }

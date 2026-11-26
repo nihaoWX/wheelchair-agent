@@ -25,7 +25,15 @@
  */
 import { listDeployments, missingDeploymentError } from '../shared/deployments.js'
 import { dirsOf } from '../shared/queue.js'
-import { checkPreset, checkProject, checkTask, checkThread, ensureDeploymentStarted, submitTask } from './dispatch.js'
+import {
+  checkPreset,
+  checkProject,
+  checkTask,
+  checkThread,
+  ensureDeploymentStarted,
+  ensureDispatchAllowed,
+  submitTask,
+} from './dispatch.js'
 import { probe, serviceDown } from './health.js'
 import { createSpvMessage, resolveInboxRoot } from './inbox.js'
 import { startResultInjector } from './injector.js'
@@ -133,11 +141,13 @@ export function defineSpvTools(root, state, config = {}) {
             id: { type: 'string' },
             thread: { type: 'string' },
             project: { type: 'string' },
+            note: { type: 'string', description: 'Set when this dispatch had to add the sender to the deployment policy.' },
           },
         },
         render: (_args, value) => [{
           type: 'text',
           text: `Dispatched ${value.id} on thread "${value.thread}" for project ${value.project}. ` +
+            (value.note === undefined ? '' : `Note: ${value.note}. `) +
             `The result will arrive later by itself as a new message on thread "${value.thread}"; ` +
             'keep the conversation going and do not wait for it.',
         }],
@@ -155,11 +165,19 @@ export function defineSpvTools(root, state, config = {}) {
           const health = await probe()
           if (!health.alive) throw serviceDown(health)
         }
+        // 策略检查必须在写队列之前：allowlist 没配上时，写进去的任务会被 Source 以 not_a_member 丢掉，
+        // 而工具却报成功。ensureDispatchAllowed() 失败就不写、不报成功。
+        const admitted = await ensureDispatchAllowed(target)
         try {
           const record = await submitTask(dirsOf(targetRoot), { project, task, thread, preset })
           // 记下会话的 agent：后台注入器靠它决定把结果投给谁。第一次派活之前没有会话可投。
           if (exec?.agent) state.agent = exec.agent
-          return { id: record.id, thread: record.thread, project: record.project }
+          return {
+            id: record.id,
+            thread: record.thread,
+            project: record.project,
+            ...(admitted.note === undefined ? {} : { note: admitted.note }),
+          }
         } catch (error) {
           if (error.code === 'ENOENT') throw missingQueue(targetRoot)
           throw error
