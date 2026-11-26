@@ -1098,7 +1098,13 @@ notice_id_for_blockers() {
 refusal_notice() {
   local out id
   id=$(notice_id_for_blockers)
-  if ! out=$(refusal_text | node "$SELF_DIR/build/refusal-notice.mjs" "$id" 2>&1); then
+  # The registry is the only deployment source, so name the project when the script inferred one;
+  # without it the notice helper reports "cannot tell which deployment" instead of guessing a queue.
+  local -a projectArgs=()
+  if [ -n "$PROJECT_NAME" ]; then
+    projectArgs=(--project "$PROJECT_NAME")
+  fi
+  if ! out=$(refusal_text | node "$SELF_DIR/build/refusal-notice.mjs" "$id" "${projectArgs[@]}" 2>&1); then
     note "could not queue the SPV refusal notice: $out"
     return 0
   fi
