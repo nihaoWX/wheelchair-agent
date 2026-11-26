@@ -1,7 +1,7 @@
 /**
- * The standalone panel is its own dsh instance: the "panel" profile (dsh-base + dsh-web-app + the
- * wheelchair-agent webui package) plus the installed `panel.patch.yml`. This test installs into a
- * throwaway DSH_HOME with the same seams `tests/test-install.sh` uses, then starts the real instance
+ * The standalone panel is its own dsh instance: the "wheelchair-agent" profile (dsh-base + dsh-web-app
+ * + the wheelchair-agent webui package) plus the installed `panel.patch.yml`. This test installs into
+ * a throwaway DSH_HOME with the same seams `tests/test-install.sh` uses, then starts the real instance
  * on 3997 and checks the browser-facing facts: the harness page, the authenticated inbox route, the
  * status contract, and that stopping closes the port.
  *
@@ -152,14 +152,45 @@ async function startForeground(box) {
   return { child, token, outputOf: () => output }
 }
 
+async function testLegacyDetection() {
+  const { looksLikeLegacyPanelHost } = await import(new URL('../src/spv/panel-instance.js', import.meta.url))
+  const legacy = ['node', '/home/u/.local/bin/cli.js', 'panel', '--foreground', '--port', '3080']
+  check('the pre-rename cli.js panel host is still recognised', looksLikeLegacyPanelHost(legacy) === true)
+  check('a bare panel --foreground is still recognised', looksLikeLegacyPanelHost(['panel', '--foreground']) === true)
+  const current = [
+    'node', '/usr/local/bin/dsh', '--profile', 'wheelchair-agent',
+    '--patch', '/home/u/.dsh/.agent-presets/spv/panel.patch.yml', '--no-open',
+  ]
+  check('the current wheelchair-agent instance is not reported as legacy', looksLikeLegacyPanelHost(current) === false)
+  const currentEquals = [
+    'node', '/usr/local/bin/dsh', '--profile=wheelchair-agent',
+    '--patch', '/home/u/.dsh/.agent-presets/spv/panel.patch.yml', '--no-open',
+  ]
+  check('the --profile=wheelchair-agent form is not reported as legacy', looksLikeLegacyPanelHost(currentEquals) === false)
+  const oldProfile = [
+    'node', '/usr/local/bin/dsh', '--profile', 'panel',
+    '--patch', '/home/u/.dsh/.agent-presets/spv/panel.patch.yml', '--no-open',
+  ]
+  check('an instance left on the old profile is not a pre-#58 host', looksLikeLegacyPanelHost(oldProfile) === false)
+  check(
+    'a foreign port owner is never reported',
+    looksLikeLegacyPanelHost(['node', '/x/panel-server.js', '--port', '3080']) === false,
+  )
+  check('an empty argv is never reported', looksLikeLegacyPanelHost([]) === false)
+}
+
 async function testProfile() {
   const box = makeBox()
   try {
     install(box)
-    const profile = join(box.dsh, 'profiles', 'panel')
+    const profile = join(box.dsh, 'profiles', 'wheelchair-agent')
     const manifest = JSON.parse(readFileSync(join(profile, 'package.json'), 'utf8'))
     const bundles = manifest?.dsh?.profile?.bundles ?? []
     check('the panel profile exists', existsSync(profile))
+    check(
+      'the panel profile is installed under its new name only',
+      !existsSync(join(box.dsh, 'profiles', 'panel')),
+    )
     check('the panel profile bundles dsh-web-app', bundles.includes('@deepseek-ai/dsh-web-app'), bundles.join(','))
     check('the panel profile bundles dsh-base', bundles.includes('@deepseek-ai/dsh-base'), bundles.join(','))
     const patch = readFileSync(join(profile, 'cordis.patch.yml'), 'utf8')
@@ -254,7 +285,7 @@ async function testCheck(box) {
   writeFileSync(overlay, `${readFileSync(overlay, 'utf8')}\n# comment-only edit\n`)
   const commentOnly = installCheck(box)
   check('a comment-only overlay edit is not stale', commentOnly.status === 0, commentOnly.stdout + commentOnly.stderr)
-  const marker = join(box.dsh, 'profiles', 'panel', 'panel-instance.json')
+  const marker = join(box.dsh, 'profiles', 'wheelchair-agent', 'panel-instance.json')
   const recorded = JSON.parse(readFileSync(marker, 'utf8'))
   writeFileSync(marker, `${JSON.stringify({ ...recorded, dshVersion: '0.0.0-old' }, null, 2)}\n`)
   const stale = installCheck(box)
@@ -264,6 +295,7 @@ async function testCheck(box) {
 }
 
 async function main() {
+  await testLegacyDetection()
   const box = await testProfile()
   if (FAIL === 0) {
     await testRunningPanel(box)

@@ -1,4 +1,4 @@
-# Machine configuration for the standalone `panel` profile.
+# Machine configuration for the standalone `wheelchair-agent` profile.
 #
 # The panel is its own dsh instance, not a deployment: it loads dsh-base, dsh-web-app and the
 # wheelchair-agent-webui plugin, and deliberately no orchestrator bundle (that would create a second

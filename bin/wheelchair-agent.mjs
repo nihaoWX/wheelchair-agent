@@ -198,7 +198,7 @@ options:
 
 const PANEL_USAGE = `usage: wheelchair-agent panel [start|stop|status|sync] [--port <n>] [--foreground]
 
-The standalone wheelchair-agent panel is its own dsh instance: the "panel" profile with a small
+The standalone wheelchair-agent panel is its own dsh instance: the "wheelchair-agent" profile with a small
 overlay, running in tmux session "wca-panel". Its plugins mirror the deployment webui instances
 (settings "panel.profileFrom", default "superagent"), except dsh-superagent: the panel has no
 orchestrator and no Sources. It gives the same four sections (inbox, settings, hooks, projects)

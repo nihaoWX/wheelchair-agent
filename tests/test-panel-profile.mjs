@@ -119,18 +119,18 @@ test('panel.profileFrom rejects path-shaped profile names', () => {
 
 test('the panel profile cannot be its own source profile', () => {
   assert.throws(
-    () => PANEL_PROFILE.panelSourceProfile({ settings: { effective: { 'panel.profileFrom': 'panel' } } }),
+    () => PANEL_PROFILE.panelSourceProfile({ settings: { effective: { 'panel.profileFrom': 'wheelchair-agent' } } }),
     /cannot mirror itself/,
   )
   assert.throws(
-    () => PANEL_PROFILE.planPanelProfile({ dshHome: mkdtempSync(join(tmpdir(), 'wheelchair-self-')), sourceProfile: 'panel', bundles: [] }),
+    () => PANEL_PROFILE.planPanelProfile({ dshHome: mkdtempSync(join(tmpdir(), 'wheelchair-self-')), sourceProfile: 'wheelchair-agent', bundles: [] }),
     /cannot mirror itself/,
   )
 })
 
 function planFixture(overrides = {}) {
   const home = mkdtempSync(join(tmpdir(), 'wheelchair-plan-'))
-  mkdirSync(join(home, 'profiles', 'panel', 'node_modules'), { recursive: true })
+  mkdirSync(join(home, 'profiles', 'wheelchair-agent', 'node_modules'), { recursive: true })
   const plan = PANEL_PROFILE.planPanelProfile({
     dshHome: home,
     sourceProfile: 'superagent',
@@ -437,7 +437,7 @@ test('sync writes the manifest, links and record, then prunes only its own stale
   const home = mkdtempSync(join(tmpdir(), 'wheelchair-sync-'))
   try {
     const source = join(home, 'profiles', 'superagent')
-    const panel = join(home, 'profiles', 'panel')
+    const panel = join(home, 'profiles', 'wheelchair-agent')
     mkdirSync(join(panel, 'node_modules'), { recursive: true })
     writePackage(join(source, 'node_modules', 'dsh-context'), 'dsh-context')
     writePackage(join(source, 'node_modules', 'extra-plugin'), 'extra-plugin')
@@ -584,17 +584,17 @@ function check(box) {
 }
 
 function panelManifest(box) {
-  return JSON.parse(readFileSync(join(box.dsh, 'profiles', 'panel', 'package.json'), 'utf8'))
+  return JSON.parse(readFileSync(join(box.dsh, 'profiles', 'wheelchair-agent', 'package.json'), 'utf8'))
 }
 function panelRecord(box) {
-  return JSON.parse(readFileSync(join(box.dsh, 'profiles', 'panel', 'panel-bundles.json'), 'utf8'))
+  return JSON.parse(readFileSync(join(box.dsh, 'profiles', 'wheelchair-agent', 'panel-bundles.json'), 'utf8'))
 }
 
 let box = null
 try {
   box = makeBox()
   install(box)
-  const panel = join(box.dsh, 'profiles', 'panel')
+  const panel = join(box.dsh, 'profiles', 'wheelchair-agent')
 
   test('install mirrors the source bundles without dsh-superagent', () => {
     assert.deepEqual(panelManifest(box).dsh.profile.bundles, [

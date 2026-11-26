@@ -457,13 +457,14 @@ function processAlive(pid) {
 /** One machine-wide round also covers the panel, which is not a deployment: stop last/start last, never fail. */
 async function testLegacyPanelShapes() {
   // Pure shapes: the old host is `cli.js panel --foreground` without the panel profile overlay; a
-  // current instance always loads `panel.patch.yml`. Everything else is not ours.
+  // current instance always loads `panel.patch.yml` under the wheelchair-agent profile. Everything
+  // else is not ours.
   assert.equal(
     looksLikeLegacyPanelHost(['node', '/home/nihao/.local/bin/cli.js', 'panel', '--foreground', '--port', '3080']),
     true,
   )
   assert.equal(
-    looksLikeLegacyPanelHost(['node', '/usr/bin/dsh', '--profile', 'panel', '--patch', '/h/.agent-presets/spv/panel.patch.yml']),
+    looksLikeLegacyPanelHost(['node', '/usr/bin/dsh', '--profile', 'wheelchair-agent', '--patch', '/h/.agent-presets/spv/panel.patch.yml']),
     false,
   )
   assert.equal(looksLikeLegacyPanelHost(['vim', 'panel']), false)
@@ -517,13 +518,13 @@ async function testServiceAllIncludesThePanel() {
   assert.equal(startLines.length, 3)
   assert.match(startLines[0], /start --profile superagent --patch .*alpha\.yml/)
   assert.match(startLines[1], /start --profile superagent --patch .*beta\.yml/)
-  assert.match(startLines[2], /start --mode panel --profile panel --patch .*panel\.patch\.yml/)
+  assert.match(startLines[2], /start --mode panel --profile wheelchair-agent --patch .*panel\.patch\.yml/)
   assert.match(startLines[2], /--port 3080/)
   assert.match(start.stdout, /panel: started/)
 
   // A broken panel prints the manager's reason and fix, but never changes the deployments' exit code.
   fake = await writeFakeManager(box, {
-    panelBody: 'echo "FAIL: port 3080 is already in use by pid 4910, which is not profile panel" >&2; echo "fix: stop that process first: kill -INT 4910" >&2',
+    panelBody: 'echo "FAIL: port 3080 is already in use by pid 4910, which is not profile wheelchair-agent" >&2; echo "fix: stop that process first: kill -INT 4910" >&2',
     panelExit: 1,
   })
   await reset()

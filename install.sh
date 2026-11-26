@@ -94,8 +94,12 @@ PROFILE_ID=${DSH_SUPERAGENT_PROFILE:-superagent}
 PROFILE_DIR=$DSH_HOME_DIR/profiles/$PROFILE_ID
 WEBUI_TARGET=$PROFILE_DIR/node_modules/wheelchair-agent-webui
 # The panel instance is its own dsh profile, not a deployment: no dsh-superagent, its own state dir.
-PANEL_PROFILE_ID=panel
+# The id must match src/spv/panel-instance.js PANEL_PROFILE_ID; the profile used to be named "panel"
+# and install_panel_profile migrates that directory once.
+PANEL_PROFILE_ID=wheelchair-agent
+PANEL_LEGACY_PROFILE_ID=panel
 PANEL_PROFILE_DIR=$DSH_HOME_DIR/profiles/$PANEL_PROFILE_ID
+PANEL_LEGACY_PROFILE_DIR=$DSH_HOME_DIR/profiles/$PANEL_LEGACY_PROFILE_ID
 PANEL_WEBUI_TARGET=$PANEL_PROFILE_DIR/node_modules/wheelchair-agent-webui
 SERVICE_PROFILE=$PROFILE_ID
 SERVICE_PORT=${SPV_SERVICE_PORT:-3082}
@@ -797,6 +801,11 @@ check_panel_profile() {
   local problems current profile_problems
   current=$(panel_dsh_version)
   if [ ! -d "$PANEL_PROFILE_DIR" ]; then
+    # The profile was renamed from "panel" to "wheelchair-agent": install migrates that directory,
+    # but --check never writes. Name the old directory instead of failing as if nothing was installed.
+    if [ -d "$PANEL_LEGACY_PROFILE_DIR" ]; then
+      note "the panel profile is still at the old path $PANEL_LEGACY_PROFILE_DIR; run install.sh to migrate it to $PANEL_PROFILE_ID"
+    fi
     fail "the panel profile is not installed at $PANEL_PROFILE_DIR"
     fix 'run: bash install.sh'
     return
@@ -1341,6 +1350,20 @@ install_panel_file() {
 # be created from scratch.
 install_panel_profile() {
   local version version_json
+  # The profile used to be `profiles/panel`. Move that directory once, before syncing, so its bundle
+  # links and panel-bundles.json (the prune record) survive the rename. A directory already at the
+  # new path wins; the old one is then only reported, because deleting it is the operator's call.
+  if [ -d "$PANEL_LEGACY_PROFILE_DIR" ] && [ ! -e "$PANEL_PROFILE_DIR" ]; then
+    if mv "$PANEL_LEGACY_PROFILE_DIR" "$PANEL_PROFILE_DIR"; then
+      note "moved the panel profile from $PANEL_LEGACY_PROFILE_ID to $PANEL_PROFILE_ID"
+    else
+      fail "cannot move the panel profile from $PANEL_LEGACY_PROFILE_DIR to $PANEL_PROFILE_DIR"
+      fix 'move it by hand, then rerun: bash install.sh'
+      return 1
+    fi
+  elif [ -d "$PANEL_LEGACY_PROFILE_DIR" ] && [ -e "$PANEL_PROFILE_DIR" ]; then
+    note "$PANEL_LEGACY_PROFILE_DIR also exists; the panel uses $PANEL_PROFILE_DIR, so remove the old directory by hand once nothing uses it"
+  fi
   version=$(panel_dsh_version)
   version_json=$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$version") || {
     fail 'cannot encode the dsh version for the panel profile'
@@ -1385,7 +1408,7 @@ nodeLinker: hoisted
 autoInstallPeers: false
 YAML
   fi
-  install_webui_package "$PANEL_PROFILE_DIR" "$PANEL_WEBUI_TARGET" panel
+  install_webui_package "$PANEL_PROFILE_DIR" "$PANEL_WEBUI_TARGET" "$PANEL_PROFILE_ID"
 }
 
 install_preset() {
