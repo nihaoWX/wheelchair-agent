@@ -346,3 +346,26 @@ gh 失败只 warning。
 否则会把用户 prose 里的 `#` 与 `apiKey:` 当注释和秘密删掉）。写目标只有 `profiles/panel/**`，
 `profiles/superagent` 只读；来源 profile 消失时 `start` 保留现状并打 note，不让面板因此起不来。
 
+
+## 派单前必须证明这份部署会接单（`#64`，2026-11-26）
+
+**问题**：`ensureDeploymentStarted()` 只证明实例活着，而"会接单"是另一份**每部署独立**的配置：
+`policy.sources.spv.allowed` 为空时，队列里的任务照常被消费、然后以 `not_a_member` 被 ignore——
+`spv_dispatch` 报成功，工单表 0 行，操作者在面板上只看到"没人能发起工单"。同一个坑还有一面：
+新部署的 `executor.prepare` 是空串，工单会在空目录里开跑，不 clone、不建分支。
+根因是 dsh-superagent 的 `validatePolicy()` 只对**已存在**的 `policy.sources.<id>` 套用 Source 声明的默认值，
+而新部署的 `policy.sources` 是 `{}`——所以默认值永远不会自己出现。
+
+**决定**：把这四项设置变成派单的前置条件，并且**先证明再写队列文件**。新增
+`src/spv/deployment-policy.js`（只走面板 loopback API，不碰 dsh-superagent 源码）：`ensureAllowed()` 往
+`policy.sources.spv.allowed` 补 `operator`（幂等、保留其余来源与手填条目、409 重读一次再写、写后重读确认），
+`ensureExecutorPrepare()` 只在 `prepare` 为空时写默认命令（非空一律不动）。三个入口共用：
+`deployment setup` 成功时补齐（把 note 打给操作者）、`spv_dispatch`/`dispatch` 写队列**之前**补齐（补不上就报错且
+不写队列）、`install.sh --check` 用 `audit` 子命令只读巡检（每份部署一行事实，不把"没在跑"当成安装失败）。
+
+**理由**："派成功但被静默丢弃"是最坏的失败形态——没有任何一方会报错，人只会以为智能体偷懒。
+把它降级成"派单个就报错、并给出可照抄的修法"，代价只是一次 GET/PUT。
+
+**取舍**：不把这条修进 dsh-superagent（让 `allowedSender` 对缺失的 part 也套默认值会更根本，但那是另一个仓库的
+行为变更，且会影响所有人）；因此**每份新部署都必须被我们的 CLI/工具碰过一次**才可用——`deployment add` 只复刻
+端口/stateDir/queueDir，实例级设置不在它的责任里，`setup` 与派单路径负责补齐。

@@ -74,6 +74,13 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
   `setup.problem` 的真机形状是对象 `{place, code, values, detail}`（`dsh-superagent/src/setup.ts:24`），
   由 `setupProblemText()` 归一化成一句话，`projects-view.js` 与 `deployment-setup.js` 共用；读不到/空对象/缺
   `code` 一律 fail open（旧式队列、测试假实例都不能被误拒）。启动/暂停/失败三种情形都**不**留下任务文件。
+- **"实例活着"不等于"会接单"**（`#64`）：候选条件还有两项**每部署独立**的设置，缺了就静默坏掉——
+  `policy.sources.spv.allowed` 为空 ⇒ 队列文件被消费后以 `not_a_member` 被 ignore（`spv_dispatch` 却报成功，
+  工单表 0 行）；`executor.prepare` 为空 ⇒ 工单在空目录里开跑，不 clone、不建分支。由
+  `src/spv/deployment-policy.js` 补：`deployment setup` 成功时补齐并打 note、`spv_dispatch`/`dispatch` 在写
+  `pending/<id>.json` **之前**补齐（补不上就报错、一个字节都不写）、`install.sh --check` 用 `audit` 只读巡检。
+  根因在 dsh-superagent 的 `validatePolicy()` 只对已存在的 `policy.sources.<id>` 套默认值，所以新部署的默认值
+  永远不会自己出现；`deployment add` 只复刻端口/stateDir/queueDir，不管这些。
 - `wheelchair-agent spv` **不启动任何后端**（`#59`）：任务进的是各部署自己的队列文件，读它的是那份部署自己的实例，
   所以派单路径（`spv_dispatch` / `dispatch`）先确保目标部署在跑、**成功之后**才写队列文件。没被用到的部署就一直不跑，
   它的收件箱轮询/自动合并也随之不发生——这是有意的（"没用到就不启动"）。

@@ -64,6 +64,15 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
 
 # Completed
 
+- **`#64` 合并（`be60fcd`，`fix(spv): fill per-deployment admission and prepare before dispatch`）**：新部署
+  "能起、能派、不能干活"——`policy.sources.spv.allowed` 为空让每个任务以 `not_a_member` 被静默 ignore
+  （`spv_dispatch` 却报成功），`executor.prepare` 为空让工单在空目录里开跑。新增
+  `src/spv/deployment-policy.js`（只走面板 loopback API）：`ensureAllowed()` 补 `operator`（幂等、保留其余来源、
+  409 重读一次、写后重读确认）、`ensureExecutorPrepare()` 只在空时写默认命令；`deployment setup` 成功时补齐并打
+  note、`spv_dispatch`/`dispatch` 在写队列**之前**补齐（失败即报错且不写）、`install.sh --check` 用 `audit` 只读巡检。
+  我验的：`bash build/build-core.sh` + `npm test` **482 PASS / 0 FAIL（EXIT=0）**、`gh pr checks 64` = `ci pass`；
+  真机 3084 `readPolicy()` 读到 `revision 1, allowed ["operator"]`（我先前手工补的那次），`audit` 只报没在跑的两份。
+  这张 PR 是 **`merge.autoMerge` 自己合的**（CI 绿 + 未碰 HARNESS），我审完之后才看到 `already merged`。
 - **`#63` 合并（`10d28c3`，`Mirror the source profile's plugins and patch into the panel`）**：3080 面板以前只有
   `dsh-base` + `dsh-web-app`，所以在 3082 装/配的插件到面板里连包都不存在。新增 `src/spv/panel-profile.js`，
   按设置 `panel.profileFrom`（默认 `superagent`，`a-z0-9-`）镜像来源 profile 的两样东西：`package.json` 的
@@ -322,18 +331,17 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
 
 # In Progress
 
-- **下一次冷安装**（`#49`–`#52` 全在等它）：`service stop` → 退出 SPV → `bash install.sh --project
-  tools/wheelchair-agent` → `wheelchair-agent service start --all` → `wheelchair-agent spv`。
-  装完 `install.sh --check --project tools/wheelchair-agent` 应全绿，`deployment list` 应显示一条
-  `tools/wheelchair-agent port 3082`；随后 `wheelchair-agent panel --detach` + `service open` 才是独立面板。
-- **下一步（未派）**：`INSTRUCTIONS.md` 的「spv 项目」模型 + 面板「项目」卡片（只读）——
-  `<data root>/spv-projects.json`、`spv-project add|list|remove`、`deployment add --spv`、卡片数据来自每份
-  部署的 `GET /orchestrator/api/{overview,tickets}`，实例挂了显示 `unavailable`。
-- **四份部署尚未注册**：`tools/manuscripts_skills`→`nihaoWX/manuscripts_skills`、`tools/pitfalls-manager`、
-  `tools/svg_grid`、`tools/wheelchair-agent`（3082），端口 3083/3084/3085；每份要 `deployment add` +
-  `install.sh --project` + `service start` + `deployment setup --project`（`#51`）。
-- **`merge.autoMerge` 仍是关的**：`settings.json` 里还没有这个键（默认 `false`），要在面板打开，
-  且第一次真正合并前建议先用一张低风险 PR 试。
+- **两张票在跑**：`worker-binding`（实例-worker 项目保护：一 project 一部署、worker 必须已部署、不许挂两个 spv
+  项目、派单解析不到唯一部署就失败）与 `panel-profile-rename`（profile id `panel` → `wheelchair-agent`，
+  只改 id、`install.sh` 自动 `mv` 旧目录、旧宿主仍能识别）。
+- **下一次冷安装**（`#59`–`#64` 全在等它）：退出 SPV → `wheelchair-agent service stop --all` →
+  `wheelchair-agent panel stop` → `bash install.sh --project tools/wheelchair-agent` →
+  `wheelchair-agent service start --all` → `wheelchair-agent spv`。
+- **「项目」页还缺"正在跑什么工单"**：`/wheelchair-projects` 已有 spv 路径、绑定的 worker、端口、
+  `runningTicketCount`、`setupProblem`；操作者要的是正在跑的工单**标题**（数据来自各部署
+  `GET /orchestrator/api/tickets`）。排在 `worker-binding` 与改名之后。
+- **`INSTRUCTIONS.md` 只剩一处待确认**：`### spv_dispatch` 已改成"相同的 superagent profile 但是不同的实例"
+  （与实现一致）；其余新增章节（spv/worker 项目、profile 与实例、保护机制）由上面两张票落成。
 
 # Known Issues
 
