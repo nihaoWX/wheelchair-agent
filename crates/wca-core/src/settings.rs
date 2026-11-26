@@ -78,6 +78,17 @@ const SPECS: &[Spec] = &[
         label_en: "Standalone panel port",
     },
     Spec {
+        key: "panel.profileFrom",
+        kind: Kind::String,
+        default: Default::Text("superagent"),
+        env: None,
+        min: None,
+        max: None,
+        options: None,
+        label_zh: "面板复制哪个 profile 的插件",
+        label_en: "Panel plugin source profile",
+    },
+    Spec {
         key: "webui.style",
         kind: Kind::String,
         default: Default::Text("fluid"),
@@ -821,6 +832,13 @@ fn normalize(key: &str, raw: &Value, strict: bool) -> Result<Value, SettingsErro
                     )));
                 }
             }
+            if key == "panel.profileFrom" && !value.is_empty() && !is_profile_id(value) {
+                return Err(invalid(format!(
+                    "{} must be a profile id using lowercase letters, digits and dash, got {}.",
+                    key,
+                    quote(text)
+                )));
+            }
             if key == "merge.installRepo" && !is_install_repo(value) {
                 return Err(invalid(format!(
                     "{} must be \"name\" or \"owner/name\" using letters, digits, dot, dash and underscore, got {}.",
@@ -895,6 +913,17 @@ fn normalize(key: &str, raw: &Value, strict: bool) -> Result<Value, SettingsErro
 }
 
 /// `^[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.-]*)?$` without a regex dependency.
+fn is_profile_id(value: &str) -> bool {
+    let mut characters = value.chars();
+    match characters.next() {
+        Some(character) if character.is_ascii_lowercase() || character.is_ascii_digit() => {}
+        _ => return false,
+    }
+    characters.all(|character| {
+        character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
+    })
+}
+
 fn is_install_repo(value: &str) -> bool {
     let mut parts = value.split('/');
     let Some(first) = parts.next() else {
@@ -939,6 +968,7 @@ mod tests {
             keys,
             vec![
                 "panel.port",
+                "panel.profileFrom",
                 "webui.style",
                 "inbox.intervalSeconds",
                 "merge.installRepo",
@@ -951,10 +981,11 @@ mod tests {
             ]
         );
         assert_eq!(default_value(&SPECS[0]), json("3080"));
-        assert_eq!(default_value(&SPECS[1]), json("\"fluid\""));
-        assert_eq!(default_value(&SPECS[2]), json("60"));
-        assert_eq!(default_value(&SPECS[8]), json("0"));
-        assert_eq!(default_value(&SPECS[9]), json("true"));
+        assert_eq!(default_value(&SPECS[1]), json("\"superagent\""));
+        assert_eq!(default_value(&SPECS[2]), json("\"fluid\""));
+        assert_eq!(default_value(&SPECS[3]), json("60"));
+        assert_eq!(default_value(&SPECS[9]), json("0"));
+        assert_eq!(default_value(&SPECS[10]), json("true"));
     }
 
     #[test]
@@ -963,13 +994,13 @@ mod tests {
         assert_eq!(
             data["values"],
             json(
-                "{\"panel.port\":3080,\"webui.style\":\"fluid\",\"inbox.intervalSeconds\":60,\"merge.installRepo\":\"wheelchair-agent\",\"merge.autoMerge\":false,\"injection.intervalMs\":1000,\"injection.maxBodyChars\":12000,\"work.keep\":0,\"work.keepDays\":0,\"work.sweepOnMount\":true}"
+                "{\"panel.port\":3080,\"panel.profileFrom\":\"superagent\",\"webui.style\":\"fluid\",\"inbox.intervalSeconds\":60,\"merge.installRepo\":\"wheelchair-agent\",\"merge.autoMerge\":false,\"injection.intervalMs\":1000,\"injection.maxBodyChars\":12000,\"work.keep\":0,\"work.keepDays\":0,\"work.sweepOnMount\":true}"
             )
         );
         assert_eq!(
             data["filled"],
             json(
-                "[\"panel.port\",\"webui.style\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.keep\",\"work.keepDays\",\"work.sweepOnMount\"]"
+                "[\"panel.port\",\"panel.profileFrom\",\"webui.style\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.keep\",\"work.keepDays\",\"work.sweepOnMount\"]"
             )
         );
     }
@@ -1025,6 +1056,18 @@ mod tests {
             "webui.style must be one of \"minimal\", \"fluid\", got \"fancy\"."
         );
         assert_eq!(
+            normalize("panel.profileFrom", &json("\" ops \""), true).expect("trimmed profile"),
+            json("\"ops\"")
+        );
+        assert_eq!(
+            normalize("panel.profileFrom", &json("\"\""), true).expect("empty means default"),
+            json("\"\"")
+        );
+        assert_eq!(
+            error_message(normalize("panel.profileFrom", &json("\"../ops\""), true)),
+            "panel.profileFrom must be a profile id using lowercase letters, digits and dash, got \"../ops\"."
+        );
+        assert_eq!(
             error_message(normalize("merge.installRepo", &json("\"bad repo\""), true)),
             "merge.installRepo must be \"name\" or \"owner/name\" using letters, digits, dot, dash and underscore, got \"bad repo\"."
         );
@@ -1068,7 +1111,7 @@ mod tests {
         assert_eq!(
             data["fill"]["filled"],
             json(
-                "[\"panel.port\",\"webui.style\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.keepDays\",\"work.sweepOnMount\"]"
+                "[\"panel.port\",\"panel.profileFrom\",\"webui.style\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.keepDays\",\"work.sweepOnMount\"]"
             )
         );
         assert_eq!(data["values"], json("{\"work.keep\":3}"));
@@ -1148,7 +1191,7 @@ mod tests {
         assert_eq!(
             data["filled"],
             json(
-                "[\"panel.port\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.sweepOnMount\"]"
+                "[\"panel.port\",\"panel.profileFrom\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.sweepOnMount\"]"
             )
         );
     }

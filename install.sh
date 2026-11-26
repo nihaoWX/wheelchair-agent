@@ -482,7 +482,7 @@ render_into() {
     fix "check that $SELF_DIR/bin/wheelchair-agent.mjs exists and is readable, then rerun this script"
     return 1
   fi
-  for file in shared/core-stamp.js shared/deployments.js shared/home.js shared/hook-events.js shared/hooks.js shared/install-stamp.js shared/queue.js shared/schema.js shared/settings.js shared/spv-projects.js shared/work.js spv/auto-merge-effect.js spv/check.js spv/cron-plugin.js spv/cron.js spv/deployment-restart.js spv/deployment-setup.js spv/deployment.js spv/dispatch.js spv/health.js spv/hook.js spv/inbox.js spv/injector.js spv/outbox.js spv/ownership.js spv/projects-view.js spv/panel-routes.js spv/panel-instance.js spv/spv-project.js spv/paths.js spv/restart-command.js spv/restart-ux.js spv/restart.js spv/service-instance.js spv/session.js spv/tools.js; do
+  for file in shared/core-stamp.js shared/deployments.js shared/home.js shared/hook-events.js shared/hooks.js shared/install-stamp.js shared/queue.js shared/schema.js shared/settings.js shared/spv-projects.js shared/work.js spv/auto-merge-effect.js spv/check.js spv/cron-plugin.js spv/cron.js spv/deployment-restart.js spv/deployment-setup.js spv/deployment.js spv/dispatch.js spv/health.js spv/hook.js spv/inbox.js spv/injector.js spv/outbox.js spv/ownership.js spv/projects-view.js spv/panel-routes.js spv/panel-instance.js spv/panel-profile.js spv/spv-project.js spv/paths.js spv/restart-command.js spv/restart-ux.js spv/restart.js spv/service-instance.js spv/session.js spv/tools.js; do
     if ! cp "$SELF_DIR/src/$file" "$dest/src/$file"; then
       fail "cannot copy src/$file from this checkout"
       fix "check that $SELF_DIR/src/$file exists and is readable, then rerun this script"
@@ -660,7 +660,7 @@ check_preset() {
     fix 'run: bash tools/wheelchair-agent/install.sh'
   fi
   actual=$(find "$PRESET_DIR" -type f | sed "s|^$PRESET_DIR/||" | sort | tr '\n' ' ')
-  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md panel.patch.yml agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/core-stamp.js src/shared/deployments.js src/shared/home.js src/shared/hook-events.js src/shared/hooks.js src/shared/install-stamp.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/spv-projects.js src/shared/work.js src/spv/auto-merge-effect.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/deployment-restart.js src/spv/deployment-setup.js src/spv/deployment.js src/spv/dispatch.js src/spv/health.js src/spv/hook.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/ownership.js src/spv/projects-view.js src/spv/panel-routes.js src/spv/panel-instance.js src/spv/spv-project.js src/spv/paths.js src/spv/restart-command.js src/spv/restart-ux.js src/spv/restart.js src/spv/service-instance.js src/spv/session.js src/spv/tools.js "
+  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md panel.patch.yml agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/core-stamp.js src/shared/deployments.js src/shared/home.js src/shared/hook-events.js src/shared/hooks.js src/shared/install-stamp.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/spv-projects.js src/shared/work.js src/spv/auto-merge-effect.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/deployment-restart.js src/spv/deployment-setup.js src/spv/deployment.js src/spv/dispatch.js src/spv/health.js src/spv/hook.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/ownership.js src/spv/projects-view.js src/spv/panel-routes.js src/spv/panel-instance.js src/spv/panel-profile.js src/spv/spv-project.js src/spv/paths.js src/spv/restart-command.js src/spv/restart-ux.js src/spv/restart.js src/spv/service-instance.js src/spv/session.js src/spv/tools.js "
   local missing extras
   missing=$(comm -23 <(printf '%s' "$expected" | tr ' ' '\n' | sort) <(printf '%s' "$actual" | tr ' ' '\n' | sort) | tr '\n' ' ')
   extras=$(comm -13 <(printf '%s' "$expected" | tr ' ' '\n' | sort) <(printf '%s' "$actual" | tr ' ' '\n' | sort) | tr '\n' ' ')
@@ -789,11 +789,12 @@ check_webui() {
   fi
 }
 
-# The panel profile is the one profile this project creates. Its contract is small and checkable:
-# two bundles, our webui package, no dsh-superagent, and the dsh version it was installed for. The
-# overlay it is started with lives in the preset and is covered by check_preset's digest.
+# The panel profile is the one profile this project creates. Its contract: the plugin bundles of the
+# source profile (settings `panel.profileFrom`, default "superagent"), our webui package, no
+# dsh-superagent, and the dsh version it was installed for. The overlay it is started with lives in the
+# preset and is covered by check_preset's digest.
 check_panel_profile() {
-  local problems current
+  local problems current profile_problems
   current=$(panel_dsh_version)
   if [ ! -d "$PANEL_PROFILE_DIR" ]; then
     fail "the panel profile is not installed at $PANEL_PROFILE_DIR"
@@ -812,17 +813,8 @@ try {
 } catch (error) {
   problems.push(`package.json is missing or unreadable: ${error.message}`)
 }
-if (manifest !== null) {
-  const bundles = manifest?.dsh?.profile?.bundles
-  if (!Array.isArray(bundles) || !bundles.includes('@deepseek-ai/dsh-base')) {
-    problems.push('package.json must list @deepseek-ai/dsh-base in dsh.profile.bundles')
-  }
-  if (!Array.isArray(bundles) || !bundles.includes('@deepseek-ai/dsh-web-app')) {
-    problems.push('package.json must list @deepseek-ai/dsh-web-app in dsh.profile.bundles')
-  }
-  if (JSON.stringify(manifest).includes('dsh-superagent')) {
-    problems.push('the panel profile must never declare dsh-superagent')
-  }
+if (manifest !== null && JSON.stringify(manifest).includes('dsh-superagent')) {
+  problems.push('the panel profile must never declare dsh-superagent')
 }
 try {
   const marker = JSON.parse(read('panel-instance.json'))
@@ -851,6 +843,14 @@ process.stdout.write(problems.join('\n'))
 process.exitCode = problems.length === 0 ? 0 : 1
 NODE
 )
+  # Plugins: the manifest bundles, the links they need and the recorded link list. Read-only; the
+  # fix is the same install/sync that wrote the profile.
+  if profile_problems=$(node "$SELF_DIR/src/spv/panel-profile.js" check --dsh-home "$DSH_HOME_DIR" 2>&1); then
+    ok "panel plugins: $profile_problems"
+  else
+    if [ -z "$problems" ]; then problems=$profile_problems; else problems="$problems
+$profile_problems"; fi
+  fi
   if [ -z "$problems" ]; then
     ok "panel profile matches its contract ($PANEL_PROFILE_DIR, dsh $current)"
   else
@@ -1309,10 +1309,15 @@ install_panel_file() {
   return 1
 }
 
-# Create or refresh the standalone panel profile: dsh-base + dsh-web-app + our webui package, and
-# never dsh-superagent. This profile is ours, so unlike the operator-created superagent profile it
-# may be created from scratch; the bundles still resolve from the dsh installation, so no node_modules
-# dependency declaration is needed for them.
+# Create or refresh the standalone panel profile. Its plugin bundles mirror the source profile
+# (settings `panel.profileFrom`, default "superagent"), except dsh-superagent: that would start a
+# second orchestrator and a second set of Sources in the panel. Its cordis.patch.yml is generated
+# from the source profile's patch with the same module, so the panel sees the same plugin config
+# (model provider, search, permissions, theme, ...) without the webserver row or the spv inserts.
+# Packages the panel cannot resolve from the dsh installation are symlinked from the source
+# profile's node_modules; the module records them in panel-bundles.json so a later sync prunes only
+# links it created. This profile is ours, so unlike the operator-created superagent profile it may
+# be created from scratch.
 install_panel_profile() {
   local version version_json
   version=$(panel_dsh_version)
@@ -1325,21 +1330,21 @@ install_panel_profile() {
     fix "check that $DSH_HOME_DIR/profiles is writable, then rerun this script"
     return 1
   fi
-  install_panel_file "$PANEL_PROFILE_DIR/package.json" <<'JSON' || return 1
-{
-  "name": "dsh-profile-panel",
-  "private": true,
-  "dependencies": {},
-  "dsh": {
-    "profile": {
-      "bundles": [
-        "@deepseek-ai/dsh-base",
-        "@deepseek-ai/dsh-web-app"
-      ]
-    }
-  }
-}
-JSON
+  local synced status
+  synced=$(node "$SELF_DIR/src/spv/panel-profile.js" sync --dsh-home "$DSH_HOME_DIR" 2>&1)
+  status=$?
+  if [ "$status" -ne 0 ]; then
+    fail 'the panel profile plugins could not be mirrored from their source profile'
+    printf '%s\n' "$synced" | sed 's/^/     /'
+    fix 'make sure the source profile and its node_modules are installed, then rerun: bash install.sh'
+    return 1
+  fi
+  printf '%s\n' "$synced" | while IFS= read -r line; do
+    case $line in
+      note:*) note "${line#note: }" ;;
+      *) ok "panel profile: $line" ;;
+    esac
+  done
   install_panel_file "$PANEL_PROFILE_DIR/panel-instance.json" <<JSON || return 1
 {
   "dshVersion": $version_json
@@ -1359,7 +1364,6 @@ nodeLinker: hoisted
 autoInstallPeers: false
 YAML
   fi
-  ensure_webui_loader_in "$PANEL_PROFILE_DIR" panel || return 1
   install_webui_package "$PANEL_PROFILE_DIR" "$PANEL_WEBUI_TARGET" panel
 }
 

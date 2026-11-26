@@ -74,8 +74,10 @@ export function readOnlyPanelPort({ env = process.env, home, stateDir } = {}) {
 /**
  * The instance's own state directory: `<data root>/panel`.
  *
- * It is not a deployment state dir: `service stop --all` walks the deployment registry, and the
- * panel must not be in it. Exporting it as `DSH_SUPERAGENT_STATE_DIR` is still the one seam the
+ * It is not a deployment state dir, and the panel is not written to deployments.json. The
+ * `service stop/start --all` loop does include it, but recognises it by its profile and overlay,
+ * not as a registry entry: it stops after the deployments, starts last, and its failure never
+ * changes their exit code. Exporting it as `DSH_SUPERAGENT_STATE_DIR` is still the one seam the
  * webui plugin already understands (settings/work lookups), without mounting dsh-superagent.
  */
 export function panelStateDir({ env = process.env, home, stateDir } = {}) {

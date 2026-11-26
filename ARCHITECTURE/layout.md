@@ -164,7 +164,7 @@ wheelchair-agent/
 ├── src/superagent/               # 只被 superagent profile 加载（spv.js 定义 Source kind，watch.js 跑轮询）
 ├── src/spv/                      # 只被 SPV preset 与 CLI 加载（paths, dispatch, outbox, injector, health,
 │                                 #   inbox, cron, tools, cron-plugin, check, hook, restart, restart-ux,
-│                                 #   restart-command, session, panel-instance）
+│                                 #   restart-command, session, panel-instance, panel-profile）
 ├── preset/                       # 装到 ~/.dsh/.agent-presets/spv/（preset.yml, agent.cordis.yml, spv-launcher.sh）；
 │                                 #   panel.patch.yml 是独立面板实例的 --patch overlay
 ├── commands/                     # 会被装成独立命令的实现（prepare.sh, jobctl.py, superagent-service.py）
@@ -182,7 +182,11 @@ wheelchair-agent/
 superagent 侧的 `src/superagent/` **从不进 preset 目录**：那个 profile 用自己的 `node_modules` 软链加载它。
 `webui/` 是**第四种安装目标**：`install.sh` 把包拷进 `~/.dsh/profiles/superagent/node_modules/wheelchair-agent-webui/`，
 并往该 profile 的 `cordis.patch.yml` 追加一行 loader（见下）。`#58` 又加了**第五种**：`$DSH_HOME/profiles/panel/`
-（`package.json`、`cordis.yml`、`panel-instance.json` + 同一份 webui 包），只给独立面板用，与任何部署无关。
+（`package.json`、`cordis.yml`、`panel-instance.json`、`panel-bundles.json` + 同一份 webui 包），只给独立面板用，
+与任何部署无关；其中 `package.json` 的 `dsh.profile.bundles` 镜像来源 profile（`panel.profileFrom`，默认
+`superagent`，只去掉 `dsh-superagent`）；`cordis.patch.yml` 也由 sync 整文件生成，镜像来源 profile 的顶层行（跳过
+`webserver`/`dsh-superagent`/`wheelchair-agent/*` insert，面板自己的 loader 与 `ui-settings-general` 固定首末）；
+`panel-bundles.json` 记下 `src/spv/panel-profile.js` 建过的软链，下次 sync 只回收这些。
 
 **`install.sh` 的契约在 `ARCHITECTURE/layout.md`**：只做冷安装（服务或活着的 SPV 会话占着目标就 `exit 3` 并写一条
 notice）、`--check` 只读地比"装进去的 == checkout"（过期 `exit 2`）、**拷贝不软链**、暂存后原子替换、幂等。
