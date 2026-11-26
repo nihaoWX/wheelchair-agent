@@ -55,8 +55,9 @@ The single entry point for the SPV session and the superagent service.
 
 commands:
   spv [dsh-tui args...]
-                               start the one global SPV session: it starts every registered backend and
-                               supervises them all (no deployment selector; extra args go to dsh-tui)
+                               start the one global SPV session (no deployment selector; extra args go
+                               to dsh-tui). It starts no backend: a deployment's instance starts on
+                               demand when a task is dispatched to it
   prepare                      the panel's prepare command: clone the project, install a managed
                                AGENTS.md, give tools/<name> a private GitHub remote
   service <start|stop|restart|status|open> [--all]
@@ -578,37 +579,14 @@ function runServiceManager(args) {
   return child.status ?? 1
 }
 
-/** 一个部署施加到 service manager 上的参数：profile、实例 overlay、会话/日志/端口与部署身份。 */
+/**
+ * 一个部署施加到 service manager 上的参数：profile、实例 overlay、会话/日志/端口与部署身份。
+ * 参数形状只实现在 `src/spv/service-instance.js`：`service start` 与 dispatch 的按需启动必须一字不差。
+ */
 async function serviceArgsFor(entry, rest) {
-  const deployments = await load('src', 'shared', 'deployments.js')
-  if (entry.port === null) {
-    throw new Error(
-      `deployment ${JSON.stringify(entry.project)} has no port, so it has no panel to start: run ` +
-        `"wheelchair-agent deployment add ${entry.project} --port <n>" and start the deployment again.`,
-    )
-  }
-  const instance = deployments.instancePath(entry.project)
-  if (!existsSync(instance)) {
-    throw new Error(
-      `the instance overlay for ${JSON.stringify(entry.project)} is missing at ${instance}: run ` +
-        `"wheelchair-agent deployment add ${entry.project}" to render it from the registry.`,
-    )
-  }
-  const slug = deployments.deploymentSlug(entry.project)
-  const log = join(DSH_HOME, '.artifacts', `wca-${slug}.log`)
-  return [
-    ...rest,
-    '--profile', entry.profile,
-    '--patch', instance,
-    '--session', `wca-${slug}`,
-    '--state-dir', entry.stateDir,
-    '--queue-dir', entry.queueDir,
-    '--log', log,
-    '--url', `http://127.0.0.1:${entry.port}`,
-    '--port', String(entry.port),
-  ]
+  const { deploymentServiceArgs } = await load('src', 'spv', 'service-instance.js')
+  return deploymentServiceArgs(entry, rest)
 }
-
 
 /**
  * `service`：每份部署都有自己的实例，所以目标永远是「这条命令所在的项目 checkout」；`--all` 是唯一的
@@ -762,7 +740,11 @@ async function commandPanel(argv) {
  * no deployment selector — `--project` would read as "start this path's spv", which is meaningless. Multi-
  * deployment routing does not need the session to identify itself: dispatch routes by each task's project,
  * and results aggregate through `resolveRoots()` over the whole registry.
-
+ *
+ * It starts no backends: entering the session never touches a deployment, and a deployment's instance is
+ * started on demand when a task is dispatched to it. One broken deployment therefore cannot keep the operator
+ * out of the session.
+ *
  * Because the session carries no queue/state override, a stale `SPV_QUEUE_DIR` inherited from the launching
  * shell is removed too; otherwise the injector and `spv_status` would silently watch one queue.
  */
@@ -772,33 +754,12 @@ async function commandSpv(argv) {
     if (word === '--project' || word.startsWith('--project=') || word === '--all') {
       throw new UsageError(
         `spv does not take ${JSON.stringify(word.split('=')[0])}: it is the one global SPV session, not a ` +
-          'deployment. To start or diagnose a deployment, run "wheelchair-agent service status" from its ' +
-          'project checkout (or "wheelchair-agent service status --all"), or ' +
-          '"wheelchair-agent restart-all --project <p>" to restart one from elsewhere.',
+          'deployment, and it starts no backends. To start or diagnose a deployment, run ' +
+          '"wheelchair-agent service status" from its project checkout (or "wheelchair-agent service status ' +
+          '--all"), or "wheelchair-agent restart-all --project <p>" to restart one from elsewhere.',
       )
     }
     rest.push(word)
-  }
-
-
-  const { registry } = await requiredRegistry().catch(error => {
-    // No registry is not fatal here: an SPV session can still start and inspect/route once deployments exist.
-    if (error?.name === 'Error' && /^no deployment registry at /.test(String(error.message))) {
-      return { registry: undefined }
-    }
-    throw error
-  })
-  if (registry === undefined) {
-    process.stdout.write(
-      'note: no deployments are registered yet, so no backend was started. Register one before dispatching: ' +
-        '"wheelchair-agent deployment migrate" (adopt an old install) or "wheelchair-agent deployment add ' +
-        'tools/<name>" / "bash install.sh --project tools/<name>".\n',
-    )
-  } else if (registry.deployments.length === 0) {
-    process.stdout.write(
-      'note: the deployment registry is empty, so no backend was started. Add one before dispatching: ' +
-        '"wheelchair-agent deployment add tools/<name>" (or "deployment migrate" for an old install).\n',
-    )
   }
 
   const configured = String(process.env.WHEELCHAIR_AGENT_LAUNCHER ?? '').trim()
@@ -808,22 +769,9 @@ async function commandSpv(argv) {
     process.stderr.write('fix: run "bash install.sh --project <project>" from the wheelchair-agent checkout\n')
     process.exit(1)
   }
-  if (registry !== undefined && registry.deployments.length > 0) {
-    for (const entry of registry.deployments) {
-      try {
-        const args = await serviceArgsFor(entry, ['start'])
-        if (runServiceManager(args) !== 0) {
-          process.stderr.write(
-            `warning: the backend for ${entry.project} did not start; run "wheelchair-agent service status ` +
-              `--project ${entry.project}" to diagnose it.\n`,
-          )
-        }
-      } catch (error) {
-        process.stderr.write(`warning: ${entry.project}: ${error.message}\n`)
-      }
-    }
-  }
-
+  process.stdout.write(
+    'note: backends start on demand: the deployment a task targets is started when the task is dispatched.\n',
+  )
 
   const { resolveResume, runSpvSession } = await load('src', 'spv', 'restart-ux.js')
   const { resolveSession, resumeIdFromArgv } = await load('src', 'spv', 'session.js')
@@ -856,7 +804,8 @@ async function commandDispatch(argv) {
       '[--thread <name>] [--preset <id>]',
     flags: { '--project': 'project', '--task': 'task', '--thread': 'thread', '--preset': 'preset' },
   })
-  const { checkPreset, checkProject, checkTask, checkThread, submitTask } = await load('src', 'spv', 'dispatch.js')
+  const { checkPreset, checkProject, checkTask, checkThread, ensureDeploymentStarted, submitTask } =
+    await load('src', 'spv', 'dispatch.js')
   const { probe, serviceDown } = await load('src', 'spv', 'health.js')
   const { missingQueue, resolveRoot } = await load('src', 'spv', 'paths.js')
   const { dirsOf } = await load('src', 'shared', 'queue.js')
@@ -866,9 +815,13 @@ async function commandDispatch(argv) {
   const task = checkTask(parsed.task)
   const thread = checkThread(parsed.thread)
   const preset = checkPreset(parsed.preset)
-  // 与 spv_dispatch 工具同样的理由：队列目录在服务停止后仍然存在，只查目录会把任务写进没人读的地方。
-  const health = await probe()
-  if (!health.alive) throw serviceDown(health)
+  // 与 spv_dispatch 工具同样的顺序：先确保这份部署在跑，再写任务。停止的队列没有读者，先写会让
+  // 一次失败的派活看起来成功。队列没有注册条目（纯 SPV_QUEUE_DIR 覆盖）时保留旧探活。
+  const target = await ensureDeploymentStarted(root)
+  if (target.entry === null) {
+    const health = await probe()
+    if (!health.alive) throw serviceDown(health)
+  }
   try {
     const record = await submitTask(dirsOf(root), { project, task, thread, preset })
     process.stdout.write(`dispatched ${record.id} on thread "${record.thread}" for project ${record.project}\n`)

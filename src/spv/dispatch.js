@@ -9,10 +9,12 @@
  */
 import { randomUUID } from 'node:crypto'
 import { mkdir, rename, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 import { writeHookSpoolEvent } from '../shared/hooks.js'
-import { PROJECT_PATTERN } from '../shared/deployments.js'
+import { listDeployments, PROJECT_PATTERN } from '../shared/deployments.js'
+import { probe } from './health.js'
+import { deploymentUrl, runDeploymentService } from './service-instance.js'
 
 /**
  * 本工具写的任务固定携带的身份，以及它**不**作为参数接受的原因。
@@ -137,4 +139,72 @@ export async function submitTask(dirs, { project, task, thread, preset }) {
     { eventId: `dispatch:${record.id}` },
   )
   return record
+}
+
+/** How long a freshly started instance may take to answer its health endpoint. */
+const START_TIMEOUT_MS = 60_000
+const START_POLL_MS = 250
+
+/**
+ * The registered deployment that reads `root`, or null when the queue is a pure override (a one-off test
+ * queue, or a pre-registry layout). The queue directory is the deployment's identity, exactly as
+ * `ownDeployment()` treats `SPV_QUEUE_DIR`.
+ */
+export function deploymentForQueue(root, { env = process.env } = {}) {
+  let registry
+  try {
+    registry = listDeployments({ env })
+  } catch {
+    return null
+  }
+  if (!registry.exists) return null
+  const wanted = resolve(root)
+  return registry.deployments.find(entry => entry.queueDir === root || resolve(entry.queueDir) === wanted) ?? null
+}
+
+/** The manager output tail that explains a failed start without flooding the caller. */
+function outputTail(child) {
+  const text = `${child.stdout ?? ''}${child.stderr ?? ''}`.trim()
+  return text === '' ? '' : `: ${text.split('\n').slice(-5).join(' | ')}`
+}
+
+/**
+ * Make sure the deployment reading `root` is running before a task is written into its queue.
+ *
+ * Dispatch must not write `pending/<id>.json` first and hope the instance catches it: the task is handed to
+ * the instance only once it is up. So this starts a stopped deployment with exactly the argv of
+ * `wheelchair-agent service start` (same `serviceArgsFor` implementation), waits for its own URL to answer,
+ * and only then lets the caller call `submitTask()`. A queue that belongs to no registered deployment has no
+ * instance to start; the caller keeps its single-service health check for that legacy case.
+ */
+export async function ensureDeploymentStarted(root, { env = process.env, timeoutMs = START_TIMEOUT_MS } = {}) {
+  const entry = deploymentForQueue(root, { env })
+  if (entry === null) return { entry: null, started: false }
+  const url = deploymentUrl(entry)
+  const before = await probe(url)
+  if (before.alive) return { entry, started: false, url, health: before }
+
+  const started = runDeploymentService(entry, ['start'], { env, stdio: ['ignore', 'pipe', 'pipe'] })
+  if ((started.status ?? 1) !== 0) {
+    throw new Error(
+      `could not start the deployment instance for ${JSON.stringify(entry.project)}${outputTail(started)}. ` +
+        `Run "wheelchair-agent service status" from that project's checkout (or "wheelchair-agent service ` +
+        'status --all") to diagnose it.',
+    )
+  }
+  let last = await probe(url)
+  const deadline = Date.now() + timeoutMs
+  while (!last.alive && Date.now() < deadline) {
+    await new Promise(done => setTimeout(done, START_POLL_MS))
+    last = await probe(url)
+  }
+  if (!last.alive) {
+    const reason = last.reason === undefined ? '' : ` (${last.reason})`
+    throw new Error(
+      `the deployment instance for ${JSON.stringify(entry.project)} started but ${url} did not answer within ` +
+        `${Math.round(timeoutMs / 1000)}s${reason}. Run "wheelchair-agent service status" from that project's ` +
+        'checkout (or "wheelchair-agent service status --all") to diagnose it.',
+    )
+  }
+  return { entry, started: true, url, health: last }
 }

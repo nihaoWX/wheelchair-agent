@@ -231,24 +231,28 @@ async function testServiceProjectSelector() {
   const box = await sandbox()
   const added = cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'test/alpha'])
   assert.equal(added.status, 0, added.stderr)
+  const fake = await fakeServiceManager(box)
+  const calls = async () => (await readFile(fake.log, 'utf8').catch(() => '')).trim().split('\n').filter(Boolean)
 
+  // `service` has no project selector at all: both spellings are rejected before the registry is read or
+  // the manager is reached, and the error says where a deployment can be named from elsewhere.
   const missingValue = cli(box, ['service', 'status', '--project'])
   assert.equal(missingValue.status, 2)
-  assert.match(missingValue.stderr, /--project needs a project name/)
+  assert.match(missingValue.stderr, /service does not take "--project"/)
+  assert.match(missingValue.stderr, /restart-all --project/)
 
-  const unknown = cli(box, ['service', 'status', '--project', 'tools/nope'])
-  assert.equal(unknown.status, 1)
-  assert.match(unknown.stderr, /no deployment for project "tools\/nope"/)
-  assert.match(unknown.stderr, /wheelchair-agent deployment add tools\/nope/)
+  const unknown = cli(box, ['service', 'status', '--project=tools/nope'], { PATH: fake.path, FAKE_SERVICE_LOG: fake.log })
+  assert.equal(unknown.status, 2)
+  assert.match(unknown.stderr, /service does not take "--project"/)
+  assert.match(unknown.stderr, /restart-all --project/)
 
-  // 没有端口的条目不能启动，也不去猜端口。
-  const entry = JSON.parse(await readFile(join(box.data, 'deployments.json'), 'utf8')).deployments[0]
-  entry.port = null
-  await writeFile(join(box.data, 'deployments.json'), `${JSON.stringify({ version: 1, deployments: [entry] }, null, 2)}\n`, 'utf8')
-  const portless = cli(box, ['service', 'status', '--project', 'tools/alpha'])
-  assert.equal(portless.status, 1)
-  assert.match(portless.stderr, /has no port/)
-  pass('service --project names the missing deployment/port instead of starting anything')
+  assert.deepEqual(await calls(), [], 'a rejected selector never reaches the service manager')
+
+  // The top-level `status` (the queue view, not `service status`) keeps --project: it is about one queue.
+  const queueStatus = cli(box, ['status', '--project', 'tools/alpha'])
+  assert.equal(queueStatus.status, 0, queueStatus.stderr)
+  assert.match(queueStatus.stdout, /queue: .*alpha[\\/]spv/)
+  pass('service rejects every --project spelling while the top-level status keeps it')
 }
 
 async function testInstanceSelectorIsExact() {
@@ -330,14 +334,14 @@ async function testRestartAllDryRun() {
   assert.equal(plan.status, 0, plan.stderr)
   assert.match(plan.stdout, /restart-all --all plan \(dry run; nothing is changed\)/)
   assert.match(plan.stdout, /deployments: tools\/alpha, tools\/beta/)
-  for (const project of ['tools/alpha', 'tools/beta']) {
-    assert.match(plan.stdout, new RegExp(`stop:  wheelchair-agent service stop --project ${project}`))
-    assert.match(plan.stdout, new RegExp(`start: wheelchair-agent service start --project ${project}`))
-  }
+  assert.match(plan.stdout, /1\. stop:  wheelchair-agent service stop --all/)
+  assert.match(plan.stdout, /4\. start: wheelchair-agent service start --all/)
   assert.match(plan.stdout, /3\. bash .*install\.sh --project tools\/alpha/)
-  // The deleted single-deployment path must not reappear: every install/stop/start names a project.
+  // The deleted single-deployment path must not reappear, and `service` has no per-project selector: the
+  // one install names its project, both service steps aggregate with --all.
   assert.doesNotMatch(plan.stdout, /install\.sh\s*$/m)
   assert.doesNotMatch(plan.stdout, /service (?:stop|start)\s*$/m)
+  assert.doesNotMatch(plan.stdout, /service (?:stop|start) --project/)
 
   const unknownCheckout = cli(box, ['restart-all', '--all', '--dry-run'])
   assert.equal(unknownCheckout.status, 1)
@@ -370,13 +374,12 @@ async function testRestartAllDryRunFromInsideSession() {
   const detached = cli(box, ['restart-all', '--all', '--dry-run', '--detach', '--project', 'tools/alpha'])
   assert.equal(detached.status, 0, `${detached.stdout}${detached.stderr}`)
   assert.match(detached.stdout, /restart-all --all plan \(dry run; nothing is changed\)/)
-  for (const project of ['tools/alpha', 'tools/beta']) {
-    assert.match(detached.stdout, new RegExp(`stop:  wheelchair-agent service stop --project ${project}`))
-    assert.match(detached.stdout, new RegExp(`start: wheelchair-agent service start --project ${project}`))
-  }
+  assert.match(detached.stdout, /1\. stop:  wheelchair-agent service stop --all/)
+  assert.match(detached.stdout, /4\. start: wheelchair-agent service start --all/)
   assert.match(detached.stdout, /3\. bash .*install\.sh --project tools\/alpha/)
   assert.doesNotMatch(detached.stdout, /install\.sh\s*$/m)
   assert.doesNotMatch(detached.stdout, /service (?:stop|start)\s*$/m)
+  assert.doesNotMatch(detached.stdout, /service (?:stop|start) --project/)
   pass('restart-all --all --dry-run --detach previews from inside the session; a bare dry run explains why')
 }
 
@@ -427,19 +430,21 @@ async function testServiceTargetsOwnDeployment() {
   assert.doesNotMatch(status.stdout, /profile: superagent/)
   assert.match((await calls()).at(-1), /superagent-service\.py status --profile superagent /)
 
-  // 显式 --project 压过环境里的身份。
-  cli(box, ['service', 'status', '--project', 'tools/beta'], {
+  // `--project` is not a service selector any more: it is rejected before the manager runs.
+  const rejected = cli(box, ['service', 'status', '--project', 'tools/beta'], {
     SPV_QUEUE_DIR: alphaQueue, PATH: fake.path, FAKE_SERVICE_LOG: fake.log,
   })
-  assert.ok((await calls()).at(-1).includes(`--queue-dir ${betaQueue}`), '--project wins over SPV_QUEUE_DIR')
+  assert.equal(rejected.status, 2)
+  assert.match(rejected.stderr, /service does not take "--project"/)
+  assert.match(rejected.stderr, /restart-all --project/)
 
   // 既没有 cwd 身份也没有 SPV_QUEUE_DIR 时，裸命令不再回退到旧式无 patch 服务。
   const anonymous = cli(box, ['service', 'start'], { PATH: fake.path, FAKE_SERVICE_LOG: fake.log })
   assert.equal(anonymous.status, 2)
   assert.match(anonymous.stderr, /cannot infer a deployment from /)
   assert.match(anonymous.stderr, /Registered deployments: tools\/alpha, tools\/beta/)
-  assert.match(anonymous.stderr, /Pass --project <p> or --all/)
-  assert.equal((await calls()).length, 3, 'an anonymous start never reaches the service manager')
+  assert.match(anonymous.stderr, /use --all for every deployment/)
+  assert.equal((await calls()).length, 2, 'an anonymous start never reaches the service manager')
   pass('a process that knows its deployment targets itself; a bare command outside every checkout is a usage error')
 }
 
@@ -458,8 +463,8 @@ async function testSpvHasNoDeploymentSelectorAndAggregatesEveryQueue() {
   assert.match(rejected.stderr, /spv does not take "--project"/)
   assert.match(rejected.stderr, /global SPV session, not a deployment/)
 
-  // A fake launcher records exactly what `spv` hands the supervised child. The backend start runs the real
-  // manager, so PATH has python3 only: no dsh/tmux means it fails fast and cannot touch a live service.
+  // A fake launcher records exactly what `spv` hands the supervised child. `spv` starts no backend at all,
+  // so PATH holds only python3 and sh: nothing can reach the real service manager.
   const bin = join(box.base, 'path-bin')
   await mkdir(bin, { recursive: true })
   await symlink(PYTHON, join(bin, 'python3'))
@@ -481,6 +486,9 @@ async function testSpvHasNoDeploymentSelectorAndAggregatesEveryQueue() {
     PATH: bin,
   })
   assert.equal(run.status, 0, `${run.stdout}${run.stderr}`)
+  const notes = run.stdout.split('\n').filter(line => line.startsWith('note: backends start on demand:'))
+  assert.equal(notes.length, 1, `spv prints exactly one on-demand note: ${run.stdout}`)
+  assert.match(notes[0], /the deployment a task targets is started when the task is dispatched/)
   const seen = await readFile(recorded, 'utf8')
   assert.match(seen, /^SPV_QUEUE_DIR=$/m, `spv must not export a queue identity:\n${seen}`)
   assert.match(seen, /^DSH_SUPERAGENT_STATE_DIR=$/m, `spv must not export a deployment state dir:\n${seen}`)
@@ -515,10 +523,11 @@ async function testStaleSingleDeploymentTextIsGone() {
     pulledSha: 'deadbeef',
     pending: { kind: 'unknown' },
   })
-  assert.match(notice, /service stop --project '?tools\/beta'?/)
+  assert.match(notice, /cd '?\/tmp\/checkout'? && wheelchair-agent service stop/)
   assert.match(notice, /install\.sh --project '?tools\/beta'?/)
-  assert.match(notice, /service start --project '?tools\/beta'?/)
+  assert.match(notice, /cd '?\/tmp\/checkout'? && wheelchair-agent service start/)
   assert.match(notice, /^  wheelchair-agent spv$/m)
+  assert.doesNotMatch(notice, /service (?:stop|start) --project/)
   assert.doesNotMatch(notice, /^  wheelchair-agent service (?:stop|start)$/m)
 
   await mkdir(box.data, { recursive: true })
@@ -555,9 +564,13 @@ async function testServiceStatusInfersFromCwd() {
   assert.match(status.stdout, /^runtime: ready$/m)
   assert.doesNotMatch(status.stdout, /pids:    \(none\)/)
 
-  // An explicit selector still wins over cwd.
-  cli(box, ['service', 'status', '--project', 'tools/alpha'], { PATH: fake.path, FAKE_SERVICE_LOG: fake.log }, { cwd: box.base })
-  assert.ok((await calls()).at(-1).includes('--project') === false, 'the manager never receives --project')
+  // A selector is not accepted as a way to override cwd; it is a usage error before the manager runs.
+  const rejected = cli(box, ['service', 'status', '--project', 'tools/alpha'], {
+    PATH: fake.path, FAKE_SERVICE_LOG: fake.log,
+  }, { cwd: box.base })
+  assert.equal(rejected.status, 2)
+  assert.match(rejected.stderr, /service does not take "--project"/)
+  assert.ok((await calls()).every(line => !line.includes('--project')), 'the manager never receives --project')
   pass('a bare service status inside a project checkout (even nested) targets that deployment')
 }
 
@@ -586,9 +599,11 @@ async function testServiceStatusListsDeployments() {
   assert.doesNotMatch(outside.stdout, /profile: superagent/)
   assert.match(outside.stderr, /cannot infer a deployment from /)
   assert.match(outside.stderr, /Registered deployments: tools\/alpha, tools\/beta/)
-  assert.match(outside.stderr, /Pass --project <p> or --all/)
+  assert.match(outside.stderr, /use --all for every deployment/)
 
   const single = cli(box, ['service', 'status', '--project', 'tools/beta'], { WHEELCHAIR_PROC_ROOT: procRoot })
+  assert.equal(single.status, 2)
+  assert.match(single.stderr, /service does not take "--project"/)
   assert.doesNotMatch(single.stdout, /^deployments:$/m)
 
   pass('service status --all keeps the old per-deployment aggregate; bare status outside a checkout is a usage error')
