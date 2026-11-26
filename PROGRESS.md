@@ -64,14 +64,21 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
 
 # Completed
 
-- **`#63` 面板插件对齐（PR，待合并）**：3080 面板以前只有 `dsh-base` + `dsh-web-app`。新增
-  `src/spv/panel-profile.js`，按 `panel.profileFrom`（默认 `superagent`）镜像来源 profile 的
-  bundles 和 `cordis.patch.yml`：只去掉 `dsh-superagent`，dsh 解析不到的包从来源 profile 软链并记在
-  `panel-bundles.json`；patch 保留源行顺序，跳过 `webserver`/`dsh-superagent`/`wheelchair-agent/*`
-  insert 与字面 `apiKey`/`token`/`password`，面板自己的 loader 与 `ui-settings-general` 固定首末。
-  `install.sh`、`install.sh --check`、`panel sync/start/status` 共用同一实现；来源 profile 消失时
-  `start` 保留现状并打 note。验证：`npm test` **507 全绿**（新增 25 条），`npm run check` 通过；
-  未在真机安装/重启，见 PR #63。
+- **`#63` 合并（`10d28c3`，`Mirror the source profile's plugins and patch into the panel`）**：3080 面板以前只有
+  `dsh-base` + `dsh-web-app`，所以在 3082 装/配的插件到面板里连包都不存在。新增 `src/spv/panel-profile.js`，
+  按设置 `panel.profileFrom`（默认 `superagent`，`a-z0-9-`）镜像来源 profile 的两样东西：`package.json` 的
+  `dsh.profile.bundles`（原序复制，只去掉 `dsh-superagent`）与 `cordis.patch.yml` 的顶层行（跳过
+  `webserver`、`dsh-superagent`、`insert` 里 `wheelchair-agent/*` 的项；`wheelchair-webui` 与
+  `ui-settings-general` 两行由面板自己持有、固定首末；字面 `apiKey`/`token`/`password` 丢弃并打 note，
+  `apiKeyEnv`/`activeAccount` 这类 ref 照抄；块标量正文逐字保留）。dsh 解析不到的包从来源 profile 的
+  `node_modules` 软链，并记进 `panel-bundles.json`，`panel sync` 只回收自己建的链接。`install.sh` 装与
+  `--check`、`panel sync`/`start`（自动 sync）/`status` 共用同一实现；来源 profile 消失时 `start` 保留现状并打
+  note。`status` 现在先打 `plugins:`/`config:`/`drift:`。
+  **我审出了三处并让它回来补**：usage 与 `panel-instance.js` 的注释还写着 `--all` 不碰面板（`#62` 之后是假话）；
+  逐行剥注释/秘密会把块标量 `systemPrompt: |` 里的正文当注释删掉；列表形态 `- apiKey: …` 漏了秘密判定。
+  我的验证：worktree 里 `bash build/build-core.sh` + `npm test` **510 全绿 EXIT=0**（补前 507）、
+  `npm run check` OK、CI `ci` pass；写目标只在 `profiles/panel/**`（`writeIfChanged` 先 tmp 再 rename），
+  `profiles/superagent` 只读。真机安装/重启仍未做——要等操作者那次冷安装。
 - **`#62` 合并（`ddb97d0`，`fix(panel): include the panel in service --all and report older panel hosts`）**：
   面板不属于任何部署，所以 `service stop/start --all` 以前完全不碰它——冷安装把新 `webui/lib/client.js` 换进去后，
   `#58` 之前的旧宿主（`node …/cli.js panel --foreground --port 3080`，按请求读盘）继续用旧外壳发新 bundle，

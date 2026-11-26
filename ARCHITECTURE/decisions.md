@@ -323,3 +323,26 @@ gh 失败只 warning。
 
 **取舍**：不自动 kill 旧宿主——那是操作者机器上的进程，我们只有 cmdline 的间接证据；不 `SIGKILL`——宁可留一个
 需要手粘的 `kill -INT`，也不猜着强杀。`ss` 读不到 PID 时这条提醒静默失效（只影响提醒，不影响安装与 `--all`）。
+
+## 面板 profile 镜像来源 profile，而不是维护自己的清单（`#63`，2026-11-26）
+
+**问题**：面板是独立 profile，之前在 3082 的 web 端交互装的插件与改的配置只写进 `superagent` profile，面板连包都不
+存在；即使补齐插件，缺 `agent-default-model` 也会让对话回落到 `deepseek-official` 并因没有 `DEEPSEEK_API_KEY` 报
+`MISSING_CREDENTIAL`——看起来像"面板坏了"，实际是一行配置。
+
+**决定**：新增 `src/spv/panel-profile.js`，按设置 `panel.profileFrom`（默认 `superagent`）把来源 profile 的
+`dsh.profile.bundles` 与 `cordis.patch.yml` 顶层行镜像进 `~/.dsh/profiles/panel/`。排除项是三条可复述的规则：
+`dsh-superagent`（会在面板里再开一份 orchestrator 与 Sources）、`webserver`（面板端口自己定）、`insert` 里
+`name` 以 `wheelchair-agent/` 开头的项（spv Source 等，要 dsh-superagent 才活）。面板自己的两行
+（`wheelchair-webui` 的 loader、`ui-settings-general`）由面板持有、固定在首末。字面秘密（`apiKey`/`token`/
+`password`）不抄并打 note，凭据 ref 名照抄。dsh 解析不到的包从来源 profile 的 `node_modules` 软链，并记在
+`panel-bundles.json` 里，下次 sync 只回收自己建的链接。
+
+**理由**：维护一份"面板也要装的插件清单"必然漂移——操作者在 3082 装一个插件，面板就落后一步，而且没人会记得
+同步。镜像把"面板 = 3082 去掉 superagent"变成代码里的三条排除规则，而不是文档里的一句话。
+
+**取舍**：镜像的是**文本行**而不是解析后的对象——patch 里有 `!!js` 标签与块标量，解析再序列化会改变形状，
+所以逐行复制、只做"跳过整块/整键"这种可解释的删除。代价是必须自己处理块标量（`|`/`>` 之后更深缩进的行逐字保留，
+否则会把用户 prose 里的 `#` 与 `apiKey:` 当注释和秘密删掉）。写目标只有 `profiles/panel/**`，
+`profiles/superagent` 只读；来源 profile 消失时 `start` 保留现状并打 note，不让面板因此起不来。
+
