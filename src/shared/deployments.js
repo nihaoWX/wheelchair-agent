@@ -401,8 +401,8 @@ export function missingRegistryError(file) {
     `no deployment registry at ${file}: this machine has no registered deployment yet, and the registry is the ` +
       'only source of truth for which deployment reads a project. Adopt the existing installation with ' +
       '"wheelchair-agent deployment migrate", or create one explicitly with ' +
-      '"wheelchair-agent deployment add <project>", then start it with ' +
-      '"wheelchair-agent service start --project <project>".',
+      '"wheelchair-agent deployment add <project>", then start it from its project checkout with ' +
+      '"wheelchair-agent service start" (or "wheelchair-agent service start --all").',
   )
 }
 

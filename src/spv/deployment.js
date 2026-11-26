@@ -5,7 +5,7 @@
  * 注册表（`~/.wheelchair-agent/deployments.json`，见 `src/shared/deployments.js`）是「哪个项目归哪份部署」的
  * 唯一真相；`dispatch`、`spv_dispatch` 都按它把任务写进对应部署的队列。本子命令维护注册表、分配端口并渲染
  * 每部署的实例 overlay（`<data root>/deployments/<slug>.yml`），但**不**安装 profile、不启停服务：
- * `deployment add` 之后用 `wheelchair-agent service start --project <p>` 显式启动那一份。
+ * `deployment add` 之后在那个项目的 checkout 里用 `wheelchair-agent service start` 显式启动那一份。
  *
  * 退出码约定与其他子命令一致：参数错误（未知选项、缺项目、端口非法）用 `.code = 'DEPLOYMENT_USAGE'`，
  * 由 `bin/wheelchair-agent.mjs` 转成 exit 2；注册表内容/IO 错误是普通 Error，exit 1。
@@ -57,14 +57,14 @@ commands:
                                one registered spv root is its ancestor)
   setup --project <p>          point that deployment's own dsh-superagent instance at the
                                repository recorded here, through its panel API; run it after
-                               "service start --project <p>" (setup waits up to 90s)
+                               "service start" from that checkout (setup waits up to 90s)
   remove <project> [--force]   delete one deployment record (the deployment itself is not stopped);
                                removing the last one needs --force and prints a warning
   migrate                      adopt this machine's existing single deployment as tools/wheelchair-agent
 
 A deployment is never created automatically: "add" records it and renders
 <data root>/deployments/<slug>.yml; starting its service is the explicit next step
-("wheelchair-agent service start --project <p>"). Every deployment must read <stateDir>/spv:
+("wheelchair-agent service start" from that checkout). Every deployment must read <stateDir>/spv:
 its wheelchair-spv Source resolves the queue from that instance's own stateDir/settings, so a
 different registry value would dispatch into a queue the deployment never reads.
 Run "wheelchair-agent --help" for the commands that use the registry.`
@@ -444,8 +444,8 @@ function migrate(positionals, { env, out }) {
   out.write(`${instance.created ? 'instance' : 'instance (already existed, left unchanged):'} ${instance.file}\n`)
   out.write(
     'adopted the existing installation: the running superagent service is unchanged, and dispatches for ' +
-      'tools/wheelchair-agent go to that queue. Continue with "wheelchair-agent service start --project ' +
-      'tools/wheelchair-agent" so the instance identifies itself, and register other projects with ' +
+      'tools/wheelchair-agent go to that queue. Continue with "wheelchair-agent service start" from the ' +
+      'tools/wheelchair-agent checkout so the instance identifies itself, and register other projects with ' +
       '"deployment add" before dispatching to them.\n',
   )
   if (result.entry.repository === null) {

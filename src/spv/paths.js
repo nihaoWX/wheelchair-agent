@@ -8,7 +8,7 @@
  * 注册表里的条目决定。优先级（前一项永远赢）：
  *
  *   1. 显式 `queueDir` 设置（调用方自己的覆盖）
- *   2. `$SPV_QUEUE_DIR`（**仅**测试/逃生口；它不是部署来源，正常启动由 `service --project` 为实例设好）
+ *   2. `$SPV_QUEUE_DIR`（**仅**测试/逃生口；它不是部署来源，正常启动由 `service start` 为实例设好）
  *   3. 注册表中该项目的 `queueDir`
  *
  * 注册表文件不存在，或者没有该项目的条目，都直接报 `missingDeploymentError`，给出
@@ -42,14 +42,14 @@ function registryRoot(entry) {
  * 这个进程没有部署上下文时的错误。
  *
  * `$SPV_QUEUE_DIR` 与显式 `queueDir` 仍然优先，所以测试和手动排障可以指定一根队列；正常运行时由
- * `service start --project <p>` 为实例设好 `SPV_QUEUE_DIR`，不需要调用方猜。
+ * 在项目 checkout 里运行 `service start` 为实例设好 `SPV_QUEUE_DIR`，不需要调用方猜。
  */
 export function deploymentContextError() {
   return new Error(
     'cannot tell which deployment this process belongs to: the deployment registry is the only source, and ' +
-      'this process has no project and no queue override. Start it with ' +
-      '"wheelchair-agent service start --project <project>" (or, for a one-off test, set SPV_QUEUE_DIR), ' +
-      'or run "wheelchair-agent deployment list" to see the registered deployments.',
+      'this process has no project and no queue override. Start it from the project checkout with ' +
+      '"wheelchair-agent service start" (or, for a one-off test, set SPV_QUEUE_DIR), or run ' +
+      '"wheelchair-agent deployment list" to see the registered deployments.',
   )
 }
 
@@ -112,8 +112,9 @@ export function resolveRoots(config = {}) {
 export function missingQueue(root) {
   return new Error(
     `no spv queue at ${root}: the superagent spv Source creates pending/, done/ and outbox/ when it starts, ` +
-      'and until then a dispatched task would have nobody to read it. Start it with ' +
-      '"wheelchair-agent service start --project <project>", run "wheelchair-agent service status" until it ' +
-      'reports runtime ready, confirm the superagent profile enables the spv Source, then call this tool again.',
+      'and until then a dispatched task would have nobody to read it. From the project checkout run ' +
+      '"wheelchair-agent service start" (or "wheelchair-agent service start --all"), then ' +
+      '"wheelchair-agent service status" until it reports runtime ready, confirm the superagent profile enables ' +
+      'the spv Source, then call this tool again.',
   )
 }

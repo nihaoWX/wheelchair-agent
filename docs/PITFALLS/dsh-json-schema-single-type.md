@@ -53,7 +53,7 @@ project: { oneOf: [{ type: 'string' }, { type: 'null' }] }
    ```
 
 4. **`superagent did not start` 不代表后端坏了**：先用
-   `wheelchair-agent service status --project <p>` 看 `runtime:`；那次后端其实是 ready 的，警告来自
+   `wheelchair-agent service status`（在项目 checkout 里）看 `runtime:`；那次后端其实是 ready 的，警告来自
    启动器在 `#48` 之后仍裸跑 `service status`/`service start`（已修：`commandService` 改用
    `ownDeployment()` 读 `SPV_QUEUE_DIR` 反查本部署）。
 5. **`dsh-tui run`（headless）不能用来验证 preset 挂载**：它不认 `--patch`/`DSH_TUI_PRESET` 的 preset

@@ -125,6 +125,24 @@ async function pendingFiles(queue) {
   }
 }
 
+/** 一个部署实例的替身：健康检查只要求“有 HTTP 响应”，起在动态端口上即可。 */
+async function openInstance() {
+  const server = createServer((_request, response) => {
+    response.statusCode = 200
+    response.setHeader('content-type', 'application/json')
+    response.end('{"ok":true}')
+  })
+  await new Promise((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolve))
+  return server
+}
+
+async function closeInstance(server) {
+  await new Promise(resolve => {
+    server.closeAllConnections()
+    server.close(resolve)
+  })
+}
+
 async function pendingRecord(queue) {
   const names = await pendingFiles(queue)
   assert.equal(names.length, 1, `exactly one task in ${queue}/pending, got ${names.join(', ') || 'none'}`)
@@ -289,17 +307,18 @@ async function testCommandsRequireARegisteredDeployment() {
   assert.equal(serviceStart.status, 2)
   assert.match(serviceStart.stderr, /cannot infer a deployment from /)
   assert.match(serviceStart.stderr, /no deployment registry at /)
-  assert.match(serviceStart.stderr, /Pass --project <p> or --all/)
+  assert.match(serviceStart.stderr, /use --all for every deployment/)
 
   const restartBare = await cli(box, ['restart-all', '--dry-run'])
   assert.equal(restartBare.status, 2)
   assert.match(restartBare.stderr, /restart-all needs --project <p> or --all/)
 
-  // `spv` is the one global session: no registry is a notice, not a blocker; nothing selects a deployment.
+  // `spv` is the one global session: it reads no registry at all and starts no backend, so a missing
+  // launcher is the only thing that can stop it.
   const missingLauncher = join(box.base, 'missing-launcher')
   const spvBare = await cli(box, ['spv'], { WHEELCHAIR_AGENT_LAUNCHER: missingLauncher })
   assert.equal(spvBare.status, 1)
-  assert.match(spvBare.stdout, /no deployments are registered yet/)
+  assert.doesNotMatch(spvBare.stdout, /no deployments are registered yet/)
   assert.match(spvBare.stderr, /SPV launcher is missing at /)
 
   const spvProject = await cli(box, ['spv', '--project', 'tools/alpha'])
@@ -313,11 +332,11 @@ async function testCommandsRequireARegisteredDeployment() {
   const serviceStopBare = await cli(box, ['service', 'stop'])
   assert.equal(serviceStopBare.status, 2)
   assert.match(serviceStopBare.stderr, /cannot infer a deployment from /)
-  assert.match(serviceStopBare.stderr, /Pass --project <p> or --all/)
+  assert.match(serviceStopBare.stderr, /use --all for every deployment/)
 
   const serviceMissing = await cli(box, ['service', 'start', '--project', 'tools/nope'])
-  assert.equal(serviceMissing.status, 1)
-  assert.match(serviceMissing.stderr, /deployment add tools\/nope/)
+  assert.equal(serviceMissing.status, 2)
+  assert.match(serviceMissing.stderr, /service does not take "--project"/)
 
   const restartMissing = await cli(box, ['restart-all', '--dry-run', '--project', 'tools/nope'])
   assert.equal(restartMissing.status, 1)
@@ -347,15 +366,20 @@ async function testCommandsRequireARegisteredDeployment() {
 
 async function testDispatchRoutesEachProjectToItsOwnQueue() {
   const box = await sandbox()
-  for (const [project, stateDir, queue, port] of [
-    ['tools/alpha', box.stateA, box.queueA, '3101'],
-    ['tools/beta', box.stateB, box.queueB, '3102'],
-  ]) {
-    const added = await cli(box, ['deployment', 'add', project, '--repo', `test/${project.split('/').pop()}`, '--state-dir', stateDir, '--queue-dir', queue, '--port', port])
-    assert.equal(added.status, 0, added.stderr)
-  }
+  const instances = []
+  try {
+    for (const [project, stateDir, queue] of [
+      ['tools/alpha', box.stateA, box.queueA],
+      ['tools/beta', box.stateB, box.queueB],
+    ]) {
+      // dispatch now starts the target deployment itself, so the routing test keeps each instance alive.
+      const instance = await openInstance()
+      instances.push(instance)
+      const added = await cli(box, ['deployment', 'add', project, '--repo', `test/${project.split('/').pop()}`, '--state-dir', stateDir, '--queue-dir', queue, '--port', String(instance.address().port)])
+      assert.equal(added.status, 0, added.stderr)
+    }
 
-  const alpha = await cli(box, ['dispatch', '--project', 'tools/alpha', '--task', 'alpha only', '--thread', 't-alpha'])
+    const alpha = await cli(box, ['dispatch', '--project', 'tools/alpha', '--task', 'alpha only', '--thread', 't-alpha'])
   assert.equal(alpha.status, 0, alpha.stderr)
   assert.match(alpha.stdout, /dispatched [0-9a-f]+ on thread "t-alpha" for project tools\/alpha/)
 
@@ -377,15 +401,21 @@ async function testDispatchRoutesEachProjectToItsOwnQueue() {
   assert.equal(overridden.status, 0, overridden.stderr)
   assert.equal((await pendingRecord(box.queueOverride)).text, 'override')
   assert.equal((await pendingFiles(box.queueA)).length, 1, 'the override wins over the registry')
+  } finally {
+    for (const instance of instances) await closeInstance(instance)
+  }
 }
 
 async function testToolDispatchUsesTheRegistry() {
   const box = await sandbox()
+  const instances = []
   for (const [project, stateDir, queue] of [
     ['tools/alpha', box.stateA, box.queueA],
     ['tools/beta', box.stateB, box.queueB],
   ]) {
-    const added = await cli(box, ['deployment', 'add', project, '--repo', `test/${project.split('/').pop()}`, '--state-dir', stateDir, '--queue-dir', queue])
+    const instance = await openInstance()
+    instances.push(instance)
+    const added = await cli(box, ['deployment', 'add', project, '--repo', `test/${project.split('/').pop()}`, '--state-dir', stateDir, '--queue-dir', queue, '--port', String(instance.address().port)])
     assert.equal(added.status, 0, added.stderr)
   }
 
@@ -419,6 +449,7 @@ async function testToolDispatchUsesTheRegistry() {
       if (saved[key] === undefined) delete process.env[key]
       else process.env[key] = saved[key]
     }
+    for (const instance of instances) await closeInstance(instance)
   }
 }
 
@@ -737,7 +768,9 @@ async function testServiceStartPrintsSetupHint() {
   await mkdir(tools, { recursive: true })
   await writeFile(join(tools, 'python3'), '#!/bin/sh\nexit 0\n', 'utf8')
   await chmod(join(tools, 'python3'), 0o755)
-  const started = await cli(box, ['service', 'start', '--project', 'tools/alpha'], { PATH: `${tools}:${process.env.PATH}`, WHEELCHAIR_AGENT_SETUP_TIMEOUT_MS: '300' })
+  const checkout = join(box.home, 'bioagentforge', 'tools', 'alpha')
+  await mkdir(checkout, { recursive: true })
+  const started = await cli(box, ['service', 'start'], { PATH: `${tools}:${process.env.PATH}`, WHEELCHAIR_AGENT_SETUP_TIMEOUT_MS: '300' }, { cwd: checkout })
   assert.equal(started.status, 0, started.stderr)
   assert.match(started.stdout, /run "wheelchair-agent deployment setup --project tools\/alpha"/)
   panel.close()

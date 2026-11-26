@@ -1695,7 +1695,7 @@ export function allPlanLines({ entries, installProject, checkout, logFile, pre, 
   lines.push(`  log:       ${logFile ?? '(not resolved)'}`)
   lines.push(`  tmux:      ${TMUX_SESSION}`)
   lines.push('steps:')
-  for (const entry of entries) lines.push(`  1. stop:  wheelchair-agent service stop --project ${entry.project}`)
+  lines.push('  1. stop:  wheelchair-agent service stop --all')
   lines.push(
     `  2. close a stale tmux session ${TMUX_SESSION} when present; SIGTERM ` +
       `${chainPids.length > 0 ? chainPids.join(' ') : '(none)'}; wait for the pids to exit, SIGKILL survivors, ` +
@@ -1706,7 +1706,7 @@ export function allPlanLines({ entries, installProject, checkout, logFile, pre, 
       ? '  3. skipped (--no-install)'
       : `  3. bash ${join(checkout ?? '<checkout>', 'install.sh')} --project ${installProject}`,
   )
-  for (const entry of entries) lines.push(`  4. start: wheelchair-agent service start --project ${entry.project}`)
+  lines.push('  4. start: wheelchair-agent service start --all')
   const launch = pre?.launch ?? ['wheelchair-agent', 'spv']
   const launchArgv = resume?.ok ? [...launch, '--resume', resume.id] : launch
   lines.push(
@@ -1851,21 +1851,20 @@ export async function runAllRestart(context, options = {}) {
   const total = 5
 
   // 1. Stop every registered instance. A partial stop is recoverable: the remaining instances are still
-  // running and the session/install steps are not started.
-  for (const entry of entries) {
-    const stop = runArgv([...pre.agent, 'service', 'stop', '--project', entry.project], {
-      env: stepEnv,
-      cwd: pre.cwd,
-      timeout: 330_000,
-    })
-    record(`step 1/${total}: ${stop.command} -> exit ${exitText(stop)}`)
-    if (exitCodeOf(stop) !== 0) {
-      record(
-        `restart-all --all aborted: ${entry.project} did not stop; the SPV session and the install were left ` +
-          'alone (exit 1)',
-      )
-      return 1
-    }
+  // running and the session/install steps are not started. `--all` means this step does not depend on the
+  // invoking checkout; the per-deployment `== <project> ==` headers name any deployment that failed.
+  const stop = runArgv([...pre.agent, 'service', 'stop', '--all'], {
+    env: stepEnv,
+    cwd: pre.cwd,
+    timeout: 330_000,
+  })
+  record(`step 1/${total}: ${stop.command} -> exit ${exitText(stop)}`)
+  if (exitCodeOf(stop) !== 0) {
+    record(
+      'restart-all --all aborted: at least one deployment did not stop (see the output above); the SPV ' +
+        'session and the install were left alone (exit 1)',
+    )
+    return 1
   }
 
   // 2. Close the stale tmux fallback, stop the exact `/proc`-identified SPV chain and wait for its lease.
@@ -1933,29 +1932,26 @@ export async function runAllRestart(context, options = {}) {
       record('install failed; every deployment is left stopped; not starting any of them back (exit 1)')
       record(
         `fix: recover by hand: bash ${join(picked.checkout, 'install.sh')} --project ${installProject} && ` +
-          `wheelchair-agent service start --project ${installProject}`,
+          'wheelchair-agent service start --all',
       )
-      record('     every deployment was stopped: also run "wheelchair-agent service start --all" for the rest.')
       return 1
     }
   }
 
-  // 4. Start every registered instance back; a failure ends the restart and says which one failed.
-  for (const entry of entries) {
-    const start = runArgv([...pre.agent, 'service', 'start', '--project', entry.project], {
-      env: stepEnv,
-      cwd: pre.cwd,
-      timeout: 180_000,
-    })
-    record(`step 4/${total}: ${start.command} -> exit ${exitText(start)}`)
-    if (exitCodeOf(start) !== 0) {
-      record(
-        `FAIL: the superagent service did not start for ${entry.project}; the TUI was not relaunched. Run ` +
-          `"wheelchair-agent service start --project ${entry.project}" (and --all only after every start works).`,
-      )
-      record('restart failed (exit 1)')
-      return 1
-    }
+  // 4. Start every registered instance back; the per-deployment `== <project> ==` headers name a failure.
+  const start = runArgv([...pre.agent, 'service', 'start', '--all'], {
+    env: stepEnv,
+    cwd: pre.cwd,
+    timeout: 180_000,
+  })
+  record(`step 4/${total}: ${start.command} -> exit ${exitText(start)}`)
+  if (exitCodeOf(start) !== 0) {
+    record(
+      'FAIL: at least one superagent service did not start (see the output above); the TUI was not relaunched. ' +
+        'Run "wheelchair-agent service start --all" after fixing the deployment named above.',
+    )
+    record('restart failed (exit 1)')
+    return 1
   }
 
   // 5. The terminal that launched `wheelchair-agent spv` claims and narrates; tmux is the fallback.

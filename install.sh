@@ -73,7 +73,7 @@
 # installed deployment for that project in the registry
 # ($WHEELCHAIR_AGENT_HOME/deployments.json, src/shared/deployments.js) and renders its instance overlay
 # (<data root>/deployments/<slug>.yml) after a successful install, so `wheelchair-agent dispatch
-# --project <p>` writes into this deployment's queue and `service ... --project <p>` starts that instance.
+# --project <p>` writes into this deployment's queue and `service start` from its checkout starts that instance.
 # It is opt-in and only a real install writes either file: --check and --fingerprint stay read-only.
 set -uo pipefail
 

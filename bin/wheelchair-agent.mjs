@@ -59,11 +59,10 @@ commands:
                                supervises them all (no deployment selector; extra args go to dsh-tui)
   prepare                      the panel's prepare command: clone the project, install a managed
                                AGENTS.md, give tools/<name> a private GitHub remote
-  service <start|stop|restart|status|open> [--project <p>|--all]
-                               start, stop, restart or inspect a deployment's instance; a bare
-                               start|stop|restart|status identifies the deployment from the current
-                               checkout, --all does every registered deployment, and "service open"
-                               opens only the standalone panel
+  service <start|stop|restart|status|open> [--all]
+                               start, stop, restart or inspect a deployment's instance; without --all
+                               the deployment is the project checkout this command runs in, --all does
+                               every registered deployment, and "service open" opens only the panel
   panel [start|stop|status] [--port <n>] [--foreground]
                                run the standalone panel (127.0.0.1, default 3080): its own dsh
                                instance with the full harness UI, serving the inbox/settings/hooks/
@@ -449,23 +448,34 @@ async function requiredRegistry() {
   return { deployments, registry }
 }
 
-/** `service`/`spv` 的目标：--project 与 --all 互斥，其余参数原样交给下層。 */
-function takeServiceTarget(argv) {
+/**
+ * `service` 的目标：部署就是命令所在的项目 checkout，所以 `service` 不接受 `--project`——只认
+ * `--all`（全部部署）或按 cwd / `SPV_QUEUE_DIR` 推断（见 `commandService`）。顶层 `status` 仍然按
+ * 项目看一份队列，所以它是唯一一个 `allowProject: true` 的调用方。
+ */
+function takeServiceTarget(argv, { allowProject = false } = {}) {
   const rest = []
   let project
   let all = false
   for (let index = 0; index < argv.length; index += 1) {
     const word = argv[index]
-    if (word === '--project') {
-      const value = argv[index + 1]
-      if (value === undefined || value.startsWith('-')) throw new UsageError('--project needs a project name, e.g. tools/<name>')
-      project = value
-      index += 1
-      continue
-    }
-    if (word.startsWith('--project=')) {
-      project = word.slice('--project='.length)
-      if (project === '') throw new UsageError('--project needs a project name, e.g. tools/<name>')
+    if (word === '--project' || word.startsWith('--project=')) {
+      if (!allowProject) {
+        throw new UsageError(
+          `service does not take ${JSON.stringify(word.split('=')[0])}: a deployment is the project ` +
+            'checkout this command runs in. Use --all for every deployment, or ' +
+            '"wheelchair-agent restart-all --project <p>" to target one from elsewhere.',
+        )
+      }
+      if (word === '--project') {
+        const value = argv[index + 1]
+        if (value === undefined || value.startsWith('-')) throw new UsageError('--project needs a project name, e.g. tools/<name>')
+        project = value
+        index += 1
+      } else {
+        project = word.slice('--project='.length)
+        if (project === '') throw new UsageError('--project needs a project name, e.g. tools/<name>')
+      }
       continue
     }
     if (word === '--all') {
@@ -490,8 +500,8 @@ async function deploymentFromCwd(cwd = process.cwd()) {
     ({ registry } = await requiredRegistry())
   } catch (error) {
     throw new UsageError(
-      `cannot infer a deployment from ${cwd}: ${error.message} Pass --project <p> or --all after ` +
-        'registering the deployment.',
+      `cannot infer a deployment from ${cwd}: ${error.message} Run this from the project checkout, ` +
+        'or use --all for every deployment.',
     )
   }
   const projects = registry.deployments.map(entry => entry.project)
@@ -520,8 +530,8 @@ async function deploymentFromCwd(cwd = process.cwd()) {
   if (match === null) {
     throw new UsageError(
       `cannot infer a deployment from ${cwd}: it is not inside any registered project checkout ` +
-        `(${join(PROJECTS_ROOT, '<project>')}). Registered deployments: ${listing}. ` +
-        'Pass --project <p> or --all.',
+        `(${join(PROJECTS_ROOT, '<project>')}). cd into the project checkout and run it again, or use ` +
+        `--all for every deployment. Registered deployments: ${listing}.`,
     )
   }
   return match
@@ -599,24 +609,25 @@ async function serviceArgsFor(entry, rest) {
   ]
 }
 
+
 /**
- * `service`：每份部署都有自己的实例，所以 start|stop|restart 必须说清目标（--project 或 --all）；
- * 裸 `service status`（以及 `status --all`）逐个列出所有注册部署。没有 --project 也没有 --all 时不再
- * 静默使用基 stateDir/3082。
+ * `service`：每份部署都有自己的实例，所以目标永远是「这条命令所在的项目 checkout」；`--all` 是唯一的
+ * 选择器，含义是全部注册部署。`--project` 不再属于 `service`（见 `takeServiceTarget`）：从别处点名一份
+ * 部署用 `restart-all --project <p>`。
  *
- * 没有 `--project` / `--all` 时先按 cwd 推断：cwd 必须位于 `<PROJECTS_ROOT>/<project>` 之下（嵌套目录
- * 也算，最长匹配）。推断失败是 usage error（exit 2，列出注册表），不再静默去看不存在的旧式无
- * `--patch` 服务。启动器导出的 `SPV_QUEUE_DIR` 只作为第二兜底。
+ * 没有 `--all` 时先按 cwd 推断：cwd 必须位于 `<PROJECTS_ROOT>/<project>` 之下（嵌套目录也算，最长匹配）。
+ * 推断失败是 usage error（exit 2，列出注册表）。启动器导出的 `SPV_QUEUE_DIR` 只作为第二兜底。
  *
  * `service open` 只开独立面板：面板不属于任何部署；它打开的 token URL 与部署实例取自同一条路径。
  */
 async function commandService(argv) {
-  const { project, all, rest } = takeServiceTarget(argv)
+  const { all, rest } = takeServiceTarget(argv)
   const action = rest[0] ?? 'status'
-  let target = project
-  if (target === undefined && !all && action !== 'open') {
-    // A bare `service ...` first identifies the deployment by the checkout it runs in; a launcher
-    // that exported SPV_QUEUE_DIR keeps its old self-identification as a secondary hint.
+  let target
+  if (!all && action !== 'open') {
+    // The deployment is the checkout this command runs in. A launcher that exported SPV_QUEUE_DIR
+    // keeps its self-identification as a secondary hint, so `start` from a service-managed shell and
+    // `status` from inside the clone reach the same deployment.
     const fromCwd = await deploymentFromCwd().catch(error => error)
     if (fromCwd instanceof Error) {
       const { ownDeployment } = await load('src', 'spv', 'ownership.js')
@@ -628,20 +639,13 @@ async function commandService(argv) {
     }
   }
   if (action === 'open') {
-    if (project !== undefined || all || rest.length > 1) {
+    if (all || rest.length > 1) {
       throw new UsageError(
         'service open opens the standalone panel and takes no deployment selector: the panel is not part of ' +
           'any deployment. Use "wheelchair-agent service status" to list deployments.',
       )
     }
     process.exit(runServiceManager(await panelArgs('open')))
-  }
-  if (target === undefined && !all && action !== 'status') {
-    throw new UsageError(
-      `service ${action} needs --project <p> or --all: this command is not inside a registered project ` +
-        'checkout, and the CLI no longer falls back to a legacy deployment without an instance overlay. ' +
-        'Run "wheelchair-agent deployment list" to see the registered deployments.',
-    )
   }
   const { deployments, registry } = await requiredRegistry()
   const { checkProject } = await load('src', 'spv', 'dispatch.js')
@@ -758,7 +762,7 @@ async function commandPanel(argv) {
  * no deployment selector — `--project` would read as "start this path's spv", which is meaningless. Multi-
  * deployment routing does not need the session to identify itself: dispatch routes by each task's project,
  * and results aggregate through `resolveRoots()` over the whole registry.
- *
+
  * Because the session carries no queue/state override, a stale `SPV_QUEUE_DIR` inherited from the launching
  * shell is removed too; otherwise the injector and `spv_status` would silently watch one queue.
  */
@@ -768,7 +772,9 @@ async function commandSpv(argv) {
     if (word === '--project' || word.startsWith('--project=') || word === '--all') {
       throw new UsageError(
         `spv does not take ${JSON.stringify(word.split('=')[0])}: it is the one global SPV session, not a ` +
-          'deployment. Use "wheelchair-agent service ... --project <p>" to target a deployment.',
+          'deployment. To start or diagnose a deployment, run "wheelchair-agent service status" from its ' +
+          'project checkout (or "wheelchair-agent service status --all"), or ' +
+          '"wheelchair-agent restart-all --project <p>" to restart one from elsewhere.',
       )
     }
     rest.push(word)
@@ -817,6 +823,7 @@ async function commandSpv(argv) {
       }
     }
   }
+
 
   const { resolveResume, runSpvSession } = await load('src', 'spv', 'restart-ux.js')
   const { resolveSession, resumeIdFromArgv } = await load('src', 'spv', 'session.js')
@@ -899,7 +906,7 @@ function commandSpvProject(argv) {
  * 队列目录尚未建立（服务没启动）时报 `missingQueue`，与单部署时代一致。
  */
 async function commandStatus(argv) {
-  const { project, rest } = takeServiceTarget(argv)
+  const { project, rest } = takeServiceTarget(argv, { allowProject: true })
   const parsed = options(rest, {
     command: 'status',
     usage: 'usage: wheelchair-agent status [--project <project>] [--thread <name>]',

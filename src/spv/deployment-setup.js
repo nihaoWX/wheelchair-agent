@@ -73,7 +73,7 @@ function panelRequest(port, path, { method = 'GET', body, timeoutMs = 5000 } = {
       })
     })
     req.on('timeout', () => req.destroy(new Error(`the deployment at ${panelUrl(port)} did not answer ${method} ${path} within ${timeoutMs}ms`)))
-    req.on('error', error => reject(new Error(`cannot reach the deployment at ${panelUrl(port)} (${error.message}); is it running? Start it with "wheelchair-agent service start --project <project>"`)))
+    req.on('error', error => reject(new Error(`cannot reach the deployment at ${panelUrl(port)} (${error.message}); is it running? Start it with "wheelchair-agent service start" from the project checkout`)))
     if (payload !== null) req.write(payload)
     req.end()
   })
@@ -207,7 +207,7 @@ export async function setupDeployment(projectInput, { env = process.env, out = p
 }
 
 /**
- * `service start --project <p>` 之后的轻提示：实例的 setup 还没有账号时，告诉操作者跑哪条命令。
+ * `service start`（在项目 checkout 里）之后的轻提示：实例的 setup 还没有账号时，告诉操作者跑哪条命令。
  * 读不到（实例刚起、面板还没就绪）就返回 null，绝不影响 start。
  */
 export async function setupHint(entry, { env = process.env } = {}) {

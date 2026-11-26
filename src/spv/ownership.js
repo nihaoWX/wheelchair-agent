@@ -5,7 +5,7 @@
  * questions the inbox needs without adding registry fields:
  *
  *   - which running instance is this? The entry whose `queueDir` equals `$SPV_QUEUE_DIR`, the queue the
- *     launcher sets for this instance (`service start --project <p>`). No match (no registry, no override,
+ *     launcher sets for this instance (`service start` from the project checkout). No match (no registry, no override,
  *     deleted entry) means "unknown": callers poll nothing and say why; the registry is the only source.
  *   - which project owns a repo? The local checkout is `<projectsRoot>/<project>`; its `origin` URL is the
  *     authoritative back-reference. When a project has no checkout to read, the repo name equal to the
@@ -49,7 +49,7 @@ export function projectForRepo(repo, { projectsRoot, deployments } = {}) {
 /**
  * The registry entry of the running instance, or a reason why it cannot be identified.
  *
- * The launcher (`service start --project <p>`) exports `SPV_QUEUE_DIR=<entry.queueDir>` for the instance, so
+ * The launcher (`service start` from the project checkout) exports `SPV_QUEUE_DIR=<entry.queueDir>` for the instance, so
  * this is a plain reverse lookup. `queue` may be passed explicitly (tests, or a caller that resolved it
  * another way). `{entry: null, reason}` is not a fallback: the watcher polls nothing and logs the reason,
  * `spv_status` reports it as a problem, and `/restart-wheelchair-agent` refuses to guess.
