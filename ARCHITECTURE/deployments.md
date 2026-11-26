@@ -66,6 +66,10 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
   - `restart-all --all`：全机器一圈——`service stop --all` → 停会话链等 lease → **装一次**
     （`bash install.sh --project <installProject>`，installProject 由本 checkout 的 origin/路径反推，推不出就要求
     显式 `--project`）→ `service start --all` → 恢复 TUI。想装新代码就用它。
+- 派单路径的健康判定（`src/spv/dispatch.js` 的 `ensureDeploymentStarted()`）：先探活 → 目标部署没在跑就用**与
+  `service start` 完全相同**的 argv 起它 → 再探活 → 只有实例真的能应答才写 `pending/<id>.json`。**非零退出码不等于
+  启动失败**：`setup: waiting — repositoryUnset` 时管理器会先把实例拉起来再 exit 3，那种情况按"已暂停"报告并指向
+  `deployment setup --project <p>`（`#60`）。启动/暂停/失败三种情形都**不**留下任务文件。
 - `wheelchair-agent spv` **不启动任何后端**（`#59`）：任务进的是各部署自己的队列文件，读它的是那份部署自己的实例，
   所以派单路径（`spv_dispatch` / `dispatch`）先确保目标部署在跑、**成功之后**才写队列文件。没被用到的部署就一直不跑，
   它的收件箱轮询/自动合并也随之不发生——这是有意的（"没用到就不启动"）。

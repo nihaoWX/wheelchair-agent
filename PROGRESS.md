@@ -57,6 +57,15 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
 
 # Completed
 
+- **`#60` 合并（`00df1a0`，`dispatch: tell a paused deployment apart from a failed start`）**：`service start`
+  在 `setup: waiting — repositoryUnset` 时**实例已起来但 exit 3**，`ensureDeploymentStarted()` 原来把非零退出
+  一律当"起不来"。现在先探活再看退出码：实例可达 + 输出含 `setup: waiting` → 报 `started but is paused` 并指向
+  `deployment setup --project <p>`；可达但其他非零退出 → 报 `manager reported exit <n>`；不可达才 `could not start`。
+  三种情形都不写 `pending/`。我的验证：worktree build + `npm test` **504 全绿**；真机复现同一场景，输出与文案逐字相符。
+  **我随后又抓到一个洞并派了票**：该判定只在"这次刚起它"时做，实例本来就在跑时 `probe()` alive 直接返回，
+  于是 paused 的部署第二次派单会**成功**（我实测 `dispatched bbe5716…` 且 `pending/` 落了文件）。修法：读实例自己的
+  `/orchestrator/api/state`（`setup.problem` 非空 = paused），两条路径共用；解析不出来时 fail open。
+
 - **`#59` 合并（`7c45916`，`Fix the refusal-notice crash, target deployments from their checkout, start backends on demand`）**：
   三件事，都是操作者真机踩出来的：①`build/refusal-notice.mjs` 自 `#48` 起就在无参 `resolveRoot()` 上抛错，所以
   每一条"冷安装被拒"的 SPV 通知其实都没送出过——现在收 `--project`（`install.sh` 传 `$PROJECT_NAME`），任何解析
