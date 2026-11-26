@@ -6,6 +6,9 @@
  * 路径，并且必须在写 `pending/<id>.json` **之前**完成：停止的队列没有读者，先写会让一次失败的派活
  * 看起来成功（本测试用假 manager 检查「start 时 pending 必须为空」，再断言之后恰好一份任务）。
  *
+ * 实例已启动但 paused（manager 输出 `setup: waiting`）不是启动失败：错误要准确说明 paused 并指向
+ * `deployment setup`，同样不写 pending。
+ *
  * 全程沙箱：HOME/DSH_HOME/WHEELCHAIR_AGENT_HOME 都在 mkdtemp 下；假 `python3` 记录 manager argv，并用
  * 一个后台 node HTTP 服务冒充实例的健康检查端点。不碰真实端口、真实服务或 `~/.wheelchair-agent`。
  *
@@ -49,7 +52,8 @@ async function sandbox() {
 
 /**
  * 假 service manager：记录 argv；`start` 时若队列里已有 pending 文件就留下一个证据文件，然后用一个后台
- * node 服务冒充实例。`FAKE_SERVICE_START_STATUS` 让 start 失败。
+ * node 服务冒充实例。`FAKE_SERVICE_START_STATUS` 让 start 失败，`FAKE_SERVICE_START_SERVER=0` 让失败的
+ * start 不留下实例，`FAKE_SERVICE_START_OUTPUT` 让 start 打印管理器输出（paused 等分类靠它）。
  */
 async function writeManager(box) {
   const file = join(box.bin, 'python3')
@@ -70,9 +74,15 @@ done
 printf '%s\\n' "$*" >> "$FAKE_SERVICE_LOG"
 if [ "$action" = start ]; then
   if [ -n "$(ls -A "$queue/pending" 2>/dev/null)" ]; then : > "$FAKE_SWALLOWED"; fi
+  if [ "\${FAKE_SERVICE_START_SERVER:-1}" = 1 ]; then
+    node -e "require('http').createServer((q,s)=>{s.statusCode=200;s.end('{}')}).listen($port,'127.0.0.1')" >/dev/null 2>&1 &
+    printf '%s\\n' "$!" > "$FAKE_SERVICE_PID"
+    # 真 manager 的 start 会等到实例能答健康检查才返回（paused 也算 ready）；假 manager 照做，避免把
+    # 「实例刚起还没监听」误当成启动失败。
+    node -e "const p=$port;let n=0;(function w(){require('http').get({host:'127.0.0.1',port:p,timeout:100},r=>{r.resume();process.exit(0)}).on('error',()=>{if(++n>200)process.exit(1);setTimeout(w,5)})})()" >/dev/null 2>&1
+  fi
+  if [ -n "\${FAKE_SERVICE_START_OUTPUT:-}" ]; then printf '%s\\n' "$FAKE_SERVICE_START_OUTPUT"; fi
   if [ "\${FAKE_SERVICE_START_STATUS:-0}" != 0 ]; then exit "\${FAKE_SERVICE_START_STATUS}"; fi
-  node -e "require('http').createServer((q,s)=>{s.statusCode=200;s.end('{}')}).listen($port,'127.0.0.1')" >/dev/null 2>&1 &
-  printf '%s\\n' "$!" > "$FAKE_SERVICE_PID"
 fi
 exit 0
 `,
@@ -213,6 +223,7 @@ async function testFailedStartWritesNothing() {
   addDeployment(box, 'tools/alpha', port)
   const sent = await cli(box, ['dispatch', '--project', 'tools/alpha', '--task', 'never lands'], {
     FAKE_SERVICE_START_STATUS: '1',
+    FAKE_SERVICE_START_SERVER: '0',
   })
   assert.equal(sent.status, 1)
   assert.match(sent.stderr, /could not start the deployment instance for "tools\/alpha"/)
@@ -221,6 +232,45 @@ async function testFailedStartWritesNothing() {
   assert.equal(calls.length, 1)
   assert.match(calls[0], /\/commands\/superagent-service\.py start /)
   assert.deepEqual(await pendingFiles(box), [], 'a failed start must not leave a task behind')
+}
+
+async function testPausedStartPointsAtDeploymentSetup() {
+  const box = await sandbox()
+  const port = await freePort()
+  addDeployment(box, 'tools/alpha', port)
+  try {
+    const sent = await cli(box, ['dispatch', '--project', 'tools/alpha', '--task', 'never lands'], {
+      FAKE_SERVICE_START_STATUS: '3',
+      FAKE_SERVICE_START_SERVER: '1',
+      FAKE_SERVICE_START_OUTPUT: 'setup:   waiting — repositoryUnset: tools/alpha has no GitHub repository',
+    })
+    assert.equal(sent.status, 1)
+    assert.match(sent.stderr, /started but is paused/)
+    assert.match(sent.stderr, /wheelchair-agent deployment setup --project tools\/alpha/)
+    assert.doesNotMatch(sent.stderr, /could not start/)
+    assert.deepEqual(await pendingFiles(box), [], 'a paused start must not leave a task behind')
+  } finally {
+    await stopServer(box)
+  }
+}
+
+async function testReportedExitWithRunningInstance() {
+  const box = await sandbox()
+  const port = await freePort()
+  addDeployment(box, 'tools/alpha', port)
+  try {
+    const sent = await cli(box, ['dispatch', '--project', 'tools/alpha', '--task', 'never lands'], {
+      FAKE_SERVICE_START_STATUS: '3',
+      FAKE_SERVICE_START_SERVER: '1',
+      FAKE_SERVICE_START_OUTPUT: 'relay: ready | spv: paused | setup: ready',
+    })
+    assert.equal(sent.status, 1)
+    assert.match(sent.stderr, /manager reported exit 3/)
+    assert.doesNotMatch(sent.stderr, /could not start/)
+    assert.deepEqual(await pendingFiles(box), [], 'a reported non-zero exit must not leave a task behind')
+  } finally {
+    await stopServer(box)
+  }
 }
 
 async function testRunningDeploymentIsNotStartedAgain() {
@@ -271,9 +321,11 @@ async function main() {
   try {
     await testDispatchStartsBeforeWriting()
     await testFailedStartWritesNothing()
+    await testPausedStartPointsAtDeploymentSetup()
+    await testReportedExitWithRunningInstance()
     await testRunningDeploymentIsNotStartedAgain()
     await testSpvStartsNoBackend()
-    process.stdout.write('ok (4 passed)\n')
+    process.stdout.write('ok (6 passed)\n')
   } finally {
     for (const pid of SERVER_PIDS) {
       try {

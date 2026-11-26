@@ -162,9 +162,14 @@ export function deploymentForQueue(root, { env = process.env } = {}) {
   return registry.deployments.find(entry => entry.queueDir === root || resolve(entry.queueDir) === wanted) ?? null
 }
 
+/** The manager output, both streams, for classifying a non-zero exit. */
+function managerOutput(child) {
+  return `${child.stdout ?? ''}${child.stderr ?? ''}`.trim()
+}
+
 /** The manager output tail that explains a failed start without flooding the caller. */
 function outputTail(child) {
-  const text = `${child.stdout ?? ''}${child.stderr ?? ''}`.trim()
+  const text = managerOutput(child)
   return text === '' ? '' : `: ${text.split('\n').slice(-5).join(' | ')}`
 }
 
@@ -173,9 +178,15 @@ function outputTail(child) {
  *
  * Dispatch must not write `pending/<id>.json` first and hope the instance catches it: the task is handed to
  * the instance only once it is up. So this starts a stopped deployment with exactly the argv of
- * `wheelchair-agent service start` (same `serviceArgsFor` implementation), waits for its own URL to answer,
- * and only then lets the caller call `submitTask()`. A queue that belongs to no registered deployment has no
- * instance to start; the caller keeps its single-service health check for that legacy case.
+ * `wheelchair-agent service start` (same `serviceArgsFor` implementation) and waits for its own URL to answer.
+ *
+ * A non-zero manager exit is not automatically a failed start. `service start` starts the instance and then
+ * exits 3 when the deployment is paused because its GitHub source has no repository (`setup: waiting`); the
+ * instance is running in that case. So the probe after the start decides: reachable means report the accurate
+ * paused (or other reported-exit) reason and still queue nothing, unreachable means the start itself failed.
+ *
+ * A queue that belongs to no registered deployment has no instance to start; the caller keeps its
+ * single-service health check for that legacy case.
  */
 export async function ensureDeploymentStarted(root, { env = process.env, timeoutMs = START_TIMEOUT_MS } = {}) {
   const entry = deploymentForQueue(root, { env })
@@ -185,14 +196,20 @@ export async function ensureDeploymentStarted(root, { env = process.env, timeout
   if (before.alive) return { entry, started: false, url, health: before }
 
   const started = runDeploymentService(entry, ['start'], { env, stdio: ['ignore', 'pipe', 'pipe'] })
-  if ((started.status ?? 1) !== 0) {
+  const status = started.status ?? 1
+  const output = managerOutput(started)
+  const tail = outputTail(started)
+
+  // Probe once before looking at the exit code: a paused deployment leaves its instance running and still
+  // makes `service start` exit non-zero, which is not a failed start.
+  let last = await probe(url)
+  if (!last.alive && status !== 0) {
     throw new Error(
-      `could not start the deployment instance for ${JSON.stringify(entry.project)}${outputTail(started)}. ` +
+      `could not start the deployment instance for ${JSON.stringify(entry.project)}${tail}. ` +
         `Run "wheelchair-agent service status" from that project's checkout (or "wheelchair-agent service ` +
         'status --all") to diagnose it.',
     )
   }
-  let last = await probe(url)
   const deadline = Date.now() + timeoutMs
   while (!last.alive && Date.now() < deadline) {
     await new Promise(done => setTimeout(done, START_POLL_MS))
@@ -202,8 +219,23 @@ export async function ensureDeploymentStarted(root, { env = process.env, timeout
     const reason = last.reason === undefined ? '' : ` (${last.reason})`
     throw new Error(
       `the deployment instance for ${JSON.stringify(entry.project)} started but ${url} did not answer within ` +
-        `${Math.round(timeoutMs / 1000)}s${reason}. Run "wheelchair-agent service status" from that project's ` +
-        'checkout (or "wheelchair-agent service status --all") to diagnose it.',
+        `${Math.round(timeoutMs / 1000)}s${reason}${tail}. Run "wheelchair-agent service status" from that ` +
+        'project\'s checkout (or "wheelchair-agent service status --all") to diagnose it.',
+    )
+  }
+  if (status !== 0) {
+    if (/setup:\s*waiting/.test(output)) {
+      throw new Error(
+        `the deployment instance for ${JSON.stringify(entry.project)} started but is paused: its GitHub source ` +
+          `has no repository yet, so setup is waiting. Nothing was queued. Configure the deployment with ` +
+          `"wheelchair-agent deployment setup --project ${entry.project}", then dispatch again.` +
+          `${tail === '' ? '' : ` Manager output${tail}`}`,
+      )
+    }
+    throw new Error(
+      `the deployment instance for ${JSON.stringify(entry.project)} started but the manager reported exit ` +
+        `${status}${tail}. Nothing was queued; run "wheelchair-agent service status" from that project's ` +
+        'checkout (or "wheelchair-agent service status --all") to check it.',
     )
   }
   return { entry, started: true, url, health: last }
