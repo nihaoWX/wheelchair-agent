@@ -312,13 +312,43 @@ async function testRunningPausedDeploymentIsRejected() {
   const box = await sandbox()
   const port = await freePort()
   addDeployment(box, 'tools/alpha', port)
-  await withStateServer(port, '{"setup":{"problem":"repositoryUnset: tools/alpha has no GitHub repository"}}', async () => {
+  // The shape the live orchestrator sends (dsh-superagent SetupProblem); older fixtures used a string.
+  const body = JSON.stringify({
+    setup: {
+      machine: {},
+      problem: {
+        place: 'github',
+        code: 'repositoryUnset',
+        values: {},
+        detail: 'The GitHub Source names no repository.',
+      },
+      feishuProblem: null,
+      accounts: null,
+    },
+  })
+  await withStateServer(port, body, async () => {
     const sent = await cli(box, ['dispatch', '--project', 'tools/alpha', '--task', 'must not land'])
     assert.equal(sent.status, 1)
     assert.match(sent.stderr, /is paused/)
     assert.doesNotMatch(sent.stderr, /started but is paused/)
+    assert.match(sent.stderr, /The GitHub Source names no repository\.|repositoryUnset/)
     assert.match(sent.stderr, /deployment setup --project tools\/alpha/)
     assert.doesNotMatch(sent.stderr, /could not start/)
+    assert.deepEqual(await pendingFiles(box), [], 'a paused deployment must not get a task')
+    assert.deepEqual(await serviceCalls(box), [], 'an already paused deployment is not started')
+  })
+}
+
+async function testRunningStringPausedDeploymentIsRejected() {
+  const box = await sandbox()
+  const port = await freePort()
+  addDeployment(box, 'tools/alpha', port)
+  await withStateServer(port, '{"setup":{"problem":"repositoryUnset: legacy string fixture"}}', async () => {
+    const sent = await cli(box, ['dispatch', '--project', 'tools/alpha', '--task', 'must not land'])
+    assert.equal(sent.status, 1)
+    assert.match(sent.stderr, /is paused/)
+    assert.match(sent.stderr, /repositoryUnset: legacy string fixture/)
+    assert.match(sent.stderr, /deployment setup --project tools\/alpha/)
     assert.deepEqual(await pendingFiles(box), [], 'a paused deployment must not get a task')
     assert.deepEqual(await serviceCalls(box), [], 'an already paused deployment is not started')
   })
@@ -328,6 +358,7 @@ async function testUnreadableDeploymentStateFailsOpen() {
   for (const [label, body] of [
     ['empty object', '{}'],
     ['null problem', '{"setup":{"problem":null}}'],
+    ['empty problem object', '{"setup":{"problem":{}}}'],
     ['non-JSON', 'not json'],
   ]) {
     const box = await sandbox()
@@ -375,9 +406,10 @@ async function main() {
     await testReportedExitWithRunningInstance()
     await testRunningDeploymentIsNotStartedAgain()
     await testRunningPausedDeploymentIsRejected()
+    await testRunningStringPausedDeploymentIsRejected()
     await testUnreadableDeploymentStateFailsOpen()
     await testSpvStartsNoBackend()
-    process.stdout.write('ok (8 passed)\n')
+    process.stdout.write('ok (9 passed)\n')
   } finally {
     for (const pid of SERVER_PIDS) {
       try {

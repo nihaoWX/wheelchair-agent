@@ -97,6 +97,34 @@ export function probe(url = serviceBaseUrl()) {
 }
 
 /**
+ * Normalize a deployment's `setup.problem` into one human-readable sentence, or null when there is none.
+ *
+ * The live orchestrator sends `{place, code, values, detail}` (see dsh-superagent's `SetupProblem`), while older
+ * notes and fixtures used a bare string. Both mean paused: prefer `detail`, fall back to `code`, and append the
+ * raw `values` when present. `null`, a missing/empty object, or any other shape means "no known problem" so the
+ * callers fail open.
+ */
+export function setupProblemText(value) {
+  if (typeof value === 'string') {
+    const text = value.trim()
+    return text === '' ? null : text
+  }
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null
+  const code = typeof value.code === 'string' ? value.code.trim() : ''
+  if (code === '') return null
+  const detail = typeof value.detail === 'string' ? value.detail.trim() : ''
+  const base = detail === '' ? code : detail
+  const values = value.values
+  const pairs =
+    values !== null && typeof values === 'object' && !Array.isArray(values)
+      ? Object.entries(values)
+          .filter(([, item]) => item !== null && item !== undefined && String(item) !== '')
+          .map(([key, item]) => `${key}=${String(item)}`)
+      : []
+  return pairs.length === 0 ? base : `${base} (${code}: ${pairs.join(', ')})`
+}
+
+/**
  * Whether a reachable deployment can accept a task right now.
  *
  * `setup.problem`非空表示实例在跑但 paused（`repositoryUnset` 等），此时派单会写进一个没人消费的队列，
@@ -106,10 +134,8 @@ export function probe(url = serviceBaseUrl()) {
 export async function deploymentState(url = serviceBaseUrl()) {
   const result = await probe(url)
   if (!result.alive) return { ...result, paused: false, problem: null }
-  const setup = result.state !== null && typeof result.state === 'object' ? result.state.setup : null
-  const problem =
-    setup !== null && typeof setup === 'object' && typeof setup.problem === 'string' ? setup.problem.trim() : ''
-  return { ...result, paused: problem !== '', problem: problem === '' ? null : problem }
+  const problem = setupProblemText(result.state?.setup?.problem)
+  return { ...result, paused: problem !== null, problem }
 }
 
 /**
