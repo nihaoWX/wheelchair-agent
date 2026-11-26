@@ -32,7 +32,7 @@
 | 命令 | 做什么 |
 |---|---|
 | `wheelchair-agent spv-project list [--json]` | 列出 spv 项目与它们绑定的 worker |
-| `wheelchair-agent spv-project add <root> [--worker <project>]...` | 登记/更新；相同内容重复执行打印 `nothing changed` 且不写盘 |
+| `wheelchair-agent spv-project add <root> [--worker <project>]...` | 登记/更新；相同内容重复执行打印 `nothing changed` 且不写盘。每个 `--worker` 必须已经是某份注册部署的项目（否则 `it is not the project of a registered deployment, so no instance would run it`）；spv 根不能是某份 worker checkout 本身**或其子目录**（`#66`） |
 | `wheelchair-agent spv-project remove <root>` | 还绑着 worker 时必须 `--force`（提示里列出会解绑哪些） |
 | `wheelchair-agent deployment add <project> … --spv <root>` | 登记部署的同时把 worker 绑进那个 spv 项目；省略时只在"恰好一个 spv 根是它的祖先"时自动推断，0 个或 ≥2 个都要求显式 |
 | `wheelchair-agent deployment remove <project>` | 同时把该 worker 从 spv 项目的 `workers` 里摘掉 |

@@ -389,3 +389,24 @@ gh 失败只 warning。
 **取舍**：不自动删旧目录（`profiles/panel` 里可能有操作者手放的东西）；`#58` 之前那种
 `cli.js panel --foreground` 旧宿主识别保持不变，而"另一个 `dsh --profile panel` 实例"不属于那个形状——它由
 端口占用检查拦住并报出 pid，代价是操作者要自己 `kill -INT`。
+
+## 一个 worker 项目路径只归一份部署，判等用 realpath 而不是项目名（`#66`，2026-11-26）
+
+**问题**：`INSTRUCTIONS.md` 要求"一个 worker 项目路径只能绑定一个实例"。注册表原先只拒绝重复的项目名/端口/
+实例名，两个不同的项目名照样能指向同一份 checkout（符号链接、目录改名、`tools/x` 与 `tools/x-link`）——
+那种情况下 `spv_dispatch` 按项目名能找到唯一一条，但"这份 checkout 到底归哪个实例"没有答案，同一个仓库会被
+两份实例同时 clone、两份 worker 同时提交。
+
+**决定**：所有"这两个项目是不是同一处"的判定都先拼 `<projectsRoot>/<project>` 再 `realpathSync`，然后比较规范
+路径（`canonicalProjectPath()` / `deploymentsAtProjectPath()` / `projectPathConflicts()`，全在
+`src/shared/deployments.js`）。三条入口各有明确行为：`deployment add` 拒绝新增（点名现有 slug 与端口，并给出
+`deployment remove <project>`），`spv-project add --worker` 要求该 worker 已有部署，`resolveDeploymentEntry()`
+发现多于一份认领同一路径时失败而不是取第一个。读取侧（`deployment list`、`install.sh --check`）只报告，不修
+注册表——那是操作者的文件。
+
+**理由**：判等的对象是**磁盘上的那份 checkout**，不是注册表里的字符串。用名字判等只能挡住最笨的重复，而符号链接
+正是实际会发生的那种（我们自己也用了一层 `~/opt/dsh-plugins/dsh-superagent` → 工具目录的软链）。
+
+**取舍**：`realpathSync` 对不存在的路径会抛，所以退化用 `resolve()` 的绝对路径（还没 clone 的部署照样能登记）。
+同一个项目重复 `deployment add` 保持幂等（只在**别的**名字认领同一路径时才拒绝），否则改端口/改仓库这类正常
+重复调用会被自己的保护挡住。

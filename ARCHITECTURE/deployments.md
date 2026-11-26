@@ -81,6 +81,16 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
   `pending/<id>.json` **之前**补齐（补不上就报错、一个字节都不写）、`install.sh --check` 用 `audit` 只读巡检。
   根因在 dsh-superagent 的 `validatePolicy()` 只对已存在的 `policy.sources.<id>` 套默认值，所以新部署的默认值
   永远不会自己出现；`deployment add` 只复刻端口/stateDir/queueDir，不管这些。
+- **一个 worker 项目路径只能归一份部署**（`#66`）：注册表本身已拒绝重复的项目名/端口/实例名，但两个不同的
+  项目名仍可能通过符号链接或目录别名指向同一份 checkout。判定一律先拼成 `<projectsRoot>/<project>` 再
+  `realpathSync`（`canonicalProjectPath()`），所以 `tools/alpha` 与指向它的 `tools/alpha-link` 是同一份。
+  四处行为：`deployment add` 遇到别的名字认领同一路径就报错并点名现有 slug 与端口（同一个项目重复 add 仍然幂等，
+  回 `already registered with these values; nothing changed`）；`spv-project add --worker <w>` 要求 `<w>` 已是
+  某份部署的项目，否则 `it is not the project of a registered deployment, so no instance would run it`；
+  `resolveDeploymentEntry()` 发现多于一份认领该路径时**不猜**、报错并列出所有认领者；`deployment list` 与
+  `install.sh --check` 只读告警/报错（`install.sh` 绝不为了修好它去删注册表条目）。
+  另外 spv 根不能再是某份 worker checkout 的**子目录**（`normalizeEntry()` 用 `inside()` 判，不只是相等）。
+
 - `wheelchair-agent spv` **不启动任何后端**（`#59`）：任务进的是各部署自己的队列文件，读它的是那份部署自己的实例，
   所以派单路径（`spv_dispatch` / `dispatch`）先确保目标部署在跑、**成功之后**才写队列文件。没被用到的部署就一直不跑，
   它的收件箱轮询/自动合并也随之不发生——这是有意的（"没用到就不启动"）。

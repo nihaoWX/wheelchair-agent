@@ -64,6 +64,16 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
 
 # Completed
 
+- **`#66` 合并（`5430d0f`，`feat(spv): bind each worker project path to one deployment`）**：一个 worker 项目路径
+  只归一份部署，判等走 `canonicalProjectPath()`（`<projectsRoot>/<project>` 再 `realpathSync`）。`deployment add`
+  拒绝另一个名字认领同一份 checkout（报现有 slug 与端口），同一项目重复 add 仍幂等；`spv-project add --worker`
+  要求已有部署；新增 `resolveDeploymentEntry()`——多于一份认领同一路径就**不猜**、报错列全部认领者；
+  `deployment list` 与 `install.sh --check`（新增 `check_deployment_registry()`）只读报告，绝不改注册表。
+  我验的：worktree `bash build/build-core.sh` + `npm test` **EXIT=0 全绿**（`test-worker-binding.mjs` 7 条全过，
+  其余同基线 49/40/7/4/101/200/28/39/63）、两次 `ci pass`（`BEHIND` → `update-branch --rebase`）；沙箱真跑三条
+  行为（`ln -s alpha alpha-link` 后同名路径被拒、同项目重复 add 回 `nothing changed`、`--worker tools/nope` 被拒）；
+  真机 `install.sh --check` 打出 `OK: every worker project path belongs to exactly one deployment`。这次也是
+  `merge.autoMerge` 自己合的（我去合时回 `already merged`）。
 - **`#65` 合并（`cd5012b`，`Rename the panel's dsh profile to wheelchair-agent`）**：面板 profile id
   `panel` → `wheelchair-agent`，只改 id（overlay `preset/panel.patch.yml`、设置键 `panel.port`/`panel.profileFrom`、
   tmux `wca-panel`、stateDir `<data root>/panel` 全不动）。`install.sh` 一次性 `mv` 旧目录（`panel-bundles.json`
@@ -338,16 +348,14 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
 
 # In Progress
 
-- **一张票在跑**：`worker-binding`（实例-worker 项目保护：一 project 一部署、worker 必须已部署、不许挂两个 spv
-  项目、派单解析不到唯一部署就失败）。
-- **下一次冷安装**（`#59`–`#65` 全在等它）：退出 SPV → `wheelchair-agent service stop --all` →
+- **下一次冷安装**（`#59`–`#66` 全在等它）：退出 SPV → `wheelchair-agent service stop --all` →
   `wheelchair-agent panel stop` → `bash install.sh --project tools/wheelchair-agent` →
   `wheelchair-agent service start --all` → `wheelchair-agent spv`。
 - **「项目」页还缺"正在跑什么工单"**：`/wheelchair-projects` 已有 spv 路径、绑定的 worker、端口、
   `runningTicketCount`、`setupProblem`；操作者要的是正在跑的工单**标题**（数据来自各部署
-  `GET /orchestrator/api/tickets`）。排在 `worker-binding` 与改名之后。
-- **`INSTRUCTIONS.md` 只剩一处待确认**：`### spv_dispatch` 已改成"相同的 superagent profile 但是不同的实例"
-  （与实现一致）；其余新增章节（spv/worker 项目、profile 与实例、保护机制）由上面两张票落成。
+  `GET /orchestrator/api/tickets`）。`worker-binding` 与改名都已合并，这张票可以派了。
+- **`INSTRUCTIONS.md` 已对齐**：`### spv_dispatch`（相同 superagent profile、不同实例）、spv/worker 项目、profile
+  与实例、实例-worker 保护机制都由 `#64`–`#66` 落成；唯一未落地的产品诉求是上面那条「项目」页显示正在跑的工单标题。
 
 # Known Issues
 
