@@ -17,7 +17,8 @@
  *     容器本身（version + deployments 数组）没有对应的 schema 原语（`records()` 要求每条都有 id），
  *     所以在 `object()` 之外手工检查数组形状；这不是另一套字段校验。
  */
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
 
 import { dataPaths } from './home.js'
@@ -178,6 +179,66 @@ const ENTRY_FIELDS = ['profile', 'stateDir', 'queueDir', 'port', 'installedSha',
 export function deploymentSlug(project) {
   const leaf = String(project ?? '').trim().split('/').pop() ?? ''
   return leaf.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/^-+|-+$/g, '')
+}
+
+/**
+ * spv 项目根：`$SPV_PROJECTS_ROOT`，否则 `~/bioagentforge`。
+ *
+ * 注册表只存项目名（`tools/<name>`），一个项目对应 `<projects root>/<project>`。判断「两个项目是否
+ * 同一个路径」必须先把项目名拼成绝对路径再解析符号链接；否则 `tools/alpha` 与指向它的
+ * `tools/alpha-link` 会被当成两个互不相干的项目。
+ */
+export function projectsRootOf({ env = process.env } = {}) {
+  const configured = String(env.SPV_PROJECTS_ROOT ?? '').trim()
+  return resolve(configured === '' ? join(homedir(), 'bioagentforge') : configured)
+}
+
+/** 一个项目在 spv 项目根下的绝对路径（不解析符号链接）。 */
+export function projectPathOf(project, options = {}) {
+  return resolve(projectsRootOf(options), String(project ?? '').trim())
+}
+
+/** 项目的规范路径：存在时用 realpath，不存在时退回 resolve 的绝对路径。 */
+export function canonicalProjectPath(project, options = {}) {
+  const path = projectPathOf(project, options)
+  try {
+    return realpathSync(path)
+  } catch {
+    return path
+  }
+}
+
+/** 注册表中与 `project` 指向同一真实路径的所有条目（含它自己）。 */
+export function deploymentsAtProjectPath(project, deployments, options = {}) {
+  const wanted = canonicalProjectPath(project, options)
+  return deployments.filter(entry => canonicalProjectPath(entry.project, options) === wanted)
+}
+
+/**
+ * 注册表里被多于一个部署认领的路径。
+ *
+ * `listDeployments()` 已经拒绝重复的项目名/端口/实例名；这里补的是另一类重复：两个不同的项目名
+ * 通过符号链接或目录别名指向同一份 checkout。读取仍是只读的——冲突由 `deployment list` 警告、
+ * `install.sh --check` 报错和 `deployment add` 拒绝新增来暴露，绝不悄悄改注册表。
+ */
+export function projectPathConflicts(deployments, options = {}) {
+  const groups = new Map()
+  for (const entry of deployments) {
+    const path = canonicalProjectPath(entry.project, options)
+    const entries = groups.get(path)
+    if (entries === undefined) groups.set(path, [entry])
+    else entries.push(entry)
+  }
+  return [...groups.entries()]
+    .filter(([, entries]) => entries.length > 1)
+    .map(([path, entries]) => ({ path, entries }))
+}
+
+/** 一句可打印的路径冲突说明，供 `deployment list` 与安装自检共用。 */
+export function describePathConflict(conflict) {
+  const claims = conflict.entries.map(entry => `${entry.project} (port ${entry.port ?? '-'})`).join(', ')
+  return `${conflict.path} is claimed by more than one deployment: ${claims}; a worker project belongs to ` +
+    'exactly one instance. Remove all but one with "wheelchair-agent deployment remove <project>".'
 }
 
 /** 每部署实例 YAML 的目录：`<data root>/deployments/`。 */
@@ -425,7 +486,7 @@ export function missingDeploymentError(project, file, registryExists = true) {
       `"wheelchair-agent deployment add ${project}" and start it.`
   return new Error(
     `no deployment for project ${JSON.stringify(project)}: a task is written into its project's own deployment ` +
-      `queue, and ${where}. ${next}`,
+      `queue, and ${where}. ${next} Run "wheelchair-agent deployment list" to see every registered project.`,
   )
 }
 

@@ -21,7 +21,7 @@
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-import { listDeployments, missingDeploymentError } from '../shared/deployments.js'
+import { listDeployments, deploymentsAtProjectPath, missingDeploymentError } from '../shared/deployments.js'
 import { assertNotTicketClone } from '../shared/home.js'
 
 /** 未指定时 superagent 部署的状态目录（只在显示/默认值里用，不再决定队列）。 */
@@ -54,6 +54,30 @@ export function deploymentContextError() {
 }
 
 /**
+ * 找到唯一认领 `project` 的部署。
+ *
+ * `listDeployments()` 已拒绝重复的项目名/端口/实例名；但两个不同的项目名仍可能通过符号链接指向同一份
+ * checkout（例如 `tools/alpha` 与 `tools/alpha-link`）。那种情况下派单**不猜**：如果多于一个部署认领该
+ * 路径，报错并列出它们，让操作者用 `deployment list` 看到冲突后删到只剩一个。
+ */
+export function resolveDeploymentEntry(project, { registry = listDeployments() } = {}) {
+  const wanted = String(project ?? '').trim()
+  if (!registry.exists) throw missingDeploymentError(wanted, registry.file, false)
+  const entry = registry.deployments.find(item => item.project === wanted)
+  if (entry === undefined) throw missingDeploymentError(wanted, registry.file, true)
+  const claims = deploymentsAtProjectPath(entry.project, registry.deployments)
+  if (claims.length > 1) {
+    const list = claims.map(item => `${item.project} (port ${item.port ?? '-'})`).join(', ')
+    throw new Error(
+      `more than one deployment claims the worker project ${JSON.stringify(wanted)}: ${list}. A worker project ` +
+        'belongs to exactly one instance, so nothing was dispatched. Run "wheelchair-agent deployment list" to ' +
+        'see the conflict and remove all but one deployment.',
+    )
+  }
+  return entry
+}
+
+/**
  * SPV 工具读写的队列根目录（绝对路径）。
  *
  * 传了 `project` 时按注册表路由到该项目部署的队列；不传时只接受显式覆盖（`config.queueDir` /
@@ -67,11 +91,7 @@ export function resolveRoot(config = {}, { project } = {}) {
   if (fromEnv) return fromEnv
   const wanted = String(project ?? '').trim()
   if (wanted === '') throw deploymentContextError()
-  const registry = listDeployments()
-  if (!registry.exists) throw missingDeploymentError(wanted, registry.file, false)
-  const entry = registry.deployments.find(item => item.project === wanted)
-  if (entry === undefined) throw missingDeploymentError(wanted, registry.file, true)
-  return registryRoot(entry)
+  return registryRoot(resolveDeploymentEntry(wanted))
 }
 
 /**

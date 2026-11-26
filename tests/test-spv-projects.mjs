@@ -155,6 +155,8 @@ function testAbsentAndIdempotent() {
 
   const root = rootFor(box, 'spv-a')
   mkdirSync(join(root, 'tools', 'alpha'), { recursive: true })
+  // `spv-project add --worker` only binds a project a deployment already owns; seed that registration first.
+  registry(box, [deployment('tools/alpha', 3071)])
   const added = cli(box, ['spv-project', 'add', root, '--worker', 'tools/alpha'])
   check('add exit 0', added.status, 0)
   match('add prints registered', added.stdout, /registered spv-project .*workers=1/)
