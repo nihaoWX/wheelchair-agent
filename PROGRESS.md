@@ -18,14 +18,19 @@ superagent 不耦合；队列归**每份部署**自己（`<stateDir>/spv/`），
 `ARCHITECTURE/deployments.md`。
 
 **面板**：两个宿主、同一份 `webui/lib/client.js`。①`wheelchair-agent panel`（`#58`, `aabe316`）是一份
-**自己的 dsh 实例**——profile `panel`（`dsh-base` + `dsh-web-app` + 我们的 webui，**不含** `dsh-superagent`），
-`127.0.0.1:3080`（`panel.port` 可改），overlay 是 `preset/panel.patch.yml`，tmux `wca-panel`，stateDir
-`<data root>/panel`；所以它有完整 harness UI（会话列表/新会话/顶栏），但**不是部署**（不进注册表）。
-`#62`（`ddb97d0`）起 `service stop --all` 停完部署再停它、`start --all` 起完部署最后起它（面板失败不改
-部署退出码）；`install.sh` 装完与 `--check` 都会认出 `#58` 之前的 `cli.js panel --foreground` 旧宿主并打印
-其 pid 与 `kill -INT` 指路（只提醒，绝不 kill）。`panel status` 打 port/pid/带 token 的 url/`check: http <code>`/state，并说明
-没有 orchestrator 可报。②dsh 插件宿主不变（面板仍出现在各部署 dsh web 左侧栏）。四段功能：收件箱、设置、
-插口、项目；`webui.style` = `fluid`（默认）/ `minimal`；各页共用 1200px 宽度变量，收件箱无左侧日期栏。
+**自己的 dsh 实例**——profile `panel` 的插件集**镜像**来源 profile（`panel.profileFrom`，默认
+`superagent`）：bundles 按原序复制，只去掉 `dsh-superagent`（否则会再开一份 orchestrator/Sources）；dsh
+装不认识的包从来源 profile 的 `node_modules` 软链，并在 `panel-bundles.json` 记账，`panel sync` 只回收
+自己建的链接。`cordis.patch.yml` 同样整文件由 sync 生成：镜像来源的顶层配置行（`agent-default-model`、
+`llm-commandcode` 等），跳过 `dsh-superagent`/`webserver`/`wheelchair-agent/*` insert，字面 `apiKey`/
+`token`/`password` 不复制并打 note，`wheelchair-webui` 与 `ui-settings-general` 两行固定首末。`panel start`
+前自动 sync（来源 profile 消失时保留现有 bundles/patch 并打 note，不影响启动）；`panel status` 先打
+`plugins:`/`config:`/`drift:` 再打 port/pid/带 token 的 url/`check: http <code>`/state，并说明
+没有 orchestrator 可报。`127.0.0.1:3080`（`panel.port` 可改），overlay 是 `preset/panel.patch.yml`，tmux
+`wca-panel`，stateDir `<data root>/panel`；所以它有完整 harness UI（会话列表/新会话/顶栏），但**不是部署**
+（不进注册表）。`#62`（`ddb97d0`）起 `service stop --all` 停完部署再停它、`start --all` 起完部署最后起它
+（面板失败不改部署退出码）；`install.sh` 装完与 `--check` 都会认出 `#58` 之前的
+`cli.js panel --foreground` 旧宿主并打印其 pid 与 `kill -INT` 指路（只提醒，绝不 kill）。②dsh 插件宿主不变
 **后台行为（收件箱轮询、`builtin:autoMerge`、`builtin:archiveSession`、冷安装提醒、hook runner）故意只留在
 dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了手工 `node:http` 宿主、`panel-shell.js` 的
 `__ModuleLoader__` 垫片与 `webui/vendor/` 的 React UMD，`client.js` 只多了一条「打开该部署的完整 UI」链接

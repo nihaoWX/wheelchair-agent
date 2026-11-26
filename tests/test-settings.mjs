@@ -402,6 +402,7 @@ function defaultPrIssueNotice(item, comment) {
 
 const EXPECTED_DEFAULTS = {
   'panel.port': 3080,
+  'panel.profileFrom': 'superagent',
   'webui.style': 'fluid',
   'inbox.intervalSeconds': 60,
   'merge.installRepo': 'wheelchair-agent',

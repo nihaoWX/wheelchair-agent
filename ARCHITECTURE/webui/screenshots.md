@@ -68,6 +68,19 @@ route registration itself is covered by the test suite.
 - `webui/docs/after-pr-body.png` — a PR description expanded in the new chrome, rendering Markdown.
 - `webui/docs/after-panel.png` / `webui/docs/after-panel-dark.png` — earlier feature-host captures in light and dark; the current status/chip UI is shown above.
 
+### Panel plugin parity (this change)
+
+The pair uses the **same throwaway temp `DSH_HOME`**, the same empty workspace, the same 1440×900
+viewport and the same signed-out state, so only the panel's plugin set and mirrored config differ:
+
+- `webui/docs/before-panel-plugins.png` — the panel profile as the previous `install.sh` left it:
+  `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app`, the `wheelchair-agent-webui` loader row and the
+  managed `ui-settings-general` row only; light default theme.
+- `webui/docs/after-panel-plugins-dark.png` — after `wheelchair-agent panel sync` against a source
+  `superagent` profile with `dsh-context`, `billion-context` and `@mars-sea/dsh-commandcode-provider`:
+  **Context Insights** appears from `dsh-context`, and the dark theme comes from the mirrored
+  `ui-theme` row. The signed-out dialog is expected in both boxes: the temp `DSH_HOME` has no account.
+
 ### Panel style, cards and drafts (this change)
 
 The before/after pair uses the **same throwaway `superagent` profile, the same seeded inbox, the same

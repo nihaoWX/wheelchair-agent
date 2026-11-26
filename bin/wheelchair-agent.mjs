@@ -196,19 +196,22 @@ reader actually resolves a path, not here.
 options:
   --json    print one JSON object for scripting`
 
-const PANEL_USAGE = `usage: wheelchair-agent panel [start|stop|status] [--port <n>] [--foreground]
+const PANEL_USAGE = `usage: wheelchair-agent panel [start|stop|status|sync] [--port <n>] [--foreground]
 
-The standalone wheelchair-agent panel is its own dsh instance: the "panel" profile (dsh-base +
-dsh-web-app + wheelchair-agent-webui) with a small overlay, running in tmux session "wca-panel".
-It gives the same four sections (inbox, settings, hooks, projects) the full harness UI, but it is
-not a deployment: it is absent from the deployment registry, and "service stop --all" never
-touches it. Inbox polling, auto-merge, cold-install notices and the hook runner stay in each
-deployment's dsh plugin; this instance disables them and only serves the routes and the page.
+The standalone wheelchair-agent panel is its own dsh instance: the "panel" profile with a small
+overlay, running in tmux session "wca-panel". Its plugins mirror the deployment webui instances
+(settings "panel.profileFrom", default "superagent"), except dsh-superagent: the panel has no
+orchestrator and no Sources. It gives the same four sections (inbox, settings, hooks, projects)
+the full harness UI, but it is not a deployment: it is absent from the deployment registry, and
+"service stop --all" never touches it. Inbox polling, auto-merge, cold-install notices and the
+hook runner stay in each deployment's dsh plugin; this instance disables them and only serves
+the routes and the page.
 
 commands:
-  start (default)              start in tmux like a deployment; idempotent
+  start (default)              start in tmux like a deployment; idempotent; syncs plugins first
   stop                         stop this instance; other deployments are untouched
-  status                       print port, pid, the tokenised URL and a one-shot liveness check
+  status                       print the mirrored profile, drift, port, pid, URL and liveness
+  sync                         mirror the source profile's plugins into the panel profile only
 
 options:
   --port <n>                   override this run's port (default: settings.json "panel.port", 3080)
@@ -741,6 +744,88 @@ async function commandService(argv) {
   process.exit(status)
 }
 
+/** The source profile from settings, defaulting to "superagent" when settings cannot be read. */
+async function panelSourceProfileFromSettings(profile) {
+  let settings = null
+  try {
+    const loaded = await load('src', 'shared', 'settings.js')
+    settings = loaded.resolveSettings()
+  } catch {
+    settings = null
+  }
+  return profile.panelSourceProfile({ settings })
+}
+
+/** Read-only profile status; never throws, so `panel status` still reports the process. */
+async function panelStatusReport(profile) {
+  try {
+    const sourceProfile = await panelSourceProfileFromSettings(profile)
+    const report = profile.syncPanelProfile({ dshHome: DSH_HOME, sourceProfile, write: false })
+    return { sourceProfile, report, error: null }
+  } catch (error) {
+    return { sourceProfile: null, report: null, error }
+  }
+}
+
+function printPanelProfileStatus(profile, status) {
+  if (status.report === null) {
+    process.stdout.write(`plugins: unknown (${status.error.message})\n`)
+    process.stdout.write('config:  unknown\n')
+    process.stdout.write('drift:   unknown\n')
+    return
+  }
+  const report = status.report
+  if (report.sourceMissing) {
+    process.stdout.write(`plugins: none (profile "${status.sourceProfile}" is missing)\n`)
+    process.stdout.write(`config:  none (profile "${status.sourceProfile}" is missing)\n`)
+    process.stdout.write('drift:   none\n')
+    return
+  }
+  const excluded = report.excluded.length > 0 ? `; ${report.excluded.join(', ')} excluded` : ''
+  process.stdout.write(`plugins: mirrors profile "${status.sourceProfile}" (${report.bundles.length} bundles${excluded})\n`)
+  process.stdout.write(`${panelConfigSummary(profile, report)}\n`)
+  const drift =
+    report.problems.length === 0
+      ? 'none'
+      : 'the panel profile is out of date: run "wheelchair-agent panel sync"'
+  process.stdout.write(`drift:   ${drift}\n`)
+}
+
+/** `config:` line for `panel status`: how many patch rows the panel mirrors and what it skipped. */
+function panelConfigSummary(profile, report) {
+  const patch = report.patch
+  if (patch === null || patch === undefined) {
+    return `config:  unknown (profile "${report.sourceProfile}" has no ${profile.PANEL_PATCH_FILE})`
+  }
+  const skipped = []
+  for (const item of patch.skipped) {
+    if (item.kind === 'id') skipped.push(item.id)
+    else if (item.kind === 'insert') skipped.push('wheelchair-* inserts')
+  }
+  const skippedText = skipped.length > 0 ? ` (${[...new Set(skipped)].join(', ')} skipped)` : ''
+  return `config:  mirrors ${patch.mirroredCount} patch row(s) from "${report.sourceProfile}"${skippedText}`
+}
+
+/**
+ * `panel start` syncs first. A source profile that disappeared (a machine without superagent, or a
+ * renamed profile) must not stop the panel: the current bundles stay and the note says so.
+ */
+async function syncPanelBeforeStart(profile) {
+  const sourceProfile = await panelSourceProfileFromSettings(profile)
+  const report = profile.syncPanelProfile({ dshHome: DSH_HOME, sourceProfile })
+  if (report.sourceMissing) {
+    process.stdout.write(
+      `note: the source profile "${sourceProfile}" is missing; the panel profile keeps its current bundles\n`,
+    )
+  } else if (report.changed) {
+    process.stdout.write(
+      `note: synced the panel profile with profile "${sourceProfile}" (${report.bundles.length} bundle(s), ` +
+        `${report.linkCount} link(s))\n`,
+    )
+  }
+  for (const note of report.notes ?? []) process.stdout.write(`note: ${note}\n`)
+}
+
 /**
  * `panel`：独立面板，不属于任何部署。默认像部署一样在 tmux 里启动（幂等）；`--foreground` 在当前终端
  * 运行（测试和调试），`stop` 停掉，`status` 看端口、pid、token URL 与一次活性检查。
@@ -771,11 +856,22 @@ async function commandPanel(argv) {
     } else if (word.startsWith('-')) throw new UsageError(`unknown panel option ${JSON.stringify(word)}`)
     else words.push(word)
   }
-  if (words.length > 1) throw new UsageError('panel takes one of start|stop|status')
+  if (words.length > 1) throw new UsageError('panel takes one of start|stop|status|sync')
   if (words[0] === 'stop') action = 'stop'
   else if (words[0] === 'status') action = 'status'
+  else if (words[0] === 'sync') action = 'sync'
   else if (words[0] === 'start') action = 'start'
   else if (words[0] !== undefined) throw new UsageError(`unknown panel command ${JSON.stringify(words[0])}`)
+
+  const profile = await load('src', 'spv', 'panel-profile.js')
+  if (action === 'sync') {
+    const sourceProfile = await panelSourceProfileFromSettings(profile)
+    const report = profile.syncPanelProfile({ dshHome: DSH_HOME, sourceProfile })
+    process.stdout.write(`synced: ${report.bundles.length} bundle(s), ${report.linkCount} link(s)\n`)
+    if (report.sourceMissing) process.stdout.write(`note: ${profile.describePanelProfile(report)}\n`)
+    for (const note of report.notes ?? []) process.stdout.write(`note: ${note}\n`)
+    process.exit(0)
+  }
 
   const chosen = port ?? panel.panelPort()
   if (action === 'stop') {
@@ -783,6 +879,9 @@ async function commandPanel(argv) {
     process.exit(runServiceManager(args))
   }
   if (action === 'status') {
+    // The plugin lines come first: they are about the profile, not the live process the manager
+    // reports below, and they are read-only.
+    printPanelProfileStatus(profile, await panelStatusReport(profile))
     process.exit(runServiceManager(await panelArgs('status', { port: chosen })))
   }
   const overlay = panelOverlayPath()
@@ -792,6 +891,7 @@ async function commandPanel(argv) {
         'panel profile, overlay and webui package.',
     )
   }
+  await syncPanelBeforeStart(profile)
   if (foreground) {
     process.exit(await panel.runPanelForeground({
       overlay,
