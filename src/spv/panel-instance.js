@@ -2,9 +2,9 @@
  * Lifecycle glue for the standalone wheelchair-agent panel.
  *
  * The panel used to be a hand-written `node:http` host. It is now an ordinary dsh instance of its
- * own: the shipped `panel` profile (dsh-base + dsh-web-app + `wheelchair-agent-webui`) plus a small
- * overlay passed with `--patch`. The instance deliberately loads no dsh-superagent, so it has no
- * orchestrator, no sources and no tickets; the routes and the page are the same files the
+ * own: the shipped `wheelchair-agent` profile (dsh-base + dsh-web-app + `wheelchair-agent-webui`)
+ * plus a small overlay passed with `--patch`. The instance deliberately loads no dsh-superagent, so
+ * it has no orchestrator, no sources and no tickets; the routes and the page are the same files the
  * deployments mount, and the data root is ours.
  *
  * Process lifecycle (start/stop/token URL) is shared with deployments and lives in
@@ -26,7 +26,8 @@ import { fileURLToPath } from 'node:url'
 import { dataPaths } from '../shared/home.js'
 import { resolveSettings } from '../shared/settings.js'
 
-export const PANEL_PROFILE_ID = 'panel'
+/** The panel's own dsh profile (`profiles/<id>`): `wheelchair-agent`, not a deployment profile. */
+export const PANEL_PROFILE_ID = 'wheelchair-agent'
 export const PANEL_SESSION = 'wca-panel'
 export const PANEL_HOST = '127.0.0.1'
 export const DEFAULT_PANEL_PORT = 3080
@@ -96,8 +97,10 @@ export function panelLogPath({ env = process.env, dshHome } = {}) {
  * carries no `--patch`, so a cold install that replaces `webui/lib/client.js` leaves it serving the
  * new bundle out of its old page shell (the TDZ `ReferenceError` the operator saw on 3080).
  *
- * A current panel instance always loads `panel.patch.yml`; anything without it is foreign to the
- * panel profile and is reported, never killed.
+ * The panel profile is now `wheelchair-agent`; a current instance always loads `panel.patch.yml`
+ * under that profile id and is never reported. An instance left over under the old `panel` profile
+ * is a plain `dsh --profile panel` process, not the `cli.js panel --foreground` host: the service
+ * manager refuses its port and names the pid, and this detector stays limited to the pre-#58 shape.
  */
 export function looksLikeLegacyPanelHost(argv) {
   if (!Array.isArray(argv) || argv.length === 0) return false
@@ -107,7 +110,9 @@ export function looksLikeLegacyPanelHost(argv) {
   const cliPanel = words.some((word, index) => /(^|\/)cli\.js$/.test(word) && words[index + 1] === 'panel')
   const panelForeground = words.some((word, index) => word === 'panel' && words[index + 1] === '--foreground')
   if (!cliPanel && !panelForeground) return false
-  // A current instance is `dsh --profile panel --patch <…>/panel.patch.yml`; never report it.
+  // A current instance is `dsh --profile wheelchair-agent --patch <…>/panel.patch.yml`; never report
+  // it. An old-profile `dsh --profile panel` instance never reaches here (no cli.js/panel
+  // --foreground shape), so it is the service manager that refuses its port and names the pid.
   const profilePanel = words.some(
     (word, index) => word === `--profile=${PANEL_PROFILE_ID}` || (word === '--profile' && words[index + 1] === PANEL_PROFILE_ID),
   )

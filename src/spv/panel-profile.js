@@ -763,7 +763,7 @@ function recordMatches(file, plan) {
 }
 
 /**
- * Apply a plan to `~/.dsh/profiles/panel` only.
+ * Apply a plan to the panel profile (`~/.dsh/profiles/wheelchair-agent`) only.
  *
  * Writes the manifest and the link record, creates/updates the planned symlinks, and prunes only
  * symlinks recorded by the previous sync (`plan.stale`) whose target still matches the record. A

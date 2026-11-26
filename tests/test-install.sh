@@ -644,12 +644,42 @@ check '(21) --check names the port and pid' "$(grep -c 'note: port 3080 is held 
 check '(21) --check gives the replacement commands' "$(grep -c 'then "wheelchair-agent panel start --detach"' "$SB/stdout")" 1
 check '(21) reporting the older host wrote nothing' "$(install_snapshot)" "$before_panel"
 
-# A current panel instance (panel profile + overlay) is what the install itself starts: no note for it.
-printf 'node\0/usr/bin/dsh\0--profile\0panel\0--patch\0%s/.agent-presets/spv/panel.patch.yml\0--no-open\0' "$SB/dsh" > "$FAKE_PROC/$LEGACY_PID/cmdline"
+# A current panel instance (wheelchair-agent profile + overlay) is what the install itself starts: no
+# note for it, and the overlay keeps it out of the pre-#58 shape.
+printf 'node\0/usr/bin/dsh\0--profile\0wheelchair-agent\0--patch\0%s/.agent-presets/spv/panel.patch.yml\0--no-open\0' "$SB/dsh" > "$FAKE_PROC/$LEGACY_PID/cmdline"
 run_install_raw --check --project tools/wheelchair-agent
 check '(21) a current panel instance passes --check' "$?" 0
 check '(21) a current panel instance needs no note' "$(grep -c 'an older panel host' "$SB/stdout")" 0
 unset WHEELCHAIR_PROC_ROOT SPV_INSTALL_PANEL_HOLDER
+
+# ---- case 22: the panel profile was renamed from "panel"; --check never migrates, install does it once
+# The old name must not silently pass --check. A real install moves profiles/panel to profiles/wheelchair-agent
+# before syncing, keeping the bundle record and links, and a directory already at the new name wins (the old
+# one is only reported: deleting it is the operator's call). The probe and core seams keep this offline.
+mv "$SB/dsh/profiles/wheelchair-agent" "$SB/dsh/profiles/panel"
+before_migrate=$(install_snapshot)
+run_install_raw --check --project tools/wheelchair-agent
+check '(22) --check does not pass with only the old panel profile' "$?" 2
+check '(22) --check says to run install.sh to migrate' "$(grep -c 'note: the panel profile is still at the old path .*profiles/panel; run install.sh to migrate it to wheelchair-agent' "$SB/stdout")" 1
+check '(22) --check still fails the new panel profile path' "$(grep -c 'FAIL: the panel profile is not installed at .*profiles/wheelchair-agent' "$SB/stdout")" 1
+check '(22) --check wrote nothing' "$(install_snapshot)" "$before_migrate"
+
+run_install_raw --project tools/wheelchair-agent
+check '(22) the install migrates the old panel profile' "$?" 0
+check '(22) the install reports the move' "$(grep -c 'note: moved the panel profile from panel to wheelchair-agent' "$SB/stdout")" 1
+check '(22) the new panel profile exists' "$([ -d "$SB/dsh/profiles/wheelchair-agent" ] && echo yes)" yes
+check '(22) the old panel profile is gone' "$([ ! -e "$SB/dsh/profiles/panel" ] && echo yes)" yes
+check '(22) the moved profile keeps its bundle record' "$([ -f "$SB/dsh/profiles/wheelchair-agent/panel-bundles.json" ] && echo yes)" yes
+node "$REPO/src/spv/panel-profile.js" check --dsh-home "$SB/dsh" >/dev/null 2>&1
+check '(22) the moved profile passes panel-profile check' "$?" 0
+
+mkdir -p "$SB/dsh/profiles/panel"
+printf 'stale\n' > "$SB/dsh/profiles/panel/keep-me"
+run_install_raw --project tools/wheelchair-agent
+check '(22) both names: the install still succeeds' "$?" 0
+check '(22) both names: the note names the leftover directory' "$(grep -c 'also exists; the panel uses .*profiles/wheelchair-agent, so remove the old directory by hand' "$SB/stdout")" 1
+check '(22) both names: the old directory is not deleted' "$(cat "$SB/dsh/profiles/panel/keep-me" 2>/dev/null)" 'stale'
+rm -rf "$SB/dsh/profiles/panel"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
