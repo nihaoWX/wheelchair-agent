@@ -880,16 +880,17 @@ export function mergeNoticeText({ item, repo, project, localPath, pulledSha, pen
   if (pending?.kind === 'stale') {
     lines.push(`The installed copy differs from this checkout in: ${describeInstallChanges(pending)}.`)
   }
-  // `project` is that repository's registered project name; every command must name it, because this repo no
-  // longer has a base deployment that a bare `service`/`install.sh` would implicitly mean.
+  // `project` is that repository's registered project name; the install and the service commands name it,
+  // because this repo no longer has a base deployment that a bare `service`/`install.sh` would implicitly mean.
+  // `service` targets the checkout it runs in, so the stop/start lines cd into that checkout.
   const targeted = shellQuote(String(project ?? '<project>'))
   lines.push(
     '',
     `Stop only ${project ?? 'that deployment'}'s holders, install from that checkout, then start again:`,
-    `  wheelchair-agent service stop --project ${targeted}`,
+    `  cd ${shellQuote(localPath)} && wheelchair-agent service stop`,
     '  # exit the SPV session (Ctrl-D); it cannot be stopped from here',
     `  bash ${shellQuote(localPath)}/install.sh --project ${targeted}`,
-    `  wheelchair-agent service start --project ${targeted}`,
+    `  cd ${shellQuote(localPath)} && wheelchair-agent service start`,
     '  wheelchair-agent spv',
   )
   return lines.join('\n')

@@ -8,7 +8,7 @@
  * 唯一的接口是 `<queue>/{pending,done,outbox}/` 里的 JSON 文件（见 `src/shared/queue.js` 与 `ARCHITECTURE/spv-source.md`）。
  *
  * 三个工具：
- *   spv_dispatch  写 pending/，立刻返回 id/thread/project
+ *   spv_dispatch  确保该部署在跑，写 pending/，立刻返回 id/thread/project
  *   spv_status    非阻塞：pending 里还没取走的任务 + 已到但未读的消息
  *   spv_notify    写一封 `spv_message` 决策信进操作者的收件箱，返回 id/thread
  *
@@ -25,7 +25,7 @@
  */
 import { listDeployments, missingDeploymentError } from '../shared/deployments.js'
 import { dirsOf } from '../shared/queue.js'
-import { checkPreset, checkProject, checkTask, checkThread, submitTask } from './dispatch.js'
+import { checkPreset, checkProject, checkTask, checkThread, ensureDeploymentStarted, submitTask } from './dispatch.js'
 import { probe, serviceDown } from './health.js'
 import { createSpvMessage, resolveInboxRoot } from './inbox.js'
 import { startResultInjector } from './injector.js'
@@ -96,8 +96,9 @@ export function defineSpvTools(root, state, config = {}) {
         'work pass preset "cordis" (creator mode); otherwise omit it.\n\n' +
         'Do not wait, do not poll, and do not look for a tool that reads the result: there is no timeout and ' +
         'no such tool. The result arrives later by itself as a new user message on the thread; "reply" means ' +
-        'the worker finished, "notice" needs the operator\'s attention. Fails instead of queuing when the ' +
-        'service is not running.\n\n' +
+        'the worker finished, "notice" needs the operator\'s attention. The deployment that reads the ' +
+        'project is started on demand first, with the same argv as "wheelchair-agent service start"; when it ' +
+        'cannot be started nothing is queued and the error names the project.\n\n' +
         'Report only what the worker actually said: do not claim success on its behalf, and do not quietly ' +
         'substitute your own attempt when it fails.',
       parameters: {
@@ -146,10 +147,14 @@ export function defineSpvTools(root, state, config = {}) {
         const task = checkTask(args.task)
         const thread = checkThread(args.thread)
         const preset = checkPreset(args.preset)
-        // 先路由再探活：项目的部署决定任务进哪条队列，没有条目时不必也不该去碰服务。
+        // 先路由、再确保该部署在跑、最后才写任务：停止的队列没有读者，先写只会让一次失败的派活看起来
+        // 成功。队列不属于任何注册部署（纯 SPV_QUEUE_DIR 覆盖）时没有实例可拉，保留旧的服务探活。
         const targetRoot = resolveRoot(config, { project })
-        const health = await probe()
-        if (!health.alive) throw serviceDown(health)
+        const target = await ensureDeploymentStarted(targetRoot)
+        if (target.entry === null) {
+          const health = await probe()
+          if (!health.alive) throw serviceDown(health)
+        }
         try {
           const record = await submitTask(dirsOf(targetRoot), { project, task, thread, preset })
           // 记下会话的 agent：后台注入器靠它决定把结果投给谁。第一次派活之前没有会话可投。

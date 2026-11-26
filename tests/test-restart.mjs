@@ -735,7 +735,7 @@ async function testFailedInstallAborts() {
     assert.match(joined, /install output: fake install failed: 1/, 'the install output tail is in the log')
     assert.match(
       joined,
-      /fix: recover by hand: bash .*install\.sh --project .* && wheelchair-agent service start --project/,
+      /fix: recover by hand: bash .*install\.sh --project .* && wheelchair-agent service start --all/,
       'the recovery is the by-hand sequence; restart-all cannot identify a live session after the chain died',
     )
     assert.match(output(result), /install failed; every deployment is left stopped/)
@@ -796,9 +796,9 @@ async function testServiceStartFailure() {
       'the TUI must not be relaunched',
     )
     const joined = (await logLines(box)).join('\n')
-    assert.match(joined, /the superagent service did not start/)
+    assert.match(joined, /at least one superagent service did not start/)
     assert.match(joined, /the TUI was not relaunched/)
-    assert.match(joined, /the superagent service did not start/)
+    assert.match(joined, /at least one superagent service did not start/)
     assert.match(joined, /restart failed \(exit 1\)/)
     assert.doesNotMatch(joined, /step 5\/5/)
   })
@@ -1396,7 +1396,7 @@ exit 0
   })
   assert.equal(result.status, 0)
   // Starting a registered backend is outside this assertion; a missing backend only warns on stderr.
-  assert.equal(result.stdout, '', 'a normal exit produces no narrator output')
+  assert.equal(result.stdout, 'note: backends start on demand: the deployment a task targets is started when the task is dispatched.\n', 'a normal exit produces only the on-demand note')
   assert.deepEqual(
     await calls(box),
     ['marker-present', 'launcher-first'],
@@ -1425,7 +1425,7 @@ exit 7
     env: { WHEELCHAIR_AGENT_LAUNCHER: launcher, WHEELCHAIR_RESTART_NARRATE_MS: '3000' },
   })
   assert.equal(result.status, 7, 'the child status becomes the CLI status')
-  assert.equal(result.stdout, '')
+  assert.equal(result.stdout, 'note: backends start on demand: the deployment a task targets is started when the task is dispatched.\n')
   assert.deepEqual(await calls(box), ['launcher-first'])
 }
 

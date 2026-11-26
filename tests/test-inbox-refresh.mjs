@@ -379,9 +379,10 @@ async function testMergePullAndNotice() {
     assert.ok(notice.text.includes(mergedSha), 'the notice names the pulled sha')
     assert.ok(notice.text.includes('moved to'), 'the notice says the local clone moved')
     assert.ok(notice.text.includes('cold install is now pending'), 'the notice says the cold install is pending')
-    assert.match(notice.text, /wheelchair-agent service stop --project '?tools\/wheelchair-agent'?/, 'the notice stops only that deployment')
+    assert.match(notice.text, /cd .* && wheelchair-agent service stop/, 'the notice stops the checkout it names')
     assert.match(notice.text, /install\.sh --project '?tools\/wheelchair-agent'?/, 'the notice installs that deployment')
-    assert.match(notice.text, /wheelchair-agent service start --project '?tools\/wheelchair-agent'?/, 'the notice starts that deployment')
+    assert.match(notice.text, /cd .* && wheelchair-agent service start/, 'the notice starts the checkout it names')
+    assert.doesNotMatch(notice.text, /service (?:stop|start) --project/)
     assert.match(notice.text, /^  wheelchair-agent spv$/m, 'the SPV session is the bare global one')
     assert.ok(notice.text.includes('cannot install itself'), 'the notice says the service cannot install itself')
 
@@ -611,9 +612,10 @@ async function testInstallStampStale() {
   assert.ok(notice.text.includes('preset (2 files:'), 'the line names the component and count')
   assert.ok(notice.text.includes('agent.cordis.yml'), 'the line names a differing file')
   assert.ok(!notice.text.includes('webui ('), 'unchanged components are not listed')
-  assert.match(notice.text, /wheelchair-agent service stop --project '?tools\/wheelchair-agent'?/, 'the stop command names the deployment')
+  assert.match(notice.text, /cd .* && wheelchair-agent service stop/, 'the stop command uses the checkout it names')
   assert.match(notice.text, /install\.sh --project '?tools\/wheelchair-agent'?/, 'the install command names the deployment')
-  assert.match(notice.text, /wheelchair-agent service start --project '?tools\/wheelchair-agent'?/, 'the start command names the deployment')
+  assert.match(notice.text, /cd .* && wheelchair-agent service start/, 'the start command uses the checkout it names')
+  assert.doesNotMatch(notice.text, /service (?:stop|start) --project/)
 }
 
 async function testInstallStampMissing() {
@@ -907,6 +909,8 @@ async function loadHostApply(box) {
     ['src/shared/spv-projects.js', 'lib/shared/spv-projects.js'],
     ['src/spv/ownership.js', 'lib/core/ownership.js'],
     ['src/spv/dispatch.js', 'lib/core/dispatch.js'],
+    ['src/spv/health.js', 'lib/core/health.js'],
+    ['src/spv/service-instance.js', 'lib/core/service-instance.js'],
     ['src/spv/hook-runner.js', 'lib/core/hook-runner.js'],
     ['src/spv/paths.js', 'lib/core/paths.js'],
     ['src/spv/archive-effect.js', 'lib/core/archive-effect.js'],

@@ -13,10 +13,12 @@
  * restarted, the SPV session came or went) is a new notice. The file name is what the injector keys on,
  * so this is also safe across processes.
  *
- * A missing queue directory means the superagent service has never run (it creates `pending/`, `done/`
- * and `outbox/` when it starts). Print one line and exit 0: a refusal must keep its exit code 3 even
- * when nobody can be notified. Any other write failure is reported on stderr with exit 1, and
- * `install.sh` downgrades it to a note for the same reason.
+ * The queue is resolved through the deployment registry: `install.sh` passes the project it inferred
+ * (`--project <p>`), and the registry is the only source that names a deployment's queue. A cold install
+ * can run before the first service start, so a missing registry, an unregistered project or an unknown
+ * project is "nobody to notify yet", not a crash. Print one line and exit 0: a refusal must keep its exit
+ * code 3 even when nobody can be notified. Any other write failure is reported on stderr with exit 1,
+ * and `install.sh` downgrades it to a note for the same reason.
  */
 import { stat } from 'node:fs/promises'
 import { dirsOf, writeMessage } from '../src/shared/queue.js'
@@ -29,18 +31,57 @@ async function readStdin() {
   return Buffer.concat(chunks).toString('utf8')
 }
 
+/** Split `--project <p>` / `--project=<p>` out of the arguments; anything else is a usage error. */
+function parseArgs(argv) {
+  let project = ''
+  const rest = []
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]
+    if (arg === '--project') {
+      project = String(argv[index + 1] ?? '').trim()
+      index += 1
+      if (project === '') return { error: '--project needs a value' }
+    } else if (arg.startsWith('--project=')) {
+      project = arg.slice('--project='.length).trim()
+      if (project === '') return { error: '--project needs a value' }
+    } else {
+      rest.push(arg)
+    }
+  }
+  return { id: String(rest[0] ?? '').trim(), project }
+}
+
+/** One line: `install.sh` prints this as a `note:` and a multi-line error would break that shape. */
+function oneLine(value) {
+  return String(value?.message ?? value).replace(/\s+/g, ' ').trim()
+}
+
 async function main() {
-  const id = String(process.argv[2] ?? '').trim()
+  const parsed = parseArgs(process.argv.slice(2))
+  if (parsed.error !== undefined) {
+    process.stderr.write(`usage: refusal-notice.mjs <message-id> [--project <project>] < notice-text (${parsed.error})\n`)
+    return 2
+  }
+  const id = parsed.id
   if (!/^[A-Za-z0-9._-]+$/.test(id)) {
-    process.stderr.write('usage: refusal-notice.mjs <message-id> < notice-text\n')
+    process.stderr.write('usage: refusal-notice.mjs <message-id> [--project <project>] < notice-text\n')
     return 2
   }
   const text = (await readStdin()).trim()
   if (text === '') {
-    process.stderr.write('usage: refusal-notice.mjs <message-id> < notice-text\n')
+    process.stderr.write('usage: refusal-notice.mjs <message-id> [--project <project>] < notice-text\n')
     return 2
   }
-  const root = resolveRoot()
+  // Resolve through the registry, the one deployment source. `install.sh` passes the project it
+  // inferred; without it `resolveRoot()` refuses to guess between deployments, and that refusal is
+  // also a "skipped:" line rather than a crash.
+  let root
+  try {
+    root = resolveRoot({}, { project: parsed.project })
+  } catch (error) {
+    process.stdout.write(`skipped: ${oneLine(error)}\n`)
+    return 0
+  }
   const info = await stat(root).catch(() => undefined)
   if (info === undefined || !info.isDirectory()) {
     // One line, no queue is created: the refusal did not cause it, and creating one would write state

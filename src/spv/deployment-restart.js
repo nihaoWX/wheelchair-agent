@@ -133,7 +133,7 @@ export function resolveProjectSession({ env = process.env, stateDir, session } =
   return { id: record.sessionId, dir: found?.dir, source: 'record' }
 }
 
-/** The installed per-deployment log path, matching `wheelchair-agent service --project`. */
+/** The installed per-deployment log path, matching the deployment's own `service` instance. */
 function instanceLog(env, slug) {
   const home = String(env.DSH_HOME ?? '').trim() || join(homedir(), '.dsh')
   return join(home, '.artifacts', `wca-${slug}.log`)

@@ -136,7 +136,7 @@ function makeHandler(config = {}) {
         return errorResult(
           `cannot restart: this session does not belong to a registered deployment (${own.reason}). ` +
             'Run "wheelchair-agent deployment list" and pass --project <p>, or start this deployment with ' +
-            '"wheelchair-agent service start --project <p>" so it can identify itself. A machine-wide restart ' +
+            '"wheelchair-agent service start" from its checkout so it can identify itself. A machine-wide restart ' +
             'is no longer the fallback.',
         )
       }
