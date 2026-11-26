@@ -17,6 +17,14 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import { listDeployments, missingDeploymentError } from '../shared/deployments.js'
+import {
+  DEFAULT_ACTOR,
+  DEFAULT_ACTOR_NAME,
+  DEFAULT_PREPARE,
+  DEFAULT_SOURCE,
+  ensureAllowed,
+  ensureExecutorPrepare,
+} from './deployment-policy.js'
 import { setupProblemText } from './health.js'
 
 const SETTINGS_PATH = '/orchestrator/api/settings'
@@ -140,6 +148,39 @@ function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms))
 }
 
+/**
+ * 新部署的 `policy.sources` 与 `executor.prepare` 都是空的：前者让任务以 not_a_member 被悄悄丢弃，
+ * 后者让工单在空目录里开跑。setup 成功时把这两项补齐（已有的自定义值一律不动），失败就抛错，
+ * 这样「setup 成功」不会覆盖一份实际不可用的部署。
+ */
+async function ensureDispatchSettings(entry, { out = process.stdout } = {}) {
+  try {
+    const allowed = await ensureAllowed({
+      port: entry.port,
+      source: DEFAULT_SOURCE,
+      id: DEFAULT_ACTOR,
+      name: DEFAULT_ACTOR_NAME,
+    })
+    if (allowed.changed) {
+      out.write(
+        `note: ${entry.project} was missing the "${DEFAULT_ACTOR}" allowed identity for source ` +
+          `"${DEFAULT_SOURCE}"; added it so dispatches are accepted\n`,
+      )
+    }
+    const prepare = await ensureExecutorPrepare({ port: entry.port, command: DEFAULT_PREPARE })
+    if (prepare.changed) {
+      out.write(`note: ${entry.project} had an empty executor.prepare; set it to "${DEFAULT_PREPARE}"\n`)
+    }
+  } catch (error) {
+    throw new Error(
+      `the deployment ${JSON.stringify(entry.project)} at ${panelUrl(entry.port)} is reachable, but its dispatch ` +
+        `settings could not be completed: ${String(error?.message ?? error)}. Open the panel: ` +
+        `${panelUrl(entry.port)} (Sources and Workers pages), then rerun ` +
+        `"wheelchair-agent deployment setup --project ${entry.project}".`,
+    )
+  }
+}
+
 /** `deployment setup --project <p>` 的实现；返回 0，失败抛 Error（bin 转成 exit 1）。 */
 export async function setupDeployment(projectInput, { env = process.env, out = process.stdout } = {}) {
   const wanted = String(projectInput ?? '').trim()
@@ -164,6 +205,7 @@ export async function setupDeployment(projectInput, { env = process.env, out = p
   const settings = await panelRequest(entry.port, SETTINGS_PATH)
   const { source, config } = githubSource(settings, entry.port)
   if (sameRepository(config.repository, target)) {
+    await ensureDispatchSettings(entry, { out })
     out.write(`already configured: ${entry.project} targets ${target} (${url})\n`)
     return 0
   }
@@ -189,6 +231,7 @@ export async function setupDeployment(projectInput, { env = process.env, out = p
       last = await panelRequest(entry.port, STATE_PATH, { timeoutMs: 3000 })
       const accounts = last?.setup?.accounts
       if (accounts && typeof accounts === 'object' && sameRepository(accounts.repository, target)) {
+        await ensureDispatchSettings(entry, { out })
         out.write(`configured: ${entry.project} now targets ${target} (${url})\n`)
         return 0
       }

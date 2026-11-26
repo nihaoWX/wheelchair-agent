@@ -244,6 +244,7 @@ async function loadHostApply(box) {
     ['src/shared/spv-projects.js', 'lib/shared/spv-projects.js'],
     ['src/spv/ownership.js', 'lib/core/ownership.js'],
     ['src/spv/dispatch.js', 'lib/core/dispatch.js'],
+    ['src/spv/deployment-policy.js', 'lib/core/deployment-policy.js'],
     ['src/spv/health.js', 'lib/core/health.js'],
     ['src/spv/service-instance.js', 'lib/core/service-instance.js'],
     ['src/spv/hook-runner.js', 'lib/core/hook-runner.js'],
