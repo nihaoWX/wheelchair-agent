@@ -17,6 +17,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 import { listDeployments, missingDeploymentError } from '../shared/deployments.js'
+import { setupProblemText } from './health.js'
 
 const SETTINGS_PATH = '/orchestrator/api/settings'
 const STATE_PATH = '/orchestrator/api/state'
@@ -191,7 +192,8 @@ export async function setupDeployment(projectInput, { env = process.env, out = p
         out.write(`configured: ${entry.project} now targets ${target} (${url})\n`)
         return 0
       }
-      if (typeof last?.setup?.problem === 'string' && last.setup.problem.trim() !== '') lastProblem = last.setup.problem.trim()
+      const problem = setupProblemText(last?.setup?.problem)
+      if (problem !== null) lastProblem = problem
     } catch (error) {
       lastProblem = error instanceof Error ? error.message : String(error)
     }

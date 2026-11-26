@@ -294,7 +294,7 @@ function testInference() {
   match('no ancestor lists roots', none.stderr, /Pass --spv <root> explicitly/)
 }
 
-function fakeDeployment(port, mode) {
+function fakeDeployment(port, mode, problem = null) {
   const server = createServer((req, res) => {
     if (mode === 'hang') return
     const url = new URL(req.url, 'http://127.0.0.1')
@@ -302,7 +302,9 @@ function fakeDeployment(port, mode) {
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify(body))
     }
-    if (url.pathname === '/orchestrator/api/state') return send({ setup: { problem: null, accounts: { repository: 'test/alpha' } } })
+    if (url.pathname === '/orchestrator/api/state') {
+      return send({ setup: { problem: mode === 'problem' ? problem : null, accounts: { repository: 'test/alpha' } } })
+    }
     if (url.pathname === '/orchestrator/api/overview') return send({ executor: { running: 1, queued: 2, maxWorkers: 1, idle: 0 } })
     if (url.pathname === '/orchestrator/api/tickets') {
       return send({ items: [{ id: 't1', title: '正在跑的工单', stage: 'working', action: 'run' }] })
@@ -346,6 +348,39 @@ async function testPanelRoute() {
   }
 }
 
+/**
+ * The live orchestrator sends `setup.problem` as `{place, code, values, detail}`; older notes and fixtures used a
+ * bare string. A card must show either, not only the string form.
+ */
+async function testSetupProblemShapes() {
+  const box = makeBox()
+  BOX = box
+  const root = rootFor(box, 'spv-problem')
+  worker(box, 'tools/alpha')
+  worker(box, 'tools/beta')
+  registry(box, [deployment('tools/alpha', 3913), deployment('tools/beta', 3914)])
+  upsertSpvProject(root, ['tools/alpha', 'tools/beta'], { env: envFor(box) })
+  const objectProblem = {
+    place: 'github',
+    code: 'repositoryUnset',
+    values: {},
+    detail: 'The GitHub Source names no repository.',
+  }
+  const alpha = await fakeDeployment(3913, 'problem', objectProblem)
+  const beta = await fakeDeployment(3914, 'problem', 'repositoryUnset (legacy string fixture)')
+  try {
+    const cards = await projectCardsDirect({ env: envFor(box) })
+    const workers = cards.spvProjects[0].workers
+    const first = workers.find(item => item.project === 'tools/alpha')
+    const second = workers.find(item => item.project === 'tools/beta')
+    check('object problem card text', first.state.setupProblem, 'The GitHub Source names no repository.')
+    check('string problem card text', second.state.setupProblem, 'repositoryUnset (legacy string fixture)')
+  } finally {
+    alpha.close()
+    beta.close()
+  }
+}
+
 async function main() {
   testAbsentAndIdempotent()
   testValidation()
@@ -353,6 +388,7 @@ async function main() {
   testDeploymentBinding()
   testInference()
   await testPanelRoute()
+  await testSetupProblemShapes()
   // projectCards is re-exported by panel-routes only through createPanelHandlers; this import keeps
   // the module graph honest (it must be free of dsh imports, like the rest of the panel core).
   process.stdout.write(`\n${pass} passed, ${fail} failed\n`)

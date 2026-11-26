@@ -6,8 +6,9 @@
  * 路径，并且必须在写 `pending/<id>.json` **之前**完成：停止的队列没有读者，先写会让一次失败的派活
  * 看起来成功（本测试用假 manager 检查「start 时 pending 必须为空」，再断言之后恰好一份任务）。
  *
- * 实例已启动但 paused（manager 输出 `setup: waiting`）不是启动失败：错误要准确说明 paused 并指向
- * `deployment setup`，同样不写 pending。
+ * 实例已启动但 paused（manager 输出 `setup: waiting` 或 state 的 `setup.problem`）不是启动失败：错误要
+ * 准确说明 paused 并指向 `deployment setup`，同样不写 pending。已在跑的实例也要先读 `setup.problem`——
+ * 第二次 dispatch 不能因为实例活着就放行。
  *
  * 全程沙箱：HOME/DSH_HOME/WHEELCHAIR_AGENT_HOME 都在 mkdtemp 下；假 `python3` 记录 manager argv，并用
  * 一个后台 node HTTP 服务冒充实例的健康检查端点。不碰真实端口、真实服务或 `~/.wheelchair-agent`。
@@ -169,6 +170,21 @@ async function freePort() {
   return port
 }
 
+/** Serve one fixed `/orchestrator/api/state` body on the deployment port for the duration of `fn`. */
+async function withStateServer(port, body, fn) {
+  const server = createServer((_request, response) => {
+    response.statusCode = 200
+    response.setHeader('content-type', body.startsWith('{') ? 'application/json' : 'text/plain')
+    response.end(body)
+  })
+  await new Promise(done => server.listen(port, '127.0.0.1', done))
+  try {
+    await fn()
+  } finally {
+    await new Promise(done => server.close(done))
+  }
+}
+
 /** 注册一份部署；overlay 由 `deployment add` 渲染，manager 参数才完整。 */
 function addDeployment(box, project, port) {
   execFileSync(
@@ -292,6 +308,71 @@ async function testRunningDeploymentIsNotStartedAgain() {
   }
 }
 
+async function testRunningPausedDeploymentIsRejected() {
+  const box = await sandbox()
+  const port = await freePort()
+  addDeployment(box, 'tools/alpha', port)
+  // The shape the live orchestrator sends (dsh-superagent SetupProblem); older fixtures used a string.
+  const body = JSON.stringify({
+    setup: {
+      machine: {},
+      problem: {
+        place: 'github',
+        code: 'repositoryUnset',
+        values: {},
+        detail: 'The GitHub Source names no repository.',
+      },
+      feishuProblem: null,
+      accounts: null,
+    },
+  })
+  await withStateServer(port, body, async () => {
+    const sent = await cli(box, ['dispatch', '--project', 'tools/alpha', '--task', 'must not land'])
+    assert.equal(sent.status, 1)
+    assert.match(sent.stderr, /is paused/)
+    assert.doesNotMatch(sent.stderr, /started but is paused/)
+    assert.match(sent.stderr, /The GitHub Source names no repository\.|repositoryUnset/)
+    assert.match(sent.stderr, /deployment setup --project tools\/alpha/)
+    assert.doesNotMatch(sent.stderr, /could not start/)
+    assert.deepEqual(await pendingFiles(box), [], 'a paused deployment must not get a task')
+    assert.deepEqual(await serviceCalls(box), [], 'an already paused deployment is not started')
+  })
+}
+
+async function testRunningStringPausedDeploymentIsRejected() {
+  const box = await sandbox()
+  const port = await freePort()
+  addDeployment(box, 'tools/alpha', port)
+  await withStateServer(port, '{"setup":{"problem":"repositoryUnset: legacy string fixture"}}', async () => {
+    const sent = await cli(box, ['dispatch', '--project', 'tools/alpha', '--task', 'must not land'])
+    assert.equal(sent.status, 1)
+    assert.match(sent.stderr, /is paused/)
+    assert.match(sent.stderr, /repositoryUnset: legacy string fixture/)
+    assert.match(sent.stderr, /deployment setup --project tools\/alpha/)
+    assert.deepEqual(await pendingFiles(box), [], 'a paused deployment must not get a task')
+    assert.deepEqual(await serviceCalls(box), [], 'an already paused deployment is not started')
+  })
+}
+
+async function testUnreadableDeploymentStateFailsOpen() {
+  for (const [label, body] of [
+    ['empty object', '{}'],
+    ['null problem', '{"setup":{"problem":null}}'],
+    ['empty problem object', '{"setup":{"problem":{}}}'],
+    ['non-JSON', 'not json'],
+  ]) {
+    const box = await sandbox()
+    const port = await freePort()
+    addDeployment(box, 'tools/alpha', port)
+    await withStateServer(port, body, async () => {
+      const sent = await cli(box, ['dispatch', '--project', 'tools/alpha', '--task', `task (${label})`])
+      assert.equal(sent.status, 0, `${label}: ${sent.stderr}`)
+      assert.deepEqual(await serviceCalls(box), [], `${label}: a running instance is not started again`)
+      assert.equal((await pendingFiles(box)).length, 1, `${label}: the task is queued`)
+    })
+  }
+}
+
 // ------------------------------------------------------------ spv 不再起任何 backend
 
 async function testSpvStartsNoBackend() {
@@ -324,8 +405,11 @@ async function main() {
     await testPausedStartPointsAtDeploymentSetup()
     await testReportedExitWithRunningInstance()
     await testRunningDeploymentIsNotStartedAgain()
+    await testRunningPausedDeploymentIsRejected()
+    await testRunningStringPausedDeploymentIsRejected()
+    await testUnreadableDeploymentStateFailsOpen()
     await testSpvStartsNoBackend()
-    process.stdout.write('ok (6 passed)\n')
+    process.stdout.write('ok (9 passed)\n')
   } finally {
     for (const pid of SERVER_PIDS) {
       try {

@@ -11,6 +11,7 @@ import { join } from 'node:path'
 
 import { deploymentSlug, listDeployments } from '../shared/deployments.js'
 import { listSpvProjects, projectsRootOf, spvProjectsPath } from '../shared/spv-projects.js'
+import { setupProblemText } from './health.js'
 
 /** 单份部署的请求上限；并发发出，所以整张卡最多等这么久。 */
 export const PROJECT_PROBE_TIMEOUT_MS = 2000
@@ -92,7 +93,7 @@ export async function probeDeployment(port) {
       running,
       queued: Number.isInteger(executor.queued) ? executor.queued : 0,
       workers: Number.isInteger(executor.running) ? executor.running : running.length,
-      setupProblem: typeof state?.setup?.problem === 'string' ? state.setup.problem : null,
+      setupProblem: setupProblemText(state?.setup?.problem),
     }
   } catch (error) {
     return { kind: 'unavailable', port, reason: reasonOf(error) }
