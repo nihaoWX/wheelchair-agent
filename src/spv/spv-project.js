@@ -12,6 +12,7 @@
  */
 import { resolve } from 'node:path'
 
+import { listDeployments } from '../shared/deployments.js'
 import {
   SPV_PROJECTS_VERSION,
   listSpvProjects,
@@ -36,8 +37,9 @@ commands:
   remove <root> [--force]      delete an spv root; while it still binds workers, --force is
                                required and the error lists what would be unbound
 
-A worker belongs to at most one spv root. "wheelchair-agent deployment add <project> --spv <root>"
-maintains the same binding, and "deployment remove" unbinds the worker again.`
+A worker belongs to at most one spv root, and every --worker must already be the project of a registered
+deployment (run "wheelchair-agent deployment add <project> --repository owner/name" first). "wheelchair-agent
+deployment add <project> --spv <root>" maintains the same binding, and "deployment remove" unbinds the worker again.`
 
 function usageError(message) {
   const error = new Error(message)
@@ -137,7 +139,17 @@ function list({ env, json, out }) {
 function add(positionals, flags, { env, out }) {
   const root = exactlyOne(positionals, '~/bioagentforge')
   const workers = flags['--worker'] ?? []
-  for (const worker of workers) checkProject(worker)
+  const registry = workers.length === 0 ? null : listDeployments({ env })
+  for (const worker of workers) {
+    checkProject(worker)
+    if (!registry.deployments.some(entry => entry.project === worker)) {
+      throw new Error(
+        `cannot bind ${JSON.stringify(worker)} to spv project ${JSON.stringify(resolve(root))}: it is not the ` +
+          'project of a registered deployment, so no instance would run it. Register it first with ' +
+          `"wheelchair-agent deployment add ${worker} --repository owner/name", then rerun this command.`,
+      )
+    }
+  }
   const result = upsertSpvProject(root, workers, { env })
   if (result.created) {
     out.write(`registered ${describe(result.entry)}\n`)

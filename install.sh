@@ -1035,6 +1035,41 @@ check_deployment_settings() {
   done
 }
 
+# A worker project path may belong to only one deployment. `listDeployments()` already rejects duplicate
+# project names and ports, but two different names can still resolve to the same real checkout (a symlink or
+# a moved directory), and then dispatch cannot know which instance owns it. --check reports each such path as
+# a failure and stays read-only: it never deletes an entry to repair the registry.
+check_deployment_registry() {
+  local report status line
+  report=$(WHEELCHAIR_AGENT_HOME="$DATA_ROOT" SPV_PROJECTS_ROOT="$PROJECTS_ROOT" node --input-type=module -e '
+import { pathToFileURL } from "node:url"
+import { join } from "node:path"
+const [self] = process.argv.slice(1)
+try {
+  const { listDeployments, projectPathConflicts, describePathConflict } = await import(
+    pathToFileURL(join(self, "src", "shared", "deployments.js")).href
+  )
+  const registry = listDeployments()
+  for (const conflict of projectPathConflicts(registry.deployments)) {
+    console.log(describePathConflict(conflict))
+    process.exitCode = 1
+  }
+} catch (error) {
+  console.error(`could not check the deployment registry: ${error instanceof Error ? error.message : String(error)}`)
+  process.exitCode = 1
+}
+' "$SELF_DIR" 2>&1)
+  status=$?
+  if [ "$status" -eq 0 ]; then
+    ok 'every worker project path belongs to exactly one deployment'
+    return
+  fi
+  while IFS= read -r line; do
+    [ -n "$line" ] && fail "$line"
+  done <<< "$report"
+  fix 'remove all but one deployment for that path: wheelchair-agent deployment remove <project>'
+}
+
 # A stopped service is not a failure: the operator may install before starting it. Say so and move on.
 check_service_path() {
   local pid path entry found=0
@@ -1633,6 +1668,7 @@ if [ "$CHECK" -eq 1 ]; then
   check_core_binary
   check_install_stamp
   check_service_path
+  check_deployment_registry
   check_deployment_settings
   panel_upgrade_note
   if [ "$PROBLEMS" -gt 0 ]; then

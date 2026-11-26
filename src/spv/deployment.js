@@ -12,15 +12,18 @@
  */
 import { execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { join, resolve } from 'node:path'
 
 import {
   DEFAULT_PROFILE,
   allocatePort,
+  canonicalProjectPath,
   deploymentSlug,
+  describePathConflict,
   installedShaOf,
   listDeployments,
+  projectPathConflicts,
+  projectsRootOf,
   removeDeployment,
   repositoryFromRemote,
   upsertDeployment,
@@ -149,7 +152,7 @@ function sameRepository(left, right) {
 
 /** 项目 checkout 的根：与 `prepare`/watcher 看的是同一层（`$SPV_PROJECTS_ROOT` 或 ~/bioagentforge）。 */
 function projectsRoot(env) {
-  return String(env.SPV_PROJECTS_ROOT ?? '').trim() || join(homedir(), 'bioagentforge')
+  return projectsRootOf({ env })
 }
 
 /**
@@ -233,7 +236,8 @@ function list({ env, json, out }) {
       ...entry,
       spv: spvRoots.get(entry.project) ?? null,
     }))
-    out.write(`${JSON.stringify({ version: registry.version, registry: registry.file, deployments }, null, 2)}\n`)
+    const warnings = projectPathConflicts(registry.deployments, { env }).map(describePathConflict)
+    out.write(`${JSON.stringify({ version: registry.version, registry: registry.file, deployments, warnings }, null, 2)}\n`)
     return 0
   }
   out.write(`registry: ${registry.file}\n`)
@@ -246,6 +250,9 @@ function list({ env, json, out }) {
     return 0
   }
   const spvRoots = spvRootsByWorker(env)
+  for (const conflict of projectPathConflicts(registry.deployments, { env })) {
+    out.write(`warning: ${describePathConflict(conflict)}\n`)
+  }
   for (const entry of registry.deployments) out.write(`${describe(entry, spvRoots.get(entry.project))}\n`)
   return 0
 }
@@ -267,6 +274,17 @@ function add(positionals, flags, { env, out }) {
     }
   }
   const existing = registry.deployments.find(entry => entry.project === project)
+  const canonical = canonicalProjectPath(project, { env })
+  const clash = registry.deployments.find(
+    entry => entry.project !== project && canonicalProjectPath(entry.project, { env }) === canonical,
+  )
+  if (clash !== undefined) {
+    throw new Error(
+      `${canonical} is already the deployment ${JSON.stringify(deploymentSlug(clash.project))} ` +
+        `(port ${clash.port ?? '-'}); a worker project belongs to exactly one instance. Remove that deployment ` +
+        `first ("deployment remove ${clash.project}") if you really mean to move it.`,
+    )
+  }
   const stateDir = String(flags['--state-dir'] ?? '').trim() || existing?.stateDir || deploymentStateDir(project, env)
   const expectedQueue = join(stateDir, 'spv')
   const requestedQueue = String(flags['--queue-dir'] ?? '').trim()

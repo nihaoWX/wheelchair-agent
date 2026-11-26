@@ -11,15 +11,17 @@
  *   - 一个 worker 只能属于一个 spv 项目（读取时检测重复，不悄悄取第一个）。
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
 
 import { dataPaths } from './home.js'
-import { PROJECT_PATTERN, listDeployments } from './deployments.js'
+import { PROJECT_PATTERN, listDeployments, projectsRootOf } from './deployments.js'
 import { object, text } from './schema.js'
 
 export const SPV_PROJECTS_FILE = 'spv-projects.json'
 export const SPV_PROJECTS_VERSION = 1
+
+/** worker 项目的 checkout 根：`$SPV_PROJECTS_ROOT`，默认 `~/bioagentforge`。 */
+export { projectsRootOf }
 
 /** `root` 字段的类型校验；容器（spvProjects 数组与 workers 数组）手工检查。 */
 const rootSchema = object({ root: text({ min: 1, max: 4096 }) })
@@ -27,12 +29,6 @@ const rootSchema = object({ root: text({ min: 1, max: 4096 }) })
 /** spv 项目文件的路径：数据根下，与 deployments.json 平级。 */
 export function spvProjectsPath({ env = process.env, home, stateDir } = {}) {
   return join(dataPaths({ env, home, stateDir }).root, SPV_PROJECTS_FILE)
-}
-
-/** worker 项目的 checkout 根：`$SPV_PROJECTS_ROOT`，默认 `~/bioagentforge`。 */
-export function projectsRootOf({ env = process.env } = {}) {
-  const configured = String(env.SPV_PROJECTS_ROOT ?? '').trim()
-  return resolve(configured === '' ? join(homedir(), 'bioagentforge') : configured)
 }
 
 function registryError(file, detail) {
@@ -118,15 +114,12 @@ function normalizeEntry(raw, where, { projectsRoot, deployments }) {
     workers.push(worker)
   }
   const rootReal = realOrResolved(root)
-  const registered = deployments.find(entry => {
-    const checkout = join(projectsRoot, entry.project)
-    return realOrResolved(checkout) === rootReal || resolve(checkout) === rootReal
-  })
+  const registered = deployments.find(entry => inside(realOrResolved(join(projectsRoot, entry.project)), rootReal))
   if (registered !== undefined) {
     throw new Error(
       `${where}.root is ${JSON.stringify(root)}, but that is the checkout of registered worker project ` +
-        `${JSON.stringify(registered.project)}. An spv root is the directory that contains worker projects, not one ` +
-        'of them.',
+        `${JSON.stringify(registered.project)} (or a directory inside it). An spv root is the directory that ` +
+        'contains worker projects, not one of them or a subdirectory of one.',
     )
   }
   return { root, workers: workers.sort(byWorker) }
@@ -283,8 +276,9 @@ export function upsertSpvProject(root, workers = [], options = {}) {
     for (const worker of entry.workers) {
       if (candidate.workers.includes(worker)) {
         throw new Error(
-          `worker ${JSON.stringify(worker)} is already bound to spv project ${JSON.stringify(entry.root)}; a worker ` +
-            'can belong to only one spv project. Remove it there first.',
+          `worker ${JSON.stringify(worker)} is already bound to spv project ${JSON.stringify(entry.root)}; it cannot ` +
+            `also belong to spv project ${JSON.stringify(candidate.root)}. A worker can belong to only one spv ` +
+            `project. Remove it from ${JSON.stringify(entry.root)} first.`,
         )
       }
     }
