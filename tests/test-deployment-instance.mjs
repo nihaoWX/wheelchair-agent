@@ -13,11 +13,12 @@
  *     不写真实数据根，也不碰正在运行的服务。
  */
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { execFile as execFileCallback, spawn, spawnSync } from 'node:child_process'
 import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { promisify } from 'node:util'
 
 import {
   allocatePort,
@@ -37,6 +38,7 @@ import {
 import { encodeSegment, projectKey } from '../src/spv/session.js'
 import { apply as applyRestartCommand, USAGE as RESTART_COMMAND_USAGE } from '../src/spv/restart-command.js'
 import { mergeNoticeText } from '../src/spv/inbox.js'
+import { looksLikeLegacyPanelHost, probePanelHttp } from '../src/spv/panel-instance.js'
 import { resolveRoots } from '../src/spv/paths.js'
 
 const CLI = fileURLToPath(new URL('../bin/wheelchair-agent.mjs', import.meta.url))
@@ -98,6 +100,26 @@ function envFor(box, extra = {}) {
     // read-only preflight see "nothing known" instead of live load.
     DSH_SUPERAGENT_URL: 'http://127.0.0.1:9',
     ...extra,
+  }
+}
+
+const execFile = promisify(execFileCallback)
+
+/**
+ * Same CLI run as `cli()`, but asynchronous. A synchronously blocked test process cannot reap a killed
+ * child, so a zombie would still answer `kill(pid, 0)`; awaiting here keeps the event loop free while the
+ * CLI stops the older panel host.
+ */
+async function cliAsync(box, argv, extra = {}, { timeoutMs } = {}) {
+  try {
+    const { stdout, stderr } = await execFile(process.execPath, [CLI, ...argv], {
+      env: envFor(box, extra),
+      encoding: 'utf8',
+      ...(timeoutMs === undefined ? {} : { timeout: timeoutMs }),
+    })
+    return { status: 0, stdout, stderr }
+  } catch (error) {
+    return { status: typeof error?.code === 'number' ? error.code : 1, stdout: error?.stdout ?? '', stderr: error?.stderr ?? '' }
   }
 }
 
@@ -403,6 +425,178 @@ async function fakeServiceManager(box) {
   return { log, path: `${bin}:${process.env.PATH}` }
 }
 
+async function writeFakeManager(box, { panelBody = ':', panelExit = 0 } = {}) {
+  const bin = join(box.base, 'bin')
+  await mkdir(bin, { recursive: true })
+  const log = join(box.base, 'service-argv.log')
+  await writeFile(
+    join(bin, 'python3'),
+    [
+      '#!/bin/sh',
+      'printf \'%s\\n\' "$*" >> "$FAKE_SERVICE_LOG"',
+      'case "$*" in',
+      `  *--mode\\ panel*) ${panelBody}; exit ${panelExit} ;;`,
+      'esac',
+      'exit 0',
+      '',
+    ].join('\n'),
+  )
+  await chmod(join(bin, 'python3'), 0o755)
+  return { log, path: `${bin}:${process.env.PATH}` }
+}
+
+function processAlive(pid) {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch {
+    return false
+  }
+}
+
+/** One machine-wide round also covers the panel, which is not a deployment: stop last/start last, never fail. */
+async function testLegacyPanelShapes() {
+  // Pure shapes: the old host is `cli.js panel --foreground` without the panel profile overlay; a
+  // current instance always loads `panel.patch.yml`. Everything else is not ours.
+  assert.equal(
+    looksLikeLegacyPanelHost(['node', '/home/nihao/.local/bin/cli.js', 'panel', '--foreground', '--port', '3080']),
+    true,
+  )
+  assert.equal(
+    looksLikeLegacyPanelHost(['node', '/usr/bin/dsh', '--profile', 'panel', '--patch', '/h/.agent-presets/spv/panel.patch.yml']),
+    false,
+  )
+  assert.equal(looksLikeLegacyPanelHost(['vim', 'panel']), false)
+  assert.equal(looksLikeLegacyPanelHost(['node', '/x/panel-server.js', '--port', '3080']), false)
+  assert.equal(looksLikeLegacyPanelHost([]), false)
+
+  // The HTTP half: a closed port has no answer, a serving one does. No /proc and no real process.
+  const closed = await probePanelHttp(30999, { timeoutMs: 300 })
+  assert.equal(closed, null)
+  const { createServer } = await import('node:http')
+  const server = createServer((_, response) => response.end('ok'))
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const port = server.address().port
+    assert.equal(await probePanelHttp(port, { timeoutMs: 800 }), 200)
+  } finally {
+    await new Promise(resolve => server.close(resolve))
+  }
+  pass('legacy panel detection is a pure, injectable shape plus an HTTP liveness probe')
+}
+
+async function testServiceAllIncludesThePanel() {
+  const box = await sandbox()
+  assert.equal(cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'test/alpha']).status, 0)
+  assert.equal(cli(box, ['deployment', 'add', 'tools/beta', '--repo', 'test/beta']).status, 0)
+  let fake = await writeFakeManager(box)
+  const env = { PATH: fake.path, FAKE_SERVICE_LOG: fake.log }
+  const calls = async () => {
+    try {
+      return (await readFile(fake.log, 'utf8')).trim().split('\n').filter(Boolean)
+    } catch {
+      return []
+    }
+  }
+  const reset = async () => { await rm(fake.log, { force: true }) }
+
+  // No overlay: the panel is optional; the round stays successful and only touches deployments.
+  const missing = cli(box, ['service', 'start', '--all'], env)
+  assert.equal(missing.status, 0, missing.stderr)
+  assert.equal((await calls()).length, 2)
+  assert.match(missing.stdout, /panel: not configured \(no panel overlay at .*panel\.patch\.yml\)/)
+
+  // Installed overlay: the panel starts last, after the deployments whose registry it reads.
+  const overlay = join(box.dsh, '.agent-presets', 'spv', 'panel.patch.yml')
+  await mkdir(dirname(overlay), { recursive: true })
+  await writeFile(overlay, '- id: webserver\n  config: {}\n')
+  await reset()
+  const start = cli(box, ['service', 'start', '--all'], env)
+  assert.equal(start.status, 0, start.stderr)
+  const startLines = await calls()
+  assert.equal(startLines.length, 3)
+  assert.match(startLines[0], /start --profile superagent --patch .*alpha\.yml/)
+  assert.match(startLines[1], /start --profile superagent --patch .*beta\.yml/)
+  assert.match(startLines[2], /start --mode panel --profile panel --patch .*panel\.patch\.yml/)
+  assert.match(startLines[2], /--port 3080/)
+  assert.match(start.stdout, /panel: started/)
+
+  // A broken panel prints the manager's reason and fix, but never changes the deployments' exit code.
+  fake = await writeFakeManager(box, {
+    panelBody: 'echo "FAIL: port 3080 is already in use by pid 4910, which is not profile panel" >&2; echo "fix: stop that process first: kill -INT 4910" >&2',
+    panelExit: 1,
+  })
+  await reset()
+  const failedStart = cli(box, ['service', 'start', '--all'], { PATH: fake.path, FAKE_SERVICE_LOG: fake.log })
+  assert.equal(failedStart.status, 0, failedStart.stderr)
+  assert.equal((await calls()).length, 3)
+  assert.match(failedStart.stdout, /panel: FAIL: port 3080 is already in use by pid 4910/)
+  assert.match(failedStart.stdout, /kill -INT 4910/)
+
+  // The manager cannot see a pre-#58 `cli.js panel --foreground` host: stop --all stops that one too.
+  fake = await writeFakeManager(box, { panelBody: 'echo "OK: not running; nothing to stop"' })
+  const holder = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', detached: true })
+  try {
+    await mkdir(join(box.proc, String(holder.pid)), { recursive: true })
+    await writeFile(
+      join(box.proc, String(holder.pid), 'cmdline'),
+      ['node', join(box.base, 'cli.js'), 'panel', '--foreground', '--port', '3080'].join('\0') + '\0',
+    )
+    await reset()
+    const stop = await cliAsync(box, ['service', 'stop', '--all'], {
+      PATH: fake.path, FAKE_SERVICE_LOG: fake.log, SPV_INSTALL_PANEL_HOLDER: String(holder.pid),
+    })
+    assert.equal(stop.status, 0, stop.stderr)
+    assert.match(stop.stdout, new RegExp(`panel: stopped \\(older panel host pid ${holder.pid}\\)`))
+    assert.equal(processAlive(holder.pid), false, 'the older panel host was stopped')
+  } finally {
+    try { process.kill(holder.pid, 'SIGKILL') } catch { /* already gone */ }
+  }
+
+  // A host that refuses SIGINT is reported with the exact command; we never escalate to SIGKILL.
+  fake = await writeFakeManager(box, { panelBody: 'echo "OK: not running; nothing to stop"' })
+  const stubborn = spawn(
+    process.execPath,
+    ['-e', "process.on('SIGINT', () => {}); setInterval(() => {}, 1000)"],
+    { stdio: 'ignore', detached: true },
+  )
+  try {
+    await mkdir(join(box.proc, String(stubborn.pid)), { recursive: true })
+    await writeFile(
+      join(box.proc, String(stubborn.pid), 'cmdline'),
+      ['node', join(box.base, 'stubborn-cli.js'), 'panel', '--foreground', '--port', '3080'].join('\0') + '\0',
+    )
+    await reset()
+    const refused = await cliAsync(
+      box,
+      ['service', 'stop', '--all'],
+      { PATH: fake.path, FAKE_SERVICE_LOG: fake.log, SPV_INSTALL_PANEL_HOLDER: String(stubborn.pid) },
+      { timeoutMs: 30_000 },
+    )
+    assert.equal(refused.status, 0, refused.stderr)
+    assert.match(
+      refused.stdout,
+      new RegExp(`panel: pid ${stubborn.pid} \\(older panel host\\) did not exit; stop it with "kill -INT ${stubborn.pid}"`),
+    )
+  } finally {
+    try { process.kill(stubborn.pid, 'SIGKILL') } catch { /* already gone */ }
+  }
+
+  // Nothing of ours on the port: the line says so, and a panel stop failure still keeps exit 0.
+  fake = await writeFakeManager(box, { panelBody: 'echo "OK: not running; nothing to stop"' })
+  await reset()
+  const idle = cli(box, ['service', 'stop', '--all'], { PATH: fake.path, FAKE_SERVICE_LOG: fake.log })
+  assert.equal(idle.status, 0, idle.stderr)
+  assert.match(idle.stdout, /panel: not running/)
+
+  fake = await writeFakeManager(box, { panelBody: 'echo "FAIL: panel stop exploded" >&2', panelExit: 3 })
+  await reset()
+  const brokenStop = cli(box, ['service', 'stop', '--all'], { PATH: fake.path, FAKE_SERVICE_LOG: fake.log })
+  assert.equal(brokenStop.status, 0, brokenStop.stderr)
+  assert.match(brokenStop.stdout, /panel: FAIL: panel stop exploded/)
+  pass('service --all includes the standalone panel without letting it change the deployments result')
+}
+
 async function testServiceTargetsOwnDeployment() {
   const box = await sandbox()
   assert.equal(cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'test/alpha']).status, 0)
@@ -665,6 +859,8 @@ try {
   await testServiceStatusInfersFromCwd()
   await testServiceStatusListsDeployments()
   await testServiceTargetsOwnDeployment()
+  await testLegacyPanelShapes()
+  await testServiceAllIncludesThePanel()
   await testRestartCommandPassesProject()
   process.stdout.write(`ok (${passed} passed)\n`)
 } catch (error) {

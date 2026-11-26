@@ -63,7 +63,8 @@ commands:
   service <start|stop|restart|status|open> [--all]
                                start, stop, restart or inspect a deployment's instance; without --all
                                the deployment is the project checkout this command runs in, --all does
-                               every registered deployment, and "service open" opens only the panel
+                               every registered deployment and also starts/stops the standalone panel,
+                               and "service open" opens only the panel
   panel [start|stop|status] [--port <n>] [--foreground]
                                run the standalone panel (127.0.0.1, default 3080): its own dsh
                                instance with the full harness UI, serving the inbox/settings/hooks/
@@ -579,6 +580,67 @@ function runServiceManager(args) {
   return child.status ?? 1
 }
 
+/** Run the manager with captured output, for the panel lines `--all` summarises instead of forwarding. */
+function runServiceManagerQuiet(args) {
+  if (!existsSync(SERVICE)) {
+    return { status: 1, stdout: '', stderr: `the service manager is missing at ${SERVICE}` }
+  }
+  const child = spawnSync('python3', [SERVICE, ...args], { env: process.env, encoding: 'utf8' })
+  if (child.error) return { status: 1, stdout: '', stderr: `cannot run the service manager: ${child.error.message}` }
+  return { status: child.status ?? 1, stdout: child.stdout ?? '', stderr: child.stderr ?? '' }
+}
+
+/** The first line the operator needs from a failed manager run, plus its `fix:` line when present. */
+function failureSummary(result) {
+  const lines = `${result.stderr}\n${result.stdout}`.split('\n').map(line => line.trim()).filter(Boolean)
+  const first = lines[0] ?? 'the service manager failed without a message'
+  const fix = lines.find(line => line.startsWith('fix:'))
+  return fix === undefined ? first : `${first}\n      ${fix}`
+}
+
+/**
+ * The panel part of `service stop --all` / `service start --all`.
+ *
+ * The panel is not a deployment and never enters the registry, but it is part of one machine-wide
+ * round: `stop --all` must not leave the old panel host serving the freshly installed bundle, and
+ * `start --all` should bring the new panel back. A panel that is missing, foreign or broken prints a
+ * line and never changes the deployments' exit code (the deployments are the main goal).
+ */
+async function panelAllLine(action) {
+  const panel = await load('src', 'spv', 'panel-instance.js')
+  const overlay = panelOverlayPath()
+  if (!existsSync(overlay)) {
+    // Without an overlay there is no panel-profile instance to start or stop, but an older host may still
+    // hold the port: `stop --all` takes it down anyway, `start --all` cannot (install has to run first).
+    if (action === 'stop') {
+      const legacy = await panel.stopLegacyPanelHost({ port: panel.panelPort() })
+      if (legacy !== null && legacy.stopped) return `panel: stopped (older panel host pid ${legacy.pid})`
+      if (legacy !== null) {
+        return `panel: pid ${legacy.pid} (older panel host) did not exit; stop it with "kill -INT ${legacy.pid}"`
+      }
+    }
+    return `panel: not configured (no panel overlay at ${overlay})`
+  }
+  let args
+  let port
+  try {
+    port = panel.panelPort()
+    args = await panelArgs(action, { port })
+  } catch (error) {
+    return `panel: not configured (${error.message})`
+  }
+  const result = runServiceManagerQuiet(args)
+  if (result.status !== 0) return `panel: ${failureSummary(result)}`
+  if (action === 'start') return /already running/i.test(result.stdout) ? 'panel: already running' : 'panel: started'
+  if (!/not running/i.test(result.stdout)) return 'panel: stopped'
+  // The manager only knows the panel-profile instance; a pre-#58 `cli.js panel --foreground` host is
+  // invisible to it while it still holds the port. Stop that one here too, after checking its cmdline.
+  const legacy = await panel.stopLegacyPanelHost({ port })
+  if (legacy === null) return 'panel: not running'
+  if (legacy.stopped) return `panel: stopped (older panel host pid ${legacy.pid})`
+  return `panel: pid ${legacy.pid} (older panel host) did not exit; stop it with "kill -INT ${legacy.pid}"`
+}
+
 /**
  * 一个部署施加到 service manager 上的参数：profile、实例 overlay、会话/日志/端口与部署身份。
  * 参数形状只实现在 `src/spv/service-instance.js`：`service start` 与 dispatch 的按需启动必须一字不差。
@@ -669,6 +731,12 @@ async function commandService(argv) {
       const hint = await setupHint(entry)
       if (hint !== null) process.stdout.write(`note: ${hint}\n`)
     }
+  }
+  // The panel belongs to no deployment, so the per-deployment loop above cannot reach it. A machine-wide
+  // round includes it: stop it after the deployments (no order requirement), start it last (it reads the
+  // registry), and never let its result change the deployments' exit code.
+  if (all && (action === 'stop' || action === 'start')) {
+    process.stdout.write(`${await panelAllLine(action)}\n`)
   }
   process.exit(status)
 }

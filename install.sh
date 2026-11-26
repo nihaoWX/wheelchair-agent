@@ -1036,6 +1036,25 @@ check_service_path() {
   fi
 }
 
+# An older panel host (started before the panel became its own dsh instance) keeps `panel.port` and
+# serves the page shell it booted with. A cold install replaces `webui/lib/client.js` underneath it, so
+# the browser gets the new bundle from the old shell and dies on it. Report the holder and the exact
+# commands; never signal it (that is the operator's decision) and never fail the install over it. The
+# detection is read-only: it reads /proc and settings, and writes nothing.
+panel_upgrade_note() {
+  local out port pid
+  out=$(WHEELCHAIR_AGENT_HOME="$DATA_ROOT" DSH_SUPERAGENT_STATE_DIR="$LEGACY_STATE_DIR" \
+        node "$SELF_DIR/src/spv/panel-instance.js" legacy-holder 2>/dev/null) || return 0
+  port=$(printf '%s\n' "$out" | sed -n 's/^panel_holder_port=//p')
+  pid=$(printf '%s\n' "$out" | sed -n 's/^panel_holder_pid=//p')
+  if [ -z "$port" ] || [ -z "$pid" ]; then
+    return 0
+  fi
+  note "port $port is held by pid $pid, an older panel host (started before the panel became its own dsh instance);"
+  printf '      stop it with "kill -INT %s" (panel stop only knows the current panel instance), then "wheelchair-agent panel start --detach"\n' "$pid"
+  return 0
+}
+
 check_prerequisites() {
   require_node || true
   require_dsh_tui || true
@@ -1566,6 +1585,7 @@ if [ "$CHECK" -eq 1 ]; then
   check_core_binary
   check_install_stamp
   check_service_path
+  panel_upgrade_note
   if [ "$PROBLEMS" -gt 0 ]; then
     printf '\n%d check(s) failed.\n' "$PROBLEMS"
     exit 2
@@ -1636,6 +1656,8 @@ if [ "$PROBLEMS" -gt 0 ]; then
   printf '\n%d step(s) failed.\n' "$PROBLEMS"
   exit 1
 fi
+
+panel_upgrade_note
 
 printf '\nDone. Start the deployment backends, then the SPV session:\n'
 printf '  wheelchair-agent service start --all   # every registered backend that executes tickets\n'

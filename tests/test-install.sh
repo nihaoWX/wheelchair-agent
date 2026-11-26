@@ -616,5 +616,40 @@ run_install_core "$FAKE_CORE" "$FAKE_STAMP" --project tools/wheelchair-agent --a
 check '(20) --allow-stale-core installs anyway' "$?" 0
 check '(20) the escape hatch warns' "$(grep -c 'WARNING: installing a stale Rust core artifact' "$SB/stderr")" 1
 
+# ---- case 21: an older panel host holding panel.port is reported, never killed
+# The pre-#58 panel was a plain `cli.js panel --foreground` host. A cold install reuses panel.port and
+# replaces webui/lib/client.js underneath it, so the browser gets the new bundle from the old page shell.
+# Both `--check` and a real install name the holder and the exact commands (the install must not signal it),
+# and detection reads /proc and settings only. The process table is a sandbox (WHEELCHAIR_PROC_ROOT) and the
+# listener is injected (SPV_INSTALL_PANEL_HOLDER), so nothing real is inspected or signalled.
+FAKE_PROC=$SB/install-proc
+LEGACY_PID=4910
+rm -rf "$FAKE_PROC"
+mkdir -p "$FAKE_PROC/$LEGACY_PID"
+printf 'node\0%s/cli.js\0panel\0--foreground\0--port\03080\0' "$SB/local-bin" > "$FAKE_PROC/$LEGACY_PID/cmdline"
+export WHEELCHAIR_PROC_ROOT="$FAKE_PROC"
+export SPV_INSTALL_PANEL_HOLDER="$LEGACY_PID"
+
+# Case 20 left a fabricated stale core installed; a real install restores the checkout's artifact and is
+# also the "after install" path that must report the older host.
+run_install_raw --project tools/wheelchair-agent
+check '(21) the install succeeds with the older panel host running' "$?" 0
+check '(21) the install reports the older panel host' "$(grep -c 'note: port 3080 is held by pid 4910, an older panel host' "$SB/stdout")" 1
+check '(21) the install does not fail over the panel' "$(grep -c '^FAIL:' "$SB/stdout")" 0
+
+before_panel=$(install_snapshot)
+run_install_raw --check --project tools/wheelchair-agent
+check '(21) --check succeeds while reporting the older panel host' "$?" 0
+check '(21) --check names the port and pid' "$(grep -c 'note: port 3080 is held by pid 4910, an older panel host' "$SB/stdout")" 1
+check '(21) --check gives the replacement commands' "$(grep -c 'then "wheelchair-agent panel start --detach"' "$SB/stdout")" 1
+check '(21) reporting the older host wrote nothing' "$(install_snapshot)" "$before_panel"
+
+# A current panel instance (panel profile + overlay) is what the install itself starts: no note for it.
+printf 'node\0/usr/bin/dsh\0--profile\0panel\0--patch\0%s/.agent-presets/spv/panel.patch.yml\0--no-open\0' "$SB/dsh" > "$FAKE_PROC/$LEGACY_PID/cmdline"
+run_install_raw --check --project tools/wheelchair-agent
+check '(21) a current panel instance passes --check' "$?" 0
+check '(21) a current panel instance needs no note' "$(grep -c 'an older panel host' "$SB/stdout")" 0
+unset WHEELCHAIR_PROC_ROOT SPV_INSTALL_PANEL_HOLDER
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]
