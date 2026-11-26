@@ -25,17 +25,59 @@ export function serviceBaseUrl(env = process.env) {
 }
 
 /**
+ * The management headers the panel expects: same-origin Host plus the explicit opt-in header. The Host must be
+ * the loopback address the deployment was registered with, not whatever a proxy would send.
+ */
+function stateHeaders(url) {
+  let host
+  try {
+    host = new URL(url).host
+  } catch {
+    host = undefined
+  }
+  return {
+    accept: 'application/json',
+    'x-orchestrator-request': '1',
+    ...(host === undefined ? {} : { host }),
+  }
+}
+
+/**
  * 探测一次健康端点。
  *
- * 返回 `{ alive: true }` 或 `{ alive: false, reason }`；`reason` 直接说清观察到了什么，供错误文案引用。
+ * 返回 `{ alive: true, statusCode, state }` 或 `{ alive: false, reason, url }`；`state` 是解析后的应答
+ * body（不是 JSON 或读不到时为 null），`reason` 直接说清观察到了什么，供错误文案引用。
  * 不抛异常：调用方要的是"能不能派活"，不是"探测本身有没有出错"。
  */
 export function probe(url = serviceBaseUrl()) {
   return new Promise(resolve => {
-    const req = request(`${url}${HEALTH_PATH}`, { method: 'GET', timeout: PROBE_TIMEOUT }, res => {
+    let settled = false
+    const settle = value => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
+    const req = request(`${url}${HEALTH_PATH}`, { method: 'GET', timeout: PROBE_TIMEOUT, headers: stateHeaders(url) }, res => {
       // 任何 HTTP 应答都说明进程在监听。401 也算活着——它只是要求面板 token，不影响 Source 消费队列。
-      res.resume()
-      resolve({ alive: true, statusCode: res.statusCode })
+      let body = ''
+      let bytes = 0
+      res.setEncoding('utf8')
+      res.on('data', chunk => {
+        bytes += Buffer.byteLength(chunk, 'utf8')
+        // The state document is small; never let a misbehaving instance grow this without bound.
+        if (bytes <= 4 * 1024 * 1024) body += chunk
+      })
+      res.on('end', () => {
+        let state = null
+        try {
+          state = body === '' ? null : JSON.parse(body)
+        } catch {
+          state = null
+        }
+        settle({ alive: true, statusCode: res.statusCode, state })
+      })
+      res.on('aborted', () => settle({ alive: true, statusCode: res.statusCode, state: null }))
+      res.on('error', () => settle({ alive: true, statusCode: res.statusCode, state: null }))
     })
     req.on('timeout', () => {
       req.destroy(new Error('timeout'))
@@ -48,10 +90,26 @@ export function probe(url = serviceBaseUrl()) {
           : error.message === 'timeout'
             ? `${url} did not answer within ${PROBE_TIMEOUT}ms`
             : `probing ${url} failed: ${error.message}`
-      resolve({ alive: false, reason, url })
+      settle({ alive: false, reason, url })
     })
     req.end()
   })
+}
+
+/**
+ * Whether a reachable deployment can accept a task right now.
+ *
+ * `setup.problem`非空表示实例在跑但 paused（`repositoryUnset` 等），此时派单会写进一个没人消费的队列，
+ * 所以必须拒绝。读不到状态、body 不是 JSON、或没有 `setup` 字段都属于 unknown：放行（fail open）——
+ * 旧式队列没有注册部署，测试假实例也只回 `{}`；不能因为解析不出就谎报 paused。
+ */
+export async function deploymentState(url = serviceBaseUrl()) {
+  const result = await probe(url)
+  if (!result.alive) return { ...result, paused: false, problem: null }
+  const setup = result.state !== null && typeof result.state === 'object' ? result.state.setup : null
+  const problem =
+    setup !== null && typeof setup === 'object' && typeof setup.problem === 'string' ? setup.problem.trim() : ''
+  return { ...result, paused: problem !== '', problem: problem === '' ? null : problem }
 }
 
 /**
