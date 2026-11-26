@@ -962,11 +962,15 @@ export function syncPanelProfile({
   }
 
   const bundles = source.missing ? fallbackBundles : source.bundles
+  // Without a source profile there is nothing to link from. The fallback bundles come from the dsh
+  // installation itself, so treat them as resolvable: install must still work on a machine where the
+  // superagent profile has not been created yet (the install test home is exactly that machine).
+  const planResolves = source.missing ? () => true : probe
   const plan = planPanelProfile({
     dshHome: home,
     sourceProfile,
     bundles,
-    resolves: probe,
+    resolves: planResolves,
     recorded: panel.recorded,
     bundlesNow: panel.bundles,
     linkState: readLink,

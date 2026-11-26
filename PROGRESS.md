@@ -70,7 +70,7 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
   `panel-bundles.json`；patch 保留源行顺序，跳过 `webserver`/`dsh-superagent`/`wheelchair-agent/*`
   insert 与字面 `apiKey`/`token`/`password`，面板自己的 loader 与 `ui-settings-general` 固定首末。
   `install.sh`、`install.sh --check`、`panel sync/start/status` 共用同一实现；来源 profile 消失时
-  `start` 保留现状并打 note。验证：`npm test` **499 全绿**（新增 25 条），`npm run check` 通过；
+  `start` 保留现状并打 note。验证：`npm test` **507 全绿**（新增 25 条），`npm run check` 通过；
   未在真机安装/重启，见 PR #63。
 - **`#62` 合并（`ddb97d0`，`fix(panel): include the panel in service --all and report older panel hosts`）**：
   面板不属于任何部署，所以 `service stop/start --all` 以前完全不碰它——冷安装把新 `webui/lib/client.js` 换进去后，
