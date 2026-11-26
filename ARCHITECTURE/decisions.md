@@ -304,3 +304,22 @@ HARNESS 文件（`ARCHITECTURE*`、`PROGRESS.md`、`INSTRUCTIONS.md`）在 PR �
 **守住它的测试**：`tests/test-hooks.mjs` 的 `builtin:autoMerge` 用例组——没有 PR、两个 open PR、draft、
 `CONFLICTING`、检查为空、检查失败、命中 HARNESS、全绿合并一次、第二次 delivered 不动、开关关闭不动、
 gh 失败只 warning。
+
+## 面板不是部署，但在 `--all` 那一圈里（`#62`，2026-11-26）
+
+**问题**：`service stop/start --all` 只遍历注册表，面板恰好不在注册表里——于是冷安装之后，`#58` 之前的旧面板宿主
+继续占着 `panel.port`，一边按请求读新 `webui/lib/client.js`、一边用自己那份旧页面外壳，浏览器撞 TDZ
+（`Cannot access 'jsxRuntime' before initialization`）。操作者看到的是"3080 白屏、其它部署正常"。
+
+**决定**：面板仍**不进注册表**（它不执行工单，`deployment list`/`spv-projects.json` 都不该出现它），但
+`service stop --all` 停完部署再停它、`start --all` 起完部署最后起它；面板的任何失败只打一行、不改部署的退出码。
+旧宿主由 cmdline 判定（`looksLikeLegacyPanelHost`），只发 `SIGINT` + 有界等待，绝不 `SIGKILL`；`install.sh` 的
+装完路径与 `--check` 都只提醒 pid 与 `kill -INT`，不动进程。
+
+**理由**：`--all` 是"整机器一圈"的语义，面板是这一圈里唯一不属于任何部署的东西，漏了它就等于漏了升级过程中
+最容易被旧进程绊住的那一环。反过来，把面板塞进注册表会污染 `project → 部署` 这个唯一映射（它没有项目、没有
+队列、没有 repo）。退出码上区分"部署失败"与"面板失败"，是因为两者的修复动作完全不同：前者要查实例与 setup，
+后者只是 `panel start` 或 `kill -INT` 一个旧进程。
+
+**取舍**：不自动 kill 旧宿主——那是操作者机器上的进程，我们只有 cmdline 的间接证据；不 `SIGKILL`——宁可留一个
+需要手粘的 `kill -INT`，也不猜着强杀。`ss` 读不到 PID 时这条提醒静默失效（只影响提醒，不影响安装与 `--all`）。

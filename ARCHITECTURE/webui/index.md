@@ -65,8 +65,10 @@ same JSON routes; they differ in what surrounds the page.
     (one bounded `GET /`) and `state:`, then says outright that there is no orchestrator to report
     (`panel: no orchestrator …`), because `dsh-web-app` has no health endpoint;
   - the panel is **not** a deployment: it is never written to `deployments.json`, `deployment list`
-    never shows it, `service stop --all` never stops it, and it must not appear in `spv-projects.json`
-    either.
+    never shows it, and it must not appear in `spv-projects.json` either. It *is* part of a
+    machine-wide round (`#62`): `service stop --all` stops it after the deployments, `start --all`
+    starts it last (it reads the registry), and a panel failure only prints a line — it never changes
+    the deployments' exit code.
 
 The JSON routes and their handlers are the shared core `src/spv/panel-routes.js`, copied into the
 installed package as `lib/core/panel-routes.js` (and into the preset as `src/spv/panel-routes.js`) by

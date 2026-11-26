@@ -46,6 +46,7 @@
 | 已踩过的坑（一条一个问题） | `docs/PITFALLS/` |
 | superagent 设计文档（9 篇） | `docs/repositories/dsh-superagent-prototype/docs/` |
 | DSH 安装与 GOAT 接入 | `docs/setup/dsh-commandcode.md` |
+| Command Code 账号绑定：凭据库 / profile 差异 / 排查与换号 | `docs/setup/dsh-commandcode-accounts.md` |
 | AGENTS.md 模板（项目开发 / 研究任务） | `docs/agentsmd-examples/` |
 | 会话归档：dsh 原生归档是什么、为什么移动目录不行、`ticket.delivered`→`ticket.ended` 的缺口 | `docs/dsh/session-archive.md` |
 | superagent 源码 | `~/opt/dsh-plugins/dsh-superagent/`（独立仓库，在 bioagentforge 工作区之外） |

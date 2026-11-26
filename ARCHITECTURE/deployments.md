@@ -80,9 +80,16 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
 - `wheelchair-agent spv` 仍只有一个（spv 不是部署），它的目标由 cwd 落在
   `<projectsRoot>/<project>` 推断，推不出就报错列清单，**不再有 `--project`**（`#50` 删掉：项目没有自己的 spv）。
 - 面板（`service open` / `wheelchair-agent panel`）从 `#58` 起也是**一份自己的 dsh 实例**，但它**不是部署**：
-  profile `panel` 不含 `dsh-superagent`，不进注册表，`deployment list` 不显示、`service stop --all` 不停它，
+  profile `panel` 不含 `dsh-superagent`，不进注册表，`deployment list` 不显示，
   端口取设置 `panel.port`（默认 3080），stateDir `<data root>/panel`。各部署的完整 UI 仍在各自端口，面板
   「项目」卡片用链接跳过去。
+- 面板在 `--all` 这一圈里（`#62`）：`service stop --all` 停完部署再停它，`start --all` 起完部署最后起它
+  （它读注册表，所以必须最后）。面板的任何失败只打一行、**不改部署的退出码**——部署才是这一圈的目标。
+- 升级细节：`#58` 之前的独立面板宿主是 `node …/cli.js panel --foreground --port 3080`，它按请求读盘，所以
+  一次冷安装把新 `webui/lib/client.js` 塞进旧外壳，浏览器会死在
+  `Cannot access 'jsxRuntime' before initialization`。`install.sh`（装完与 `--check` 都打印）与
+  `service stop --all` 都先认出它（`looksLikeLegacyPanelHost(argv)` 读 `/proc/<pid>/cmdline`，绝不凭端口猜），
+  只发 **SIGINT**、有界等待、不 `SIGKILL`；认不出或读不到就什么都不做。
 
 ## 3. 收件箱（stage 3）
 

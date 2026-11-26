@@ -20,8 +20,10 @@ superagent 不耦合；队列归**每份部署**自己（`<stateDir>/spv/`），
 **面板**：两个宿主、同一份 `webui/lib/client.js`。①`wheelchair-agent panel`（`#58`, `aabe316`）是一份
 **自己的 dsh 实例**——profile `panel`（`dsh-base` + `dsh-web-app` + 我们的 webui，**不含** `dsh-superagent`），
 `127.0.0.1:3080`（`panel.port` 可改），overlay 是 `preset/panel.patch.yml`，tmux `wca-panel`，stateDir
-`<data root>/panel`；所以它有完整 harness UI（会话列表/新会话/顶栏），但**不是部署**（不进注册表、
-`service stop --all` 不停它）。`panel status` 打 port/pid/带 token 的 url/`check: http <code>`/state，并说明
+`<data root>/panel`；所以它有完整 harness UI（会话列表/新会话/顶栏），但**不是部署**（不进注册表）。
+`#62`（`ddb97d0`）起 `service stop --all` 停完部署再停它、`start --all` 起完部署最后起它（面板失败不改
+部署退出码）；`install.sh` 装完与 `--check` 都会认出 `#58` 之前的 `cli.js panel --foreground` 旧宿主并打印
+其 pid 与 `kill -INT` 指路（只提醒，绝不 kill）。`panel status` 打 port/pid/带 token 的 url/`check: http <code>`/state，并说明
 没有 orchestrator 可报。②dsh 插件宿主不变（面板仍出现在各部署 dsh web 左侧栏）。四段功能：收件箱、设置、
 插口、项目；`webui.style` = `fluid`（默认）/ `minimal`；各页共用 1200px 宽度变量，收件箱无左侧日期栏。
 **后台行为（收件箱轮询、`builtin:autoMerge`、`builtin:archiveSession`、冷安装提醒、hook runner）故意只留在
@@ -57,6 +59,17 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
 
 # Completed
 
+- **`#62` 合并（`ddb97d0`，`fix(panel): include the panel in service --all and report older panel hosts`）**：
+  面板不属于任何部署，所以 `service stop/start --all` 以前完全不碰它——冷安装把新 `webui/lib/client.js` 换进去后，
+  `#58` 之前的旧宿主（`node …/cli.js panel --foreground --port 3080`，按请求读盘）继续用旧外壳发新 bundle，
+  浏览器死在 `ReferenceError: Cannot access 'jsxRuntime' before initialization`（操作者 3080 白屏就是它）。
+  现在：`--all` 停完部署再停面板、起完部署最后起面板，面板失败只打一行、不改部署退出码；旧宿主由
+  `looksLikeLegacyPanelHost(argv)`（读 `/proc/<pid>/cmdline`，不凭端口猜）识别，只发 **SIGINT** + 有界等待，
+  绝不 `SIGKILL`；`install.sh` 装完与 `--check` 都打印其 pid 与 `kill -INT` 指路（只提醒、不 kill）。
+  **我打回过第一版**：tip 只带了 `bin` 改动、另外 4 个文件丢了，`panel.stopLegacyPanelHost` 在分支上根本不存在
+  （`service stop --all` 会 `TypeError`），且 0 测试。修正版（`2eef924`，5 文件 +520/−6）我在 worktree 里
+  `bash build/build-core.sh` + `npm test` **EXIT=0**、八个带计数的套件全绿，CI `ci` pass、MERGEABLE/CLEAN。
+  `ss -lptnH` 读不到 PID（没装 iproute2、容器、权限）时降级为"没有旧宿主"，只影响这条提醒。
 - **`#61` 合并（`80b480b`，`dispatch: refuse a paused deployment even when its instance is running`）**：`#60` 只在
   "这次刚起它"时判 paused，实例本来就在跑时 `probe()` alive 就放行——我实测第二次派单会成功、`pending/` 落文件。
   现在 `ensureDeploymentStarted()` 起手就读实例的 `/orchestrator/api/state`，两条路径共用同一个判断，措辞分开
