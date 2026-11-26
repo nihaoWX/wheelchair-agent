@@ -57,6 +57,18 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
 
 # Completed
 
+- **`#61` 合并（`80b480b`，`dispatch: refuse a paused deployment even when its instance is running`）**：`#60` 只在
+  "这次刚起它"时判 paused，实例本来就在跑时 `probe()` alive 就放行——我实测第二次派单会成功、`pending/` 落文件。
+  现在 `ensureDeploymentStarted()` 起手就读实例的 `/orchestrator/api/state`，两条路径共用同一个判断，措辞分开
+  （刚起的说 `started but is paused`，本来在跑的说 `is paused`）。
+  **第一版按字符串判 `setup.problem`、在真机上不生效**（真机是对象 `{place,code,values,detail}`，见
+  `dsh-superagent/src/setup.ts:24`），我验出来后让它同分支补 commit：新增 `setupProblemText()` 归一化
+  （对象取 `detail` 优先、退化到 `code`，字符串形态兼容，`null`/`{}` 视为没问题），`health.js`/`dispatch.js`/
+  `projects-view.js`/`deployment-setup.js` 四处共用——顺带修掉两处早就存在的同类误解：真机上「项目」卡片的
+  `setupProblem` 永远是 `null`、`deployment setup` 超时永远报 "did not report a setup problem"。
+  我的验证：worktree build + `npm test` **506 全绿**；真起 `repositoryUnset` 部署，第一次派单
+  `started but is paused (The GitHub Source names no repository.)`、第二次 `is paused (…)`，两次 `pending/` 都为空。
+
 - **`#60` 合并（`00df1a0`，`dispatch: tell a paused deployment apart from a failed start`）**：`service start`
   在 `setup: waiting — repositoryUnset` 时**实例已起来但 exit 3**，`ensureDeploymentStarted()` 原来把非零退出
   一律当"起不来"。现在先探活再看退出码：实例可达 + 输出含 `setup: waiting` → 报 `started but is paused` 并指向
