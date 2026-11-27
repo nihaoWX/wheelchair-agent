@@ -1,0 +1,17 @@
+# R5 的 round-data —— “tests/test-deployments.mjs 的 migrate 夹具不再拉真服务”这一轮实际跑过的边界与入口。
+# 字段含义见 pitfalls-manager references/02_consume.md §4.3；本文件不复述。
+id = "wheelchair-agent:R5"
+verdict = "新领土"
+family = ["测试夹具把宿主机的真实端口与 profile 写进注册表"]
+closures = [ { finding = "R5-F1", tier = "代码" },
+             { finding = "R5-F2", tier = "检查" } ]
+run_before = []
+touched = []
+note = """
+为什么认定同类：这是 v13 issue-first 机制的第一次实跑，此前没有 round-data 记录可复发。
+根因与建议修法：已证——migrate 夹具写死 SPV_SERVICE_PORT=3082 / DSH_SUPERAGENT_PROFILE=superagent，随后 dispatch 调 ensureDeploymentStarted()，沙箱里没有假 service manager，于是真的执行 commands/superagent-service.py start，占住宿主机 3082 并建出 wca-wheelchair-agent 会话。夹具改为 freePort() + 同端口活实例 + 会记录并拒绝启动的假 python3，外加整个文件跑前跑后的 3082/tmux 现场守卫。
+怎么修才不弄坏前面：本目录只动 tests/test-deployments.mjs；src/spv 的 ensure 行为未改，fixture 仍走真实 ensureDeploymentStarted 路径。改夹具前先跑本目录 repro.sh；它同时覆盖“3082 空闲”和“3082 已有实例”两种现场。
+"""
+how_to_run = """
+sh docs/PITFALLS/round-data/wheelchair-agent:R5/repro.sh
+"""
