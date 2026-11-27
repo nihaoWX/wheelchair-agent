@@ -29,7 +29,10 @@ Records the definition of project-development task, its overall architecture, an
 Knowledge base — stores API docs, official tutorials, literature, etc. for its dependencies.
 
 - `docs/` organized by knowledge category: `docs/<domain>/`, `docs/<domain>/<subdomain>/`
-- `docs/PITFALLS/`: Similar to GitHub issues, managed by skill `pitfalls-manager`, it tracks changes and the reasons for the projects. It’s important for project development—just use it.
+- `docs/PITFALLS/`: **historical only.** Reports used to be markdown files here; since pitfalls-manager v13 a report is a
+  GitHub issue on **this project's own repo**, and the ledger (`~/pitfalls-manager/`) keeps the history. Old `.md` files
+  here are read-only evidence — a stale file does **not** mean "unresolved", so do not treat it as a TODO and do not delete it.
+  `docs/PITFALLS/round-data/` stays: it holds the runnable evidence of each recorded round.
 
 # AGENT ROLE
 
@@ -59,9 +62,11 @@ WHEN AGENT READ THIS, YOU ARE WORKER.
 - Before executing, review the necessary authoritative sources to constrain the scope of the TODO list.
  
 # worker workflow
-- 1. Read `INSTRUCTIONS.md`; Load skill: `pitfalls-manager`
+- 1. Read `INSTRUCTIONS.md`; Load skill: `pitfalls-manager`.
 - 2. Worker acts as Arranger, break down complex task and delegated Executor.
-- 3. Use `pitfalls-manager` to complete the task. If worker encounter any bugs or identify areas for optimization, submit an issue at `nihaoWX/pitfalls-manager`.
+- 3. Use `pitfalls-manager` for both sides of the loop — the issue lives in **this project's repo**, never in the tool's repo:
+  - **pending work**: an open `[pitfall:blocker]` / `[pitfall:suggestion]` issue here (`gh issue list --repo <owner>/<name> --state open`) is the only "still unresolved" signal. Consume it per `pitfalls-manager`'s `references/02_consume.md` (query the locations you are about to change → fix → commit → `record` → `gh issue close`).
+  - **found a pitfall yourself**: open an issue on **this project's own repo** (`git remote get-url origin`), title prefixed `[pitfall:blocker]` / `[pitfall:suggestion]`, no label. Do **not** write a markdown file into `docs/PITFALLS/`, and do **not** report into the tool's repo.
 - 4. Before task complete, load skill: `harness-guide` to check/modify HARNESS.
 - 5. Task completed.
 

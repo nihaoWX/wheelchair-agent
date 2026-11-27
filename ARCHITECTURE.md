@@ -43,7 +43,7 @@
 | spv 项目（spv 根 → worker 项目的绑定）、四条校验、面板「项目」段 | `ARCHITECTURE/spv-projects.md` |
 | Rust 核心：边界、JSON 契约、为什么不是 `.node`、分发待办 | `ARCHITECTURE/core.md` |
 | 已定型的结论（每条附证据，**勿重新推导**） | `ARCHITECTURE/decisions.md` |
-| 已踩过的坑（一条一个问题） | `docs/PITFALLS/` |
+| 已踩过的坑：报告是**本项目仓库的 GitHub issue**（`[pitfall:blocker]`/`[pitfall:suggestion]`），历史在账本 `~/pitfalls-manager/`；`docs/PITFALLS/` 只剩旧 md 与 `round-data/` 证据 | 技能 `pitfalls-manager` |
 | superagent 设计文档（9 篇） | `docs/repositories/dsh-superagent-prototype/docs/` |
 | DSH 安装与 GOAT 接入 | `docs/setup/dsh-commandcode.md` |
 | Command Code 账号绑定：凭据库 / profile 差异 / 排查与换号 | `docs/setup/dsh-commandcode-accounts.md` |

@@ -174,7 +174,7 @@ wheelchair-agent/
 ├── install.sh                    # 只负责安装（冷安装，契约见 ARCHITECTURE/layout.md）
 ├── crates/wca-core/               # Rust 核心 wheelchair-agent-core（work-plan / schema 子命令）
 ├── ARCHITECTURE.md ARCHITECTURE/  # 定义 + 索引 + 分册（构建规则只允许记在这里）
-└── docs/                         # 只剩 PITFALLS/、setup/、agentsmd-examples/
+└── docs/                         # 只剩 PITFALLS/（旧 md + round-data/ 证据）、setup/、agentsmd-examples/
 ```
 
 安装布局：preset 目录是「SPV 侧的已安装包」（含 `cli.js`、`src/{shared,spv}/`、`commands/`、`prepare.sh`），

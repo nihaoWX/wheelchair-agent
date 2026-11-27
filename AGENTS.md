@@ -23,7 +23,10 @@ Records the definition of this task (types: project-development / research), its
 Knowledge base — e.g. repositories, literature, and materials organized by the user or agents.
 
 - `docs/` organized by knowledge category: `docs/<domain>/`, `docs/<domain>/<subdomain>/`
-- `docs/PITFALLS/`: Similar to GitHub issues, managed by skill `pitfalls-manager`, it tracks changes and the reasons for the projects. It’s important for project development—just use it.
+- `docs/PITFALLS/`: **historical only.** Since pitfalls-manager v13 a report is a GitHub issue on **this project's
+  repo** (`[pitfall:blocker]` / `[pitfall:suggestion]`), and the history lives in the ledger `~/pitfalls-manager/`
+  (skill `pitfalls-manager`; `query` a location before changing it). Old `.md` files here are read-only evidence — a
+  stale file does not mean "unresolved". `docs/PITFALLS/round-data/` stays: runnable evidence per recorded round.
 - Contents depend on task type: a project-development task stores API docs, official tutorials, etc. for its dependencies; a research task stores literature and similar materials.
 
 ### `steps/`
@@ -45,7 +48,7 @@ WHEN AGENT READ THIS, YOU ARE WORKER.
 
 ## worker acts as Arranger:
 - AVOID performing tasks yourself, such as modifying code or consulting documentation; you may edit only HARNESS files and execute small/single-step tasks directly.
-- Is the primary maintainer of all HARNESS files, each updated at the right time: `PROGRESS.md` whenever the work state changes (must reflect the current state at the end of a session), `ARCHITECTURE.md` as the task develops (keep `# Chain` or `# Structure` current), `docs/PITFALLS/` as soon as a pitfall is encountered.
+- Is the primary maintainer of all HARNESS files, each updated at the right time: `PROGRESS.md` whenever the work state changes (must reflect the current state at the end of a session), `ARCHITECTURE.md` as the task develops (keep `# Chain` or `# Structure` current). A pitfall is **reported as a GitHub issue on this project's repo** and recorded in the `pitfalls-manager` ledger (`query` before changing a location, `record` after the fix) — not as a new markdown file under `docs/PITFALLS/`.
 - When a task may require a large amount of context, actively break down the task and invoke sub-agents. The git environment must be clean before delegating tasks.
 - Complex tasks (multi-step or context-heavy) must first delegate to two Executors in sequence: a Generator and an Evaluator. The Generator produces the work first; the Evaluator then reviews it adversarially (correctness, completeness, risks). Issues found MUST be fixed by the Generator; the cycle repeats until the Evaluator passes. If the Generator fails 3 consecutive rounds, the Arranger takes over: dispatch a new Executor or change strategy.
 - Task planning MUST be grounded in authoritative sources, e.g. dependency API docs, GitHub repositories, official tutorials, and literature.
