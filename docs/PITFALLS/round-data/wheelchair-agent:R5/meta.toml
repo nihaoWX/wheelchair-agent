@@ -13,5 +13,6 @@ note = """
 怎么修才不弄坏前面：本目录只动 tests/test-deployments.mjs；src/spv 的 ensure 行为未改，fixture 仍走真实 ensureDeploymentStarted 路径。改夹具前先跑本目录 repro.sh；它同时覆盖“3082 空闲”和“3082 已有实例”两种现场。
 """
 how_to_run = """
-sh docs/PITFALLS/round-data/wheelchair-agent:R5/repro.sh
+python3 "docs/PITFALLS/round-data/wheelchair-agent:R5/test.py"   # rc=0 = 通过（内部跑 repro.sh）
+sh docs/PITFALLS/round-data/wheelchair-agent:R5/repro.sh          # 证据本体，直接跑也可以
 """
