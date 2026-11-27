@@ -30,6 +30,19 @@ import { defineSpvTools } from '../src/spv/tools.js'
 const CLI = fileURLToPath(new URL('../bin/wheelchair-agent.mjs', import.meta.url))
 const SANDBOXES = []
 
+/**
+ * 每个 `deployment setup` 调用都钉住等待窗口（issue #69）：假面板要么立刻说“已就绪”，
+ * 要么永远不说；不钉住就会白等 `deployment-setup.js` 的 90 秒默认值。
+ */
+const FAST_SETUP_ENV = {
+  WHEELCHAIR_AGENT_SETUP_TIMEOUT_MS: '300',
+  WHEELCHAIR_AGENT_SETUP_INTERVAL_MS: '50',
+}
+
+/** 整份文件的上界：一个“没就绪”的负例不该把测试拖成分钟级（issue #69）。 */
+const FILE_STARTED_AT = Date.now()
+const FILE_TIME_LIMIT_MS = 15_000
+
 /** 一个沙箱：HOME/DSH_HOME 与数据根、状态目录、几条互不相同的队列。 */
 async function sandbox() {
   const base = await mkdtemp(join(tmpdir(), 'wheelchair-agent-deployments-test-'))
@@ -794,7 +807,7 @@ async function testDeploymentSetupFillsPolicyAndPrepare() {
     (await cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'nihaoWX/alpha', '--port', String(panel.port)])).status,
     0,
   )
-  const configured = await cli(box, ['deployment', 'setup', '--project', 'tools/alpha'])
+  const configured = await cli(box, ['deployment', 'setup', '--project', 'tools/alpha'], FAST_SETUP_ENV)
   assert.equal(configured.status, 0, configured.stderr)
   assert.match(configured.stdout, /configured: tools\/alpha now targets nihaoWX\/alpha/)
   assert.match(configured.stdout, /was missing the "operator" allowed identity for source "spv"; added it/)
@@ -824,13 +837,14 @@ async function testDeploymentSetupFillsPolicyAndPrepare() {
     (await cli(customBox, ['deployment', 'add', 'tools/alpha', '--repo', 'nihaoWX/alpha', '--port', String(custom.port)])).status,
     0,
   )
-  const kept = await cli(customBox, ['deployment', 'setup', '--project', 'tools/alpha'])
+  const kept = await cli(customBox, ['deployment', 'setup', '--project', 'tools/alpha'], FAST_SETUP_ENV)
   assert.equal(kept.status, 0, kept.stderr)
   assert.doesNotMatch(kept.stdout, /set it to/)
   assert.equal(custom.calls.filter(call => call.method === 'PUT' && call.url.endsWith('/executor')).length, 0)
   custom.close()
 
-  // 补不齐时 setup 必须失败，不能先打印 configured。
+  // 补不齐时 setup 必须失败，不能先打印 configured；钉住等待窗口后，这个负例才会在
+  // 几百毫秒内失败，而不是睡满 90 秒默认超时（issue #69）。
   const failBox = await sandbox()
   const failing = await setupServer('success', {
     policy: { rules: [], sources: {} },
@@ -841,8 +855,14 @@ async function testDeploymentSetupFillsPolicyAndPrepare() {
     (await cli(failBox, ['deployment', 'add', 'tools/alpha', '--repo', 'nihaoWX/alpha', '--port', String(failing.port)])).status,
     0,
   )
-  const failed = await cli(failBox, ['deployment', 'setup', '--project', 'tools/alpha'])
+  const failedStartedAt = Date.now()
+  const failed = await cli(failBox, ['deployment', 'setup', '--project', 'tools/alpha'], FAST_SETUP_ENV)
+  const failedElapsedMs = Date.now() - failedStartedAt
   assert.equal(failed.status, 1)
+  assert.ok(
+    failedElapsedMs < 2000,
+    `the failing setup case took ${failedElapsedMs}ms; a policy write failure must fail fast, not wait out a timeout`,
+  )
   assert.match(failed.stderr, /dispatch settings could not be completed/)
   assert.match(failed.stderr, /policy write failed/)
   assert.doesNotMatch(failed.stdout, /^configured:/m)
@@ -856,7 +876,7 @@ async function testDeploymentSetup() {
   const added = await cli(box, ['deployment', 'add', 'tools/alpha', '--repo', 'nihaoWX/alpha', '--port', String(panel.port)])
   assert.equal(added.status, 0, added.stderr)
 
-  const configured = await cli(box, ['deployment', 'setup', '--project', 'tools/alpha'])
+  const configured = await cli(box, ['deployment', 'setup', '--project', 'tools/alpha'], FAST_SETUP_ENV)
   assert.equal(configured.status, 0, configured.stderr)
   assert.match(configured.stdout, /configured: tools\/alpha now targets nihaoWX\/alpha/)
   assert.match(configured.stdout, new RegExp(`127\\.0\\.0\\.1:${panel.port}`))
@@ -874,7 +894,7 @@ async function testDeploymentSetup() {
   const box2 = await sandbox()
   const already = await setupServer('success', { repository: 'nihaoWX/alpha' })
   assert.equal((await cli(box2, ['deployment', 'add', 'tools/alpha', '--repo', 'nihaoWX/alpha', '--port', String(already.port)])).status, 0)
-  const noop = await cli(box2, ['deployment', 'setup', '--project', 'tools/alpha'])
+  const noop = await cli(box2, ['deployment', 'setup', '--project', 'tools/alpha'], FAST_SETUP_ENV)
   assert.equal(noop.status, 0, noop.stderr)
   assert.match(noop.stdout, /already configured/)
   assert.equal(already.calls.filter(call => call.method === 'PUT').length, 0)
@@ -884,9 +904,7 @@ async function testDeploymentSetup() {
   const box3 = await sandbox()
   const broken = await setupServer('timeout')
   assert.equal((await cli(box3, ['deployment', 'add', 'tools/alpha', '--repo', 'nihaoWX/alpha', '--port', String(broken.port)])).status, 0)
-  const timeout = await cli(box3, ['deployment', 'setup', '--project', 'tools/alpha'], {
-    WHEELCHAIR_AGENT_SETUP_TIMEOUT_MS: '300', WHEELCHAIR_AGENT_SETUP_INTERVAL_MS: '50',
-  })
+  const timeout = await cli(box3, ['deployment', 'setup', '--project', 'tools/alpha'], FAST_SETUP_ENV)
   assert.equal(timeout.status, 1)
   assert.match(timeout.stderr, /did not report nihaoWX\/alpha within/)
   assert.match(timeout.stderr, /GitHub token lacks push access/)
@@ -1003,6 +1021,11 @@ try {
   await testOldRegistryEntriesReadAsNoRepository()
   await testServiceStartPrintsSetupHint()
   assertHostIsUnchanged(HOST_BEFORE)
+  const fileElapsedMs = Date.now() - FILE_STARTED_AT
+  assert.ok(
+    fileElapsedMs < FILE_TIME_LIMIT_MS,
+    `tests/test-deployments.mjs took ${fileElapsedMs}ms; it must stay under ${FILE_TIME_LIMIT_MS}ms (issue #69)`,
+  )
   process.stdout.write('ok\n')
 } catch (error) {
   process.stderr.write(`not ok: ${error?.stack ?? error}\n`)
