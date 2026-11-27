@@ -351,11 +351,12 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
 - **下一次冷安装**（`#59`–`#66` 全在等它）：退出 SPV → `wheelchair-agent service stop --all` →
   `wheelchair-agent panel stop` → `bash install.sh --project tools/wheelchair-agent` →
   `wheelchair-agent service start --all` → `wheelchair-agent spv`。
-- **「项目」页还缺"正在跑什么工单"**：`/wheelchair-projects` 已有 spv 路径、绑定的 worker、端口、
-  `runningTicketCount`、`setupProblem`；操作者要的是正在跑的工单**标题**（数据来自各部署
-  `GET /orchestrator/api/tickets`）。`worker-binding` 与改名都已合并，这张票可以派了。
-- **`INSTRUCTIONS.md` 已对齐**：`### spv_dispatch`（相同 superagent profile、不同实例）、spv/worker 项目、profile
-  与实例、实例-worker 保护机制都由 `#64`–`#66` 落成；唯一未落地的产品诉求是上面那条「项目」页显示正在跑的工单标题。
+- **`INSTRUCTIONS.md` 已对齐，没有待派的产品票**：`### spv_dispatch`（相同 superagent profile、不同实例）、
+  spv/worker 项目、profile 与实例、实例-worker 保护机制由 `#64`–`#66` 落成；「项目」页要看的三样
+  （spv 路径 / 绑定的 worker / 正在跑的工单）在 `#53` 就已全部渲染——`webui/lib/client.js` 的
+  `wca-project-running` 列表逐条打印 `ticket.title`（缺标题时退回 `ticket.id`），数据来自
+  `src/spv/projects-view.js:67 runningTickets()`。我曾在 Known Issues 里记过"只显示数量"，那是看错旧截图，
+  已于 2026-11-27 核实并删除。
 
 # Known Issues
 
