@@ -1,0 +1,17 @@
+# R7 的 round-data —— “dispatch 补完 allowed 却漏补 executor.prepare”这一轮实际跑过的边界与入口。
+# 字段含义见 pitfalls-manager references/02_consume.md §4.3；本文件不复述。
+id = "wheelchair-agent:R7"
+verdict = "新领土"
+family = ["dispatch 写队列前只补 allowed、漏补 executor.prepare，任务在没 clone 的空目录里开跑（#64 同族缺口）"]
+closures = [ { finding = "R7-F1", tier = "代码" },
+             { finding = "R7-F2", tier = "检查" } ]
+run_before = []
+touched = []
+note = """
+为什么认定同类：账本里这三处（dispatch.js / deployment-policy.js / deployment-setup.js）此前 0 条记录；#64 的改动从未入账，故本轮在账本上是首次可断言记录，记“新领土”。族名按 #64 的设计缺口起，防止下一轮当成新问题。
+根因与建议修法：已证——ensureDispatchAllowed() 只调 ensureAllowed()，ensureExecutorPrepare() 仅由 deployment setup 调用；新部署 dispatch 成功后 executor.prepare 仍为空，worker 在空目录开跑。
+怎么修才不弄坏前面：dispatch 在 ensureAllowed() 之后补 ensureExecutorPrepare()（同样的 409 重读重试 + 写后重读），失败不写队列且错误点名 prepare；自定义 prepare 一个字节不改。旧行为只在 setup 侧，不跑 R5/R6（与这两处无关）。
+"""
+how_to_run = """
+cd docs/PITFALLS/round-data/wheelchair-agent:R7 && python3 test.py   # rc=0 = 三族全过；失败会打出族名与实测差异
+"""

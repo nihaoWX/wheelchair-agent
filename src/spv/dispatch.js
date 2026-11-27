@@ -13,7 +13,7 @@ import { join, resolve } from 'node:path'
 
 import { writeHookSpoolEvent } from '../shared/hooks.js'
 import { listDeployments, PROJECT_PATTERN } from '../shared/deployments.js'
-import { DEFAULT_ACTOR_NAME, DEFAULT_SOURCE, ensureAllowed } from './deployment-policy.js'
+import { DEFAULT_ACTOR_NAME, DEFAULT_SOURCE, ensureAllowed, ensureExecutorPrepare } from './deployment-policy.js'
 import { deploymentState } from './health.js'
 import { deploymentUrl, runDeploymentService } from './service-instance.js'
 
@@ -258,13 +258,14 @@ export async function ensureDeploymentStarted(root, { env = process.env, timeout
 }
 
 /**
- * 在写任务文件之前，确认这份部署的 spv Source 真的会接单。
+ * 在写任务文件之前，确认这份部署的 spv Source 真的会接单、worker 也真的会先 clone。
  *
- * `ensureDeploymentStarted()` 只证明实例活着；策略是另一份每部署独立的配置，空 `policy.sources` 会让任务以
- * `not_a_member` 被 ignore，而派单方完全看不出来。这里补上 `operator`（或调用方给的身份），让「派单成功」与
- * 「superagent 会处理」是同一件事：补不上就抛错，调用方因此不会写队列，也就不会报成功。
+ * `ensureDeploymentStarted()` 只证明实例活着；策略是另一份每部署独立的配置。空 `policy.sources` 会让任务以
+ * `not_a_member` 被 ignore，而派单方完全看不出来；空 `executor.prepare` 则会让 worker 在没 clone 的空目录里
+ * 开跑。两者都让「派单成功」不等于「superagent 会处理」。这里补上 `operator`（或调用方给的身份）与默认
+ * prepare，补不上就抛错，调用方因此不会写队列，也就不会报成功。
  *
- * 返回的 `note` 只在这次真的补了 allowed 时存在，供工具/CLI 告诉操作者配置被自动修好了。
+ * 返回的 `note` 只在这次真的补了 allowed 或 prepare 时存在，供工具/CLI 告诉操作者配置被自动修好了。
  */
 export async function ensureDispatchAllowed(target, {
   source = DEFAULT_SOURCE,
@@ -275,21 +276,41 @@ export async function ensureDispatchAllowed(target, {
   // 纯 SPV_QUEUE_DIR 覆盖的旧队列没有注册部署，也就没有面板可查；保留旧路径的行为。
   if (target === null || target === undefined || target.entry === null) return { changed: false, allowed: [] }
   const entry = target.entry
+  const notes = []
+  let phase = 'allowed'
   try {
-    const result = await ensureAllowed({ port: entry.port, source, id, name, timeoutMs })
+    const admitted = await ensureAllowed({ port: entry.port, source, id, name, timeoutMs })
+    if (admitted.changed) {
+      notes.push(
+        `added "${id}" to the allowed identities of source "${source}" on the deployment for ` +
+          `${entry.project} (port ${entry.port}); dispatches are accepted now instead of being silently ignored`,
+      )
+    }
+    phase = 'prepare'
+    const prepare = await ensureExecutorPrepare({ port: entry.port, timeoutMs })
+    if (prepare.changed) {
+      notes.push(
+        `filled the empty executor.prepare of the deployment for ${entry.project} (port ${entry.port}) ` +
+          `with "${prepare.prepare}", so the worker clones the project before it starts`,
+      )
+    }
     return {
-      ...result,
-      note: result.changed
-        ? `added "${id}" to the allowed identities of source "${source}" on the deployment for ` +
-          `${entry.project} (port ${entry.port}); dispatches are accepted now instead of being silently ignored`
-        : undefined,
+      changed: admitted.changed || prepare.changed,
+      allowed: admitted.allowed,
+      prepare: prepare.prepare,
+      note: notes.length > 0 ? notes.join('; ') : undefined,
     }
   } catch (error) {
+    const message = String(error?.message ?? error)
+    const advice = phase === 'prepare'
+      ? `the deployment's executor.prepare could not be filled: ${message}. Set it in the deployment panel's ` +
+        `Workers page (${deploymentUrl(entry)}), or rerun ` +
+        `"wheelchair-agent deployment setup --project ${entry.project}".`
+      : `${message}. Add "${id}" in the deployment panel's Sources page (${deploymentUrl(entry)}), or rerun ` +
+        `"wheelchair-agent deployment setup --project ${entry.project}".`
     throw new Error(
       `could not let ${JSON.stringify(id)} dispatch into ${entry.project} (port ${entry.port}): ` +
-        `${String(error?.message ?? error)}. Add "${id}" in the deployment panel's Sources page ` +
-        `(${deploymentUrl(entry)}), or rerun "wheelchair-agent deployment setup --project ${entry.project}". ` +
-        'Nothing was queued.',
+        `${advice} Nothing was queued.`,
     )
   }
 }

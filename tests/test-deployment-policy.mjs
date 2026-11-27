@@ -11,7 +11,8 @@
  *   - 已经允许 operator：0 次 PUT；
  *   - 409：重新读取 revision 后再 PUT 一次；
  *   - 非 JSON / 500：throw，且真实 dispatch 路径不写任何 pending 文件；
- *   - 空 `executor.prepare`：补成 `wheelchair-agent prepare`；自定义值一律不动。
+ *   - 空 `executor.prepare`：补成 `wheelchair-agent prepare`，dispatch 因此写且只写一个任务文件；
+ *     executor PUT 失败则报错点名 prepare、不落盘；自定义值一律不动、不发 PUT。
  *
  * 用法：node tests/test-deployment-policy.mjs（任一断言失败则 exit 1）
  */
@@ -91,9 +92,29 @@ async function pendingFiles(box) {
   }
 }
 
+/** 让 `spv_dispatch` 从 env 找到这个沙箱的注册表与队列，结束后恢复原 env。 */
+async function withStateEnv(box, work) {
+  const saved = {}
+  const keys = ['WHEELCHAIR_AGENT_HOME', 'DSH_SUPERAGENT_STATE_DIR', 'DSH_SUPERAGENT_URL', 'SPV_QUEUE_DIR']
+  for (const key of keys) {
+    saved[key] = process.env[key]
+    delete process.env[key]
+  }
+  process.env.WHEELCHAIR_AGENT_HOME = box.data
+  process.env.DSH_SUPERAGENT_STATE_DIR = box.state
+  try {
+    return await work()
+  } finally {
+    for (const [key, value] of Object.entries(saved)) {
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+}
+
 /**
  * 只实现 settings/state 路由的假面板。`conflictOnce` 会在第一次 policy PUT 时先把 revision 加一（模拟
- * 别人刚保存过），再回 409；`putStatus` 让 policy PUT 直接失败。
+ * 别人刚保存过），再回 409；`putStatus` 让 policy PUT 直接失败，`executorPutStatus` 让 executor PUT 失败。
  */
 async function panel({
   policy = { rules: [], sources: {} },
@@ -102,6 +123,7 @@ async function panel({
   executorRevision = 7,
   conflictOnce = false,
   putStatus = 0,
+  executorPutStatus = 0,
   settingsText = null,
 } = {}) {
   const state = {
@@ -154,6 +176,10 @@ async function panel({
       return
     }
     if (request.method === 'PUT' && request.url === '/orchestrator/api/settings/executor') {
+      if (executorPutStatus) {
+        json({ error: `executor exploded: ${'x'.repeat(300)}` }, executorPutStatus)
+        return
+      }
       state.prepare = body.value.prepare
       state.executorRevision += 1
       json({ saved: true, revision: state.executorRevision })
@@ -311,14 +337,7 @@ async function testFailedAdmissionWritesNoQueueFile() {
     assert.deepEqual(await pendingFiles(box), [], 'the CLI writes nothing when admission fails')
 
     // 工具走同一个 ensureDispatchAllowed：失败同样不能落盘。
-    const saved = {}
-    for (const key of ['WHEELCHAIR_AGENT_HOME', 'DSH_SUPERAGENT_STATE_DIR', 'DSH_SUPERAGENT_URL', 'SPV_QUEUE_DIR']) {
-      saved[key] = process.env[key]
-      delete process.env[key]
-    }
-    process.env.WHEELCHAIR_AGENT_HOME = box.data
-    process.env.DSH_SUPERAGENT_STATE_DIR = box.state
-    try {
+    await withStateEnv(box, async () => {
       const tools = defineSpvTools(join(box.state, 'spv'), {}, {})
       const dispatch = tools.find(tool => tool.name === 'spv_dispatch')
       assert.ok(dispatch)
@@ -327,12 +346,113 @@ async function testFailedAdmissionWritesNoQueueFile() {
         error => /could not let "operator" dispatch into tools\/alpha/.test(error.message) && /Nothing was queued/.test(error.message),
       )
       assert.deepEqual(await pendingFiles(box), [], 'the tool writes nothing when admission fails')
-    } finally {
-      for (const [key, value] of Object.entries(saved)) {
-        if (value === undefined) delete process.env[key]
-        else process.env[key] = value
-      }
-    }
+    })
+  } finally {
+    await p.close()
+  }
+}
+
+async function testDispatchFillsPrepareBeforeWritingTheTask() {
+  const box = await sandbox()
+  // 已经允许 operator、只缺 prepare：dispatch 只需补 executor.prepare，然后写一个任务文件。
+  const p = await panel({ policy: { rules: [], sources: { spv: { allowed: [{ id: 'operator', name: 'Ops' }] } } } })
+  try {
+    const added = await cli(box, [
+      'deployment', 'add', 'tools/alpha', '--repo', 'nihaoWX/alpha', '--state-dir', box.state, '--queue-dir', box.queue, '--port', String(p.port),
+    ])
+    assert.equal(added.status, 0, added.stderr)
+
+    const sent = await cli(box, ['dispatch', '--project', 'tools/alpha', '--task', 'fills prepare first'])
+    assert.equal(sent.status, 0, sent.stderr)
+    assert.match(sent.stdout, /note: filled the empty executor\.prepare/)
+    const puts = putCalls(p, '/settings/executor')
+    assert.equal(puts.length, 1, 'the dispatch fills the empty prepare exactly once')
+    assert.deepEqual(puts[0].body, { revision: 7, value: { prepare: DEFAULT_PREPARE } })
+    assert.equal(p.state.prepare, DEFAULT_PREPARE)
+    assert.equal(putCalls(p, '/settings/policy').length, 0, 'an already-allowed source needs no policy write')
+    assert.deepEqual((await pendingFiles(box)).length, 1, 'exactly one task file is queued after admission')
+  } finally {
+    await p.close()
+  }
+
+  // spv_dispatch 工具走同一个 ensureDispatchAllowed：成功时同样先补 prepare 再落盘。
+  const toolBox = await sandbox()
+  const toolPanel = await panel({ policy: { rules: [], sources: { spv: { allowed: [{ id: 'operator', name: 'Ops' }] } } } })
+  try {
+    const added = await cli(toolBox, [
+      'deployment', 'add', 'tools/beta', '--repo', 'nihaoWX/beta', '--state-dir', toolBox.state, '--queue-dir', toolBox.queue, '--port', String(toolPanel.port),
+    ])
+    assert.equal(added.status, 0, added.stderr)
+    await withStateEnv(toolBox, async () => {
+      const tools = defineSpvTools(join(toolBox.state, 'spv'), {}, {})
+      const dispatch = tools.find(tool => tool.name === 'spv_dispatch')
+      const result = await dispatch.execute({ project: 'tools/beta', task: 'the tool fills prepare first' }, {})
+      assert.match(result.note, /filled the empty executor\.prepare/)
+      assert.equal(putCalls(toolPanel, '/settings/executor').length, 1)
+      assert.equal(toolPanel.state.prepare, DEFAULT_PREPARE)
+      assert.equal((await pendingFiles(toolBox)).length, 1)
+    })
+  } finally {
+    await toolPanel.close()
+  }
+}
+
+async function testDispatchKeepsCustomPrepare() {
+  const box = await sandbox()
+  const custom = 'my own prepare --project tools/alpha'
+  const p = await panel({
+    policy: { rules: [], sources: { spv: { allowed: [{ id: 'operator', name: 'Ops' }] } } },
+    prepare: custom,
+  })
+  try {
+    const added = await cli(box, [
+      'deployment', 'add', 'tools/alpha', '--repo', 'nihaoWX/alpha', '--state-dir', box.state, '--queue-dir', box.queue, '--port', String(p.port),
+    ])
+    assert.equal(added.status, 0, added.stderr)
+
+    const sent = await cli(box, ['dispatch', '--project', 'tools/alpha', '--task', 'keep my prepare'])
+    assert.equal(sent.status, 0, sent.stderr)
+    assert.doesNotMatch(sent.stdout, /note:/, 'no note when both settings were already configured')
+    assert.equal(putCalls(p, '/settings/executor').length, 0, 'a custom prepare is never overwritten')
+    assert.equal(p.state.prepare, custom)
+    assert.equal((await pendingFiles(box)).length, 1)
+  } finally {
+    await p.close()
+  }
+}
+
+async function testFailedPrepareAdmissionWritesNoQueueFile() {
+  const box = await sandbox()
+  const p = await panel({
+    policy: { rules: [], sources: { spv: { allowed: [{ id: 'operator', name: 'Ops' }] } } },
+    executorPutStatus: 500,
+  })
+  try {
+    const added = await cli(box, [
+      'deployment', 'add', 'tools/alpha', '--repo', 'nihaoWX/alpha', '--state-dir', box.state, '--queue-dir', box.queue, '--port', String(p.port),
+    ])
+    assert.equal(added.status, 0, added.stderr)
+
+    const sent = await cli(box, ['dispatch', '--project', 'tools/alpha', '--task', 'must not land'])
+    assert.equal(sent.status, 1)
+    assert.match(sent.stderr, /could not let "operator" dispatch into tools\/alpha \(port \d+\)/)
+    assert.match(sent.stderr, /executor\.prepare could not be filled/)
+    assert.match(sent.stderr, /executor exploded/)
+    assert.match(sent.stderr, /Nothing was queued/)
+    assert.deepEqual(await pendingFiles(box), [], 'the CLI writes nothing when prepare admission fails')
+
+    // 工具走同一个 ensureDispatchAllowed：失败同样不落盘，且错误点名 prepare。
+    await withStateEnv(box, async () => {
+      const tools = defineSpvTools(join(box.state, 'spv'), {}, {})
+      const dispatch = tools.find(tool => tool.name === 'spv_dispatch')
+      await assert.rejects(
+        () => dispatch.execute({ project: 'tools/alpha', task: 'must not land either' }, {}),
+        error => /executor\.prepare could not be filled/.test(error.message) &&
+          /executor exploded/.test(error.message) &&
+          /Nothing was queued/.test(error.message),
+      )
+      assert.deepEqual(await pendingFiles(box), [], 'the tool writes nothing when prepare admission fails')
+    })
   } finally {
     await p.close()
   }
@@ -358,6 +478,9 @@ try {
   await testNonJsonAnd500Throw()
   await testPrepareIsFilledOnlyWhenEmpty()
   await testFailedAdmissionWritesNoQueueFile()
+  await testDispatchFillsPrepareBeforeWritingTheTask()
+  await testDispatchKeepsCustomPrepare()
+  await testFailedPrepareAdmissionWritesNoQueueFile()
   await testAllowedIdsReadsOnlyTheNamedSource()
   process.stdout.write('ok\n')
 } catch (error) {
