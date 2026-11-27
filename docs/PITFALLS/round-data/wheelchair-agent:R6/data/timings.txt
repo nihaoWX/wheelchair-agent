@@ -1,0 +1,6 @@
+issue=69
+command=/usr/bin/time -f 'ELAPSED=%e' node tests/test-deployments.mjs
+before_commit=208605f
+before_elapsed_s=94.11
+after_elapsed_s=4.52
+r6_test_py_elapsed_s=4.75

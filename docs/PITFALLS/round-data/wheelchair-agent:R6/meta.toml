@@ -1,0 +1,17 @@
+# R6 的 round-data —— “setup 负例不再睡满 90 秒默认超时”这一轮实际跑过的边界与入口。
+# 字段含义见 pitfalls-manager references/02_consume.md §4.3；本文件不复述。
+id = "wheelchair-agent:R6"
+verdict = "混合"
+family = ["setup 负例依赖 90 秒默认超时白等，失败原因被超时文案吞掉"]
+closures = [ { finding = "R6-F1", tier = "检查" },
+             { finding = "R6-F2", tier = "检查" } ]
+run_before = ["wheelchair-agent:R5"]
+touched = []
+note = """
+为什么认定同类：与 R5 同一份测试文件，但 R5 是 migrate 夹具拉真服务，本轮是 setup 负例睡满默认超时——同址不同因，故记“混合”。
+根因与建议修法：已证——假面板始终上报匹配的 accounts；ensureDispatchSettings() 因 policy PUT 500 抛错，却被轮询用的同一 catch 吞成 lastProblem，循环因此睡满 90 秒才退出。本轮按 issue #69 只钉测试侧等待窗口并加耗时上界，未改 src 的默认值与重试语义。
+怎么修才不弄坏前面：正例/负例的 setup 都钉 300ms/50ms，负例另断言 <2s；整份文件在打印 ok 前断言 <15s。R5 没有 test.py，改测试前跑它的 repro.sh（本轮已跑，rc=0）。
+"""
+how_to_run = """
+cd <此目录> && python3 test.py         # rc=0 = 全过；失败会打出族名 + 实测耗时
+"""
