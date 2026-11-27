@@ -79,6 +79,8 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
   工单表 0 行）；`executor.prepare` 为空 ⇒ 工单在空目录里开跑，不 clone、不建分支。由
   `src/spv/deployment-policy.js` 补：`deployment setup` 成功时补齐并打 note、`spv_dispatch`/`dispatch` 在写
   `pending/<id>.json` **之前**补齐（补不上就报错、一个字节都不写）、`install.sh --check` 用 `audit` 只读巡检。
+  **派单侧两项都补是 `#71` 才补齐的**：`#64` 只接了 `ensureAllowed()`，于是"注册 → 直接派单"这条最短路径上
+  `allowed` 会被补、`prepare` 不会（真机上 3083/3085 就是这么躺在"能接单但不 clone"的状态里的）。
   根因在 dsh-superagent 的 `validatePolicy()` 只对已存在的 `policy.sources.<id>` 套默认值，所以新部署的默认值
   永远不会自己出现；`deployment add` 只复刻端口/stateDir/queueDir，不管这些。
 - **一个 worker 项目路径只能归一份部署**（`#66`）：注册表本身已拒绝重复的项目名/端口/实例名，但两个不同的
