@@ -352,22 +352,29 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
   [#67](https://github.com/nihaoWX/wheelchair-agent/issues/67)（migrate 用例会真的在宿主机 3082 上拉起实例）
   → `#68`（`208605f`：动态端口 + 假 service manager + 3082/tmux 现场守卫）→ 账本 `wheelchair-agent:R5`（`4ddfb0e`）
   → issue 关闭。我按新机制自己 `query` 反查到 `[R5-F1]`/`[R5-F2]`，实测"跑完 3082 与 tmux 不变"。
+- **pitfalls 第二轮**：issue [#69](https://github.com/nihaoWX/wheelchair-agent/issues/69)（`tests/test-deployments.mjs`
+  每次白等 90 秒——负例子用例靠耗尽 `deployment-setup.js:32` 的 90 s 默认超时"通过"，而它断言的那句
+  `dispatch settings could not be completed … policy write failed` 也是超时后才出现）→ `#70`（`5503fe5`）：
+  三个 `deployment setup` 调用统一钉 `FAST_SETUP_ENV`（300 ms / 50 ms）、负例加"耗时 < 2 s"断言、整份文件
+  加 15 s 上界，**文件从 94.1 s 降到 4.3 s**；顺带删掉 `docs/PITFALLS/round-data/R5/`（无 `meta.toml` 的改名
+  残留）。账本 `wheelchair-agent:R6`（`code_after` 见 round），我的验证：`npm test` 495 PASS / EXIT=0、
+  `time node tests/test-deployments.mjs` = 4.3 s、账本 `query` 能查到 R5+R6。
+  另：R5 当初交的是 `repro.sh` 而非 `test.py`，`check` 因此一直给一条"run_before 指向的旧轮次没有可跑证据"
+  的非阻断提示；我补了 `docs/PITFALLS/round-data/wheelchair-agent:R5/test.py`（薄壳跑 `repro.sh` 并透传退出码，
+  4.5 s 通过），`check` 现在完全无声。
 
 # In Progress
 
-- **下一次冷安装**（`#59`–`#66` 全在等它）：退出 SPV → `wheelchair-agent service stop --all` →
+- **下一次冷安装**（`#59`–`#70` + 模板修正全在等它）：退出 SPV → `wheelchair-agent service stop --all` →
   `wheelchair-agent panel stop` → `bash install.sh --project tools/wheelchair-agent` →
-  `wheelchair-agent service start --all` → `wheelchair-agent spv`。
+  `wheelchair-agent service start --all` → `wheelchair-agent spv`。装前先 `install.sh --check`；
+  当前唯一差异是 `preset (1 file: agentsmd-examples/proj-dev-agentsmd.md)`（`c7795a8` 的模板修正）。
 - **`INSTRUCTIONS.md` 已对齐，没有待派的产品票**：`### spv_dispatch`（相同 superagent profile、不同实例）、
   spv/worker 项目、profile 与实例、实例-worker 保护机制由 `#64`–`#66` 落成；「项目」页要看的三样
   （spv 路径 / 绑定的 worker / 正在跑的工单）在 `#53` 就已全部渲染——`webui/lib/client.js` 的
   `wca-project-running` 列表逐条打印 `ticket.title`（缺标题时退回 `ticket.id`），数据来自
   `src/spv/projects-view.js:67 runningTickets()`。我曾在 Known Issues 里记过"只显示数量"，那是看错旧截图，
   已于 2026-11-27 核实并删除。
-- **pitfalls 第二轮的票在跑**：issue [#69](https://github.com/nihaoWX/wheelchair-agent/issues/69)（`tests/test-deployments.mjs`
-  每次白等 90 秒——负例子用例靠耗尽 `deployment-setup.js` 的 90 s 默认超时"通过"）已派给 worker，round 应为
-  `wheelchair-agent:R6`，顺带删掉 `docs/PITFALLS/round-data/R5/`（无 `meta.toml` 的改名残留）。
-
 # Known Issues
 
 - **宿主环境的 systemd 在崩**：`dmesg` 记录 `systemd-logind / systemd-resolved / systemd-timesyncd` 在开机 191 秒
