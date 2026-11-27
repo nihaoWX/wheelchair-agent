@@ -345,6 +345,13 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
 - **HARNESS 整理（本批次）**：`ARCHITECTURE.md` 修子命令表/目录树/参考索引、面板一节砍到边界、新增 hooks 三原则、
   已定型表格改为指向 `decisions.md`；`ARCHITECTURE/layout.md` 补 `install.sh` 契约与 tests 清单；
   `ARCHITECTURE/decisions.md` 新增 5 条定案并更正 2 处失真；`PROGRESS.md` 重写为快照。
+- **pitfalls-manager 首次按 v13（issue-first）真实跑通一轮**：`pitfalls-manager` 升到 v13（`record` 不再接受
+  `docs/PITFALLS/*.md` path 形态，报告入口是**目标仓库**的 GitHub issue；旧 path 轮次只读兼容），本仓 skill 已更新。
+  `c7795a8` 修掉真正的卡点：受管 worker 模板让人把坑报到**工具仓库** `nihaoWX/pitfalls-manager`，改成"待处理 =
+  本项目仓库 open 的 `[pitfall:blocker]`/`[pitfall:suggestion]`"。第一轮：issue
+  [#67](https://github.com/nihaoWX/wheelchair-agent/issues/67)（migrate 用例会真的在宿主机 3082 上拉起实例）
+  → `#68`（`208605f`：动态端口 + 假 service manager + 3082/tmux 现场守卫）→ 账本 `wheelchair-agent:R5`（`4ddfb0e`）
+  → issue 关闭。我按新机制自己 `query` 反查到 `[R5-F1]`/`[R5-F2]`，实测"跑完 3082 与 tmux 不变"。
 
 # In Progress
 
@@ -357,6 +364,9 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
   `wca-project-running` 列表逐条打印 `ticket.title`（缺标题时退回 `ticket.id`），数据来自
   `src/spv/projects-view.js:67 runningTickets()`。我曾在 Known Issues 里记过"只显示数量"，那是看错旧截图，
   已于 2026-11-27 核实并删除。
+- **pitfalls 第二轮的票在跑**：issue [#69](https://github.com/nihaoWX/wheelchair-agent/issues/69)（`tests/test-deployments.mjs`
+  每次白等 90 秒——负例子用例靠耗尽 `deployment-setup.js` 的 90 s 默认超时"通过"）已派给 worker，round 应为
+  `wheelchair-agent:R6`，顺带删掉 `docs/PITFALLS/round-data/R5/`（无 `meta.toml` 的改名残留）。
 
 # Known Issues
 
@@ -382,14 +392,6 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
   `linux-x64`；多平台前要改成按 `process.platform` / `process.arch` 拼名。
 - **"待冷安装"判定依赖戳**（`#39`）：`install.sh` 写 `<data root>/installed.json`，`--check` 与 `spv`
   的 `detectInstallPending` 共用同一指纹（preset 注释不敏感、块标量逐字保留）；没戳的老部署仍按旧行为提醒一次。
-- **`deployment list` 的空注册表文案也过时**：`src/spv/deployment.js:150-153` 仍说 "this install still uses the
-  single-deployment default"，而 `#48` 之后没有这个默认了（同一句里的 `deployment migrate` 建议仍然正确）。
-- **冷安装通知的配方在 `#48` 之后过时**：`src/spv/inbox.js:881-890` 的 `mergeNoticeText()` 仍打印
-  `wheelchair-agent service stop` / `bash install.sh` / `wheelchair-agent service start` / `wheelchair-agent spv`
-  这四条裸命令，而去单部署之后它们全都会被拒绝。修法：按 `ownDeployment()` 得到的项目打印 `--project <p>` 形式
-  （`deployment add` 的建议也一并给），认不出自己时打印 `--project <your project>` 占位并在文案里说明原因。
-- **`install.sh` 结尾的配方同样是裸命令**：装完打印的 `wheelchair-agent service start` / `wheelchair-agent spv`
-  在 `#48` 之后也会被拒（`service start` 要 `--project`；`spv` 推断不出项目就报错列清单）。同一类修法。
 - **直接敲 `spv` 没有部署身份**：`~/.local/bin/spv` 装的是渲染过的启动器本身（不是
   `exec wheelchair-agent spv` 的薄壳），所以直接调用时环境里没有 `SPV_QUEUE_DIR`——启动器无法反查会话属于
   哪份部署，只能如实提示改用 `wheelchair-agent spv --project <p>`（见 `ARCHITECTURE/cli.md`「保留独立命令名」）。
