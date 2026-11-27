@@ -147,13 +147,13 @@ const SETTINGS_BODY = JSON.stringify({
   sources: [],
 })
 
-async function openInstance() {
+async function openInstance(port = 0) {
   const server = createServer((request, response) => {
     response.statusCode = 200
     response.setHeader('content-type', 'application/json')
     response.end(request.url === '/orchestrator/api/settings' ? SETTINGS_BODY : '{"ok":true}')
   })
-  await new Promise((resolve, reject) => server.once('error', reject).listen(0, '127.0.0.1', resolve))
+  await new Promise((resolve, reject) => server.once('error', reject).listen(port, '127.0.0.1', resolve))
   return server
 }
 
@@ -162,6 +162,29 @@ async function closeInstance(server) {
     server.closeAllConnections()
     server.close(resolve)
   })
+}
+
+/** 让内核挑一个空闲端口，再把它交给被测代码。 */
+async function freePort() {
+  const server = await openInstance()
+  const port = server.address().port
+  await closeInstance(server)
+  return port
+}
+
+/**
+ * 假 service manager：测试真的去启动部署时，`python3` 会先记下 argv 再立刻失败。
+ *
+ * 这样 migrate 用例既能断言“活的实例在场时 dispatch 不启动 service”，又能在断言失效时挡住真实启动——
+ * 测试绝不会把宿主机 3082 上的服务或 tmux 会话拉起来。
+ */
+async function fakeServiceManager(box) {
+  const bin = join(box.base, 'fake-tools')
+  const log = join(box.base, 'fake-service.log')
+  await mkdir(bin, { recursive: true })
+  await writeFile(join(bin, 'python3'), '#!/bin/sh\nprintf \'%s\\n\' "$*" >> "$FAKE_SERVICE_LOG"\nexit 1\n', 'utf8')
+  await chmod(join(bin, 'python3'), 0o755)
+  return { bin, log }
 }
 
 async function pendingRecord(queue) {
@@ -553,51 +576,68 @@ async function testQueueDirMustMatchStateDir() {
 
 async function testMigrateRecordsTheCurrentDeployment() {
   const box = await sandbox()
-  const commit = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
-  writeStamp(installStampPath(box.data), {
-    version: 1,
-    commit,
-    installedAt: '2026-11-24T00:00:00.000Z',
-    targets: { presetDir: join(box.dsh, '.agent-presets', 'spv') },
-    components: Object.fromEntries(['preset', 'webui', 'bin', 'core'].map(name => [name, { files: {}, digest: 'x' }])),
-  })
+  const fake = await fakeServiceManager(box)
+  const port = await freePort()
+  // 迁移记录的就是这个动态端口；实例先活着，dispatch 才不需要启动 service。
+  const instance = await openInstance(port)
+  try {
+    const commit = 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef'
+    writeStamp(installStampPath(box.data), {
+      version: 1,
+      commit,
+      installedAt: '2026-11-24T00:00:00.000Z',
+      targets: { presetDir: join(box.dsh, '.agent-presets', 'spv') },
+      components: Object.fromEntries(['preset', 'webui', 'bin', 'core'].map(name => [name, { files: {}, digest: 'x' }])),
+    })
 
-  const migrated = await cli(box, ['deployment', 'migrate'], { DSH_SUPERAGENT_PROFILE: 'superagent', SPV_SERVICE_PORT: '3082' })
-  assert.equal(migrated.status, 0, migrated.stderr)
-  assert.match(migrated.stdout, /registered project tools\/wheelchair-agent/)
-  const registry = await readJson(registryFile(box))
-  assert.deepEqual(registry.deployments, [{
-    project: 'tools/wheelchair-agent',
-    profile: 'superagent',
-    stateDir: box.state,
-    queueDir: join(box.state, 'spv'),
-    port: 3082,
-    installedSha: commit,
-    repository: null,
-  }])
+    const migrated = await cli(box, ['deployment', 'migrate'], { DSH_SUPERAGENT_PROFILE: 'superagent', SPV_SERVICE_PORT: String(port) })
+    assert.equal(migrated.status, 0, migrated.stderr)
+    assert.match(migrated.stdout, /registered project tools\/wheelchair-agent/)
+    const registry = await readJson(registryFile(box))
+    assert.deepEqual(registry.deployments, [{
+      project: 'tools/wheelchair-agent',
+      profile: 'superagent',
+      stateDir: box.state,
+      queueDir: join(box.state, 'spv'),
+      port,
+      installedSha: commit,
+      repository: null,
+    }])
 
-  // 幂等：已有条目时一个字节都不改。
-  const before = await readFile(registryFile(box), 'utf8')
-  const again = await cli(box, ['deployment', 'migrate'])
-  assert.equal(again.status, 0, again.stderr)
-  assert.match(again.stdout, /already recorded/)
-  assert.equal(await readFile(registryFile(box), 'utf8'), before)
+    // 幂等：已有条目时一个字节都不改。
+    const before = await readFile(registryFile(box), 'utf8')
+    const again = await cli(box, ['deployment', 'migrate'])
+    assert.equal(again.status, 0, again.stderr)
+    assert.match(again.stdout, /already recorded/)
+    assert.equal(await readFile(registryFile(box), 'utf8'), before)
 
-  // migrate 之后旧路径变成一条真实路由：dispatch tools/wheelchair-agent 写 <stateDir>/spv。
-  const dispatched = await cli(box, ['dispatch', '--project', 'tools/wheelchair-agent', '--task', 'migrated'])
-  assert.equal(dispatched.status, 0, dispatched.stderr)
-  assert.equal((await pendingRecord(join(box.state, 'spv'))).text, 'migrated')
+    // migrate 之后旧路径变成一条真实路由：dispatch tools/wheelchair-agent 写 <stateDir>/spv。
+    // 实例已经在记录下来的端口上应答，所以这里只做准入检查并写队列，绝不启动 service。
+    const dispatched = await cli(box, ['dispatch', '--project', 'tools/wheelchair-agent', '--task', 'migrated'], {
+      PATH: `${fake.bin}:${process.env.PATH}`,
+      FAKE_SERVICE_LOG: fake.log,
+    })
+    assert.equal(dispatched.status, 0, dispatched.stderr)
+    assert.equal(await exists(fake.log), false, 'a live instance was found; the test never started a service')
+    assert.equal((await pendingRecord(join(box.state, 'spv'))).text, 'migrated')
 
-  // migrate 只记录恒等式队列 <stateDir>/spv；$SPV_QUEUE_DIR 是运行期的派单覆盖，不进注册表。
-  const other = await sandbox()
-  const custom = await cli(other, ['deployment', 'migrate'], { SPV_QUEUE_DIR: other.queueOverride })
-  assert.equal(custom.status, 0, custom.stderr)
-  assert.equal((await readJson(registryFile(other))).deployments[0].queueDir, join(other.state, 'spv'))
-  assert.equal(
-    (await cli(other, ['dispatch', '--project', 'tools/wheelchair-agent', '--task', 'override'], { SPV_QUEUE_DIR: other.queueOverride })).status,
-    0,
-  )
-  assert.equal((await pendingRecord(other.queueOverride)).text, 'override')
+    // migrate 只记录恒等式队列 <stateDir>/spv；$SPV_QUEUE_DIR 是运行期的派单覆盖，不进注册表。
+    const other = await sandbox()
+    const otherPort = await freePort()
+    const custom = await cli(other, ['deployment', 'migrate'], {
+      SPV_QUEUE_DIR: other.queueOverride,
+      SPV_SERVICE_PORT: String(otherPort),
+    })
+    assert.equal(custom.status, 0, custom.stderr)
+    assert.equal((await readJson(registryFile(other))).deployments[0].queueDir, join(other.state, 'spv'))
+    assert.equal(
+      (await cli(other, ['dispatch', '--project', 'tools/wheelchair-agent', '--task', 'override'], { SPV_QUEUE_DIR: other.queueOverride })).status,
+      0,
+    )
+    assert.equal((await pendingRecord(other.queueOverride)).text, 'override')
+  } finally {
+    await closeInstance(instance)
+  }
 }
 
 
@@ -907,7 +947,43 @@ async function testServiceStartPrintsSetupHint() {
   panel.close()
 }
 
+// ------------------------------------------------- 宿主机现场守卫（读不到就跳过）
+
+/**
+ * 读两处本测试绝不该改变的现场：宿主机 3082 上的监听，以及 tmux 会话名。
+ *
+ * `null` 表示读不到（工具不存在、无权限等），守卫据此跳过——CI 不应依赖 ss/tmux。
+ * tmux 没有服务器时以 1 退出，这是“零个会话”，仍算可读。
+ */
+function hostSnapshot() {
+  const read = (file, args) => {
+    try {
+      return execFileSync(file, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+    } catch (error) {
+      if (error.code === 'ENOENT') return null
+      if (file === 'tmux' && /no server running|no sessions/i.test(`${error.stdout ?? ''}${error.stderr ?? ''}`)) return ''
+      return null
+    }
+  }
+  return {
+    listeners: read('ss', ['-lptnH', 'sport = :3082']),
+    sessions: read('tmux', ['list-sessions', '-F', '#{session_name}']),
+  }
+}
+
+function assertHostIsUnchanged(before) {
+  const after = hostSnapshot()
+  if (before.listeners !== null && after.listeners !== null) {
+    assert.equal(after.listeners, before.listeners, 'the test changed what listens on host port 3082')
+  }
+  if (before.sessions !== null && after.sessions !== null) {
+    assert.equal(after.sessions, before.sessions, 'the test created or removed tmux sessions on the host')
+  }
+}
+
 // -------------------------------------------------------------------- main
+
+const HOST_BEFORE = hostSnapshot()
 
 try {
   await testNoRegistryIsAnActionableError()
@@ -926,6 +1002,7 @@ try {
   await testDeploymentSetupFillsPolicyAndPrepare()
   await testOldRegistryEntriesReadAsNoRepository()
   await testServiceStartPrintsSetupHint()
+  assertHostIsUnchanged(HOST_BEFORE)
   process.stdout.write('ok\n')
 } catch (error) {
   process.stderr.write(`not ok: ${error?.stack ?? error}\n`)
