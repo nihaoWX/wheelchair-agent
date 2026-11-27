@@ -362,6 +362,15 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
   另：R5 当初交的是 `repro.sh` 而非 `test.py`，`check` 因此一直给一条"run_before 指向的旧轮次没有可跑证据"
   的非阻断提示；我补了 `docs/PITFALLS/round-data/wheelchair-agent:R5/test.py`（薄壳跑 `repro.sh` 并透传退出码，
   4.5 s 通过），`check` 现在完全无声。
+- **pitfalls 第三轮**：重装后启动四份部署时 `node src/spv/deployment-policy.js audit` 抓到 3083/3085 是
+  "注册过、从未 setup"——`#64` 的派单前补齐只接了 `ensureAllowed()`，`executor.prepare` 仍为空，于是
+  "注册 → 直接派单"会在没 clone 的空目录里跑任务。我先就地 `deployment setup` 补了这两份（audit 变空），
+  再开 issue [#71](https://github.com/nihaoWX/wheelchair-agent/issues/71) → `#72`（`d139187`：
+  `ensureDispatchAllowed()` 在 `ensureAllowed()` 之后也 `ensureExecutorPrepare()`，两条 note 合并、失败按
+  phase 给不同建议、仍"Nothing was queued"；三条新测试）→ 账本 `wheelchair-agent:R7` → issue 关闭。
+  我的验证：`npm test` 495 PASS / EXIT=0；**mutation 检验**——把 prepare 那行换成空实现，新测试立刻红
+  （`did not match /note: filled the empty executor.prepare/`），改回即 `ok`；R7 的 `test.py` 三族全过（1.85 s）；
+  账本 `check` 无声。
 
 # In Progress
 
