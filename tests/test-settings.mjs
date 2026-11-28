@@ -241,6 +241,7 @@ async function loadHostApply(box) {
     ['src/spv/inbox.js', 'lib/core/inbox.js'],
     ['src/spv/panel-routes.js', 'lib/core/panel-routes.js'],
     ['src/spv/projects-view.js', 'lib/core/projects-view.js'],
+    ['src/spv/spv-host.js', 'lib/core/spv-host.js'],
     ['src/shared/spv-projects.js', 'lib/shared/spv-projects.js'],
     ['src/spv/ownership.js', 'lib/core/ownership.js'],
     ['src/spv/dispatch.js', 'lib/core/dispatch.js'],
@@ -403,6 +404,8 @@ function defaultPrIssueNotice(item, comment) {
 
 const EXPECTED_DEFAULTS = {
   'panel.port': 3080,
+  'spv.surface': 'tui',
+  'spv.webPort': 3081,
   'panel.profileFrom': 'superagent',
   'webui.style': 'fluid',
   'inbox.intervalSeconds': 60,

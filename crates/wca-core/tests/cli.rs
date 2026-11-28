@@ -202,6 +202,8 @@ fn settings_defaults_are_ordered_and_complete() {
         keys,
         vec![
             "panel.port",
+            "spv.surface",
+            "spv.webPort",
             "panel.profileFrom",
             "webui.style",
             "inbox.intervalSeconds",

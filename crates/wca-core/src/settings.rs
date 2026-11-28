@@ -78,6 +78,28 @@ const SPECS: &[Spec] = &[
         label_en: "Standalone panel port",
     },
     Spec {
+        key: "spv.surface",
+        kind: Kind::String,
+        default: Default::Text("tui"),
+        env: None,
+        min: None,
+        max: None,
+        options: Some(&["tui", "web"]),
+        label_zh: "spv 的交互形态",
+        label_en: "SPV interaction surface",
+    },
+    Spec {
+        key: "spv.webPort",
+        kind: Kind::Integer,
+        default: Default::Integer(3081),
+        env: None,
+        min: Some(1),
+        max: Some(65535),
+        options: None,
+        label_zh: "spv 浏览器端口",
+        label_en: "SPV browser port",
+    },
+    Spec {
         key: "panel.profileFrom",
         kind: Kind::String,
         default: Default::Text("superagent"),
@@ -968,6 +990,8 @@ mod tests {
             keys,
             vec![
                 "panel.port",
+                "spv.surface",
+                "spv.webPort",
                 "panel.profileFrom",
                 "webui.style",
                 "inbox.intervalSeconds",
@@ -981,11 +1005,33 @@ mod tests {
             ]
         );
         assert_eq!(default_value(&SPECS[0]), json("3080"));
-        assert_eq!(default_value(&SPECS[1]), json("\"superagent\""));
-        assert_eq!(default_value(&SPECS[2]), json("\"fluid\""));
-        assert_eq!(default_value(&SPECS[3]), json("60"));
-        assert_eq!(default_value(&SPECS[9]), json("0"));
-        assert_eq!(default_value(&SPECS[10]), json("true"));
+        assert_eq!(default_value(&SPECS[1]), json("\"tui\""));
+        assert_eq!(default_value(&SPECS[2]), json("3081"));
+        assert_eq!(default_value(&SPECS[3]), json("\"superagent\""));
+        assert_eq!(default_value(&SPECS[4]), json("\"fluid\""));
+        assert_eq!(default_value(&SPECS[5]), json("60"));
+        assert_eq!(default_value(&SPECS[11]), json("0"));
+        assert_eq!(default_value(&SPECS[12]), json("true"));
+    }
+
+    #[test]
+    fn spv_surface_and_web_port_validate_like_the_panel() {
+        assert_eq!(
+            normalize("spv.surface", &json("\"web\""), true).expect("web surface"),
+            json("\"web\"")
+        );
+        assert_eq!(
+            error_message(normalize("spv.surface", &json("\"browser\""), true)),
+            "spv.surface must be one of \"tui\", \"web\", got \"browser\"."
+        );
+        assert_eq!(
+            error_message(normalize("spv.webPort", &json("0"), true)),
+            "spv.webPort must be at least 1, got 0."
+        );
+        assert_eq!(
+            error_message(normalize("spv.webPort", &json("70000"), true)),
+            "spv.webPort must be at most 65535, got 70000."
+        );
     }
 
     #[test]
@@ -994,13 +1040,13 @@ mod tests {
         assert_eq!(
             data["values"],
             json(
-                "{\"panel.port\":3080,\"panel.profileFrom\":\"superagent\",\"webui.style\":\"fluid\",\"inbox.intervalSeconds\":60,\"merge.installRepo\":\"wheelchair-agent\",\"merge.autoMerge\":false,\"injection.intervalMs\":1000,\"injection.maxBodyChars\":12000,\"work.keep\":0,\"work.keepDays\":0,\"work.sweepOnMount\":true}"
+                "{\"panel.port\":3080,\"spv.surface\":\"tui\",\"spv.webPort\":3081,\"panel.profileFrom\":\"superagent\",\"webui.style\":\"fluid\",\"inbox.intervalSeconds\":60,\"merge.installRepo\":\"wheelchair-agent\",\"merge.autoMerge\":false,\"injection.intervalMs\":1000,\"injection.maxBodyChars\":12000,\"work.keep\":0,\"work.keepDays\":0,\"work.sweepOnMount\":true}"
             )
         );
         assert_eq!(
             data["filled"],
             json(
-                "[\"panel.port\",\"panel.profileFrom\",\"webui.style\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.keep\",\"work.keepDays\",\"work.sweepOnMount\"]"
+                "[\"panel.port\",\"spv.surface\",\"spv.webPort\",\"panel.profileFrom\",\"webui.style\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.keep\",\"work.keepDays\",\"work.sweepOnMount\"]"
             )
         );
     }
@@ -1111,7 +1157,7 @@ mod tests {
         assert_eq!(
             data["fill"]["filled"],
             json(
-                "[\"panel.port\",\"panel.profileFrom\",\"webui.style\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.keepDays\",\"work.sweepOnMount\"]"
+                "[\"panel.port\",\"spv.surface\",\"spv.webPort\",\"panel.profileFrom\",\"webui.style\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.keepDays\",\"work.sweepOnMount\"]"
             )
         );
         assert_eq!(data["values"], json("{\"work.keep\":3}"));
@@ -1191,7 +1237,7 @@ mod tests {
         assert_eq!(
             data["filled"],
             json(
-                "[\"panel.port\",\"panel.profileFrom\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.sweepOnMount\"]"
+                "[\"panel.port\",\"spv.surface\",\"spv.webPort\",\"panel.profileFrom\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.sweepOnMount\"]"
             )
         );
     }

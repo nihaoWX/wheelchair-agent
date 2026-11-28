@@ -20,6 +20,17 @@ if [ ! -f "$SPV_PATCH" ]; then
   exit 1
 fi
 
+# A browser SPV surface hands over to the CLI once, from the environment, without parsing settings here.
+# `wheelchair-agent spv` then runs the wca-spv-web host (and, in the terminal case, the branch below).
+if [ "${WHEELCHAIR_AGENT_SPV_SURFACE:-}" = "web" ]; then
+  if ! command -v wheelchair-agent >/dev/null 2>&1; then
+    echo 'FAIL: WHEELCHAIR_AGENT_SPV_SURFACE=web needs the wheelchair-agent CLI on PATH.' >&2
+    echo 'fix: install it with: bash <checkout>/install.sh --project <project>' >&2
+    exit 1
+  fi
+  exec wheelchair-agent spv "$@"
+fi
+
 # Two entry points, one implementation:
 #   - `wheelchair-agent spv` runs this script as its supervised child (WHEELCHAIR_AGENT_SUPERVISED=1). The CLI
 #     already started every registered backend, so the launcher only execs dsh-tui; anything else would recurse

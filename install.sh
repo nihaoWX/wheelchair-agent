@@ -475,7 +475,7 @@ render_into() {
     fix "check that $SELF_DIR/bin/wheelchair-agent.mjs exists and is readable, then rerun this script"
     return 1
   fi
-  for file in shared/core-stamp.js shared/deployments.js shared/home.js shared/hook-events.js shared/hooks.js shared/install-stamp.js shared/queue.js shared/schema.js shared/settings.js shared/spv-projects.js shared/work.js spv/auto-merge-effect.js spv/check.js spv/cron-plugin.js spv/cron.js spv/deployment-policy.js spv/deployment-restart.js spv/deployment-setup.js spv/deployment.js spv/dispatch.js spv/health.js spv/hook.js spv/inbox.js spv/injector.js spv/outbox.js spv/ownership.js spv/projects-view.js spv/panel-routes.js spv/panel-instance.js spv/profiles.js spv/spv-project.js spv/paths.js spv/restart-command.js spv/restart-ux.js spv/restart.js spv/service-instance.js spv/session.js spv/tools.js; do
+  for file in shared/core-stamp.js shared/deployments.js shared/home.js shared/hook-events.js shared/hooks.js shared/install-stamp.js shared/queue.js shared/schema.js shared/settings.js shared/spv-projects.js shared/work.js spv/auto-merge-effect.js spv/spv-host.js spv/check.js spv/cron-plugin.js spv/cron.js spv/deployment-policy.js spv/deployment-restart.js spv/deployment-setup.js spv/deployment.js spv/dispatch.js spv/health.js spv/hook.js spv/inbox.js spv/injector.js spv/outbox.js spv/ownership.js spv/projects-view.js spv/panel-routes.js spv/panel-instance.js spv/profiles.js spv/spv-project.js spv/paths.js spv/restart-command.js spv/restart-ux.js spv/restart.js spv/service-instance.js spv/session.js spv/tools.js; do
     if ! cp "$SELF_DIR/src/$file" "$dest/src/$file"; then
       fail "cannot copy src/$file from this checkout"
       fix "check that $SELF_DIR/src/$file exists and is readable, then rerun this script"
@@ -490,7 +490,7 @@ render_into() {
     fi
     chmod 0755 "$dest/commands/$file" || { fail "cannot make $dest/commands/$file executable"; return 1; }
   done
-  for file in wca.package.json wca.patch.yml wca-spv-tui.package.json wca-spv-tui.patch.yml; do
+  for file in wca.package.json wca.patch.yml wca-spv-tui.package.json wca-spv-tui.patch.yml wca-spv-web.package.json wca-spv-web.patch.yml; do
     if ! cp "$SELF_DIR/preset/profiles/$file" "$dest/profiles/$file"; then
       fail "cannot copy preset/profiles/$file from this checkout"
       fix "check that $SELF_DIR/preset/profiles/$file exists and is readable, then rerun this script"
@@ -500,6 +500,11 @@ render_into() {
   if ! cp "$SELF_DIR/preset/panel.patch.yml" "$dest/panel.patch.yml"; then
     fail 'cannot copy preset/panel.patch.yml from this checkout'
     fix "check that $SELF_DIR/preset/panel.patch.yml exists and is readable, then rerun this script"
+    return 1
+  fi
+  if ! cp "$SELF_DIR/preset/spv-web.patch.yml" "$dest/spv-web.patch.yml"; then
+    fail 'cannot copy preset/spv-web.patch.yml from this checkout'
+    fix "check that $SELF_DIR/preset/spv-web.patch.yml exists and is readable, then rerun this script"
     return 1
   fi
   if ! cp "$SELF_DIR/commands/prepare.sh" "$dest/prepare.sh"; then
@@ -579,7 +584,7 @@ render_webui_into() {
   done
   # `settings.js` lives in `lib/shared/` (not `lib/core/`) for the same reason `queue.js` does: the copied
   # `lib/core/inbox.js` imports `../shared/settings.js`, and `lib/core/` is for the src/spv files.
-  for pair in "spv/inbox.js:lib/core/inbox.js" "spv/dispatch.js:lib/core/dispatch.js" "spv/deployment-policy.js:lib/core/deployment-policy.js" "spv/health.js:lib/core/health.js" "spv/service-instance.js:lib/core/service-instance.js" "spv/hook-runner.js:lib/core/hook-runner.js" "spv/ownership.js:lib/core/ownership.js" "spv/projects-view.js:lib/core/projects-view.js" "spv/panel-routes.js:lib/core/panel-routes.js" "spv/paths.js:lib/core/paths.js" "spv/archive-effect.js:lib/core/archive-effect.js" "spv/auto-merge-effect.js:lib/core/auto-merge-effect.js" "shared/core-stamp.js:lib/shared/core-stamp.js" "shared/deployments.js:lib/shared/deployments.js" "shared/home.js:lib/shared/home.js" "shared/hook-events.js:lib/shared/hook-events.js" "shared/hooks.js:lib/shared/hooks.js" "shared/install-stamp.js:lib/shared/install-stamp.js" "shared/queue.js:lib/shared/queue.js" "shared/schema.js:lib/shared/schema.js" "shared/settings.js:lib/shared/settings.js" "shared/spv-projects.js:lib/shared/spv-projects.js" "shared/work.js:lib/shared/work.js"; do
+  for pair in "spv/inbox.js:lib/core/inbox.js" "spv/dispatch.js:lib/core/dispatch.js" "spv/deployment-policy.js:lib/core/deployment-policy.js" "spv/health.js:lib/core/health.js" "spv/service-instance.js:lib/core/service-instance.js" "spv/hook-runner.js:lib/core/hook-runner.js" "spv/ownership.js:lib/core/ownership.js" "spv/projects-view.js:lib/core/projects-view.js" "spv/spv-host.js:lib/core/spv-host.js" "spv/panel-routes.js:lib/core/panel-routes.js" "spv/paths.js:lib/core/paths.js" "spv/archive-effect.js:lib/core/archive-effect.js" "spv/auto-merge-effect.js:lib/core/auto-merge-effect.js" "shared/core-stamp.js:lib/shared/core-stamp.js" "shared/deployments.js:lib/shared/deployments.js" "shared/home.js:lib/shared/home.js" "shared/hook-events.js:lib/shared/hook-events.js" "shared/hooks.js:lib/shared/hooks.js" "shared/install-stamp.js:lib/shared/install-stamp.js" "shared/queue.js:lib/shared/queue.js" "shared/schema.js:lib/shared/schema.js" "shared/settings.js:lib/shared/settings.js" "shared/spv-projects.js:lib/shared/spv-projects.js" "shared/work.js:lib/shared/work.js"; do
     src=${pair%%:*}
     target=${pair##*:}
     if ! cp "$SELF_DIR/src/$src" "$dest/$target"; then
@@ -660,7 +665,7 @@ check_preset() {
     fix 'run: bash tools/wheelchair-agent/install.sh'
   fi
   actual=$(find "$PRESET_DIR" -type f | sed "s|^$PRESET_DIR/||" | sort | tr '\n' ' ')
-  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md panel.patch.yml agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh profiles/wca.package.json profiles/wca.patch.yml profiles/wca-spv-tui.package.json profiles/wca-spv-tui.patch.yml src/shared/core-stamp.js src/shared/deployments.js src/shared/home.js src/shared/hook-events.js src/shared/hooks.js src/shared/install-stamp.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/spv-projects.js src/shared/work.js src/spv/auto-merge-effect.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/deployment-policy.js src/spv/deployment-restart.js src/spv/deployment-setup.js src/spv/deployment.js src/spv/dispatch.js src/spv/health.js src/spv/hook.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/ownership.js src/spv/projects-view.js src/spv/panel-routes.js src/spv/panel-instance.js src/spv/profiles.js src/spv/spv-project.js src/spv/paths.js src/spv/restart-command.js src/spv/restart-ux.js src/spv/restart.js src/spv/service-instance.js src/spv/session.js src/spv/tools.js "
+  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md panel.patch.yml agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh profiles/wca.package.json profiles/wca.patch.yml profiles/wca-spv-tui.package.json profiles/wca-spv-tui.patch.yml profiles/wca-spv-web.package.json profiles/wca-spv-web.patch.yml spv-web.patch.yml src/shared/core-stamp.js src/shared/deployments.js src/shared/home.js src/shared/hook-events.js src/shared/hooks.js src/shared/install-stamp.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/spv-projects.js src/shared/work.js src/spv/auto-merge-effect.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/deployment-policy.js src/spv/deployment-restart.js src/spv/deployment-setup.js src/spv/deployment.js src/spv/dispatch.js src/spv/health.js src/spv/hook.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/ownership.js src/spv/projects-view.js src/spv/spv-host.js src/spv/panel-routes.js src/spv/panel-instance.js src/spv/profiles.js src/spv/spv-project.js src/spv/paths.js src/spv/restart-command.js src/spv/restart-ux.js src/spv/restart.js src/spv/service-instance.js src/spv/session.js src/spv/tools.js "
   local missing extras
   missing=$(comm -23 <(printf '%s' "$expected" | tr ' ' '\n' | sort) <(printf '%s' "$actual" | tr ' ' '\n' | sort) | tr '\n' ' ')
   extras=$(comm -13 <(printf '%s' "$expected" | tr ' ' '\n' | sort) <(printf '%s' "$actual" | tr ' ' '\n' | sort) | tr '\n' ' ')
@@ -797,15 +802,15 @@ check_profiles() {
   if report=$(node "$SELF_DIR/src/spv/profiles.js" check \
     --dsh-home "$DSH_HOME_DIR" --data-root "$DATA_ROOT" \
     --state-dir "$LEGACY_STATE_DIR" --port "$SERVICE_PORT" 2>&1); then
-    ok "profiles: wca and wca-spv-tui match their templates ($DSH_HOME_DIR/profiles)"
     printf '%s\n' "$report" | while IFS= read -r line; do
       case $line in
+        ok:*) ok "${line#ok: }" ;;
         note:*) note "${line#note: }" ;;
       esac
     done
     return
   fi
-  fail 'the wca/wca-spv-tui profiles, the deployment registry or the panel overlay do not match this checkout'
+  fail 'the wca/wca-spv-tui profiles, the deployment registry or the overlays do not match this checkout'
   printf '%s\n' "$report" | sed 's/^/     /'
   fix 'run: bash install.sh from the wheelchair-agent checkout (after install: wheelchair-agent profiles sync)'
 }
@@ -1293,7 +1298,8 @@ sync_profiles() {
     --dsh-home "$DSH_HOME_DIR" --data-root "$DATA_ROOT" \
     --state-dir "$LEGACY_STATE_DIR" --port "$SERVICE_PORT" \
     --template-dir "$SELF_DIR/preset/profiles" \
-    --panel-overlay "$SELF_DIR/preset/panel.patch.yml" 2>&1); then
+    --panel-overlay "$SELF_DIR/preset/panel.patch.yml" \
+    --spv-overlay "$SELF_DIR/preset/spv-web.patch.yml" 2>&1); then
     status=0
   else
     status=1

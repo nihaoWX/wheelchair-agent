@@ -220,7 +220,7 @@ check '(2) the data root and its subdirectories were created' \
 check '(2) install created the settings file' \
   "$([ -f "$SB/home/.wheelchair-agent/settings.json" ] && echo yes || echo no)" yes
 check '(2) the shipped settings file carries every default' \
-  "$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const v=s.values||{}; process.stdout.write(s.version===1&&s.revision===0&&Object.keys(v).length===11&&v["panel.port"]===3080&&v["panel.profileFrom"]==="superagent"&&v["webui.style"]==="fluid"&&v["merge.autoMerge"]===false&&v["inbox.intervalSeconds"]===60&&v["work.sweepOnMount"]===true&&Object.keys(s.templates).length===0&&Array.isArray(s.filled)&&s.filled.length===11?"yes":"no")' "$SB/home/.wheelchair-agent/settings.json" 2>/dev/null)" yes
+  "$(node -e 'const s=JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")); const v=s.values||{}; process.stdout.write(s.version===1&&s.revision===0&&Object.keys(v).length===13&&v["panel.port"]===3080&&v["panel.profileFrom"]==="superagent"&&v["webui.style"]==="fluid"&&v["merge.autoMerge"]===false&&v["inbox.intervalSeconds"]===60&&v["work.sweepOnMount"]===true&&Object.keys(s.templates).length===0&&Array.isArray(s.filled)&&s.filled.length===13?"yes":"no")' "$SB/home/.wheelchair-agent/settings.json" 2>/dev/null)" yes
 check '(2) the shipped settings file reads back the built-in defaults' \
   "$(WHEELCHAIR_AGENT_HOME="$SB/home/.wheelchair-agent" DSH_SUPERAGENT_STATE_DIR="$SB/dsh/state/superagent" node --input-type=module -e 'import { pathToFileURL } from "node:url"; const { resolveSettings } = await import(pathToFileURL(process.argv[1]).href); const s = resolveSettings(); process.stdout.write(s.fileState === "ok" && s.effective["webui.style"] === "fluid" && s.effective["inbox.intervalSeconds"] === 60 ? "yes" : "no")' "$REPO/src/shared/settings.js" 2>/dev/null)" yes
 check '(2) the shipped settings file is mode 0644' \
@@ -698,6 +698,25 @@ check '(22) both names: the install still succeeds' "$?" 0
 check '(22) both names: the note names the leftover directory' "$(grep -c 'profiles/superagent still exists; the deployments now use "wca"' "$SB/stdout")" 1
 check '(22) both names: the old directory is not deleted' "$(cat "$SB/dsh/profiles/superagent/keep-me" 2>/dev/null)" 'stale'
 rm -rf "$SB/dsh/profiles/superagent"
+
+# ---- case 23: the browser-shaped SPV host is opt-in through spv.surface. --check in that shape asks for
+# the wca-spv-web profile and the deployments/spv.yml overlay; the install renders both, then --check is
+# clean again. The terminal profile must survive the switch untouched.
+before_web=$(install_snapshot)
+( export WHEELCHAIR_AGENT_SPV_SURFACE=web; run_install_raw --check --project tools/wheelchair-agent )
+check '(23) web-shaped --check fails while wca-spv-web is missing' "$?" 2
+check '(23) it names the missing browser profile' "$(grep -c 'profile "wca-spv-web" is missing' "$SB/stdout")" 1
+check '(23) it says how to render it' "$(grep -q 'wheelchair-agent profiles sync' "$SB/stdout" && echo yes)" yes
+check '(23) web-shaped --check wrote nothing' "$(install_snapshot)" "$before_web"
+
+( export WHEELCHAIR_AGENT_SPV_SURFACE=web; run_install_raw --project tools/wheelchair-agent )
+check '(23) the install renders the browser SPV profile' "$?" 0
+check '(23) wca-spv-web exists' "$([ -d "$SB/dsh/profiles/wca-spv-web" ] && echo yes)" yes
+check '(23) the SPV browser overlay exists' "$([ -f "$SB/home/.wheelchair-agent/deployments/spv.yml" ] && echo yes)" yes
+check '(23) the terminal profile survives the switch' "$([ -d "$SB/dsh/profiles/wca-spv-tui" ] && echo yes)" yes
+( export WHEELCHAIR_AGENT_SPV_SURFACE=web; run_install_raw --check --project tools/wheelchair-agent )
+check '(23) web-shaped --check passes after the install' "$?" 0
+check '(23) it reports the three profiles' "$(grep -c 'the wca, wca-spv-tui and wca-spv-web profiles' "$SB/stdout")" 1
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

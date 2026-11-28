@@ -1,0 +1,17 @@
+# The SPV browser-host overlay. install.sh writes it to `<data root>/deployments/spv.yml`, and
+# `wheelchair-agent spv` (with `spv.surface = "web"`) starts the host with
+#   dsh --profile wca-spv-web --patch <data root>/deployments/spv.yml
+#
+# It is not a deployment and never enters deployments.json. The overlay exists for the one value
+# that must follow the running process rather than the rendered profile: the port.
+#
+#   WHEELCHAIR_SPV_WEB_PORT     settings "spv.webPort" (3081 by default)
+#
+# Unlike the panel overlay, there are no deployment-only rows to switch off here: the
+# `wca-spv-web` profile bundles neither dsh-superagent nor wheelchair-agent-webui, and it carries
+# no orchestrator service or agent-preset rows. `--dump-config` on this overlay therefore shows
+# their absence rather than `disabled: true` entries.
+- id: webserver
+  config:
+    host: 127.0.0.1
+    port: !!js Number(process.env.WHEELCHAIR_SPV_WEB_PORT ?? 3081)

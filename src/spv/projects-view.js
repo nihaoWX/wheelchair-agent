@@ -12,14 +12,19 @@ import { join } from 'node:path'
 import { deploymentSlug, listDeployments } from '../shared/deployments.js'
 import { listSpvProjects, projectsRootOf, spvProjectsPath } from '../shared/spv-projects.js'
 import { setupProblemText } from './health.js'
+import {
+  probeSpvWebHost,
+  spvLogPath,
+  spvSurface,
+  spvTokenFromLog,
+  spvWebPort,
+} from './spv-host.js'
 
 /** 单份部署的请求上限；并发发出，所以整张卡最多等这么久。 */
 export const PROJECT_PROBE_TIMEOUT_MS = 2000
 
 const API_HEADERS = { accept: 'application/json', 'x-orchestrator-request': '1' }
-
-/** `dsh web` prints this once per start; the token is the only way into the harness page. */
-const TOKEN_URL = /https?:\/\/[^\s]*[?&]token=[A-Za-z0-9._-]+/g
+const DEPLOYMENT_TOKEN_URL = /https?:\/\/[^\s]*[?&]token=[A-Za-z0-9._-]+/g
 
 /**
  * The tokenised URL of one deployment's own full UI.
@@ -32,7 +37,7 @@ export function deploymentUrl(project, { env = process.env } = {}) {
   const dshHome = String(env.DSH_HOME ?? '').trim() || join(homedir(), '.dsh')
   const log = join(dshHome, '.artifacts', `wca-${deploymentSlug(project)}.log`)
   try {
-    const matches = [...readFileSync(log, 'utf8').matchAll(TOKEN_URL)]
+    const matches = [...readFileSync(log, 'utf8').matchAll(DEPLOYMENT_TOKEN_URL)]
     return matches.length === 0 ? null : matches[matches.length - 1][0]
   } catch {
     return null
@@ -128,6 +133,14 @@ export async function projectCards({ env = process.env, home, stateDir } = {}) {
       probes.set(port, await probeDeployment(port))
     }),
   )
+  const surface = spvSurface({ env, home, stateDir })
+  const spv = { surface }
+  if (surface === 'web') {
+    const port = spvWebPort({ env, home, stateDir })
+    spv.port = port
+    spv.running = (await probeSpvWebHost({ port })) !== null
+    spv.url = spvTokenFromLog(spvLogPath({ env }))
+  }
   const spvProjects = registry.spvProjects.map(entry => ({
     root: entry.root,
     exists: true,
@@ -164,6 +177,7 @@ export async function projectCards({ env = process.env, home, stateDir } = {}) {
     }),
   }))
   return {
+    spv,
     spvProjects,
     registry: spvProjectsPath({ env, home, stateDir }),
     ...(deploymentProblem === null ? {} : { problem: deploymentProblem }),

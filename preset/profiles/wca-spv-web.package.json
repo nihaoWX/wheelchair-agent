@@ -1,0 +1,21 @@
+{
+  "name": "dsh-profile-wca-spv-web",
+  "private": true,
+  "dependencies": {
+    "@mars-sea/dsh-commandcode-provider": "0.17.6",
+    "billion-context": "^0.1.216",
+    "dsh-context": "^0.84.1",
+    "dsh-superagent": "link:@DSH_SUPERAGENT@",
+    "wheelchair-agent": "link:@WHEELCHAIR_AGENT@"
+  },
+  "dsh": {
+    "profile": {
+      "bundles": [
+        "@deepseek-ai/dsh-base",
+        "@deepseek-ai/dsh-web-app",
+        "@mars-sea/dsh-commandcode-provider",
+        "billion-context"
+      ]
+    }
+  }
+}
