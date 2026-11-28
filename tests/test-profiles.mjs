@@ -536,31 +536,57 @@ async function testSpvHostState() {
   try {
     const log = join(base, 'wca-spv.log')
     writeFileSync(log, 'dsh web: http://127.0.0.1:3081/?token=abc-DEF_123\n')
-    const running = await spvHost.spvHostState({
+    const noToken = join(base, 'no-token.log')
+    writeFileSync(noToken, 'dsh web starting\n')
+    const own = '127.0.0.1:3081/?token=abc-DEF_123'
+    const running401 = await spvHost.spvHostState({
       port: 3081,
       logPath: log,
-      request: async () => ({ status: 200, body: { cancel() {} } }),
-      listenerPid: () => { throw new Error('the running path must not inspect the listener') },
+      probe: async () => 401,
+      listenerPid: () => 700,
+      cmdline: () => 'node /usr/bin/dsh --profile wca-spv-web --patch /tmp/spv.yml',
     })
-    check('spvHostState treats a 200 page as already running', running.state === 'running', JSON.stringify(running))
-    check(
-      'spvHostState uses the last token URL from the log',
-      running.url === 'http://127.0.0.1:3081/?token=abc-DEF_123', String(running.url),
-    )
+    check('spvHostState treats a 401 as our running host', running401.state === 'running', JSON.stringify(running401))
+    check('spvHostState uses the last token URL from the log', running401.url?.endsWith(own) === true, String(running401.url))
+    const running303 = await spvHost.spvHostState({
+      port: 3081,
+      logPath: log,
+      probe: async () => 303,
+      listenerPid: () => 701,
+      cmdline: () => 'node dsh --profile=wca-spv-web',
+    })
+    check('spvHostState treats a 303 token exchange as running', running303.state === 'running', JSON.stringify(running303))
+    const unreadable = await spvHost.spvHostState({
+      port: 3081,
+      logPath: log,
+      probe: async () => 200,
+      listenerPid: () => 702,
+      cmdline: () => '',
+    })
+    check('spvHostState trusts the token when the cmdline is unreadable', unreadable.state === 'running', JSON.stringify(unreadable))
     const occupied = await spvHost.spvHostState({
       port: 3081,
-      logPath: log,
-      request: async () => ({ status: 503 }),
+      logPath: noToken,
+      probe: async () => 200,
       listenerPid: () => 4242,
+      cmdline: () => 'node /usr/bin/other-server',
     })
-    check('spvHostState reports a foreign listener as occupied', occupied.state === 'occupied' && occupied.pid === 4242, JSON.stringify(occupied))
+    check('spvHostState reports a 200 without a token as occupied', occupied.state === 'occupied' && occupied.pid === 4242, JSON.stringify(occupied))
+    const foreign = await spvHost.spvHostState({
+      port: 3081,
+      logPath: log,
+      probe: async () => 401,
+      listenerPid: () => 4343,
+      cmdline: () => 'node /usr/bin/other-server',
+    })
+    check('spvHostState rejects a token with a foreign listener', foreign.state === 'occupied' && foreign.pid === 4343, JSON.stringify(foreign))
     const free = await spvHost.spvHostState({
       port: 3081,
       logPath: log,
-      request: async () => { throw new Error('connection refused') },
+      probe: async () => null,
       listenerPid: () => null,
     })
-    check('spvHostState reports an unused port as free', free.state === 'free', JSON.stringify(free))
+    check('spvHostState reports a refused probe as free', free.state === 'free', JSON.stringify(free))
   } finally {
     rmSync(base, { recursive: true, force: true })
   }

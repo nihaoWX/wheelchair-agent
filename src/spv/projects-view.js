@@ -138,7 +138,7 @@ export async function projectCards({ env = process.env, home, stateDir } = {}) {
   if (surface === 'web') {
     const port = spvWebPort({ env, home, stateDir })
     spv.port = port
-    spv.running = await probeSpvWebHost({ port })
+    spv.running = (await probeSpvWebHost({ port })) !== null
     spv.url = spvTokenFromLog(spvLogPath({ env }))
   }
   const spvProjects = registry.spvProjects.map(entry => ({

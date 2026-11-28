@@ -11,6 +11,7 @@
  */
 import { closeSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs'
 import { spawn } from 'node:child_process'
+import { request } from 'node:http'
 import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { dataPaths } from '../shared/home.js'
@@ -94,35 +95,64 @@ export function spvTokenFromLog(file) {
   }
 }
 
-/** One loopback probe of the SPV web page; any 200 is treated as the host answering. */
-export async function probeSpvWebHost({ port, request = fetch, timeoutMs = 1500 } = {}) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  timer.unref?.()
-  try {
-    const response = await request(`http://127.0.0.1:${port}/`, { cache: 'no-store', signal: controller.signal })
-    response.body?.cancel?.()
-    return response.status === 200
-  } catch {
-    return false
-  } finally {
-    clearTimeout(timer)
-  }
+/**
+ * One loopback probe of the SPV web page. Mirror `panel-instance.probePanelHttp`: the status code is
+ * the answer (dsh web replies 401 without the session cookie and 303 for the token exchange, and both
+ * mean the host is alive); only a refused/timed-out connection is null.
+ */
+export function probeSpvWebHost({ port, host = SPV_HOST, timeoutMs = 800, probe } = {}) {
+  if (probe !== undefined) return probe(port)
+  return new Promise(resolve => {
+    let settled = false
+    const finish = value => {
+      if (settled) return
+      settled = true
+      resolve(value)
+    }
+    const req = request({ host, port, path: '/', method: 'GET', timeout: timeoutMs }, response => {
+      response.resume()
+      response.on('end', () => finish(response.statusCode ?? null))
+      response.on('error', () => finish(null))
+    })
+    req.on('timeout', () => {
+      req.destroy()
+      finish(null)
+    })
+    req.on('error', () => finish(null))
+    req.end()
+  })
 }
 
 /**
- * Decide what a foreground `wheelchair-agent spv` should do. `running` means the page answered and
- * the token comes from the log; `occupied` means someone owns the port without answering the page;
- * `free` means start a new host. `listenerPid` is injected so tests never touch a real port.
+ * Decide what a foreground `wheelchair-agent spv` should do. Any HTTP answer means something serves
+ * the port; `running` additionally needs our startup token in the log and either our own listener
+ * (`--profile wca-spv-web` in its cmdline, or an unreadable cmdline) or no readable listener at all.
+ * `occupied` is a live port without those credentials; `free` is a refused/timed-out probe.
+ * `probe`, `listenerPid` and `cmdline` are injected so tests never touch a real port or /proc.
  */
-export async function spvHostState({ port, logPath, request = fetch, listenerPid = () => null } = {}) {
-  if (await probeSpvWebHost({ port, request })) {
-    return { state: 'running', port, url: spvTokenFromLog(logPath) ?? `http://127.0.0.1:${port}/` }
+export async function spvHostState({
+  port,
+  logPath,
+  probe,
+  listenerPid = () => null,
+  cmdline = () => '',
+} = {}) {
+  const status = await probeSpvWebHost({ port, probe })
+  if (status === null || status === undefined) return { state: 'free', port }
+  const url = spvTokenFromLog(logPath)
+  const raw = listenerPid(port)
+  const pid = Number.isInteger(raw) && raw > 0 ? raw : null
+  let ours = false
+  if (url !== null) {
+    if (pid === null) {
+      ours = true
+    } else {
+      const line = String(cmdline(pid) ?? '')
+      ours = line === '' ? true : /--profile[= ]wca-spv-web(?:\s|$)/.test(line)
+    }
   }
-  const pid = listenerPid(port)
-  return Number.isInteger(pid) && pid > 0
-    ? { state: 'occupied', port, pid }
-    : { state: 'free', port }
+  if (ours) return { state: 'running', port, url }
+  return { state: 'occupied', port, pid }
 }
 
 /** Arguments that select the SPV host in the shared service manager. Pure; the tests assert it. */

@@ -1013,6 +1013,7 @@ async function commandSpv(argv) {
       port,
       logPath: spvHost.spvLogPath({ dshHome: DSH_HOME }),
       listenerPid: candidate => panel.portListenerPid(candidate, process.env),
+      cmdline: pid => panel.cmdlineOfProcess(pid),
     })
     if (state.state === 'running') {
       process.stdout.write(

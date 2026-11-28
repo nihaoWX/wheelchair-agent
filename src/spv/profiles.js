@@ -650,7 +650,7 @@ export function syncProfiles(options = {}) {
       template: templates.profiles[id],
       stateDir,
       port,
-        notes: report.notes,
+      notes: report.notes,
       problems: report.problems,
     })
   }
