@@ -5,7 +5,7 @@
 
 - 插件包：`tools/wheelchair-agent/`（独立 git 仓库，纯 ESM JavaScript，无构建步骤）
 - 上游：`~/opt/dsh-plugins/dsh-superagent/`（规范开发树；**只作为 peer 依赖，一个字节的源码都没改**）
-- profile 加载点：`~/.dsh/profiles/superagent/cordis.patch.yml`
+- profile 加载点：`~/.dsh/profiles/wca/cordis.patch.yml`（`#74` 前叫 `superagent`；面板那份是 `deployments/panel.yml` 里把这一行 `disabled: true`）
 
 ## 1. 为什么是 Source 而不是改核心
 
@@ -203,7 +203,7 @@ worker preset）。`triggerOf()` 把除 `text` / `thread` / `actor` 之外的字
 entry 不激活（`dsh: warning: 1 entry did not activate`）——但进程照样起来，health 里只是**没有** `spv` 条目。
 排查方式：`health` 列表缺条目就去 `~/opt/dsh-plugins/dsh-superagent/.artifacts/*.log` 找。
 
-`package.json` 的 exports 键（`./spv-watch` 等）是公开 API，`~/.dsh/profiles/superagent/cordis.patch.yml`
+`package.json` 的 exports 键（`./spv-watch` 等）是公开 API，`~/.dsh/profiles/wca/cordis.patch.yml`（`#74` 前叫 `superagent`）
 用 bare specifier 引用它们；键名不能改，只能改它指向的文件。
 
 ### 8.2 不要导入 zod

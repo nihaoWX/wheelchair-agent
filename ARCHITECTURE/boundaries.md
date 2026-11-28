@@ -32,7 +32,7 @@
 | `wheelchair-agent/spv-tools` | `spv_dispatch` / `spv_status`（插件内的注入器把 reply/notice 推进会话） | `dsh-tui` 的 SPV preset |
 | `wheelchair-agent/spv-cron-plugin` | `/spv-cron` 斜杠命令 | `dsh-tui` 的 SPV preset |
 
-**exports 的键是公开 API**：`~/.dsh/profiles/superagent/cordis.patch.yml` 用 bare specifier
+**exports 的键是公开 API**：`~/.dsh/profiles/wca/cordis.patch.yml`（`#74` 前叫 `superagent`）用 bare specifier
 `wheelchair-agent/spv-watch` 引用它，那是仓库外的操作者状态。只改键指向的文件，不改键名。
 
 ---

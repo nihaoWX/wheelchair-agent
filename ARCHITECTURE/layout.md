@@ -95,7 +95,7 @@ wheelchair-agent/
 |---|---|
 | preset（`preset.yml`、`agent.cordis.yml`、`preset-default.patch.yml`、`package.json`） | `~/.dsh/.agent-presets/spv/` |
 | SPV 侧 JS（`src/spv/*`、`src/shared/*`）+ `cli.js` + `agentsmd-examples/` + `prepare.sh` + `commands/` | `~/.dsh/.agent-presets/spv/` |
-| **webui 包**（`package.json`、`lib/index.js`、`lib/client.js` + 拷进去的 inbox core） | **`~/.dsh/profiles/superagent/node_modules/wheelchair-agent-webui/`（新增）** |
+| **webui 包**（`package.json`、`lib/index.js`、`lib/client.js` + 拷进去的 inbox core） | **`~/.dsh/profiles/wca/node_modules/wheelchair-agent-webui/`（新增；`#74` 前是 `superagent`）** |
 | **webui loader 行**（`- insert: id: wheelchair-webui`） | **`~/.dsh/profiles/wca/cordis.patch.yml`（append-only）** |
 | **`wheelchair-agent` CLI 薄壳** | **`~/.local/bin/wheelchair-agent`（新增）** |
 | `spv` 启动器 | `~/.local/bin/spv` |
