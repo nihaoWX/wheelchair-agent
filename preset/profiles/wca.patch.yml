@@ -1,0 +1,80 @@
+# Machine configuration for the `wca` profile (browser surface).
+#
+# The profile itself carries what every browser-surface instance needs: the full harness (dsh-web-app),
+# the dsh-superagent orchestrator service, the Command Code model route and the wheelchair-agent webui
+# and `spv` Source. A deployment only overlays its webserver port, its dsh-superagent stateDir and its
+# wheelchair-spv queueDir (`<data root>/deployments/<slug>.yml`); the panel overlays the same profile
+# with the orchestrator rows disabled (`<data root>/deployments/panel.yml`).
+#
+# The `@...@` placeholders are rendered by `wheelchair-agent profiles sync` / install.sh: this file is
+# a template, never a machine-specific profile.
+- id: webserver
+  config:
+    host: 127.0.0.1
+    port: @SERVICE_PORT@
+- id: dsh-superagent
+  config:
+    stateDir: '@STATE_DIR@'
+# The orchestrator and worker Sessions need a model route. Without this row the profile falls back to
+# deepseek-official and every Eval fails with MISSING_CREDENTIAL (no DEEPSEEK_API_KEY on this machine).
+- id: agent-default-model
+  config:
+    provider: commandcode
+    model: deepseek/deepseek-v4.1-flash
+    reasoningEffort: high
+# Feishu is optional: uncomment to enable its Source, then set the bot's lark-cli on the Feishu Source.
+# - id: dsh-superagent-feishu
+#   disabled: false
+# The local-task Source (`spv`): a plain plugin, not a bundle, so it is inserted here and stays out of
+# package.json's dsh.profile.bundles. It registers the `spv` Source kind and watches <stateDir>/spv/pending/.
+- insert:
+    - id: wheelchair-spv
+      name: 'wheelchair-agent/spv-watch'
+- id: web
+  name: "@deepseek-ai/dsh-web"
+  config:
+    searchProvider: commandcode
+    fetchProvider: http
+- id: ui-settings-general
+  name: "@deepseek-ai/dsh-client-ui-settings-general"
+  config:
+    welcomeNoticeVersion: 2026-09-28.1
+# Raise the provider's transport retry budget to its maximum (50). The default 5 absorbs only
+# ~15 s of connection failures, then throws a plain Error that dsh-llm records as UNKNOWN, so
+# dsh-llm-retry never gets a turn. 50 is the schema's ceiling (z.number().min(0).max(50)).
+- id: llm-commandcode
+  config:
+    apiKeyEnv: COMMANDCODE_API_KEY
+    # Pin the working account; credentials are referenced by env-var name, never written literally.
+    activeAccount: COMMANDCODE_API_KEY_3
+    transportMaxRetries: 50
+    accounts:
+      - label: zqliangjintaofc31
+        apiKeyEnv: COMMANDCODE_API_KEY_3
+    credentialCleanupRefs: []
+    accountEnrollmentTasks: []
+    modelAccountRules: []
+
+# Review inbox panel (webui/): an independent package because dsh-client-modules only
+# scans bare package specifiers for dsh.client declarations.
+- insert:
+    - id: wheelchair-webui
+      name: 'wheelchair-agent-webui'
+- id: permission
+  name: "@deepseek-ai/dsh-permission-presets"
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+    defaultPreset: danger-full-access
+- id: ui-theme
+  name: "@deepseek-ai/dsh-client-ui-theme"
+  config:
+    preference: dark

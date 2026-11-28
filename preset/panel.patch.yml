@@ -1,9 +1,8 @@
-# Machine configuration for the standalone `wheelchair-agent` profile.
+# The panel overlay: the `wca` profile with every deployment-only row switched off.
 #
-# The panel is its own dsh instance, not a deployment: it loads dsh-base, dsh-web-app and the
-# wheelchair-agent-webui plugin, and deliberately no orchestrator bundle (that would create a second
-# orchestrator with its own sources and tickets). `wheelchair-agent panel start` passes this file
-# with --patch and exports the two values below before starting dsh:
+# install.sh writes this file to `<data root>/deployments/panel.yml`; the panel is started with
+#   dsh --profile wca --patch <data root>/deployments/panel.yml
+# It is not a deployment and never enters deployments.json.
 #
 #   WHEELCHAIR_PANEL_PORT       settings "panel.port" (3080 by default), or --port for one run
 #   DSH_SUPERAGENT_STATE_DIR    <data root>/panel, the instance's own state directory
@@ -20,3 +19,13 @@
 - id: wheelchair-webui
   config:
     background: false
+# The panel shares one profile with the four orchestrator instances, so it must switch off everything
+# a deployment owns: the orchestrator service, its two agent presets and the `spv` queue watcher.
+- id: dsh-superagent
+  disabled: true
+- id: dsh-superagent-worker-preset
+  disabled: true
+- id: dsh-superagent-router-preset
+  disabled: true
+- id: wheelchair-spv
+  disabled: true

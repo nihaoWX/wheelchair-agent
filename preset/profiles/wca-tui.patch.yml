@@ -1,0 +1,46 @@
+# Machine configuration for the `wca-tui` profile (terminal surface: the SPV session).
+#
+# The profile is the dsh-tui bundle over dsh-base. It is deliberately separate from `wca`: the SPV
+# terminal session must not share the browser surface's profile state, queue or orchestrator rows.
+# `spv` launches dsh-tui with `--profile wca-tui`; if this profile is missing it falls back to the
+# machine's own `dsh-tui` profile and says so.
+#
+- id: agent-default-model
+  config:
+    provider: commandcode
+    model: deepseek/deepseek-v4.1-flash
+    reasoningEffort: high
+# The provider row is per profile: accounts saved on the browser profile do not reach the terminal.
+# Credentials are referenced by env-var name, never written literally.
+- id: llm-commandcode
+  config:
+    apiKeyEnv: COMMANDCODE_API_KEY
+    activeAccount: COMMANDCODE_API_KEY_3
+    transportMaxRetries: 50
+    accounts:
+      - label: zqliangjintaofc31
+        apiKeyEnv: COMMANDCODE_API_KEY_3
+    credentialCleanupRefs: []
+    accountEnrollmentTasks: []
+    modelAccountRules: []
+- id: web
+  config:
+    searchProvider: commandcode
+- id: permission
+  name: "@deepseek-ai/dsh-permission-presets"
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+    defaultPreset: danger-full-access
+- id: ui-theme
+  name: "@deepseek-ai/dsh-client-ui-theme"
+  config:
+    preference: dark

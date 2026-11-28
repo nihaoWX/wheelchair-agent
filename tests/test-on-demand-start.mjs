@@ -241,7 +241,7 @@ async function testDispatchStartsBeforeWriting() {
 
     const calls = await serviceCalls(box)
     assert.equal(calls.length, 1, `exactly one on-demand start, got:\n${calls.join('\n')}`)
-    assert.match(calls[0], /commands\/superagent-service\.py start --profile superagent --patch .*alpha.*\.yml/)
+    assert.match(calls[0], /commands\/superagent-service\.py start --profile wca --patch .*alpha.*\.yml/)
     assert.ok(calls[0].includes(`--queue-dir ${box.queue}`), `the start names the deployment queue: ${calls[0]}`)
     assert.equal(await exists(box.swallowed), false, 'the task was not queued before the instance started')
 

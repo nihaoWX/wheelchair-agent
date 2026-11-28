@@ -235,7 +235,7 @@ export function resolveServiceUrl({ env = process.env } = {}) {
 
 /** The dsh profile that runs the service. */
 export function resolveProfile({ env = process.env } = {}) {
-  return String(env.DSH_SUPERAGENT_PROFILE ?? '').trim() || 'superagent'
+  return String(env.DSH_SUPERAGENT_PROFILE ?? '').trim() || 'wca'
 }
 
 /**

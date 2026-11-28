@@ -42,7 +42,7 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 
-DEFAULT_PROFILE = 'superagent'
+DEFAULT_PROFILE = 'wca'
 DEFAULT_URL = 'http://127.0.0.1:3082'
 STATE_WAIT = 3
 PART_ERROR = 2
@@ -357,7 +357,7 @@ def print_panel_status(args):
     else:
         print(f'check: unreachable: {check["reason"]}')
     print(f'state: {status["state"] or "(DSH_SUPERAGENT_STATE_DIR unset)"}')
-    print('no orchestrator: the panel host runs dsh-web-app only (no dsh-superagent), so there are no components to report')
+    print('no orchestrator: the panel overlay disables dsh-superagent (deployments/panel.yml), so there are no components to report')
     return 0 if len(pids) <= 1 else 1
 
 
