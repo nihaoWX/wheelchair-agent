@@ -64,9 +64,10 @@
 # and `@SPV_RESTART_COMMAND@` become file: URLs to this install's src/spv/*.js at sync time, for the
 # same reason the preset uses file: URLs: the profile patch layer resolves modules from the profile
 # directory, where the `wheelchair-agent` package is not installed.
-# The local-task Source (`spv`): a plain plugin, not a bundle. Its queue is this host's own
-# `<data root>/spv` root, never a deployment's queue. These rows are new entries, so they go in one
-# `insert:` block; a bare `- id:` row would only try to modify an existing entry.
+# These rows are new entries, so they go in one `insert:` block; a bare `- id:` row would only try
+# to modify an existing entry. The SPV host is the side that dispatches tasks: it does not bundle
+# dsh-superagent and never watches a deployment queue, so `wheelchair-spv` (the local Source) is
+# deliberately absent here.
 - insert:
     - id: spv-tools
       name: '@SPV_PLUGIN@'
@@ -74,7 +75,3 @@
       name: '@SPV_CRON_PLUGIN@'
     - id: restart-command
       name: '@SPV_RESTART_COMMAND@'
-    - id: wheelchair-spv
-      name: 'wheelchair-agent/spv-watch'
-      config:
-        queueDir: '@QUEUE_DIR@'

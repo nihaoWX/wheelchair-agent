@@ -1008,6 +1008,26 @@ async function commandSpv(argv) {
       process.exit(1)
     }
     const port = spvHost.spvWebPort({ stateDir: STATE_DIR })
+    const panel = await load('src', 'spv', 'panel-instance.js')
+    const state = await spvHost.spvHostState({
+      port,
+      logPath: spvHost.spvLogPath({ dshHome: DSH_HOME }),
+      listenerPid: candidate => panel.portListenerPid(candidate, process.env),
+    })
+    if (state.state === 'running') {
+      process.stdout.write(
+        `note: the SPV web host is already running on http://127.0.0.1:${port}/ — ${state.url}\n`,
+      )
+      return
+    }
+    if (state.state === 'occupied') {
+      process.stderr.write(
+        `wheelchair-agent: the SPV web port ${port} is already in use by pid ${state.pid}\n`,
+      )
+      process.stderr.write(`fix: stop that process first: kill -INT ${state.pid}\n`)
+      process.exitCode = 1
+      return
+    }
     process.stdout.write(
       `note: starting the SPV web host on http://127.0.0.1:${port}/ (profile wca-spv-web); the token URL is printed below.\n`,
     )

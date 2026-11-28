@@ -83,6 +83,48 @@ export function spvLogPath({ env = process.env, dshHome } = {}) {
   return join(home, '.artifacts', `${SPV_SESSION}.log`)
 }
 
+/** The tokenised URL `dsh web` printed last, or null when the log has no startup line yet. */
+const SPV_TOKEN_URL = /https?:\/\/[^\s]*[?&]token=[A-Za-z0-9._-]+/g
+export function spvTokenFromLog(file) {
+  try {
+    const matches = [...readFileSync(file, 'utf8').matchAll(SPV_TOKEN_URL)]
+    return matches.length === 0 ? null : matches[matches.length - 1][0]
+  } catch {
+    return null
+  }
+}
+
+/** One loopback probe of the SPV web page; any 200 is treated as the host answering. */
+export async function probeSpvWebHost({ port, request = fetch, timeoutMs = 1500 } = {}) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  timer.unref?.()
+  try {
+    const response = await request(`http://127.0.0.1:${port}/`, { cache: 'no-store', signal: controller.signal })
+    response.body?.cancel?.()
+    return response.status === 200
+  } catch {
+    return false
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+/**
+ * Decide what a foreground `wheelchair-agent spv` should do. `running` means the page answered and
+ * the token comes from the log; `occupied` means someone owns the port without answering the page;
+ * `free` means start a new host. `listenerPid` is injected so tests never touch a real port.
+ */
+export async function spvHostState({ port, logPath, request = fetch, listenerPid = () => null } = {}) {
+  if (await probeSpvWebHost({ port, request })) {
+    return { state: 'running', port, url: spvTokenFromLog(logPath) ?? `http://127.0.0.1:${port}/` }
+  }
+  const pid = listenerPid(port)
+  return Number.isInteger(pid) && pid > 0
+    ? { state: 'occupied', port, pid }
+    : { state: 'free', port }
+}
+
 /** Arguments that select the SPV host in the shared service manager. Pure; the tests assert it. */
 export function spvServiceArgs({ action, overlay, port, stateDir, log }) {
   const url = `http://${SPV_HOST}:${port}/`

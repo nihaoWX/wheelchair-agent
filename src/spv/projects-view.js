@@ -13,8 +13,10 @@ import { deploymentSlug, listDeployments } from '../shared/deployments.js'
 import { listSpvProjects, projectsRootOf, spvProjectsPath } from '../shared/spv-projects.js'
 import { setupProblemText } from './health.js'
 import {
+  probeSpvWebHost,
   spvLogPath,
   spvSurface,
+  spvTokenFromLog,
   spvWebPort,
 } from './spv-host.js'
 
@@ -22,9 +24,7 @@ import {
 export const PROJECT_PROBE_TIMEOUT_MS = 2000
 
 const API_HEADERS = { accept: 'application/json', 'x-orchestrator-request': '1' }
-
-/** `dsh web` prints this once per start; the token is the only way into the harness page. */
-const TOKEN_URL = /https?:\/\/[^\s]*[?&]token=[A-Za-z0-9._-]+/g
+const DEPLOYMENT_TOKEN_URL = /https?:\/\/[^\s]*[?&]token=[A-Za-z0-9._-]+/g
 
 /**
  * The tokenised URL of one deployment's own full UI.
@@ -37,36 +37,10 @@ export function deploymentUrl(project, { env = process.env } = {}) {
   const dshHome = String(env.DSH_HOME ?? '').trim() || join(homedir(), '.dsh')
   const log = join(dshHome, '.artifacts', `wca-${deploymentSlug(project)}.log`)
   try {
-    const matches = [...readFileSync(log, 'utf8').matchAll(TOKEN_URL)]
+    const matches = [...readFileSync(log, 'utf8').matchAll(DEPLOYMENT_TOKEN_URL)]
     return matches.length === 0 ? null : matches[matches.length - 1][0]
   } catch {
     return null
-  }
-}
-
-/** The tokenised SPV browser URL printed at startup, or null. */
-function tokenFromLog(file) {
-  try {
-    const matches = [...readFileSync(file, 'utf8').matchAll(TOKEN_URL)]
-    return matches.length === 0 ? null : matches[matches.length - 1][0]
-  } catch {
-    return null
-  }
-}
-
-/** Whether the loopback SPV host answers on its port; the projects header must never block on it. */
-async function probeSpvHost(port) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), 800)
-  timer.unref?.()
-  try {
-    const response = await fetch(`http://127.0.0.1:${port}/`, { cache: 'no-store', signal: controller.signal })
-    response.body?.cancel?.()
-    return response.status === 200
-  } catch {
-    return false
-  } finally {
-    clearTimeout(timer)
   }
 }
 
@@ -164,8 +138,8 @@ export async function projectCards({ env = process.env, home, stateDir } = {}) {
   if (surface === 'web') {
     const port = spvWebPort({ env, home, stateDir })
     spv.port = port
-    spv.running = await probeSpvHost(port)
-    spv.url = tokenFromLog(spvLogPath({ env }))
+    spv.running = await probeSpvWebHost({ port })
+    spv.url = spvTokenFromLog(spvLogPath({ env }))
   }
   const spvProjects = registry.spvProjects.map(entry => ({
     root: entry.root,

@@ -486,6 +486,22 @@ function testSpvWebSurface() {
     check('the browser SPV patch has the commandcode row', /-\s*id:\s*llm-commandcode/.test(patch), patch)
     check('the browser SPV patch has the SPV tools row', /-\s*id:\s*spv-tools/.test(patch), patch)
     check('the browser SPV patch has no deployment-only dsh-superagent row', !/-\s*id:\s*dsh-superagent\s*$/m.test(patch), patch)
+    check(
+      'the browser SPV patch watches no deployment queue',
+      !/-\s*id:\s*wheelchair-spv\b/.test(patch) &&
+        !/name:\s*['"]?wheelchair-agent\/spv-watch['"]?/.test(patch) &&
+        !/@QUEUE_DIR@/.test(patch), patch,
+    )
+    const sourceNames = pluginNames(readFileSync(join(ROOT, 'preset', 'agent.cordis.yml'), 'utf8'))
+    const mirroredNames = pluginNames(readFileSync(join(TEMPLATE_DIR, 'wca-spv-web.patch.yml'), 'utf8'))
+    for (const id of ['spv-tools', 'spv-cron', 'restart-command']) {
+      check(
+        `the browser SPV patch mirrors ${id} verbatim`,
+        sourceNames[id] !== undefined && sourceNames[id] === mirroredNames[id],
+        `preset/agent.cordis.yml is the source; preset/profiles/wca-spv-web.patch.yml is the mirror ` +
+          `(${id}: source=${sourceNames[id]} mirror=${mirroredNames[id]})`,
+      )
+    }
     const overlay = readFileSync(join(web.data, 'deployments', 'spv.yml'), 'utf8')
     check('the SPV browser overlay names the default port', /WHEELCHAIR_SPV_WEB_PORT \?\? 3081/.test(overlay), overlay)
     const status = checkProfiles(web, { env })
@@ -500,6 +516,53 @@ function testSpvWebSurface() {
     )
   } finally {
     rmSync(web.base, { recursive: true, force: true })
+  }
+}
+
+function pluginNames(text) {
+  const names = {}
+  const lines = text.split('\n')
+  for (let i = 0; i < lines.length; i += 1) {
+    const found = /^\s*- id:\s*(spv-tools|spv-cron|restart-command)\s*$/.exec(lines[i])
+    if (found === null) continue
+    const next = lines.slice(i + 1).find(line => /^\s*name:/.test(line))
+    names[found[1]] = next === undefined ? null : next.replace(/^\s*name:\s*/, '').trim()
+  }
+  return names
+}
+
+async function testSpvHostState() {
+  const base = mkdtempSync(join(tmpdir(), 'wca-spv-state-'))
+  try {
+    const log = join(base, 'wca-spv.log')
+    writeFileSync(log, 'dsh web: http://127.0.0.1:3081/?token=abc-DEF_123\n')
+    const running = await spvHost.spvHostState({
+      port: 3081,
+      logPath: log,
+      request: async () => ({ status: 200, body: { cancel() {} } }),
+      listenerPid: () => { throw new Error('the running path must not inspect the listener') },
+    })
+    check('spvHostState treats a 200 page as already running', running.state === 'running', JSON.stringify(running))
+    check(
+      'spvHostState uses the last token URL from the log',
+      running.url === 'http://127.0.0.1:3081/?token=abc-DEF_123', String(running.url),
+    )
+    const occupied = await spvHost.spvHostState({
+      port: 3081,
+      logPath: log,
+      request: async () => ({ status: 503 }),
+      listenerPid: () => 4242,
+    })
+    check('spvHostState reports a foreign listener as occupied', occupied.state === 'occupied' && occupied.pid === 4242, JSON.stringify(occupied))
+    const free = await spvHost.spvHostState({
+      port: 3081,
+      logPath: log,
+      request: async () => { throw new Error('connection refused') },
+      listenerPid: () => null,
+    })
+    check('spvHostState reports an unused port as free', free.state === 'free', JSON.stringify(free))
+  } finally {
+    rmSync(base, { recursive: true, force: true })
   }
 }
 
@@ -573,7 +636,7 @@ function testTemplateHygiene() {
   check('the wca template pins no account id', !JSON.stringify(wca).includes('COMMANDCODE_API_KEY_3'))
 }
 
-function main() {
+async function main() {
   assert.ok(existsSync(join(TEMPLATE_DIR, 'wca.patch.yml')), 'the wca template is missing')
   testTemplateHygiene()
   testMigration()
@@ -584,10 +647,11 @@ function main() {
   testMissingDshTuiDonor()
   testTerminalProfileRename()
   testSpvWebSurface()
+  await testSpvHostState()
   testSpvServiceArgs()
   testLauncherProfile()
   process.stdout.write(`\n${PASS} passed, ${FAIL} failed\n`)
   process.exit(FAIL === 0 ? 0 : 1)
 }
 
-main()
+await main()

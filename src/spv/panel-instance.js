@@ -152,7 +152,7 @@ export function probePanelHttp(port, { host = PANEL_HOST, timeoutMs = 800 } = {}
 }
 
 /** The PID listening on `port`; `SPV_INSTALL_PANEL_HOLDER` is the install-test seam. */
-function portListenerPid(port, env) {
+export function portListenerPid(port, env) {
   const injected = String(env.SPV_INSTALL_PANEL_HOLDER ?? '').trim()
   if (injected !== '') {
     const pid = Number(injected)

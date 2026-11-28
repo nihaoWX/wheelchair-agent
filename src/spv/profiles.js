@@ -250,11 +250,10 @@ function pluginUrl(...parts) {
   return pathToFileURL(join(PACKAGE_ROOT, ...parts)).href
 }
 
-function renderPatch(text, { stateDir, port, queueDir }) {
+function renderPatch(text, { stateDir, port }) {
   return text
     .replaceAll('@STATE_DIR@', () => stateDir)
     .replaceAll('@SERVICE_PORT@', () => String(port))
-    .replaceAll('@QUEUE_DIR@', () => queueDir)
     .replaceAll('@SPV_PLUGIN@', () => pluginUrl('src', 'spv', 'tools.js'))
     .replaceAll('@SPV_CRON_PLUGIN@', () => pluginUrl('src', 'spv', 'cron-plugin.js'))
     .replaceAll('@SPV_RESTART_COMMAND@', () => pluginUrl('src', 'spv', 'restart-command.js'))
@@ -515,7 +514,7 @@ function readPackageOrNull(file) {
   }
 }
 
-function syncOneProfile({ id, dshHome, env, template, stateDir, port, queueDir, notes, problems }) {
+function syncOneProfile({ id, dshHome, env, template, stateDir, port, notes, problems }) {
   const dir = join(dshHome, 'profiles', id)
   const existed = existsSync(dir)
   const current = existed ? readPackageOrNull(join(dir, 'package.json')) : null
@@ -543,7 +542,7 @@ function syncOneProfile({ id, dshHome, env, template, stateDir, port, queueDir, 
   )
   const patchChanged = writeIfChanged(
     join(dir, PROFILE_PATCH_FILE),
-    renderPatch(template.patch, { stateDir, port, queueDir }),
+    renderPatch(template.patch, { stateDir, port }),
   )
   if (!existsSync(join(dir, 'cordis.yml'))) writeIfChanged(join(dir, 'cordis.yml'), '[]\n')
 
@@ -623,7 +622,6 @@ export function syncProfiles(options = {}) {
   const port = Number(options.port ?? env.DSH_SUPERAGENT_PORT ?? 3082)
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`invalid service port ${JSON.stringify(port)}`)
   const surface = resolveSpvSurface({ dataRoot, env, surface: options.surface })
-  const queueDir = resolve(String(options.queueDir ?? env.SPV_QUEUE_DIR ?? join(dataRoot, 'spv')))
   const templates = readProfileTemplates({ templateDir: options.templateDir })
   const ids = surface === 'web' ? PROFILE_IDS : [WCA_PROFILE_ID, WCA_SPV_TUI_PROFILE_ID]
   const report = {
@@ -632,7 +630,6 @@ export function syncProfiles(options = {}) {
     stateDir,
     port,
     surface,
-    queueDir,
     migratedFrom: null,
     tuiMigrated: false,
     profiles: {},
@@ -653,8 +650,7 @@ export function syncProfiles(options = {}) {
       template: templates.profiles[id],
       stateDir,
       port,
-      queueDir,
-      notes: report.notes,
+        notes: report.notes,
       problems: report.problems,
     })
   }
@@ -749,7 +745,7 @@ export function writeSpvWebOverlay({ dataRoot, source }) {
   return { file, changed }
 }
 
-function compareProfile({ id, dir, dshHome, template, stateDir, port, queueDir }) {
+function compareProfile({ id, dir, dshHome, template, stateDir, port }) {
   const problems = []
   const fix = 'run "wheelchair-agent profiles sync"'
   if (!existsSync(dir)) {
@@ -772,7 +768,7 @@ function compareProfile({ id, dir, dshHome, template, stateDir, port, queueDir }
   const patchFile = join(dir, PROFILE_PATCH_FILE)
   if (!existsSync(patchFile)) {
     problems.push({ problem: `profile "${id}" has no ${PROFILE_PATCH_FILE}`, fix })
-  } else if (readText(patchFile).trimEnd() !== renderPatch(template.patch, { stateDir, port, queueDir }).trimEnd()) {
+  } else if (readText(patchFile).trimEnd() !== renderPatch(template.patch, { stateDir, port }).trimEnd()) {
     problems.push({ problem: `profile "${id}" patch does not match the template`, fix })
   }
   if (!existsSync(join(dir, 'cordis.yml'))) problems.push({ problem: `profile "${id}" has no cordis.yml`, fix })
@@ -894,7 +890,6 @@ export function checkProfiles(options = {}) {
   )
   const port = Number(options.port ?? env.DSH_SUPERAGENT_PORT ?? 3082)
   const surface = resolveSpvSurface({ dataRoot, env, surface: options.surface })
-  const queueDir = resolve(String(options.queueDir ?? env.SPV_QUEUE_DIR ?? join(dataRoot, 'spv')))
   const templates = readProfileTemplates({ templateDir: options.templateDir })
   const problems = []
   const notes = []
@@ -923,8 +918,7 @@ export function checkProfiles(options = {}) {
         template: templates.profiles[WCA_PROFILE_ID],
         stateDir,
         port,
-        queueDir,
-      }),
+          }),
     )
   }
   if (!existsSync(tuiDir) && existsSync(legacyTui)) {
@@ -946,8 +940,7 @@ export function checkProfiles(options = {}) {
         template: templates.profiles[WCA_SPV_TUI_PROFILE_ID],
         stateDir,
         port,
-        queueDir,
-      }),
+          }),
     )
   }
 
@@ -966,8 +959,7 @@ export function checkProfiles(options = {}) {
           template: templates.profiles[WCA_SPV_WEB_PROFILE_ID],
           stateDir,
           port,
-          queueDir,
-        }),
+              }),
       )
     }
     problems.push(
@@ -1067,7 +1059,7 @@ function cliValue(argv, name) {
 function main(argv) {
   const action = argv[0]
   if (action !== 'sync' && action !== 'check') {
-    process.stderr.write('usage: node src/spv/profiles.js <sync|check> [--dsh-home <dir>] [--data-root <dir>] [--template-dir <dir>] [--panel-overlay <file>] [--spv-overlay <file>] [--state-dir <dir>] [--queue-dir <dir>] [--port <n>] [--surface tui|web]\n')
+    process.stderr.write('usage: node src/spv/profiles.js <sync|check> [--dsh-home <dir>] [--data-root <dir>] [--template-dir <dir>] [--panel-overlay <file>] [--spv-overlay <file>] [--state-dir <dir>] [--port <n>] [--surface tui|web]\n')
     return 2
   }
   const options = {
@@ -1077,7 +1069,6 @@ function main(argv) {
     panelOverlay: cliValue(argv, '--panel-overlay'),
     spvWebOverlay: cliValue(argv, '--spv-overlay'),
     stateDir: cliValue(argv, '--state-dir'),
-    queueDir: cliValue(argv, '--queue-dir'),
     port: cliValue(argv, '--port'),
     surface: cliValue(argv, '--surface'),
   }
