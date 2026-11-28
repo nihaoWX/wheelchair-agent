@@ -1,15 +1,21 @@
 /**
- * The standalone panel is its own dsh instance: the "wheelchair-agent" profile (dsh-base + dsh-web-app
- * + the wheelchair-agent webui package) plus the installed `panel.patch.yml`. This test installs into
+ * The standalone panel is one instance of the shared `wca` profile: the profile carries dsh-web-app,
+ * dsh-superagent, the Command Code route and the wheelchair-agent webui, and the installed overlay
+ * `<data root>/deployments/panel.yml` switches every deployment-only row off. This test installs into
  * a throwaway DSH_HOME with the same seams `tests/test-install.sh` uses, then starts the real instance
- * on 3997 and checks the browser-facing facts: the harness page, the authenticated inbox route, the
- * status contract, and that stopping closes the port.
+ * on 3997 and checks the browser-facing facts: the harness page, the three wheelchair-agent routes,
+ * no orchestrator state route, the status contract, and that stopping closes the port.
+ *
+ * The runtime section needs a machine with `dsh` and the dsh-tui/dsh-superagent packages already
+ * installed (the same requirement the old panel test had for `dsh` itself); the profile assertions are
+ * pure filesystem checks. No real profile is modified.
  *
  * Run with `node tests/test-panel.mjs`.
  */
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { userInfo } from 'node:os'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -34,19 +40,57 @@ function check(name, condition, detail = '') {
   else no(name, detail)
 }
 
+function realPackage(name) {
+  const home = userInfo().homedir
+  const candidates = [
+    join(home, '.dsh', 'profiles', 'superagent', 'node_modules', name),
+    join(home, '.dsh', 'profiles', 'dsh-tui', 'node_modules', name),
+    join(home, 'opt', 'dsh-plugins', name),
+  ]
+  return candidates.find(candidate => existsSync(candidate)) ?? null
+}
+
 function makeBox() {
   const base = mkdtempSync(join(tmpdir(), 'wheelchair-panel-'))
   const box = {
     base,
     home: join(base, 'home'),
     dsh: join(base, 'dsh'),
+    data: join(base, 'home', '.wheelchair-agent'),
     tools: join(base, 'tools'),
     queue: join(base, 'queue'),
     bin: join(base, 'bin'),
   }
-  for (const dir of [box.home, box.tools, box.queue, join(box.dsh, 'profiles', 'superagent')]) {
+  for (const dir of [box.home, box.tools, box.queue, join(box.dsh, 'profiles', 'superagent'), box.data]) {
     mkdirSync(dir, { recursive: true })
   }
+  // The migrated superagent profile borrows the machine's real plugin packages (read-only links):
+  // the panel then boots the same dsh-superagent/provider/webui rows a real install would.
+  const superagent = join(box.dsh, 'profiles', 'superagent')
+  const dependencies = {}
+  for (const name of [
+    '@mars-sea/dsh-commandcode-provider',
+    'billion-context',
+    'dsh-context',
+    'dsh-superagent',
+  ]) {
+    const target = realPackage(name)
+    assert.ok(target, `the test needs the real package ${name} (dsh / dsh-tui / dsh-superagent installed)`)
+    mkdirSync(join(superagent, 'node_modules', dirname(name)), { recursive: true })
+    symlinkSync(target, join(superagent, 'node_modules', name), 'dir')
+    dependencies[name] = name === 'dsh-superagent' ? `link:${target}` : '0.0.0-test'
+  }
+  writeFileSync(
+    join(superagent, 'package.json'),
+    `${JSON.stringify({ name: 'dsh-profile-superagent', private: true, dependencies, dsh: { profile: { bundles: [] } } }, null, 2)}\n`,
+  )
+  const tuiScope = realPackage('@deepseek-harness-tui')
+  assert.ok(tuiScope, 'the test needs the real @deepseek-harness-tui package (dsh-tui installed)')
+  const tui = join(box.dsh, 'profiles', 'dsh-tui')
+  mkdirSync(join(tui, 'node_modules'), { recursive: true })
+  writeFileSync(join(tui, 'package.json'), `${JSON.stringify({ name: 'dsh-profile-dsh-tui', private: true, dependencies: {}, dsh: { profile: { bundles: [] } } }, null, 2)}\n`)
+  symlinkSync(tuiScope, join(tui, 'node_modules', '@deepseek-harness-tui'), 'dir')
+
   writeFileSync(join(box.tools, 'dsh-tui'), '#!/bin/sh\nexit 0\n', { mode: 0o755 })
   writeFileSync(
     join(box.tools, 'fake-probe'),
@@ -61,7 +105,7 @@ function envFor(box, extra = {}) {
   for (const key of [
     'SPV_QUEUE_DIR', 'SPV_SUPERAGENT_URL', 'SPV_SUPERAGENT_PORT', 'DSH_SUPERAGENT_PORT',
     'SPV_SERVICE_PORT', 'DSH_SUPERAGENT_PROFILE', 'SPV_PANEL_PORT', 'WHEELCHAIR_AGENT_OPEN',
-    'DSH_SUPERAGENT_URL', 'SPV_PROJECTS_ROOT', 'DSH_BIN',
+    'DSH_SUPERAGENT_URL', 'SPV_PROJECTS_ROOT', 'DSH_BIN', 'DSH_SUPERAGENT_PLUGIN_DIR',
   ]) delete env[key]
   return {
     ...env,
@@ -70,7 +114,7 @@ function envFor(box, extra = {}) {
     SPV_BIN_DIR: box.bin,
     SPV_QUEUE_DIR: box.queue,
     SPV_PROJECTS_ROOT: join(box.home, 'bioagentforge'),
-    WHEELCHAIR_AGENT_HOME: join(box.home, '.wheelchair-agent'),
+    WHEELCHAIR_AGENT_HOME: box.data,
     DSH_SUPERAGENT_STATE_DIR: join(box.dsh, 'state', 'superagent'),
     SPV_INSTALL_PROBE: join(box.tools, 'fake-probe'),
     SPV_SERVICE_PORT: '3082',
@@ -155,23 +199,23 @@ async function startForeground(box) {
 async function testLegacyDetection() {
   const { looksLikeLegacyPanelHost } = await import(new URL('../src/spv/panel-instance.js', import.meta.url))
   const legacy = ['node', '/home/u/.local/bin/cli.js', 'panel', '--foreground', '--port', '3080']
-  check('the pre-rename cli.js panel host is still recognised', looksLikeLegacyPanelHost(legacy) === true)
+  check('the pre-#58 cli.js panel host is still recognised', looksLikeLegacyPanelHost(legacy) === true)
   check('a bare panel --foreground is still recognised', looksLikeLegacyPanelHost(['panel', '--foreground']) === true)
-  const current = [
+  const oldProfile = [
     'node', '/usr/local/bin/dsh', '--profile', 'wheelchair-agent',
     '--patch', '/home/u/.dsh/.agent-presets/spv/panel.patch.yml', '--no-open',
   ]
-  check('the current wheelchair-agent instance is not reported as legacy', looksLikeLegacyPanelHost(current) === false)
+  check('the old wheelchair-agent profile instance is legacy', looksLikeLegacyPanelHost(oldProfile) === true)
+  const current = [
+    'node', '/usr/local/bin/dsh', '--profile', 'wca',
+    '--patch', '/home/u/.wheelchair-agent/deployments/panel.yml', '--no-open',
+  ]
+  check('the current wca instance is not reported as legacy', looksLikeLegacyPanelHost(current) === false)
   const currentEquals = [
-    'node', '/usr/local/bin/dsh', '--profile=wheelchair-agent',
-    '--patch', '/home/u/.dsh/.agent-presets/spv/panel.patch.yml', '--no-open',
+    'node', '/usr/local/bin/dsh', '--profile=wca',
+    '--patch', '/home/u/.wheelchair-agent/deployments/panel.yml', '--no-open',
   ]
-  check('the --profile=wheelchair-agent form is not reported as legacy', looksLikeLegacyPanelHost(currentEquals) === false)
-  const oldProfile = [
-    'node', '/usr/local/bin/dsh', '--profile', 'panel',
-    '--patch', '/home/u/.dsh/.agent-presets/spv/panel.patch.yml', '--no-open',
-  ]
-  check('an instance left on the old profile is not a pre-#58 host', looksLikeLegacyPanelHost(oldProfile) === false)
+  check('the --profile=wca form is not reported as legacy', looksLikeLegacyPanelHost(currentEquals) === false)
   check(
     'a foreign port owner is never reported',
     looksLikeLegacyPanelHost(['node', '/x/panel-server.js', '--port', '3080']) === false,
@@ -183,33 +227,33 @@ async function testProfile() {
   const box = makeBox()
   try {
     install(box)
-    const profile = join(box.dsh, 'profiles', 'wheelchair-agent')
+    const profile = join(box.dsh, 'profiles', 'wca')
     const manifest = JSON.parse(readFileSync(join(profile, 'package.json'), 'utf8'))
     const bundles = manifest?.dsh?.profile?.bundles ?? []
-    check('the panel profile exists', existsSync(profile))
+    check('the wca profile exists', existsSync(profile))
+    check('the legacy superagent profile was moved, not copied', !existsSync(join(box.dsh, 'profiles', 'superagent')))
+    check('the browser profile bundles dsh-web-app', bundles.includes('@deepseek-ai/dsh-web-app'), bundles.join(','))
+    check('the browser profile bundles dsh-superagent', bundles.includes('dsh-superagent'), bundles.join(','))
+    check('the terminal profile exists', existsSync(join(box.dsh, 'profiles', 'wca-tui')))
     check(
-      'the panel profile is installed under its new name only',
-      !existsSync(join(box.dsh, 'profiles', 'panel')),
+      'the terminal profile links the installed dsh-tui package',
+      existsSync(join(box.dsh, 'profiles', 'wca-tui', 'node_modules', '@deepseek-harness-tui')),
     )
-    check('the panel profile bundles dsh-web-app', bundles.includes('@deepseek-ai/dsh-web-app'), bundles.join(','))
-    check('the panel profile bundles dsh-base', bundles.includes('@deepseek-ai/dsh-base'), bundles.join(','))
     const patch = readFileSync(join(profile, 'cordis.patch.yml'), 'utf8')
-    const manifestText = readFileSync(join(profile, 'package.json'), 'utf8')
-    check('the panel profile never declares dsh-superagent', !manifestText.includes('dsh-superagent'), manifestText)
-    check('the panel patch never mounts dsh-superagent', !patch.includes('dsh-superagent'), patch)
-    check('the panel patch mounts wheelchair-webui', /name:\s*['"]wheelchair-agent-webui['"]/.test(patch), patch)
-    check(
-      'the panel profile records the dsh version it was built for',
-      JSON.parse(readFileSync(join(profile, 'panel-instance.json'), 'utf8')).dshVersion ===
-        spawnSync('dsh', ['--version'], { encoding: 'utf8' }).stdout.trim(),
-    )
-    const overlay = join(box.dsh, '.agent-presets', 'spv', 'panel.patch.yml')
-    check('the panel overlay is installed with the preset', existsSync(overlay))
-    check('the panel overlay keeps the webui background off', /background:\s*false/.test(readFileSync(overlay, 'utf8')))
-    check('the panel overlay has no dsh-superagent entry', !readFileSync(overlay, 'utf8').includes('dsh-superagent'))
+    check('the browser patch mounts dsh-superagent', /id:\s*dsh-superagent\s*$/m.test(patch), patch)
+    check('the browser patch mounts wheelchair-webui', /name:\s*['"]wheelchair-agent-webui['"]/.test(patch), patch)
+    const overlay = join(box.data, 'deployments', 'panel.yml')
+    check('the panel overlay is installed under the data root', existsSync(overlay))
+    check('the panel overlay is not the preset template', overlay !== join(box.dsh, '.agent-presets', 'spv', 'panel.patch.yml'))
+    const overlayText = readFileSync(overlay, 'utf8')
+    for (const id of ['dsh-superagent', 'dsh-superagent-worker-preset', 'dsh-superagent-router-preset', 'wheelchair-spv']) {
+      check(`the panel overlay disables ${id}`, new RegExp(`- id: ${id}\\n(?:.*\\n)*?\\s+disabled: true`).test(overlayText), overlayText)
+    }
+    const registry = JSON.parse(readFileSync(join(box.data, 'deployments.json'), 'utf8'))
+    check('the deployment registry records the wca profile', registry.deployments.every(entry => entry.profile === 'wca'), JSON.stringify(registry))
     return box
   } catch (error) {
-    no('profile setup', error.message)
+    no('profile setup', error.stack ?? error.message)
     return box
   }
 }
@@ -227,16 +271,39 @@ async function testRunningPanel(box) {
     check('the harness page answers 200', page.status === 200, `${page.status} ${html.slice(0, 120)}`)
     check('the page is the dsh web app mount point', html.includes('id="root"') || html.includes('__DSH_BOOT__'), html.slice(0, 300))
     check('the page loads our client bundle', html.includes('wheelchair-agent-webui'), html.slice(0, 500))
-    const inbox = await fetchWithCookie(`http://127.0.0.1:${PORT}/wheelchair-inbox/items`, cookie)
-    const payload = await inbox.json().catch(() => null)
-    check('the inbox route answers 200 JSON', inbox.status === 200 && payload !== null, `${inbox.status}`)
-    check('the inbox route returns an items array', Array.isArray(payload?.items), JSON.stringify(payload))
+
+    const state = await fetchWithCookie(`http://127.0.0.1:${PORT}/orchestrator/api/state`, cookie)
+    const stateText = await state.text()
+    check(
+      'the panel serves no orchestrator state route',
+      state.status === 404 || state.status === 503,
+      `${state.status} ${stateText.slice(0, 200)}`,
+    )
+
+    for (const [name, path] of [
+      ['projects', '/wheelchair-projects'],
+      ['inbox items', '/wheelchair-inbox/items'],
+      ['settings', '/wheelchair-settings'],
+    ]) {
+      const response = await fetchWithCookie(`http://127.0.0.1:${PORT}${path}`, cookie)
+      const text = await response.text()
+      let payload = null
+      try {
+        payload = JSON.parse(text)
+      } catch {
+        // A non-JSON body is a failure for these three routes and is reported below.
+      }
+      check(`the ${name} route answers 200 JSON`, response.status === 200 && payload !== null, `${response.status} ${text.slice(0, 120)}`)
+      check(`the ${name} route has no error field`, payload !== null && payload.error === undefined, text.slice(0, 200))
+    }
 
     const status = cli(box, ['panel', 'status', '--port', String(PORT)])
     check('panel status exits 0 while running', status.status === 0, status.stderr)
     check('panel status names the port and pid', new RegExp(`panel: port ${PORT} running \\d+`).test(status.stdout), status.stdout)
     check('panel status prints the tokenised url', /^url: https?:\/\/127\.0\.0\.1:3997\/\?token=/m.test(status.stdout), status.stdout)
     check('panel status proves GET / answers 200', /check: http 200/.test(status.stdout), status.stdout)
+    check('panel status names the shared profile', /^profile: wca$/m.test(status.stdout), status.stdout)
+    check('panel status reports no drift', /^drift:\s+none$/m.test(status.stdout), status.stdout)
     check('panel status says there is no orchestrator', /no orchestrator:/.test(status.stdout), status.stdout)
     check('the running panel did not change the deployment registry', cli(box, ['deployment', 'list']).stdout === before.stdout)
 
@@ -281,17 +348,20 @@ function installCheck(box) {
 async function testCheck(box) {
   const checkRun = installCheck(box)
   check('install.sh --check exits 0 after installing the panel', checkRun.status === 0, checkRun.stdout + checkRun.stderr)
-  const overlay = join(box.dsh, '.agent-presets', 'spv', 'panel.patch.yml')
+  const overlay = join(box.data, 'deployments', 'panel.yml')
   writeFileSync(overlay, `${readFileSync(overlay, 'utf8')}\n# comment-only edit\n`)
   const commentOnly = installCheck(box)
   check('a comment-only overlay edit is not stale', commentOnly.status === 0, commentOnly.stdout + commentOnly.stderr)
-  const marker = join(box.dsh, 'profiles', 'wheelchair-agent', 'panel-instance.json')
-  const recorded = JSON.parse(readFileSync(marker, 'utf8'))
-  writeFileSync(marker, `${JSON.stringify({ ...recorded, dshVersion: '0.0.0-old' }, null, 2)}\n`)
+  writeFileSync(
+    overlay,
+    readFileSync(overlay, 'utf8').replace(/\n\s+disabled: true\n/, '\n'),
+  )
   const stale = installCheck(box)
-  check('a changed panel dsh version fails --check', stale.status === 2, stale.stdout)
-  check('the version failure names the recorded version', /installed for dsh 0\.0\.0-old/.test(stale.stdout), stale.stdout)
-  writeFileSync(marker, `${JSON.stringify(recorded, null, 2)}\n`)
+  check('a panel overlay without a disabled row fails --check', stale.status === 2, stale.stdout)
+  check('the overlay failure names the missing disabled row', /panel overlay .* does not disable/.test(stale.stdout), stale.stdout)
+  check('the overlay failure prints a copy-paste fix', /profiles sync/.test(stale.stdout) || /bash install\.sh/.test(stale.stdout), stale.stdout)
+  cli(box, ['profiles', 'sync', '--port', '3082'])
+  check('profiles sync repairs the overlay', installCheck(box).status === 0)
 }
 
 async function main() {

@@ -250,7 +250,7 @@ async function testAddListUpdateAndRemove() {
     version: 1,
     deployments: [{
       project: 'tools/alpha',
-      profile: 'superagent',
+      profile: 'wca',
       stateDir: box.stateA,
       queueDir: box.queueA,
       port: 3101,
@@ -283,7 +283,7 @@ async function testAddListUpdateAndRemove() {
   const listed = await cli(box, ['deployment', 'list'])
   assert.equal(listed.status, 0, listed.stderr)
   assert.match(listed.stdout, new RegExp(`registry: ${registryFile(box).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
-  assert.match(listed.stdout, /project tools\/alpha profile=superagent/)
+  assert.match(listed.stdout, /project tools\/alpha profile=wca/)
   assert.match(listed.stdout, new RegExp(`project tools/beta profile=superagent stateDir=${box.stateB.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`))
 
   const json = JSON.parse((await cli(box, ['deployment', 'list', '--json'])).stdout)
@@ -291,7 +291,7 @@ async function testAddListUpdateAndRemove() {
 
   const removed = await cli(box, ['deployment', 'remove', 'tools/alpha'])
   assert.equal(removed.status, 0, removed.stderr)
-  assert.match(removed.stdout, /^project tools\/alpha profile=superagent/m)
+  assert.match(removed.stdout, /^project tools\/alpha profile=wca/m)
   assert.match(removed.stdout, /removed tools\/alpha; the deployment itself/)
   assert.match(removed.stdout, /1 deployment\(s\) remain/)
   assert.deepEqual((await readJson(registryFile(box))).deployments.map(entry => entry.project), ['tools/beta'])

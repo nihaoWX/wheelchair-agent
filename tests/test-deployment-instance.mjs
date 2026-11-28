@@ -456,15 +456,19 @@ function processAlive(pid) {
 
 /** One machine-wide round also covers the panel, which is not a deployment: stop last/start last, never fail. */
 async function testLegacyPanelShapes() {
-  // Pure shapes: the old host is `cli.js panel --foreground` without the panel profile overlay; a
-  // current instance always loads `panel.patch.yml` under the wheelchair-agent profile. Everything
-  // else is not ours.
+  // Pure shapes: the pre-#58 host is `cli.js panel --foreground`, and the intermediate panel profile
+  // (`wheelchair-agent` + the preset overlay) is also older than the shared `wca` profile. A current
+  // instance always loads `<data root>/deployments/panel.yml` under `wca`. Everything else is not ours.
   assert.equal(
     looksLikeLegacyPanelHost(['node', '/home/nihao/.local/bin/cli.js', 'panel', '--foreground', '--port', '3080']),
     true,
   )
   assert.equal(
     looksLikeLegacyPanelHost(['node', '/usr/bin/dsh', '--profile', 'wheelchair-agent', '--patch', '/h/.agent-presets/spv/panel.patch.yml']),
+    true,
+  )
+  assert.equal(
+    looksLikeLegacyPanelHost(['node', '/usr/bin/dsh', '--profile', 'wca', '--patch', '/h/.wheelchair-agent/deployments/panel.yml']),
     false,
   )
   assert.equal(looksLikeLegacyPanelHost(['vim', 'panel']), false)
@@ -505,10 +509,10 @@ async function testServiceAllIncludesThePanel() {
   const missing = cli(box, ['service', 'start', '--all'], env)
   assert.equal(missing.status, 0, missing.stderr)
   assert.equal((await calls()).length, 2)
-  assert.match(missing.stdout, /panel: not configured \(no panel overlay at .*panel\.patch\.yml\)/)
+  assert.match(missing.stdout, /panel: not configured \(no panel overlay at .*deployments\/panel\.yml\)/)
 
   // Installed overlay: the panel starts last, after the deployments whose registry it reads.
-  const overlay = join(box.dsh, '.agent-presets', 'spv', 'panel.patch.yml')
+  const overlay = join(box.data, 'deployments', 'panel.yml')
   await mkdir(dirname(overlay), { recursive: true })
   await writeFile(overlay, '- id: webserver\n  config: {}\n')
   await reset()
@@ -516,15 +520,15 @@ async function testServiceAllIncludesThePanel() {
   assert.equal(start.status, 0, start.stderr)
   const startLines = await calls()
   assert.equal(startLines.length, 3)
-  assert.match(startLines[0], /start --profile superagent --patch .*alpha\.yml/)
-  assert.match(startLines[1], /start --profile superagent --patch .*beta\.yml/)
-  assert.match(startLines[2], /start --mode panel --profile wheelchair-agent --patch .*panel\.patch\.yml/)
+  assert.match(startLines[0], /start --profile wca --patch .*alpha\.yml/)
+  assert.match(startLines[1], /start --profile wca --patch .*beta\.yml/)
+  assert.match(startLines[2], /start --mode panel --profile wca --patch .*deployments\/panel\.yml/)
   assert.match(startLines[2], /--port 3080/)
   assert.match(start.stdout, /panel: started/)
 
   // A broken panel prints the manager's reason and fix, but never changes the deployments' exit code.
   fake = await writeFakeManager(box, {
-    panelBody: 'echo "FAIL: port 3080 is already in use by pid 4910, which is not profile wheelchair-agent" >&2; echo "fix: stop that process first: kill -INT 4910" >&2',
+    panelBody: 'echo "FAIL: port 3080 is already in use by pid 4910, which is not profile wca" >&2; echo "fix: stop that process first: kill -INT 4910" >&2',
     panelExit: 1,
   })
   await reset()
@@ -614,7 +618,7 @@ async function testServiceTargetsOwnDeployment() {
   assert.equal(start.status, 0)
   assert.doesNotMatch(start.stderr, /needs --project/)
   const [startLine] = await calls()
-  assert.match(startLine, /superagent-service\.py start --profile superagent --patch /)
+  assert.match(startLine, /superagent-service\.py start --profile wca --patch /)
   assert.ok(startLine.includes(`--patch ${alpha}`), `start targets the alpha overlay: ${startLine}`)
   assert.ok(startLine.includes(`--queue-dir ${alphaQueue}`), `start carries the alpha queue: ${startLine}`)
 
@@ -623,7 +627,7 @@ async function testServiceTargetsOwnDeployment() {
   assert.equal(status.status, 0)
   assert.doesNotMatch(status.stdout, /^deployments:$/m)
   assert.doesNotMatch(status.stdout, /profile: superagent/)
-  assert.match((await calls()).at(-1), /superagent-service\.py status --profile superagent /)
+  assert.match((await calls()).at(-1), /superagent-service\.py status --profile wca /)
 
   // `--project` is not a service selector any more: it is rejected before the manager runs.
   const rejected = cli(box, ['service', 'status', '--project', 'tools/beta'], {
@@ -776,8 +780,8 @@ async function testServiceStatusListsDeployments() {
   const alpha = instancePath('tools/alpha', { env: envFor(box) })
   const beta = instancePath('tools/beta', { env: envFor(box) })
   const procRoot = join(box.base, 'proc')
-  await fakeProcEntry(procRoot, 100, ['dsh', '--profile', 'superagent', '--patch', alpha])
-  await fakeProcEntry(procRoot, 300, ['dsh', '--profile', 'superagent'])
+  await fakeProcEntry(procRoot, 100, ['dsh', '--profile', 'wca', '--patch', alpha])
+  await fakeProcEntry(procRoot, 300, ['dsh', '--profile', 'wca'])
 
   // `--all` keeps the old aggregate: legacy lines, one line per deployment, ordered by project.
   const status = cli(box, ['service', 'status', '--all'], { WHEELCHAIR_PROC_ROOT: procRoot })
@@ -785,7 +789,7 @@ async function testServiceStatusListsDeployments() {
   assert.match(status.stdout, /^panel:/m)
   assert.match(status.stdout, /^== tools\/alpha ==$/m)
   assert.match(status.stdout, /^== tools\/beta ==$/m)
-  assert.match(status.stdout, /profile: superagent/)
+  assert.match(status.stdout, /profile: wca/)
   assert.match(status.stdout, /url:     http:\/\/127\.0\.0\.1:3082/)
 
   // Bare `status` outside every checkout cannot guess a deployment any more: exit 2, list, no legacy view.

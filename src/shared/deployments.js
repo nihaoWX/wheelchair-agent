@@ -31,8 +31,8 @@ export const DEPLOYMENTS_FILE = 'deployments.json'
 export const DEPLOYMENTS_VERSION = 1
 /** 本仓库自己的项目名：`deployment migrate` 把旧单部署记成它。 */
 export const DEFAULT_PROJECT = 'tools/wheelchair-agent'
-/** 单部署时代的 dsh profile。 */
-export const DEFAULT_PROFILE = 'superagent'
+/** 两个自建 profile 的浏览器面：`deployment add` 不指定 `--profile` 时用它。 */
+export const DEFAULT_PROFILE = 'wca'
 
 /** superagent executor 能 clone 并交给 worker 的项目；`src/spv/dispatch.js` 复用这一份。 */
 export const PROJECT_PATTERN = /^(?:tools|research)\/[A-Za-z0-9][A-Za-z0-9._-]*$/

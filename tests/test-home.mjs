@@ -353,7 +353,7 @@ async function testWhere() {
   assert.equal(payload.layout, 'none')
   assert.equal(payload.migrationPending, false)
   assert.equal(payload.presetDir, join(box.home, '.dsh', '.agent-presets', 'spv'))
-  assert.equal(payload.webuiPackage, join(box.home, '.dsh', 'profiles', 'superagent', 'node_modules', 'wheelchair-agent-webui'))
+  assert.equal(payload.webuiPackage, join(box.home, '.dsh', 'profiles', 'wca', 'node_modules', 'wheelchair-agent-webui'))
   // 没有部署注册表就没有队列可报：where 仍要成功，并把原因放在 queue.error 里。
   assert.equal(payload.queue.path, null)
   assert.match(payload.queue.error, /cannot tell which deployment this process belongs to/)

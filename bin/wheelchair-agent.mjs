@@ -41,9 +41,10 @@ const JOBCTL = join(ROOT, 'commands', 'jobctl.py')
 const DSH_HOME = process.env.DSH_HOME || join(homedir(), '.dsh')
 const PRESET_DIR = INSTALLED ? SELF_DIR : join(DSH_HOME, '.agent-presets', 'spv')
 const STATE_DIR = process.env.DSH_SUPERAGENT_STATE_DIR || join(DSH_HOME, 'state', 'superagent')
+const DATA_ROOT = process.env.WHEELCHAIR_AGENT_HOME || join(homedir(), '.wheelchair-agent')
 const PROJECTS_ROOT = process.env.SPV_PROJECTS_ROOT || join(homedir(), 'bioagentforge')
 /** The installed webui package keeps the same `lib/client.js` + `vendor/` layout as the checkout. */
-const PROFILE_ID = String(process.env.DSH_SUPERAGENT_PROFILE ?? '').trim() || 'superagent'
+const PROFILE_ID = String(process.env.DSH_SUPERAGENT_PROFILE ?? '').trim() || 'wca'
 const WEBUI_ROOT = INSTALLED
   ? join(DSH_HOME, 'profiles', PROFILE_ID, 'node_modules', 'wheelchair-agent-webui')
   : join(ROOT, 'webui')
@@ -65,10 +66,13 @@ commands:
                                the deployment is the project checkout this command runs in, --all does
                                every registered deployment and also starts/stops the standalone panel,
                                and "service open" opens only the panel
-  panel [start|stop|status] [--port <n>] [--foreground]
-                               run the standalone panel (127.0.0.1, default 3080): its own dsh
-                               instance with the full harness UI, serving the inbox/settings/hooks/
-                               projects routes without belonging to any superagent deployment
+  panel [start|stop|status|sync] [--port <n>] [--foreground]
+                               run the standalone panel (127.0.0.1, default 3080): an instance of
+                               the shared "wca" dsh profile plus an overlay that switches off every
+                               deployment-only row, so it serves the inbox/settings/hooks/projects
+                               routes without an orchestrator or a Source
+  profiles [sync|check]        align the "wca" and "wca-tui" profiles, the deployment registry and
+                               the panel overlay with the install templates; "panel sync" is an alias
   jobctl <submit|status|log|verify|cancel>
                                hand a long job to systemd so it outlives the worker's turn
   dispatch --project <p> --task <t> [--thread <n>] [--preset <id>]
@@ -199,27 +203,40 @@ options:
 
 const PANEL_USAGE = `usage: wheelchair-agent panel [start|stop|status|sync] [--port <n>] [--foreground]
 
-The standalone wheelchair-agent panel is its own dsh instance: the "wheelchair-agent" profile with a small
-overlay, running in tmux session "wca-panel". Its plugins mirror the deployment webui instances
-(settings "panel.profileFrom", default "superagent"), except dsh-superagent: the panel has no
-orchestrator and no Sources. It gives the same four sections (inbox, settings, hooks, projects)
-the full harness UI, but it is not a deployment: it is absent from the deployment registry;
-"service stop/start --all" do include it (stopped after the deployments, started last), and a
-panel failure never changes their exit code. Inbox polling, auto-merge, cold-install notices and the
-hook runner stay in each deployment's dsh plugin; this instance disables them and only serves
-the routes and the page.
+The standalone wheelchair-agent panel is an instance of the shared "wca" dsh profile, running in tmux
+session "wca-panel" with the panel overlay (<data root>/deployments/panel.yml). The overlay disables
+the dsh-superagent service, its worker/router presets and wheelchair-spv, so the panel has no
+orchestrator, no Sources and no queues: it only serves the same four sections (inbox, settings,
+hooks, projects) the deployment webui mounts. It is not a deployment and never enters the
+deployment registry; "service stop/start --all" include it (stopped after the deployments,
+started last), and a panel failure never changes their exit code.
 
 commands:
-  start (default)              start in tmux like a deployment; idempotent; syncs plugins first
+  start (default)              start in tmux like a deployment; idempotent; syncs the profiles first
+                               and stops an older panel instance still holding the port
   stop                         stop this instance; other deployments are untouched
-  status                       print the mirrored profile, drift, port, pid, URL and liveness
-  sync                         mirror the source profile's plugins into the panel profile only
+  status                       print the profile, drift, port, pid, URL and liveness
+  sync                         align both profiles, the deployment registry and this overlay with
+                               the install templates (same as "wheelchair-agent profiles sync")
 
 options:
   --port <n>                   override this run's port (default: settings.json "panel.port", 3080)
   --foreground                 run in this terminal instead of tmux (tests and debugging)
 
 A person opens it with "wheelchair-agent service open".`
+
+const PROFILES_USAGE = `usage: wheelchair-agent profiles <sync|check> [--port <n>]
+
+The machine has two self-built dsh profiles, rendered from templates installed with the preset:
+  wca       the browser surface: panel + every deployment (dsh-superagent, webui, spv watcher)
+  wca-tui   the terminal surface: the SPV session (dsh-tui), no deployments
+
+"sync" migrates a legacy "superagent" profile with a whole mv, aligns both profile package.json files,
+their cordis.patch.yml rows and their node_modules links with the templates, points every deployment
+at "wca", and writes <data root>/deployments/panel.yml. "check" is read-only and exits 1 on drift.
+
+options:
+  --port <n>                   service port used by the wca profile rows (default 3082)`
 
 const RESTART_USAGE = `usage: wheelchair-agent restart-all [--dry-run] [--force] [--no-install] [--detach]
                                     [--session <id>] [--project <p>|--all]
@@ -544,9 +561,9 @@ async function deploymentFromCwd(cwd = process.cwd()) {
   return match
 }
 
-/** The installed overlay that turns the panel profile into the panel instance. */
+/** The installed overlay that turns the shared `wca` profile into the panel instance. */
 function panelOverlayPath() {
-  return join(PRESET_DIR, 'panel.patch.yml')
+  return join(DATA_ROOT, 'deployments', 'panel.yml')
 }
 
 /** Service-manager arguments for the panel instance (never a deployment overlay). */
@@ -555,8 +572,8 @@ async function panelArgs(action, { port } = {}) {
   const overlay = panelOverlayPath()
   if (!existsSync(overlay)) {
     throw new Error(
-      `the panel overlay is missing at ${overlay}: run "bash install.sh --project <project>" to install the ` +
-        'panel profile, overlay and webui package.',
+      `the panel overlay is missing at ${overlay}: run "wheelchair-agent profiles sync" (or ` +
+        '"bash install.sh --project <project>") to install the wca profile and its overlay.',
     )
   }
   const chosen = port ?? panel.panelPort()
@@ -634,9 +651,19 @@ async function panelAllLine(action) {
   } catch (error) {
     return `panel: not configured (${error.message})`
   }
+  let legacyNote = ''
+  if (action === 'start') {
+    // An instance from before the refactor may still hold the port under the old profile/overlay.
+    // The manager only knows the current instance, so it would report a foreign listener instead.
+    const legacy = await panel.stopLegacyPanelHost({ port })
+    if (legacy !== null && legacy.stopped) legacyNote = ` (stopped older panel host pid ${legacy.pid})`
+    else if (legacy !== null) legacyNote = ` (older panel host pid ${legacy.pid} still holds the port)`
+  }
   const result = runServiceManagerQuiet(args)
   if (result.status !== 0) return `panel: ${failureSummary(result)}`
-  if (action === 'start') return /already running/i.test(result.stdout) ? 'panel: already running' : 'panel: started'
+  if (action === 'start') {
+    return /already running/i.test(result.stdout) ? 'panel: already running' : `panel: started${legacyNote}`
+  }
   if (!/not running/i.test(result.stdout)) return 'panel: stopped'
   // The manager only knows the panel-profile instance; a pre-#58 `cli.js panel --foreground` host is
   // invisible to it while it still holds the port. Stop that one here too, after checking its cmdline.
@@ -746,86 +773,39 @@ async function commandService(argv) {
   process.exit(status)
 }
 
-/** The source profile from settings, defaulting to "superagent" when settings cannot be read. */
-async function panelSourceProfileFromSettings(profile) {
-  let settings = null
+/** Read-only profile/registry/overlay drift; never throws, so `panel status` still reports the process. */
+async function panelProfileStatus(profiles) {
   try {
-    const loaded = await load('src', 'shared', 'settings.js')
-    settings = loaded.resolveSettings()
-  } catch {
-    settings = null
-  }
-  return profile.panelSourceProfile({ settings })
-}
-
-/** Read-only profile status; never throws, so `panel status` still reports the process. */
-async function panelStatusReport(profile) {
-  try {
-    const sourceProfile = await panelSourceProfileFromSettings(profile)
-    const report = profile.syncPanelProfile({ dshHome: DSH_HOME, sourceProfile, write: false })
-    return { sourceProfile, report, error: null }
+    return {
+      report: profiles.checkProfiles({ dshHome: DSH_HOME, dataRoot: DATA_ROOT, stateDir: STATE_DIR }),
+      error: null,
+    }
   } catch (error) {
-    return { sourceProfile: null, report: null, error }
+    return { report: null, error }
   }
 }
 
-function printPanelProfileStatus(profile, status) {
+function printPanelProfileStatus(status) {
+  process.stdout.write('profile: wca\n')
   if (status.report === null) {
-    process.stdout.write(`plugins: unknown (${status.error.message})\n`)
-    process.stdout.write('config:  unknown\n')
-    process.stdout.write('drift:   unknown\n')
+    process.stdout.write(`drift:   unknown (${status.error.message})\n`)
     return
   }
-  const report = status.report
-  if (report.sourceMissing) {
-    process.stdout.write(`plugins: none (profile "${status.sourceProfile}" is missing)\n`)
-    process.stdout.write(`config:  none (profile "${status.sourceProfile}" is missing)\n`)
-    process.stdout.write('drift:   none\n')
-    return
-  }
-  const excluded = report.excluded.length > 0 ? `; ${report.excluded.join(', ')} excluded` : ''
-  process.stdout.write(`plugins: mirrors profile "${status.sourceProfile}" (${report.bundles.length} bundles${excluded})\n`)
-  process.stdout.write(`${panelConfigSummary(profile, report)}\n`)
-  const drift =
-    report.problems.length === 0
-      ? 'none'
-      : 'the panel profile is out of date: run "wheelchair-agent panel sync"'
-  process.stdout.write(`drift:   ${drift}\n`)
+  const problem = status.report.problems[0]
+  process.stdout.write(problem === undefined ? 'drift:   none\n' : `drift:   ${problem.problem} (fix: ${problem.fix})\n`)
 }
 
-/** `config:` line for `panel status`: how many patch rows the panel mirrors and what it skipped. */
-function panelConfigSummary(profile, report) {
-  const patch = report.patch
-  if (patch === null || patch === undefined) {
-    return `config:  unknown (profile "${report.sourceProfile}" has no ${profile.PANEL_PATCH_FILE})`
+/** `panel start` syncs once before binding the port: a missing or legacy profile must not block it forever. */
+async function syncProfilesBeforeStart(profiles) {
+  const report = profiles.syncProfiles({ dshHome: DSH_HOME, dataRoot: DATA_ROOT, stateDir: STATE_DIR })
+  if (report.problems.length > 0) {
+    process.stdout.write(`${profiles.formatSyncReport(report)}\n`)
+    return report
   }
-  const skipped = []
-  for (const item of patch.skipped) {
-    if (item.kind === 'id') skipped.push(item.id)
-    else if (item.kind === 'insert') skipped.push('wheelchair-* inserts')
+  if (report.changed) {
+    process.stdout.write('note: synced the wca and wca-tui profiles, the deployment registry and the panel overlay\n')
   }
-  const skippedText = skipped.length > 0 ? ` (${[...new Set(skipped)].join(', ')} skipped)` : ''
-  return `config:  mirrors ${patch.mirroredCount} patch row(s) from "${report.sourceProfile}"${skippedText}`
-}
-
-/**
- * `panel start` syncs first. A source profile that disappeared (a machine without superagent, or a
- * renamed profile) must not stop the panel: the current bundles stay and the note says so.
- */
-async function syncPanelBeforeStart(profile) {
-  const sourceProfile = await panelSourceProfileFromSettings(profile)
-  const report = profile.syncPanelProfile({ dshHome: DSH_HOME, sourceProfile })
-  if (report.sourceMissing) {
-    process.stdout.write(
-      `note: the source profile "${sourceProfile}" is missing; the panel profile keeps its current bundles\n`,
-    )
-  } else if (report.changed) {
-    process.stdout.write(
-      `note: synced the panel profile with profile "${sourceProfile}" (${report.bundles.length} bundle(s), ` +
-        `${report.linkCount} link(s))\n`,
-    )
-  }
-  for (const note of report.notes ?? []) process.stdout.write(`note: ${note}\n`)
+  return report
 }
 
 /**
@@ -835,6 +815,7 @@ async function syncPanelBeforeStart(profile) {
  */
 async function commandPanel(argv) {
   const panel = await load('src', 'spv', 'panel-instance.js')
+  const profiles = await load('src', 'spv', 'profiles.js')
   let action = 'start'
   let foreground = false
   let port
@@ -865,35 +846,41 @@ async function commandPanel(argv) {
   else if (words[0] === 'start') action = 'start'
   else if (words[0] !== undefined) throw new UsageError(`unknown panel command ${JSON.stringify(words[0])}`)
 
-  const profile = await load('src', 'spv', 'panel-profile.js')
   if (action === 'sync') {
-    const sourceProfile = await panelSourceProfileFromSettings(profile)
-    const report = profile.syncPanelProfile({ dshHome: DSH_HOME, sourceProfile })
-    process.stdout.write(`synced: ${report.bundles.length} bundle(s), ${report.linkCount} link(s)\n`)
-    if (report.sourceMissing) process.stdout.write(`note: ${profile.describePanelProfile(report)}\n`)
-    for (const note of report.notes ?? []) process.stdout.write(`note: ${note}\n`)
-    process.exit(0)
+    const report = profiles.syncProfiles({ dshHome: DSH_HOME, dataRoot: DATA_ROOT, stateDir: STATE_DIR })
+    process.stdout.write(`${profiles.formatSyncReport(report)}\n`)
+    process.exit(report.problems.length === 0 ? 0 : 1)
   }
 
   const chosen = port ?? panel.panelPort()
   if (action === 'stop') {
-    const args = await panelArgs('stop', { port: chosen })
-    process.exit(runServiceManager(args))
+    process.exit(runServiceManager(await panelArgs('stop', { port: chosen })))
   }
   if (action === 'status') {
-    // The plugin lines come first: they are about the profile, not the live process the manager
+    // The profile lines come first: they are about the profiles, not the live process the manager
     // reports below, and they are read-only.
-    printPanelProfileStatus(profile, await panelStatusReport(profile))
+    printPanelProfileStatus(await panelProfileStatus(profiles))
     process.exit(runServiceManager(await panelArgs('status', { port: chosen })))
   }
+  const report = await syncProfilesBeforeStart(profiles)
+  if (report.problems.length > 0) process.exit(1)
   const overlay = panelOverlayPath()
   if (!existsSync(overlay)) {
     throw new Error(
-      `the panel overlay is missing at ${overlay}: run "bash install.sh --project <project>" to install the ` +
-        'panel profile, overlay and webui package.',
+      `the panel overlay is missing at ${overlay}: run "wheelchair-agent profiles sync" (or ` +
+        '"bash install.sh --project <project>") to install the wca profile and its overlay.',
     )
   }
-  await syncPanelBeforeStart(profile)
+  // An instance from before this refactor keeps the same port under the old profile/overlay; the
+  // service manager only knows the current one, so it would refuse the port instead of replacing it.
+  const legacy = await panel.stopLegacyPanelHost({ port: chosen })
+  if (legacy !== null) {
+    process.stdout.write(
+      legacy.stopped
+        ? `note: stopped the older panel instance (pid ${legacy.pid})\n`
+        : `note: the older panel instance (pid ${legacy.pid}) still holds the port\n`,
+    )
+  }
   if (foreground) {
     process.exit(await panel.runPanelForeground({
       overlay,
@@ -903,6 +890,45 @@ async function commandPanel(argv) {
     }))
   }
   process.exit(runServiceManager(await panelArgs('start', { port: chosen })))
+}
+
+/**
+ * `profiles`：the machine-wide profile command. `sync` is the same path install.sh uses; `check` is
+ * read-only and safe on a live machine (`--check` in install.sh calls it).
+ */
+async function commandProfiles(argv) {
+  const profiles = await load('src', 'spv', 'profiles.js')
+  let action = 'sync'
+  let port
+  const words = []
+  for (let index = 0; index < argv.length; index += 1) {
+    const word = argv[index]
+    if (word === '--port') {
+      const value = argv[index + 1]
+      if (value === undefined) throw new UsageError('profiles --port needs a number')
+      index += 1
+      port = Number(value)
+      if (!Number.isInteger(port) || port < 1 || port > 65535) throw new UsageError(`invalid --port ${JSON.stringify(value)}`)
+    } else if (word.startsWith('--port=')) {
+      port = Number(word.slice('--port='.length))
+      if (!Number.isInteger(port) || port < 1 || port > 65535) throw new UsageError(`invalid --port ${JSON.stringify(word.slice(9))}`)
+    } else if (word === '-h' || word === '--help') {
+      process.stdout.write(PROFILES_USAGE)
+      return
+    } else if (word.startsWith('-')) throw new UsageError(`unknown profiles option ${JSON.stringify(word)}`)
+    else words.push(word)
+  }
+  if (words.length > 1) throw new UsageError('profiles takes one of sync|check')
+  if (words[0] === 'check') action = 'check'
+  else if (words[0] === 'sync') action = 'sync'
+  else if (words[0] !== undefined) throw new UsageError(`unknown profiles command ${JSON.stringify(words[0])}`)
+
+  const options = { dshHome: DSH_HOME, dataRoot: DATA_ROOT, stateDir: STATE_DIR }
+  if (port !== undefined) options.port = port
+  const report = action === 'sync' ? profiles.syncProfiles(options) : profiles.checkProfiles(options)
+  const text = action === 'sync' ? profiles.formatSyncReport(report) : profiles.formatCheckReport(report)
+  process.stdout.write(`${text}\n`)
+  process.exit(action === 'sync' ? (report.problems.length === 0 ? 0 : 1) : (report.ok ? 0 : 1))
 }
 
 /*
@@ -1564,7 +1590,7 @@ async function commandWhere(argv) {
     const path = join(binDir, name)
     return { name, path, exists: existsSync(path) }
   })
-  const profile = String(process.env.DSH_SUPERAGENT_PROFILE ?? '').trim() || 'superagent'
+  const profile = String(process.env.DSH_SUPERAGENT_PROFILE ?? '').trim() || PROFILE_ID
   const webuiPackage = join(DSH_HOME, 'profiles', profile, 'node_modules', 'wheelchair-agent-webui')
   let checkout = null
   try {
@@ -1719,6 +1745,9 @@ try {
       break
     case 'panel':
       await commandPanel(rest)
+      break
+    case 'profiles':
+      await commandProfiles(rest)
       break
     case 'service':
       await commandService(rest)

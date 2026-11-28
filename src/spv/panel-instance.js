@@ -1,20 +1,20 @@
 /**
  * Lifecycle glue for the standalone wheelchair-agent panel.
  *
- * The panel used to be a hand-written `node:http` host. It is now an ordinary dsh instance of its
- * own: the shipped `wheelchair-agent` profile (dsh-base + dsh-web-app + `wheelchair-agent-webui`)
- * plus a small overlay passed with `--patch`. The instance deliberately loads no dsh-superagent, so
- * it has no orchestrator, no sources and no tickets; the routes and the page are the same files the
- * deployments mount, and the data root is ours.
+ * The panel used to be a hand-written `node:http` host. It is now an ordinary dsh instance of the
+ * shared `wca` profile (dsh-base + dsh-web-app + dsh-superagent + `wheelchair-agent-webui`) plus the
+ * panel overlay passed with `--patch`. The overlay disables the dsh-superagent service, its two agent
+ * presets and the `spv` queue watcher, so the panel has no orchestrator, no sources and no tickets;
+ * the routes and the page are the same files the deployments mount, and the data root is ours.
  *
  * Process lifecycle (start/stop/token URL) is shared with deployments and lives in
  * `commands/superagent-service.py --mode panel`. This module only computes what is specific to the
  * panel (profile name, session, overlay, state dir, port, log) and can run the instance in the
  * foreground for tests and debugging.
  *
- * The overlay is installed with the preset (`panel.patch.yml`) and reads its port from the
- * environment; that is why `--port` and settings `panel.port` do not require rewriting a file per
- * run.
+ * The overlay template is installed with the preset (`panel.patch.yml`) and copied to
+ * `<data root>/deployments/panel.yml`; it reads its port from the environment, which is why `--port`
+ * and settings `panel.port` do not require rewriting a file per run.
  */
 import { spawn, spawnSync } from 'node:child_process'
 import { closeSync, mkdirSync, openSync, readFileSync, writeSync } from 'node:fs'
@@ -26,8 +26,10 @@ import { fileURLToPath } from 'node:url'
 import { dataPaths } from '../shared/home.js'
 import { resolveSettings } from '../shared/settings.js'
 
-/** The panel's own dsh profile (`profiles/<id>`): `wheelchair-agent`, not a deployment profile. */
-export const PANEL_PROFILE_ID = 'wheelchair-agent'
+/** The profile the panel shares with the deployments: `wca`. */
+export const PANEL_PROFILE_ID = 'wca'
+/** The profile the panel used before the two-profile split; only used to recognise old instances. */
+export const PANEL_LEGACY_PROFILE_ID = 'wheelchair-agent'
 export const PANEL_SESSION = 'wca-panel'
 export const PANEL_HOST = '127.0.0.1'
 export const DEFAULT_PANEL_PORT = 3080
@@ -79,7 +81,7 @@ export function readOnlyPanelPort({ env = process.env, home, stateDir } = {}) {
  * `service stop/start --all` loop does include it, but recognises it by its profile and overlay,
  * not as a registry entry: it stops after the deployments, starts last, and its failure never
  * changes their exit code. Exporting it as `DSH_SUPERAGENT_STATE_DIR` is still the one seam the
- * webui plugin already understands (settings/work lookups), without mounting dsh-superagent.
+ * webui plugin understands (settings/work lookups); the profile's dsh-superagent row is disabled.
  */
 export function panelStateDir({ env = process.env, home, stateDir } = {}) {
   return join(dataPaths({ env, home, stateDir }).root, 'panel')
@@ -97,10 +99,10 @@ export function panelLogPath({ env = process.env, dshHome } = {}) {
  * carries no `--patch`, so a cold install that replaces `webui/lib/client.js` leaves it serving the
  * new bundle out of its old page shell (the TDZ `ReferenceError` the operator saw on 3080).
  *
- * The panel profile is now `wheelchair-agent`; a current instance always loads `panel.patch.yml`
- * under that profile id and is never reported. An instance left over under the old `panel` profile
- * is a plain `dsh --profile panel` process, not the `cli.js panel --foreground` host: the service
- * manager refuses its port and names the pid, and this detector stays limited to the pre-#58 shape.
+ * A current instance is `dsh --profile wca --patch <data root>/deployments/panel.yml` and is never
+ * reported. The previous instance (`--profile wheelchair-agent --patch .../panel.patch.yml`) is
+ * reported as legacy so `panel start` can stop it before binding the same port; the pre-#58
+ * `cli.js panel --foreground` host remains reported for the same reason.
  */
 export function looksLikeLegacyPanelHost(argv) {
   if (!Array.isArray(argv) || argv.length === 0) return false
@@ -109,15 +111,15 @@ export function looksLikeLegacyPanelHost(argv) {
   // `panel --foreground` when it was started through the launcher.
   const cliPanel = words.some((word, index) => /(^|\/)cli\.js$/.test(word) && words[index + 1] === 'panel')
   const panelForeground = words.some((word, index) => word === 'panel' && words[index + 1] === '--foreground')
-  if (!cliPanel && !panelForeground) return false
-  // A current instance is `dsh --profile wheelchair-agent --patch <…>/panel.patch.yml`; never report
-  // it. An old-profile `dsh --profile panel` instance never reaches here (no cli.js/panel
-  // --foreground shape), so it is the service manager that refuses its port and names the pid.
-  const profilePanel = words.some(
-    (word, index) => word === `--profile=${PANEL_PROFILE_ID}` || (word === '--profile' && words[index + 1] === PANEL_PROFILE_ID),
-  )
-  const overlay = words.some(word => word.endsWith('panel.patch.yml'))
-  return !(profilePanel && overlay)
+  const profile = id =>
+    words.some((word, index) => word === `--profile=${id}` || (word === '--profile' && words[index + 1] === id))
+  const oldOverlay = words.some(word => word.endsWith('panel.patch.yml'))
+  const oldProfileInstance = profile(PANEL_LEGACY_PROFILE_ID) && oldOverlay
+  if (!cliPanel && !panelForeground && !oldProfileInstance) return false
+  // The current instance loads the new overlay under `wca`; never report it.
+  const currentProfile = profile(PANEL_PROFILE_ID)
+  const currentOverlay = words.some(word => /(^|\/)panel\.yml$/.test(word))
+  return !(currentProfile && currentOverlay)
 }
 
 /**

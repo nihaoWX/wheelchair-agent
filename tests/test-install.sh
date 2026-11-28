@@ -52,6 +52,15 @@ trap on_signal INT TERM
 # ---------------------------------------------------------------- fixtures
 
 mkdir -p "$SB/home" "$SB/tools" "$SB/dsh/profiles/superagent"
+# The two-profile sync needs the plugin checkout it links into `wca` and, for `wca-tui`, the dsh-tui
+# package plus the donor packages it borrows. They are empty markers: install only resolves and links
+# paths, it never imports the packages.
+mkdir -p "$SB/home/opt/dsh-plugins/dsh-superagent"
+printf '{"name":"dsh-superagent","version":"0.0.0-test"}\n' > "$SB/home/opt/dsh-plugins/dsh-superagent/package.json"
+mkdir -p "$SB/dsh/profiles/dsh-tui/node_modules/@deepseek-harness-tui/dsh-tui"
+mkdir -p "$SB/dsh/profiles/dsh-tui/node_modules/@mars-sea/dsh-commandcode-provider"
+mkdir -p "$SB/dsh/profiles/dsh-tui/node_modules/billion-context"
+printf '{"name":"dsh-profile-dsh-tui","private":true,"dependencies":{}}\n' > "$SB/dsh/profiles/dsh-tui/package.json"
 
 # The harness is hermetic even when the operator who runs it has real paths exported: install.sh
 # honors WHEELCHAIR_AGENT_HOME / DSH_SUPERAGENT_STATE_DIR (and the explicit SPV_* overrides), so the
@@ -205,7 +214,7 @@ check '(2) the Rust core binary landed' \
   "$([ -x "$SB/local-bin/wheelchair-agent-core" ] && echo yes || echo no)" yes
 check '(2) the CLI landed' "$([ -x "$SB/local-bin/wheelchair-agent" ] && echo yes || echo no)" yes
 check '(2) the webui package landed' \
-  "$([ -f "$SB/dsh/profiles/superagent/node_modules/wheelchair-agent-webui/package.json" ] && echo yes || echo no)" yes
+  "$([ -f "$SB/dsh/profiles/wca/node_modules/wheelchair-agent-webui/package.json" ] && echo yes || echo no)" yes
 check '(2) the data root and its subdirectories were created' \
   "$([ -d "$SB/home/.wheelchair-agent/logs" ] && [ -d "$SB/home/.wheelchair-agent/records" ] && [ -d "$SB/home/.wheelchair-agent/inbox" ] && echo yes || echo no)" yes
 check '(2) install created the settings file' \
@@ -300,7 +309,9 @@ check '(8) the real probe does not count itself as an SPV session' \
 check '(8) the real probe reports the port from the URL' \
   "$(printf '%s\n' "$real_probe" | sed -n 's/^service_port=//p')" 0
 
-# (9) --check reports the old layout and a pending migration, and stays read-only.
+# (9) --check reports the old layout and a pending migration, and stays read-only. Removing the data
+# root also removed the installed panel overlay, so the profile check is red for that one fact: the
+# panel cannot start until install writes it again.
 rm -rf "$SB/home/.wheelchair-agent"
 mkdir -p "$SB/dsh/state/superagent/inbox"
 printf '{"version":1,"revision":1,"values":{}}\n' > "$SB/dsh/state/superagent/panel-settings.json"
@@ -308,9 +319,10 @@ printf '{"id":"old-1","kind":"pr"}\n' > "$SB/dsh/state/superagent/inbox/old-1.js
 set_state
 before=$(install_snapshot)
 run_install --check
-check '(9) --check with an old layout exits 0' "$?" 0
+check '(9) --check with an old layout exits 2 for the missing panel overlay' "$?" 2
 check '(9) --check reports the old layout' "$(grep -c '^note: data layout: old' "$SB/stdout")" 1
 check '(9) --check reports the pending migration' "$(grep -c '^note: migration: pending' "$SB/stdout")" 1
+check '(9) --check names the missing panel overlay' "$(grep -c 'panel overlay is missing at' "$SB/stdout")" 1
 check '(9) --check changed nothing' "$(install_snapshot)" "$before"
 check '(9) --check did not move the old settings file' \
   "$([ -f "$SB/dsh/state/superagent/panel-settings.json" ] && echo present || echo absent)" present
@@ -320,9 +332,10 @@ mkdir -p "$SB/home/.wheelchair-agent"
 printf '{"version":1,"revision":2,"values":{}}\n' > "$SB/home/.wheelchair-agent/settings.json"
 before=$(install_snapshot)
 run_install --check
-check '(9b) --check with both layouts exits 0' "$?" 0
+check '(9b) --check with both layouts exits 2 for the missing panel overlay' "$?" 2
 check '(9b) --check reports both layouts' "$(grep -c '^note: data layout: both' "$SB/stdout")" 1
 check '(9b) --check still reports the pending old inbox' "$(grep -c '^note: migration: pending' "$SB/stdout")" 1
+check '(9b) --check names the missing panel overlay' "$(grep -c 'panel overlay is missing at' "$SB/stdout")" 1
 check '(9b) --check changed nothing' "$(install_snapshot)" "$before"
 
 # (10) A relative WHEELCHAIR_AGENT_HOME fails loudly before any install write.
@@ -492,7 +505,7 @@ check '(18) the overlay carries the port and state directory' \
   "$(grep -c 'port: 3082' "$SB/home/.wheelchair-agent/deployments/demo.yml")" 1
 check '(18) the overlay names the project state directory' \
   "$(grep -c "^    stateDir: .*$SB/dsh/state/superagent/demo\"" "$SB/home/.wheelchair-agent/deployments/demo.yml")" 1
-check '(18) the entry records the profile' "$(registry_value tools/demo profile)" superagent
+check '(18) the entry records the profile' "$(registry_value tools/demo profile)" wca
 stamp_sha=$(node -e 'const fs=require("fs"); try { process.stdout.write(String(JSON.parse(fs.readFileSync(process.argv[1],"utf8")).commit ?? "")) } catch {}' "$STAMP" 2>/dev/null)
 check '(18) the entry records the commit from installed.json' "$(registry_value tools/demo installedSha)" "$stamp_sha"
 check '(18) installed.json really carries the checkout commit' "$stamp_sha" "$(git -C "$REPO" rev-parse HEAD)"
@@ -644,42 +657,47 @@ check '(21) --check names the port and pid' "$(grep -c 'note: port 3080 is held 
 check '(21) --check gives the replacement commands' "$(grep -c 'then "wheelchair-agent panel start --detach"' "$SB/stdout")" 1
 check '(21) reporting the older host wrote nothing' "$(install_snapshot)" "$before_panel"
 
-# A current panel instance (wheelchair-agent profile + overlay) is what the install itself starts: no
-# note for it, and the overlay keeps it out of the pre-#58 shape.
-printf 'node\0/usr/bin/dsh\0--profile\0wheelchair-agent\0--patch\0%s/.agent-presets/spv/panel.patch.yml\0--no-open\0' "$SB/dsh" > "$FAKE_PROC/$LEGACY_PID/cmdline"
+# A current panel instance (shared wca profile + the installed overlay) is what the install itself
+# starts: no note for it, and the overlay path keeps it out of the old shape.
+printf 'node\0/usr/bin/dsh\0--profile\0wca\0--patch\0%s/deployments/panel.yml\0--no-open\0' "$SB/home/.wheelchair-agent" > "$FAKE_PROC/$LEGACY_PID/cmdline"
 run_install_raw --check --project tools/wheelchair-agent
 check '(21) a current panel instance passes --check' "$?" 0
 check '(21) a current panel instance needs no note' "$(grep -c 'an older panel host' "$SB/stdout")" 0
+
+# The intermediate panel profile (`wheelchair-agent` + the preset overlay) predates the shared wca
+# profile. It still owes the port, so it is reported exactly like the pre-#58 host.
+printf 'node\0/usr/bin/dsh\0--profile\0wheelchair-agent\0--patch\0%s/.agent-presets/spv/panel.patch.yml\0--no-open\0' "$SB/dsh" > "$FAKE_PROC/$LEGACY_PID/cmdline"
+run_install_raw --check --project tools/wheelchair-agent
+check '(21) the intermediate panel profile is reported as older' "$(grep -c 'note: port 3080 is held by pid 4910, an older panel host' "$SB/stdout")" 1
 unset WHEELCHAIR_PROC_ROOT SPV_INSTALL_PANEL_HOLDER
 
-# ---- case 22: the panel profile was renamed from "panel"; --check never migrates, install does it once
-# The old name must not silently pass --check. A real install moves profiles/panel to profiles/wheelchair-agent
-# before syncing, keeping the bundle record and links, and a directory already at the new name wins (the old
-# one is only reported: deleting it is the operator's call). The probe and core seams keep this offline.
-mv "$SB/dsh/profiles/wheelchair-agent" "$SB/dsh/profiles/panel"
+# ---- case 22: the single-deployment profile moved from "superagent" to "wca" whole; --check never
+# migrates, install does it once. The old name must not silently pass --check, a real install renames the
+# directory (so node_modules links and the webui package follow), and a directory already at the new name
+# wins while the old one is only reported: deleting it is the operator's call.
+mv "$SB/dsh/profiles/wca" "$SB/dsh/profiles/superagent"
 before_migrate=$(install_snapshot)
 run_install_raw --check --project tools/wheelchair-agent
-check '(22) --check does not pass with only the old panel profile' "$?" 2
-check '(22) --check says to run install.sh to migrate' "$(grep -c 'note: the panel profile is still at the old path .*profiles/panel; run install.sh to migrate it to wheelchair-agent' "$SB/stdout")" 1
-check '(22) --check still fails the new panel profile path' "$(grep -c 'FAIL: the panel profile is not installed at .*profiles/wheelchair-agent' "$SB/stdout")" 1
+check '(22) --check does not pass with only the old superagent profile' "$?" 2
+check '(22) --check names the old profile in the copy-paste fix' "$(grep -c 'the old "superagent" profile is still installed' "$SB/stdout")" 1
+check '(22) --check says to run install.sh to move it' "$(grep -c 'fix: run "bash install.sh" from the wheelchair-agent checkout' "$SB/stdout")" 1
 check '(22) --check wrote nothing' "$(install_snapshot)" "$before_migrate"
 
 run_install_raw --project tools/wheelchair-agent
-check '(22) the install migrates the old panel profile' "$?" 0
-check '(22) the install reports the move' "$(grep -c 'note: moved the panel profile from panel to wheelchair-agent' "$SB/stdout")" 1
-check '(22) the new panel profile exists' "$([ -d "$SB/dsh/profiles/wheelchair-agent" ] && echo yes)" yes
-check '(22) the old panel profile is gone' "$([ ! -e "$SB/dsh/profiles/panel" ] && echo yes)" yes
-check '(22) the moved profile keeps its bundle record' "$([ -f "$SB/dsh/profiles/wheelchair-agent/panel-bundles.json" ] && echo yes)" yes
-node "$REPO/src/spv/panel-profile.js" check --dsh-home "$SB/dsh" >/dev/null 2>&1
-check '(22) the moved profile passes panel-profile check' "$?" 0
+check '(22) the install migrates the old profile' "$?" 0
+check '(22) the install reports the whole-directory move' "$(grep -c 'migrated: superagent -> wca' "$SB/stdout")" 1
+check '(22) the new profile exists' "$([ -d "$SB/dsh/profiles/wca" ] && echo yes)" yes
+check '(22) the old profile is gone' "$([ ! -e "$SB/dsh/profiles/superagent" ] && echo yes)" yes
+check '(22) the moved profile keeps the webui package' "$([ -f "$SB/dsh/profiles/wca/node_modules/wheelchair-agent-webui/package.json" ] && echo yes)" yes
+check '(22) the moved profile records its links' "$([ -f "$SB/dsh/profiles/wca/profile-links.json" ] && echo yes)" yes
 
-mkdir -p "$SB/dsh/profiles/panel"
-printf 'stale\n' > "$SB/dsh/profiles/panel/keep-me"
+mkdir -p "$SB/dsh/profiles/superagent"
+printf 'stale\n' > "$SB/dsh/profiles/superagent/keep-me"
 run_install_raw --project tools/wheelchair-agent
 check '(22) both names: the install still succeeds' "$?" 0
-check '(22) both names: the note names the leftover directory' "$(grep -c 'also exists; the panel uses .*profiles/wheelchair-agent, so remove the old directory by hand' "$SB/stdout")" 1
-check '(22) both names: the old directory is not deleted' "$(cat "$SB/dsh/profiles/panel/keep-me" 2>/dev/null)" 'stale'
-rm -rf "$SB/dsh/profiles/panel"
+check '(22) both names: the note names the leftover directory' "$(grep -c 'profiles/superagent still exists; the deployments now use "wca"' "$SB/stdout")" 1
+check '(22) both names: the old directory is not deleted' "$(cat "$SB/dsh/profiles/superagent/keep-me" 2>/dev/null)" 'stale'
+rm -rf "$SB/dsh/profiles/superagent"
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -249,7 +249,7 @@ async function makeSandbox() {
     JSON.stringify({
       version: 1,
       deployments: [{
-        project: 'tools/wheelchair-agent', profile: 'superagent', stateDir: box.state,
+        project: 'tools/wheelchair-agent', profile: 'wca', stateDir: box.state,
         queueDir: box.queue, port: 3082, installedSha: null,
       }],
     }),
@@ -322,7 +322,7 @@ async function makeBox({ chainCount = 2, service = true, startPid = 900_000 } = 
   }
   if (service) {
     box.servicePid = freePids(1, Math.max(...box.chainPids) + 10)[0]
-    await addProc(box, box.servicePid, ['node', '/opt/dsh/bin.js', '--profile', 'superagent'])
+    await addProc(box, box.servicePid, ['node', '/opt/dsh/bin.js', '--profile', 'wca'])
   }
   return box
 }
@@ -870,7 +870,7 @@ async function testCommandModule() {
     JSON.stringify({
       version: 1,
       deployments: [{
-        project: 'tools/alpha', profile: 'superagent', stateDir: alphaState,
+        project: 'tools/alpha', profile: 'wca', stateDir: alphaState,
         queueDir: alphaQueue, port: 3901, installedSha: null,
       }],
     }),
@@ -2183,7 +2183,7 @@ async function testSessionReleaseRefusesService() {
   const dir = await writeSessionDir(box, uuid)
   const service = await spawnSleep()
   try {
-    const argv = ['node', '/opt/dsh/bin.js', 'dsh', '--profile', 'superagent', '--no-open']
+    const argv = ['node', '/opt/dsh/bin.js', 'dsh', '--profile', 'wca', '--no-open']
     await addFakeHolder(box, {
       pid: service.pid,
       target: join(dir, 'session.lock'),
@@ -2196,7 +2196,7 @@ async function testSessionReleaseRefusesService() {
     assert.match(
       dryText,
       new RegExp(
-        `^pid ${service.pid}  node /opt/dsh/bin\\.js dsh --profile superagent --no-open ` +
+        `^pid ${service.pid}  node /opt/dsh/bin\\.js dsh --profile wca --no-open ` +
           '\\(superagent service; not released\\)$',
         'm',
       ),

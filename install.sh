@@ -8,7 +8,7 @@
 # "up to date".
 #
 # Before any write, the pre-flight asks commands/superagent-service.py for two runtime facts: the service
-# PIDs (listening socket plus a /proc scan for `--profile superagent`) and the SPV-session PIDs (a
+# PIDs (listening socket plus a /proc scan for `--profile wca`) and the SPV-session PIDs (a
 # /proc/*/cmdline scan for `--patch <preset>/preset-default.patch.yml`). It recognises a session started by
 # the installed launcher, or by dsh/dsh-tui with that exact patch. It does not recognise a session that
 # picked the preset at runtime with `/preset` after starting without `--patch`, or one using a different
@@ -36,8 +36,9 @@
 #
 # Installs (this project is not an agent tool, so there is no SKILL.md to copy):
 #   1. the dsh agent preset  -> $DSH_HOME/.agent-presets/spv/
-#      (the preset ymls, the SPV-side JS, cli.js, prepare.sh, commands/ and agentsmd-examples/)
-#   2. the webui package     -> $DSH_HOME/profiles/superagent/node_modules/wheelchair-agent-webui/
+#      (the preset ymls, the profile templates, the SPV-side JS, cli.js, prepare.sh, commands/ and
+#       agentsmd-examples/)
+#   2. the webui package     -> $DSH_HOME/profiles/wca/node_modules/wheelchair-agent-webui/
 #      (an independent dsh web client plugin whose inbox core is copied in, so a preset replacement
 #       by another worktree cannot break it; its loader row is appended to the profile patch)
 #   3. the CLI               -> ~/.local/bin/wheelchair-agent   (the one entry point)
@@ -90,17 +91,15 @@ JOBCTL=$BIN_DIR/jobctl
 TARGET_PLUGIN_URL="file://$PRESET_DIR/src/spv/tools.js"
 TARGET_CRON_URL="file://$PRESET_DIR/src/spv/cron-plugin.js"
 TARGET_RESTART_URL="file://$PRESET_DIR/src/spv/restart-command.js"
-PROFILE_ID=${DSH_SUPERAGENT_PROFILE:-superagent}
+# Two self-built profiles, rendered from preset/profiles/ by src/spv/profiles.js:
+#   wca      the browser surface: every deployment and the panel (dsh-web-app + dsh-superagent)
+#   wca-tui  the terminal surface: the SPV session (dsh-tui), no deployments
+# A legacy "superagent" profile is moved to "wca" whole (src/spv/profiles.js migrateLegacySuperagent).
+PROFILE_ID=wca
 PROFILE_DIR=$DSH_HOME_DIR/profiles/$PROFILE_ID
 WEBUI_TARGET=$PROFILE_DIR/node_modules/wheelchair-agent-webui
-# The panel instance is its own dsh profile, not a deployment: no dsh-superagent, its own state dir.
-# The id must match src/spv/panel-instance.js PANEL_PROFILE_ID; the profile used to be named "panel"
-# and install_panel_profile migrates that directory once.
-PANEL_PROFILE_ID=wheelchair-agent
-PANEL_LEGACY_PROFILE_ID=panel
-PANEL_PROFILE_DIR=$DSH_HOME_DIR/profiles/$PANEL_PROFILE_ID
-PANEL_LEGACY_PROFILE_DIR=$DSH_HOME_DIR/profiles/$PANEL_LEGACY_PROFILE_ID
-PANEL_WEBUI_TARGET=$PANEL_PROFILE_DIR/node_modules/wheelchair-agent-webui
+WCA_TUI_PROFILE_ID=wca-tui
+WCA_TUI_PROFILE_DIR=$DSH_HOME_DIR/profiles/$WCA_TUI_PROFILE_ID
 SERVICE_PROFILE=$PROFILE_ID
 SERVICE_PORT=${SPV_SERVICE_PORT:-3082}
 SERVICE_URL=${DSH_SUPERAGENT_URL:-http://127.0.0.1:$SERVICE_PORT}
@@ -353,16 +352,6 @@ require_node() {
   ok "node $(node --version)"
 }
 
-# The panel profile records which dsh built it: a dsh upgrade can change how dsh-web-app behaves, so
-# `--check` must report the pair as stale until the next install records the new version.
-panel_dsh_version() {
-  if command -v dsh >/dev/null 2>&1; then
-    dsh --version 2>/dev/null | head -n 1
-  else
-    printf 'missing'
-  fi
-}
-
 require_dsh_tui() {
   if ! command -v dsh-tui >/dev/null 2>&1; then
     fail 'dsh-tui is not on PATH, so the launcher would have nothing to start'
@@ -469,7 +458,7 @@ enforce_fresh_core() {
 # from a user-level path, not from this development tree (ARCHITECTURE/preset.md, constraint 6).
 render_into() {
   local dest=$1 file
-  if ! mkdir -p "$dest/src/shared" "$dest/src/spv" "$dest/commands" "$dest/agentsmd-examples"; then
+  if ! mkdir -p "$dest/src/shared" "$dest/src/spv" "$dest/commands" "$dest/agentsmd-examples" "$dest/profiles"; then
     fail "cannot create the staging directories under $dest"
     fix 'check that the temporary directory is writable, then rerun this script'
     return 1
@@ -486,7 +475,7 @@ render_into() {
     fix "check that $SELF_DIR/bin/wheelchair-agent.mjs exists and is readable, then rerun this script"
     return 1
   fi
-  for file in shared/core-stamp.js shared/deployments.js shared/home.js shared/hook-events.js shared/hooks.js shared/install-stamp.js shared/queue.js shared/schema.js shared/settings.js shared/spv-projects.js shared/work.js spv/auto-merge-effect.js spv/check.js spv/cron-plugin.js spv/cron.js spv/deployment-policy.js spv/deployment-restart.js spv/deployment-setup.js spv/deployment.js spv/dispatch.js spv/health.js spv/hook.js spv/inbox.js spv/injector.js spv/outbox.js spv/ownership.js spv/projects-view.js spv/panel-routes.js spv/panel-instance.js spv/panel-profile.js spv/spv-project.js spv/paths.js spv/restart-command.js spv/restart-ux.js spv/restart.js spv/service-instance.js spv/session.js spv/tools.js; do
+  for file in shared/core-stamp.js shared/deployments.js shared/home.js shared/hook-events.js shared/hooks.js shared/install-stamp.js shared/queue.js shared/schema.js shared/settings.js shared/spv-projects.js shared/work.js spv/auto-merge-effect.js spv/check.js spv/cron-plugin.js spv/cron.js spv/deployment-policy.js spv/deployment-restart.js spv/deployment-setup.js spv/deployment.js spv/dispatch.js spv/health.js spv/hook.js spv/inbox.js spv/injector.js spv/outbox.js spv/ownership.js spv/projects-view.js spv/panel-routes.js spv/panel-instance.js spv/profiles.js spv/spv-project.js spv/paths.js spv/restart-command.js spv/restart-ux.js spv/restart.js spv/service-instance.js spv/session.js spv/tools.js; do
     if ! cp "$SELF_DIR/src/$file" "$dest/src/$file"; then
       fail "cannot copy src/$file from this checkout"
       fix "check that $SELF_DIR/src/$file exists and is readable, then rerun this script"
@@ -500,6 +489,13 @@ render_into() {
       return 1
     fi
     chmod 0755 "$dest/commands/$file" || { fail "cannot make $dest/commands/$file executable"; return 1; }
+  done
+  for file in wca.package.json wca.patch.yml wca-tui.package.json wca-tui.patch.yml; do
+    if ! cp "$SELF_DIR/preset/profiles/$file" "$dest/profiles/$file"; then
+      fail "cannot copy preset/profiles/$file from this checkout"
+      fix "check that $SELF_DIR/preset/profiles/$file exists and is readable, then rerun this script"
+      return 1
+    fi
   done
   if ! cp "$SELF_DIR/preset/panel.patch.yml" "$dest/panel.patch.yml"; then
     fail 'cannot copy preset/panel.patch.yml from this checkout'
@@ -664,7 +660,7 @@ check_preset() {
     fix 'run: bash tools/wheelchair-agent/install.sh'
   fi
   actual=$(find "$PRESET_DIR" -type f | sed "s|^$PRESET_DIR/||" | sort | tr '\n' ' ')
-  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md panel.patch.yml agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh src/shared/core-stamp.js src/shared/deployments.js src/shared/home.js src/shared/hook-events.js src/shared/hooks.js src/shared/install-stamp.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/spv-projects.js src/shared/work.js src/spv/auto-merge-effect.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/deployment-policy.js src/spv/deployment-restart.js src/spv/deployment-setup.js src/spv/deployment.js src/spv/dispatch.js src/spv/health.js src/spv/hook.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/ownership.js src/spv/projects-view.js src/spv/panel-routes.js src/spv/panel-instance.js src/spv/panel-profile.js src/spv/spv-project.js src/spv/paths.js src/spv/restart-command.js src/spv/restart-ux.js src/spv/restart.js src/spv/service-instance.js src/spv/session.js src/spv/tools.js "
+  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md panel.patch.yml agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh profiles/wca.package.json profiles/wca.patch.yml profiles/wca-tui.package.json profiles/wca-tui.patch.yml src/shared/core-stamp.js src/shared/deployments.js src/shared/home.js src/shared/hook-events.js src/shared/hooks.js src/shared/install-stamp.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/spv-projects.js src/shared/work.js src/spv/auto-merge-effect.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/deployment-policy.js src/spv/deployment-restart.js src/spv/deployment-setup.js src/spv/deployment.js src/spv/dispatch.js src/spv/health.js src/spv/hook.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/ownership.js src/spv/projects-view.js src/spv/panel-routes.js src/spv/panel-instance.js src/spv/profiles.js src/spv/spv-project.js src/spv/paths.js src/spv/restart-command.js src/spv/restart-ux.js src/spv/restart.js src/spv/service-instance.js src/spv/session.js src/spv/tools.js "
   local missing extras
   missing=$(comm -23 <(printf '%s' "$expected" | tr ' ' '\n' | sort) <(printf '%s' "$actual" | tr ' ' '\n' | sort) | tr '\n' ' ')
   extras=$(comm -13 <(printf '%s' "$expected" | tr ' ' '\n' | sort) <(printf '%s' "$actual" | tr ' ' '\n' | sort) | tr '\n' ' ')
@@ -793,99 +789,25 @@ check_webui() {
   fi
 }
 
-# The panel profile is the one profile this project creates. Its contract: the plugin bundles of the
-# source profile (settings `panel.profileFrom`, default "superagent"), our webui package, no
-# dsh-superagent, and the dsh version it was installed for. The overlay it is started with lives in the
-# preset and is covered by check_preset's digest.
-check_panel_profile() {
-  local problems current profile_problems
-  current=$(panel_dsh_version)
-  if [ ! -d "$PANEL_PROFILE_DIR" ]; then
-    # The profile was renamed from "panel" to "wheelchair-agent": install migrates that directory,
-    # but --check never writes. Name the old directory instead of failing as if nothing was installed.
-    if [ -d "$PANEL_LEGACY_PROFILE_DIR" ]; then
-      note "the panel profile is still at the old path $PANEL_LEGACY_PROFILE_DIR; run install.sh to migrate it to $PANEL_PROFILE_ID"
-    fi
-    fail "the panel profile is not installed at $PANEL_PROFILE_DIR"
-    fix 'run: bash install.sh'
+# Both self-built profiles, the deployment registry and the panel overlay are owned by
+# src/spv/profiles.js. Its `check` is read-only: it names drift, reports legacy directories (never
+# deletes them) and prints the copy-paste fix, exactly like the sync a real install runs.
+check_profiles() {
+  local report
+  if report=$(node "$SELF_DIR/src/spv/profiles.js" check \
+    --dsh-home "$DSH_HOME_DIR" --data-root "$DATA_ROOT" \
+    --state-dir "$LEGACY_STATE_DIR" --port "$SERVICE_PORT" 2>&1); then
+    ok "profiles: wca and wca-tui match their templates ($DSH_HOME_DIR/profiles)"
+    printf '%s\n' "$report" | while IFS= read -r line; do
+      case $line in
+        note:*) note "${line#note: }" ;;
+      esac
+    done
     return
   fi
-  problems=$(node - "$PANEL_PROFILE_DIR" "$current" <<'NODE'
-const fs = require('fs')
-const path = require('path')
-const [dir, current] = process.argv.slice(2)
-const problems = []
-const read = file => fs.readFileSync(path.join(dir, file), 'utf8')
-let manifest = null
-try {
-  manifest = JSON.parse(read('package.json'))
-} catch (error) {
-  problems.push(`package.json is missing or unreadable: ${error.message}`)
-}
-if (manifest !== null && JSON.stringify(manifest).includes('dsh-superagent')) {
-  problems.push('the panel profile must never declare dsh-superagent')
-}
-try {
-  const marker = JSON.parse(read('panel-instance.json'))
-  if (marker.dshVersion !== current) {
-    problems.push(`the panel profile was installed for dsh ${marker.dshVersion}, current dsh is ${current}`)
-  }
-} catch (error) {
-  problems.push(`panel-instance.json is missing or unreadable: ${error.message}`)
-}
-try {
-  const patch = read('cordis.patch.yml')
-  if (!/name:\s*['"]wheelchair-agent-webui['"]/.test(patch)) {
-    problems.push('cordis.patch.yml has no wheelchair-agent-webui loader row')
-  }
-  if (patch.includes('dsh-superagent')) {
-    problems.push('cordis.patch.yml must not mount dsh-superagent')
-  }
-} catch (error) {
-  problems.push(`cordis.patch.yml is missing or unreadable: ${error.message}`)
-}
-if (!fs.existsSync(path.join(dir, 'cordis.yml'))) problems.push('cordis.yml is missing')
-if (!fs.existsSync(path.join(dir, 'node_modules', 'wheelchair-agent-webui', 'package.json'))) {
-  problems.push('the webui package is not installed under node_modules')
-}
-process.stdout.write(problems.join('\n'))
-process.exitCode = problems.length === 0 ? 0 : 1
-NODE
-)
-  # Plugins: the manifest bundles, the links they need and the recorded link list. Read-only; the
-  # fix is the same install/sync that wrote the profile.
-  if profile_problems=$(node "$SELF_DIR/src/spv/panel-profile.js" check --dsh-home "$DSH_HOME_DIR" 2>&1); then
-    ok "panel plugins: $profile_problems"
-  else
-    if [ -z "$problems" ]; then problems=$profile_problems; else problems="$problems
-$profile_problems"; fi
-  fi
-  if [ -z "$problems" ]; then
-    ok "panel profile matches its contract ($PANEL_PROFILE_DIR, dsh $current)"
-  else
-    printf '%s\n' "$problems" | sed 's/^/     /'
-    fail "the panel profile at $PANEL_PROFILE_DIR is not usable as installed"
-    fix 'run: bash install.sh'
-  fi
-  local staged
-  staged=$(mktemp -d) || {
-    fail 'could not create a temporary directory for the panel webui check'
-    return
-  }
-  if render_webui_into "$staged" >/dev/null 2>&1; then
-    local staged_digest installed_digest
-    staged_digest=$(node "$SELF_DIR/src/shared/install-stamp.js" component webui "$staged" 2>/dev/null)
-    installed_digest=$(node "$SELF_DIR/src/shared/install-stamp.js" component webui "$PANEL_WEBUI_TARGET" 2>/dev/null)
-    if [ -n "$staged_digest" ] && [ "$staged_digest" = "$installed_digest" ]; then
-      ok "panel webui package matches its sources ($PANEL_WEBUI_TARGET)"
-    else
-      fail "the installed panel webui package at $PANEL_WEBUI_TARGET differs from this checkout"
-      fix 'run: bash install.sh'
-    fi
-  else
-    fail 'the webui package cannot be rendered for the panel check'
-  fi
-  rm -rf "$staged"
+  fail 'the wca/wca-tui profiles, the deployment registry or the panel overlay do not match this checkout'
+  printf '%s\n' "$report" | sed 's/^/     /'
+  fix 'run: bash install.sh from the wheelchair-agent checkout (after install: wheelchair-agent profiles sync)'
 }
 
 # Compare one installed file with what this checkout would write there.
@@ -1361,89 +1283,35 @@ register_deployment() {
   return 1
 }
 
-# Write a file only when its content changes, keeping re-runs idempotent and the profile's mtimes quiet.
-install_panel_file() {
-  local dest=$1 tmp
-  tmp=$(mktemp) || { fail "cannot create a temporary file for $dest"; return 1; }
-  if ! cat > "$tmp"; then rm -f "$tmp"; fail "cannot stage $dest"; return 1; fi
-  if [ -f "$dest" ] && cmp -s "$tmp" "$dest"; then rm -f "$tmp"; return 0; fi
-  if mv "$tmp" "$dest"; then return 0; fi
-  rm -f "$tmp"
-  fail "cannot write $dest"
-  fix "check that $dest is writable, then rerun this script"
-  return 1
-}
-
-# Create or refresh the standalone panel profile. Its plugin bundles mirror the source profile
-# (settings `panel.profileFrom`, default "superagent"), except dsh-superagent: that would start a
-# second orchestrator and a second set of Sources in the panel. Its cordis.patch.yml is generated
-# from the source profile's patch with the same module, so the panel sees the same plugin config
-# (model provider, search, permissions, theme, ...) without the webserver row or the spv inserts.
-# Packages the panel cannot resolve from the dsh installation are symlinked from the source
-# profile's node_modules; the module records them in panel-bundles.json so a later sync prunes only
-# links it created. This profile is ours, so unlike the operator-created superagent profile it may
-# be created from scratch.
-install_panel_profile() {
-  local version version_json
-  # The profile used to be `profiles/panel`. Move that directory once, before syncing, so its bundle
-  # links and panel-bundles.json (the prune record) survive the rename. A directory already at the
-  # new path wins; the old one is then only reported, because deleting it is the operator's call.
-  if [ -d "$PANEL_LEGACY_PROFILE_DIR" ] && [ ! -e "$PANEL_PROFILE_DIR" ]; then
-    if mv "$PANEL_LEGACY_PROFILE_DIR" "$PANEL_PROFILE_DIR"; then
-      note "moved the panel profile from $PANEL_LEGACY_PROFILE_ID to $PANEL_PROFILE_ID"
-    else
-      fail "cannot move the panel profile from $PANEL_LEGACY_PROFILE_DIR to $PANEL_PROFILE_DIR"
-      fix 'move it by hand, then rerun: bash install.sh'
-      return 1
-    fi
-  elif [ -d "$PANEL_LEGACY_PROFILE_DIR" ] && [ -e "$PANEL_PROFILE_DIR" ]; then
-    note "$PANEL_LEGACY_PROFILE_DIR also exists; the panel uses $PANEL_PROFILE_DIR, so remove the old directory by hand once nothing uses it"
+# Create, migrate or refresh both self-built dsh profiles from preset/profiles/. The same module
+# implements "wheelchair-agent profiles sync": a legacy profiles/superagent is moved whole, both
+# package.json/patch/node_modules links are aligned, deployments are pointed at wca, and the panel
+# overlay is installed. A profile directory is never deleted; leftovers are only reported.
+sync_profiles() {
+  local report status line
+  if report=$(node "$SELF_DIR/src/spv/profiles.js" sync \
+    --dsh-home "$DSH_HOME_DIR" --data-root "$DATA_ROOT" \
+    --state-dir "$LEGACY_STATE_DIR" --port "$SERVICE_PORT" \
+    --template-dir "$SELF_DIR/preset/profiles" \
+    --panel-overlay "$SELF_DIR/preset/panel.patch.yml" 2>&1); then
+    status=0
+  else
+    status=1
   fi
-  version=$(panel_dsh_version)
-  version_json=$(node -e 'process.stdout.write(JSON.stringify(process.argv[1]))' "$version") || {
-    fail 'cannot encode the dsh version for the panel profile'
-    return 1
-  }
-  if ! mkdir -p "$PANEL_PROFILE_DIR/node_modules"; then
-    fail "cannot create $PANEL_PROFILE_DIR/node_modules"
-    fix "check that $DSH_HOME_DIR/profiles is writable, then rerun this script"
-    return 1
-  fi
-  local synced status
-  synced=$(node "$SELF_DIR/src/spv/panel-profile.js" sync --dsh-home "$DSH_HOME_DIR" 2>&1)
-  status=$?
-  if [ "$status" -ne 0 ]; then
-    fail 'the panel profile plugins could not be mirrored from their source profile'
-    printf '%s\n' "$synced" | sed 's/^/     /'
-    fix 'make sure the source profile and its node_modules are installed, then rerun: bash install.sh'
-    return 1
-  fi
-  printf '%s\n' "$synced" | while IFS= read -r line; do
+  while IFS= read -r line; do
     case $line in
+      problem:*) fail "${line#problem: }" ;;
+      '  fix:'*) fix "${line#  fix: }" ;;
       note:*) note "${line#note: }" ;;
-      *) ok "panel profile: $line" ;;
+      '') ;;
+      *) ok "$line" ;;
     esac
-  done
-  install_panel_file "$PANEL_PROFILE_DIR/panel-instance.json" <<JSON || return 1
-{
-  "dshVersion": $version_json
-}
-JSON
-  if [ ! -f "$PANEL_PROFILE_DIR/cordis.yml" ]; then
-    install_panel_file "$PANEL_PROFILE_DIR/cordis.yml" <<'YAML' || return 1
-[]
-YAML
+  done <<< "$report"
+  if [ "$status" -ne 0 ]; then
+    fail 'the wca/wca-tui profiles could not be aligned with the installed preset'
+    fix 'fix the problem(s) above, then rerun: bash install.sh'
+    return 1
   fi
-  if [ ! -f "$PANEL_PROFILE_DIR/pnpm-workspace.yaml" ]; then
-    install_panel_file "$PANEL_PROFILE_DIR/pnpm-workspace.yaml" <<'YAML' || return 1
-packages:
-  - .
-
-nodeLinker: hoisted
-autoInstallPeers: false
-YAML
-  fi
-  install_webui_package "$PANEL_PROFILE_DIR" "$PANEL_WEBUI_TARGET" "$PANEL_PROFILE_ID"
 }
 
 install_preset() {
@@ -1508,11 +1376,11 @@ install_bin() {
 # copied into node_modules and the profile's package.json is deliberately untouched, so a pnpm install
 # against the profile may prune it; `--check` detects that and rerunning this script restores it.
 install_webui() {
-  install_webui_package "$PROFILE_DIR" "$WEBUI_TARGET" superagent
+  install_webui_package "$PROFILE_DIR" "$WEBUI_TARGET" wca
 }
 
-# Install the webui package into one dsh profile. The superagent profile and the panel profile mount
-# the same package; only the destination differs.
+# Install the webui package into one dsh profile. The browser surface (`wca`) mounts it; the terminal
+# surface (`wca-tui`) does not need it.
 install_webui_package() {
   local profile_dir=$1 target=$2 label=$3 staged backup
   if [ ! -d "$profile_dir" ]; then
@@ -1569,7 +1437,7 @@ install_webui_package() {
 # Idempotent: `loader_row_present` makes a re-run a no-op, and appending (never rewriting) keeps the
 # operator's existing patch intact.
 ensure_webui_loader() {
-  ensure_webui_loader_in "$PROFILE_DIR" superagent
+  ensure_webui_loader_in "$PROFILE_DIR" wca
 }
 
 ensure_webui_loader_in() {
@@ -1659,7 +1527,7 @@ if [ "$CHECK" -eq 1 ]; then
   check_data_root
   check_preset
   check_webui
-  check_panel_profile
+  check_profiles
   check_cli
   check_launcher
   check_service
@@ -1720,9 +1588,9 @@ if ! ensure_settings_file; then
   exit 1
 fi
 install_preset
+sync_profiles
 install_webui
 ensure_webui_loader
-install_panel_profile
 install_bin "$CLI" render_cli
 install_bin "$CORE_BIN" render_core_binary
 install_bin "$LAUNCHER" render_launcher
