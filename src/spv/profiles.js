@@ -1,5 +1,5 @@
 /**
- * The two self-built dsh profiles.
+ * The self-built dsh profiles.
  *
  * `wca` is the browser surface: dsh-web-app plus the dsh-superagent orchestrator, the Command Code
  * model route, the wheelchair-agent webui and the `spv` Source. The panel and every deployment
@@ -7,10 +7,11 @@
  * panel overlays the same profile with the deployment-only rows disabled (`deployments/panel.yml`).
  *
  * `wca-spv-tui` is the terminal surface: the dsh-tui bundle over dsh-base, used by the `spv` session.
- * It is separate so SPV never shares state with the browser profile (or with the operator's own
- * dsh-tui profile).
+ * `wca-spv-web` is the browser-shaped SPV host: dsh-web-app plus the wheelchair-agent SPV plugin rows,
+ * without dsh-superagent or the webui. It is rendered only while the `spv.surface` setting is `web`;
+ * `spv.surface` picks which of the two SPV profiles the `spv` command starts.
  *
- * Both profiles are rendered from `preset/profiles/*.{package.json,patch.yml}`; the link targets are
+ * All profiles are rendered from `preset/profiles/*.{package.json,patch.yml}`; the link targets are
  * resolved from the machine (an existing profile, `DSH_SUPERAGENT_PLUGIN_DIR`, `$HOME`), never
  * hardcoded. `profiles sync` is idempotent; `profiles check` is read-only and prints copy-paste fixes.
  *
@@ -36,14 +37,20 @@ import {
 } from 'node:fs'
 import { homedir } from 'node:os'
 import { dirname, isAbsolute, join, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
 /** The browser-surface profile that every deployment and the panel share. */
 export const WCA_PROFILE_ID = 'wca'
 /** The terminal-surface profile used by the `spv` session. */
 export const WCA_SPV_TUI_PROFILE_ID = 'wca-spv-tui'
-/** Both self-built profiles, in migration/sync order. */
-export const PROFILE_IDS = [WCA_PROFILE_ID, WCA_SPV_TUI_PROFILE_ID]
+/** The browser-shaped SPV host, rendered only while `spv.surface` is `web`. */
+export const WCA_SPV_WEB_PROFILE_ID = 'wca-spv-web'
+/** The self-built profiles, in migration/sync order. */
+export const PROFILE_IDS = [WCA_PROFILE_ID, WCA_SPV_TUI_PROFILE_ID, WCA_SPV_WEB_PROFILE_ID]
+/** Settings key that picks the SPV surface: `tui` (default) or `web`. */
+export const SPV_SURFACE_SETTING = 'spv.surface'
+/** Environment seam for `spv.surface`, used by install.sh and tests to avoid reading settings. */
+export const SPV_SURFACE_ENV = 'WHEELCHAIR_AGENT_SPV_SURFACE'
 /** The single-deployment profile that `wca` replaces. */
 export const LEGACY_SUPERAGENT_PROFILE_ID = 'superagent'
 /** The terminal profile's former name, moved to `wca-spv-tui` in one piece. */
@@ -56,6 +63,8 @@ export const PROFILE_PATCH_FILE = 'cordis.patch.yml'
 export const PROFILE_LINKS_FILE = 'profile-links.json'
 /** The panel overlay installed under `<data root>/deployments/`. */
 export const PANEL_OVERLAY_FILE = 'panel.yml'
+/** The SPV browser-host overlay installed under `<data root>/deployments/`. */
+export const SPV_WEB_OVERLAY_FILE = 'spv.yml'
 /** Rows the panel overlay must switch off. */
 export const PANEL_DISABLED_IDS = [
   'dsh-superagent',
@@ -68,11 +77,13 @@ export const PANEL_DISABLED_IDS = [
 export const PROFILE_TEMPLATES = {
   [WCA_PROFILE_ID]: { package: 'wca.package.json', patch: 'wca.patch.yml' },
   [WCA_SPV_TUI_PROFILE_ID]: { package: 'wca-spv-tui.package.json', patch: 'wca-spv-tui.patch.yml' },
+  [WCA_SPV_WEB_PROFILE_ID]: { package: 'wca-spv-web.package.json', patch: 'wca-spv-web.patch.yml' },
 }
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
 const PACKAGE_ROOT = resolve(MODULE_DIR, '..', '..')
 const DSH_SUPERAGENT_PLACEHOLDER = 'link:@DSH_SUPERAGENT@'
+const WHEELCHAIR_AGENT_PLACEHOLDER = 'link:@WHEELCHAIR_AGENT@'
 
 function homeOf(env) {
   return env.HOME || homedir()
@@ -95,6 +106,35 @@ export function resolveDshHome({ dshHome, env = process.env } = {}) {
 export function resolveDataRoot({ dataRoot, env = process.env } = {}) {
   const value = dataRoot ?? env.WHEELCHAIR_AGENT_HOME ?? join(homeOf(env), '.wheelchair-agent')
   return resolve(expandHome(String(value), env))
+}
+
+/**
+ * Which SPV surface is configured: `tui` (default) or `web`.
+ *
+ * The setting lives in the Rust settings table (`spv.surface`), but this module only reads the value
+ * from `<data root>/settings.json` (the same file `readOnlyPanelPort` reads), so `profiles check` stays
+ * read-only and does not need the native core. An explicit option or the
+ * `WHEELCHAIR_AGENT_SPV_SURFACE` seam wins over the file; `install.sh` and the tests use the seam.
+ */
+export function resolveSpvSurface({ dataRoot, env = process.env, surface } = {}) {
+  const explicit = surface ?? env[SPV_SURFACE_ENV]
+  if (explicit !== undefined && explicit !== null && String(explicit) !== '') {
+    const value = String(explicit).trim()
+    if (value !== 'tui' && value !== 'web') {
+      throw new Error(`invalid ${SPV_SURFACE_SETTING} ${JSON.stringify(value)}: expected "tui" or "web"`)
+    }
+    return value
+  }
+  const root = resolveDataRoot({ dataRoot, env })
+  const file = join(root, 'settings.json')
+  if (!existsSync(file)) return 'tui'
+  let settings
+  try {
+    settings = readJson(file)
+  } catch {
+    return 'tui'
+  }
+  return settings?.values?.[SPV_SURFACE_SETTING] === 'web' ? 'web' : 'tui'
 }
 
 function readText(file) {
@@ -159,8 +199,25 @@ export function resolvePanelOverlayTemplate({ panelOverlay, templateDir } = {}) 
 }
 
 /**
- * Read and validate the four profile templates. The patch text is returned verbatim; placeholders are
- * rendered per profile by {@link renderProfilePatch}.
+ * Find the SPV browser overlay template next to the profile templates (installed) or in `preset/`.
+ */
+export function resolveSpvWebOverlayTemplate({ spvWebOverlay, templateDir } = {}) {
+  const candidates = []
+  if (spvWebOverlay) candidates.push(resolve(String(spvWebOverlay)))
+  if (templateDir) candidates.push(join(dirname(resolve(String(templateDir))), 'spv-web.patch.yml'))
+  candidates.push(join(PACKAGE_ROOT, 'preset', 'spv-web.patch.yml'), join(PACKAGE_ROOT, 'spv-web.patch.yml'))
+  for (const file of candidates) {
+    if (existsSync(file)) return file
+  }
+  throw new Error(
+    `the SPV browser overlay template is missing: looked for ${candidates.join(', ')}. ` +
+      'fix: run "bash install.sh" from the wheelchair-agent checkout',
+  )
+}
+
+/**
+ * Read and validate the profile templates. The patch text is returned verbatim; placeholders are
+ * rendered per profile by {@link renderPatch}.
  */
 export function readProfileTemplates({ templateDir } = {}) {
   const dir = resolveTemplateDir({ templateDir })
@@ -189,10 +246,18 @@ export function readProfileTemplates({ templateDir } = {}) {
   return { dir, profiles }
 }
 
-function renderPatch(text, { stateDir, port }) {
+function pluginUrl(...parts) {
+  return pathToFileURL(join(PACKAGE_ROOT, ...parts)).href
+}
+
+function renderPatch(text, { stateDir, port, queueDir }) {
   return text
     .replaceAll('@STATE_DIR@', () => stateDir)
     .replaceAll('@SERVICE_PORT@', () => String(port))
+    .replaceAll('@QUEUE_DIR@', () => queueDir)
+    .replaceAll('@SPV_PLUGIN@', () => pluginUrl('src', 'spv', 'tools.js'))
+    .replaceAll('@SPV_CRON_PLUGIN@', () => pluginUrl('src', 'spv', 'cron-plugin.js'))
+    .replaceAll('@SPV_RESTART_COMMAND@', () => pluginUrl('src', 'spv', 'restart-command.js'))
 }
 
 /**
@@ -236,11 +301,43 @@ export function superagentSource({ env = process.env, profileDir } = {}) {
   return join(homeOf(env), 'opt', 'dsh-plugins', 'dsh-superagent')
 }
 
+/**
+ * Where the wheelchair-agent package lives: an existing profile's link, the env seam, the usual
+ * checkout, then this module's own package root (the checkout when run from `src/spv/profiles.js`).
+ */
+export function wheelchairAgentSource({ env = process.env, profileDir } = {}) {
+  if (profileDir) {
+    const file = join(profileDir, 'package.json')
+    if (existsSync(file)) {
+      try {
+        const spec = readJson(file)?.dependencies?.['wheelchair-agent']
+        if (typeof spec === 'string' && spec.startsWith('link:')) {
+          const target = spec.slice('link:'.length)
+          if (target !== WHEELCHAIR_AGENT_PLACEHOLDER && target !== '') return resolve(expandHome(target, env))
+        }
+      } catch {
+        // A broken package.json is reported by the caller; fall through to the machine default.
+      }
+    }
+  }
+  const configured = env.DSH_WHEELCHAIR_AGENT_DIR
+  if (configured) return resolve(expandHome(String(configured), env))
+  const checkout = join(homeOf(env), 'bioagentforge', 'tools', 'wheelchair-agent')
+  if (existsSync(checkout)) return checkout
+  return PACKAGE_ROOT
+}
+
 function templateDependencies(template, { env, profileDir }) {
   const source = template.manifest.dependencies ?? {}
   const rendered = {}
   for (const [name, spec] of Object.entries(source)) {
-    rendered[name] = spec === DSH_SUPERAGENT_PLACEHOLDER ? `link:${superagentSource({ env, profileDir })}` : spec
+    if (spec === DSH_SUPERAGENT_PLACEHOLDER) {
+      rendered[name] = `link:${superagentSource({ env, profileDir })}`
+    } else if (spec === WHEELCHAIR_AGENT_PLACEHOLDER) {
+      rendered[name] = `link:${wheelchairAgentSource({ env, profileDir })}`
+    } else {
+      rendered[name] = spec
+    }
   }
   return rendered
 }
@@ -297,6 +394,40 @@ function desiredLinks({ id, dir, dshHome, dependencies }) {
       }
     }
     return { links, problems, critical }
+  }
+
+  if (id === WCA_SPV_WEB_PROFILE_ID) {
+    // The browser SPV host has no dsh-tui scope and no orchestrator: it only needs the
+    // wheelchair-agent package (for the `spv` Source row) and the model/compression packages.
+    let criticalMissing = false
+    const wheelchair = dependencies['wheelchair-agent']
+    if (typeof wheelchair === 'string' && wheelchair.startsWith('link:')) {
+      const target = resolve(String(wheelchair.slice('link:'.length)))
+      if (existsSync(target)) links.push({ name: 'wheelchair-agent', target })
+      else {
+        criticalMissing = true
+        problems.push({
+          problem: `profile "wca-spv-web": wheelchair-agent links to ${target}, which does not exist`,
+          fix: 'set DSH_WHEELCHAIR_AGENT_DIR to the wheelchair-agent checkout and rerun "wheelchair-agent profiles sync"',
+        })
+      }
+    }
+    for (const name of ['@mars-sea/dsh-commandcode-provider', 'billion-context']) {
+      if (existsSync(join(dshHome, 'node_modules', name))) continue
+      const path = join(dir, 'node_modules', name)
+      if (existsSync(path) && !existsAsSymlink(path)) continue
+      const donors = ['wca', 'dsh-tui', 'superagent'].map(profile => join(dshHome, 'profiles', profile, 'node_modules', name))
+      const donor = donors.find(candidate => existsSync(candidate))
+      if (donor) links.push({ name, target: donor })
+      else {
+        criticalMissing = true
+        problems.push({
+          problem: `profile "wca-spv-web" is missing ${name}`,
+          fix: 'install the wca profile first, then rerun "bash wheelchair-agent profiles sync"',
+        })
+      }
+    }
+    return { links, problems, critical: criticalMissing }
   }
 
   const scopeTarget = join(dshHome, 'profiles', 'dsh-tui', 'node_modules', '@deepseek-harness-tui')
@@ -384,7 +515,7 @@ function readPackageOrNull(file) {
   }
 }
 
-function syncOneProfile({ id, dshHome, env, template, stateDir, port, notes, problems }) {
+function syncOneProfile({ id, dshHome, env, template, stateDir, port, queueDir, notes, problems }) {
   const dir = join(dshHome, 'profiles', id)
   const existed = existsSync(dir)
   const current = existed ? readPackageOrNull(join(dir, 'package.json')) : null
@@ -410,7 +541,10 @@ function syncOneProfile({ id, dshHome, env, template, stateDir, port, notes, pro
     join(dir, 'package.json'),
     jsonText(renderProfilePackage(template, dependencies)),
   )
-  const patchChanged = writeIfChanged(join(dir, PROFILE_PATCH_FILE), renderPatch(template.patch, { stateDir, port }))
+  const patchChanged = writeIfChanged(
+    join(dir, PROFILE_PATCH_FILE),
+    renderPatch(template.patch, { stateDir, port, queueDir }),
+  )
   if (!existsSync(join(dir, 'cordis.yml'))) writeIfChanged(join(dir, 'cordis.yml'), '[]\n')
 
   problems.push(...desired.problems)
@@ -475,7 +609,8 @@ function migrateLegacyWcaTui({ dshHome, report }) {
 }
 
 /**
- * Align both profiles, the deployment registry and the panel overlay with the templates.
+ * Align the self-built profiles, the deployment registry and the overlays with the templates.
+ * `wca-spv-web` is written only while `spv.surface` is `web`; the other two are always written.
  * Always writes; the CLI and install.sh are the only callers.
  */
 export function syncProfiles(options = {}) {
@@ -487,24 +622,30 @@ export function syncProfiles(options = {}) {
   )
   const port = Number(options.port ?? env.DSH_SUPERAGENT_PORT ?? 3082)
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error(`invalid service port ${JSON.stringify(port)}`)
+  const surface = resolveSpvSurface({ dataRoot, env, surface: options.surface })
+  const queueDir = resolve(String(options.queueDir ?? env.SPV_QUEUE_DIR ?? join(dataRoot, 'spv')))
   const templates = readProfileTemplates({ templateDir: options.templateDir })
+  const ids = surface === 'web' ? PROFILE_IDS : [WCA_PROFILE_ID, WCA_SPV_TUI_PROFILE_ID]
   const report = {
     dshHome,
     dataRoot,
     stateDir,
     port,
+    surface,
+    queueDir,
     migratedFrom: null,
     tuiMigrated: false,
     profiles: {},
     registry: null,
     panelOverlay: null,
+    spvWebOverlay: null,
     problems: [],
     notes: [],
     changed: false,
   }
   migrateLegacySuperagent({ dshHome, report })
   migrateLegacyWcaTui({ dshHome, report })
-  for (const id of PROFILE_IDS) {
+  for (const id of ids) {
     report.profiles[id] = syncOneProfile({
       id,
       dshHome,
@@ -512,6 +653,7 @@ export function syncProfiles(options = {}) {
       template: templates.profiles[id],
       stateDir,
       port,
+      queueDir,
       notes: report.notes,
       problems: report.problems,
     })
@@ -520,21 +662,25 @@ export function syncProfiles(options = {}) {
   report.problems.push(...report.registry.problems)
   const panelSource = resolvePanelOverlayTemplate({ panelOverlay: options.panelOverlay, templateDir: templates.dir })
   report.panelOverlay = writePanelOverlay({ dataRoot, source: panelSource })
+  if (surface === 'web') {
+    const spvSource = resolveSpvWebOverlayTemplate({ spvWebOverlay: options.spvWebOverlay, templateDir: templates.dir })
+    report.spvWebOverlay = writeSpvWebOverlay({ dataRoot, source: spvSource })
+  }
+  const touched = Object.values(report.profiles)
   report.changed =
     report.migratedFrom !== null ||
     report.tuiMigrated ||
     report.registry.changed ||
     report.panelOverlay.changed ||
-    report.profiles[WCA_PROFILE_ID].created ||
-    report.profiles[WCA_SPV_TUI_PROFILE_ID].created ||
-    report.profiles[WCA_PROFILE_ID].packageChanged ||
-    report.profiles[WCA_PROFILE_ID].patchChanged ||
-    report.profiles[WCA_SPV_TUI_PROFILE_ID].packageChanged ||
-    report.profiles[WCA_SPV_TUI_PROFILE_ID].patchChanged ||
-    report.profiles[WCA_PROFILE_ID].links?.linked.length > 0 ||
-    report.profiles[WCA_SPV_TUI_PROFILE_ID].links?.linked.length > 0 ||
-    report.profiles[WCA_PROFILE_ID].links?.pruned.length > 0 ||
-    report.profiles[WCA_SPV_TUI_PROFILE_ID].links?.pruned.length > 0
+    report.spvWebOverlay?.changed === true ||
+    touched.some(
+      profile =>
+        profile.created ||
+        profile.packageChanged ||
+        profile.patchChanged ||
+        (profile.links?.linked?.length ?? 0) > 0 ||
+        (profile.links?.pruned?.length ?? 0) > 0,
+    )
   return report
 }
 
@@ -596,7 +742,14 @@ export function writePanelOverlay({ dataRoot, source }) {
   return { file, changed }
 }
 
-function compareProfile({ id, dir, dshHome, template, stateDir, port }) {
+/** Install `<data root>/deployments/spv.yml` (the SPV browser-host overlay), write-if-changed. */
+export function writeSpvWebOverlay({ dataRoot, source }) {
+  const file = join(dataRoot, 'deployments', SPV_WEB_OVERLAY_FILE)
+  const changed = writeIfChanged(file, readText(source))
+  return { file, changed }
+}
+
+function compareProfile({ id, dir, dshHome, template, stateDir, port, queueDir }) {
   const problems = []
   const fix = 'run "wheelchair-agent profiles sync"'
   if (!existsSync(dir)) {
@@ -619,7 +772,7 @@ function compareProfile({ id, dir, dshHome, template, stateDir, port }) {
   const patchFile = join(dir, PROFILE_PATCH_FILE)
   if (!existsSync(patchFile)) {
     problems.push({ problem: `profile "${id}" has no ${PROFILE_PATCH_FILE}`, fix })
-  } else if (readText(patchFile).trimEnd() !== renderPatch(template.patch, { stateDir, port }).trimEnd()) {
+  } else if (readText(patchFile).trimEnd() !== renderPatch(template.patch, { stateDir, port, queueDir }).trimEnd()) {
     problems.push({ problem: `profile "${id}" patch does not match the template`, fix })
   }
   if (!existsSync(join(dir, 'cordis.yml'))) problems.push({ problem: `profile "${id}" has no cordis.yml`, fix })
@@ -715,7 +868,23 @@ function checkDeploymentRegistry({ dataRoot }) {
   return { problems, notes }
 }
 
-/** Read-only check: both profiles match the templates, the registry uses `wca`, the overlay disables the four rows. */
+function checkSpvWebOverlay({ dataRoot, template }) {
+  const file = join(dataRoot, 'deployments', SPV_WEB_OVERLAY_FILE)
+  const fix = 'run "bash install.sh" from the wheelchair-agent checkout'
+  if (!existsSync(file)) {
+    return [{ problem: `the SPV browser overlay is missing at ${file}`, fix }]
+  }
+  if (readText(file).trimEnd() !== readText(template).trimEnd()) {
+    return [{ problem: `the SPV browser overlay at ${file} does not match the template`, fix: 'run "wheelchair-agent profiles sync"' }]
+  }
+  return []
+}
+
+/**
+ * Read-only check: the profiles required by `spv.surface` match their templates, the registry uses
+ * `wca`, the panel overlay disables the four deployment rows and, on the web surface, the SPV
+ * browser overlay exists.
+ */
 export function checkProfiles(options = {}) {
   const env = options.env ?? process.env
   const dshHome = resolveDshHome({ dshHome: options.dshHome, env })
@@ -724,11 +893,14 @@ export function checkProfiles(options = {}) {
     String(options.stateDir ?? env.DSH_SUPERAGENT_STATE_DIR ?? join(dshHome, 'state', 'superagent')),
   )
   const port = Number(options.port ?? env.DSH_SUPERAGENT_PORT ?? 3082)
+  const surface = resolveSpvSurface({ dataRoot, env, surface: options.surface })
+  const queueDir = resolve(String(options.queueDir ?? env.SPV_QUEUE_DIR ?? join(dataRoot, 'spv')))
   const templates = readProfileTemplates({ templateDir: options.templateDir })
   const problems = []
   const notes = []
   const wcaDir = join(dshHome, 'profiles', WCA_PROFILE_ID)
   const tuiDir = join(dshHome, 'profiles', WCA_SPV_TUI_PROFILE_ID)
+  const webDir = join(dshHome, 'profiles', WCA_SPV_WEB_PROFILE_ID)
   const legacy = join(dshHome, 'profiles', LEGACY_SUPERAGENT_PROFILE_ID)
   const legacyTui = join(dshHome, 'profiles', LEGACY_WCA_TUI_PROFILE_ID)
 
@@ -743,7 +915,17 @@ export function checkProfiles(options = {}) {
       fix: 'run "bash install.sh" from the wheelchair-agent checkout',
     })
   } else {
-    problems.push(...compareProfile({ id: WCA_PROFILE_ID, dir: wcaDir, dshHome, template: templates.profiles[WCA_PROFILE_ID], stateDir, port }))
+    problems.push(
+      ...compareProfile({
+        id: WCA_PROFILE_ID,
+        dir: wcaDir,
+        dshHome,
+        template: templates.profiles[WCA_PROFILE_ID],
+        stateDir,
+        port,
+        queueDir,
+      }),
+    )
   }
   if (!existsSync(tuiDir) && existsSync(legacyTui)) {
     problems.push({
@@ -757,18 +939,56 @@ export function checkProfiles(options = {}) {
     })
   } else {
     problems.push(
-      ...compareProfile({ id: WCA_SPV_TUI_PROFILE_ID, dir: tuiDir, dshHome, template: templates.profiles[WCA_SPV_TUI_PROFILE_ID], stateDir, port }),
+      ...compareProfile({
+        id: WCA_SPV_TUI_PROFILE_ID,
+        dir: tuiDir,
+        dshHome,
+        template: templates.profiles[WCA_SPV_TUI_PROFILE_ID],
+        stateDir,
+        port,
+        queueDir,
+      }),
     )
-    if (existsSync(legacyTui)) {
+  }
+
+  if (surface === 'web') {
+    if (!existsSync(webDir)) {
       problems.push({
-        problem: `the old "${LEGACY_WCA_TUI_PROFILE_ID}" profile is still installed at ${legacyTui}`,
-        fix: `run "wheelchair-agent profiles sync" to move it to "${WCA_SPV_TUI_PROFILE_ID}"`,
+        problem: `profile "${WCA_SPV_WEB_PROFILE_ID}" is missing (${SPV_SURFACE_SETTING} is "web")`,
+        fix: 'run "bash install.sh" or "wheelchair-agent profiles sync" to render it',
       })
+    } else {
+      problems.push(
+        ...compareProfile({
+          id: WCA_SPV_WEB_PROFILE_ID,
+          dir: webDir,
+          dshHome,
+          template: templates.profiles[WCA_SPV_WEB_PROFILE_ID],
+          stateDir,
+          port,
+          queueDir,
+        }),
+      )
     }
+    problems.push(
+      ...checkSpvWebOverlay({
+        dataRoot,
+        template: resolveSpvWebOverlayTemplate({ spvWebOverlay: options.spvWebOverlay, templateDir: templates.dir }),
+      }),
+    )
+  } else if (existsSync(webDir)) {
+    notes.push(
+      `profiles/${WCA_SPV_WEB_PROFILE_ID} exists but ${SPV_SURFACE_SETTING} is "tui"; it is unused and can be deleted by hand`,
+    )
   }
 
   if (existsSync(legacy) && existsSync(wcaDir)) {
     notes.push(`profiles/${LEGACY_SUPERAGENT_PROFILE_ID} is unused by any deployment and can be deleted by hand`)
+  }
+  if (existsSync(legacyTui) && existsSync(tuiDir)) {
+    notes.push(
+      `profiles/${LEGACY_WCA_TUI_PROFILE_ID} is unused; it was replaced by ${WCA_SPV_TUI_PROFILE_ID} and can be deleted by hand`,
+    )
   }
   for (const id of LEGACY_PANEL_PROFILE_IDS) {
     if (existsSync(join(dshHome, 'profiles', id))) {
@@ -794,14 +1014,14 @@ export function checkProfiles(options = {}) {
   notes.push(...registry.notes)
   problems.push(...checkPanelOverlay({ dataRoot }))
 
-  return { ok: problems.length === 0, dshHome, dataRoot, problems, notes }
+  return { ok: problems.length === 0, dshHome, dataRoot, surface, problems, notes }
 }
 
 /** Human-readable sync report; `changed` lines only when something was written. */
 export function formatSyncReport(report) {
   const lines = []
   if (report.migratedFrom !== null) lines.push(`migrated: ${report.migratedFrom} -> ${WCA_PROFILE_ID}`)
-  for (const id of PROFILE_IDS) {
+  for (const id of Object.keys(report.profiles)) {
     const profile = report.profiles[id]
     if (profile.skipped) continue
     const links = profile.links.linked.length + profile.links.kept.length
@@ -814,6 +1034,9 @@ export function formatSyncReport(report) {
     lines.push(`${report.registry.changed ? 'updated' : 'ok'}: deployments.json (${report.registry.entries} entries)`)
   }
   lines.push(`${report.panelOverlay.changed ? 'updated' : 'ok'}: deployments/${PANEL_OVERLAY_FILE}`)
+  if (report.spvWebOverlay) {
+    lines.push(`${report.spvWebOverlay.changed ? 'updated' : 'ok'}: deployments/${SPV_WEB_OVERLAY_FILE}`)
+  }
   for (const note of report.notes) lines.push(`note: ${note}`)
   for (const problem of report.problems) lines.push(`problem: ${problem.problem}\n  fix: ${problem.fix}`)
   return lines.join('\n')
@@ -823,7 +1046,13 @@ export function formatCheckReport(report) {
   const lines = []
   for (const problem of report.problems) lines.push(`problem: ${problem.problem}\n  fix: ${problem.fix}`)
   for (const note of report.notes) lines.push(`note: ${note}`)
-  if (report.ok) lines.unshift('ok: the wca and wca-spv-tui profiles, deployments and panel overlay match')
+  if (report.ok) {
+    lines.unshift(
+      report.surface === 'web'
+        ? 'ok: the wca, wca-spv-tui and wca-spv-web profiles, deployments and overlays match (spv.surface=web)'
+        : 'ok: the wca and wca-spv-tui profiles, deployments and panel overlay match (spv.surface=tui)',
+    )
+  }
   return lines.join('\n')
 }
 
@@ -838,7 +1067,7 @@ function cliValue(argv, name) {
 function main(argv) {
   const action = argv[0]
   if (action !== 'sync' && action !== 'check') {
-    process.stderr.write('usage: node src/spv/profiles.js <sync|check> [--dsh-home <dir>] [--data-root <dir>] [--template-dir <dir>] [--panel-overlay <file>] [--state-dir <dir>] [--port <n>]\n')
+    process.stderr.write('usage: node src/spv/profiles.js <sync|check> [--dsh-home <dir>] [--data-root <dir>] [--template-dir <dir>] [--panel-overlay <file>] [--spv-overlay <file>] [--state-dir <dir>] [--queue-dir <dir>] [--port <n>] [--surface tui|web]\n')
     return 2
   }
   const options = {
@@ -846,8 +1075,11 @@ function main(argv) {
     dataRoot: cliValue(argv, '--data-root'),
     templateDir: cliValue(argv, '--template-dir'),
     panelOverlay: cliValue(argv, '--panel-overlay'),
+    spvWebOverlay: cliValue(argv, '--spv-overlay'),
     stateDir: cliValue(argv, '--state-dir'),
+    queueDir: cliValue(argv, '--queue-dir'),
     port: cliValue(argv, '--port'),
+    surface: cliValue(argv, '--surface'),
   }
   try {
     if (action === 'sync') {

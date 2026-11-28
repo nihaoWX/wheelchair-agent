@@ -297,6 +297,13 @@ async function testRunningPanel(box) {
       check(`the ${name} route has no error field`, payload !== null && payload.error === undefined, text.slice(0, 200))
     }
 
+    const projects = await (await fetchWithCookie(`http://127.0.0.1:${PORT}/wheelchair-projects`, cookie)).json()
+    check(
+      'the projects payload names the SPV interaction surface',
+      projects?.spv?.surface === 'tui',
+      JSON.stringify(projects?.spv ?? null),
+    )
+
     const status = cli(box, ['panel', 'status', '--port', String(PORT)])
     check('panel status exits 0 while running', status.status === 0, status.stderr)
     check('panel status names the port and pid', new RegExp(`panel: port ${PORT} running \\d+`).test(status.stdout), status.stdout)

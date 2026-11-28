@@ -55,6 +55,10 @@ window.__ModuleLoader__.load({
 			"projects.rootMissing": "spv 根不存在",
 			"projects.setup": "配置未完成：{problem}",
 			"projects.status": "{count} 个 spv 项目 · 更新于 {time}",
+			"projects.spvTui": "SPV：终端（tui）",
+			"projects.spvWeb": "SPV：浏览器（端口 {port}）",
+			"projects.spvRunning": "运行中",
+			"projects.spvStopped": "未运行",
 			"section.hooks": "插口",
 			"feature.hooks.title": "插口",
 			"feature.hooks.description": "查看每个事件是什么意思、什么时候触发、脚本能拿到什么，以及它下面有哪些内建行和自定义行。内建行属于 core path，只能改名；新增插口是一段给 agent 的提示词，不是在这里写 shell。",
@@ -136,6 +140,7 @@ window.__ModuleLoader__.load({
 			"settings.error.range": "必须是 {min}–{max} 之间的整数。",
 			"settings.error.repo": "填 owner/name 或 name，只能使用字母、数字、点、横线和下划线。",
 			"settings.group.style": "外观",
+			"settings.group.spv": "SPV 会话",
 			"settings.group.inbox": "收件箱刷新",
 			"settings.group.merge": "合并处理",
 			"settings.group.injection": "消息注入",
@@ -182,6 +187,16 @@ window.__ModuleLoader__.load({
 			"setting.webui.style.changes": "「流体」用可见的淡色底纹、分层阴影、悬停抬升和交错入场；「简洁」关掉这些，只留平面卡片。切换只改变材质与动效，版面结构不变。",
 			"setting.webui.style.recommended": "推荐先用「流体」；如果觉得晃眼或卡顿，切回「简洁」。",
 			"setting.webui.style.tech": "键 webui.style，取值 minimal | fluid；面板加载时读取，保存后即时生效，不需要重启。",
+			"setting.spv.surface.label": "SPV 的交互形态",
+			"setting.spv.surface.desc": "SPV 会话跑在终端里，还是另起一个只跑 SPV 的浏览器实例。",
+			"setting.spv.surface.changes": "选「终端」时，`wheelchair-agent spv` 照旧在终端里用 dsh-tui；选「浏览器」时，它会改为启动 wca-spv-web 实例并打印带 token 的地址，终端只负责监督。",
+			"setting.spv.surface.recommended": "推荐先用「终端」；想在浏览器里开 SPV 时再切到「浏览器」。",
+			"setting.spv.surface.tech": "键 spv.surface，取值 tui | web；环境变量 WHEELCHAIR_AGENT_SPV_SURFACE 优先。切换后运行 wheelchair-agent profiles sync 以渲染 wca-spv-web。",
+			"setting.spv.webPort.label": "SPV 浏览器端口",
+			"setting.spv.webPort.desc": "浏览器形态的 SPV 实例监听的本地端口。",
+			"setting.spv.webPort.changes": "只影响 wca-spv-web 实例；面板端口和部署端口各自独立，不会冲突检查跨进程。",
+			"setting.spv.webPort.recommended": "推荐 3081。",
+			"setting.spv.webPort.tech": "键 spv.webPort，默认 3081；环境变量 WHEELCHAIR_SPV_WEB_PORT 优先。",
 			"setting.inbox.intervalSeconds.label": "收件箱刷新间隔（秒）",
 			"setting.inbox.intervalSeconds.desc": "多久检查一次各个仓库有没有新信件。",
 			"setting.inbox.intervalSeconds.changes": "调小能更早看到新 PR，但每个仓库每轮都会调用一次 gh；调到 0 就不再自动检查，手动刷新仍然可用。",
@@ -317,6 +332,10 @@ window.__ModuleLoader__.load({
 			"projects.rootMissing": "the spv root does not exist",
 			"projects.setup": "setup incomplete: {problem}",
 			"projects.status": "{count} spv project(s) · updated {time}",
+			"projects.spvTui": "SPV: terminal (tui)",
+			"projects.spvWeb": "SPV: browser (port {port})",
+			"projects.spvRunning": "running",
+			"projects.spvStopped": "stopped",
 			"section.hooks": "Hooks",
 			"feature.hooks.title": "Hooks",
 			"feature.hooks.description": "See what each event means, when it fires, what a script receives, and which built-in and custom rows belong to it. Built-in rows are the core path and can only be renamed; adding a hook is a prompt for an agent, not a shell box here.",
@@ -398,6 +417,7 @@ window.__ModuleLoader__.load({
 			"settings.error.range": "Enter a whole number from {min} to {max}.",
 			"settings.error.repo": "Use owner/name or name, with letters, digits, dot, dash and underscore only.",
 			"settings.group.style": "Appearance",
+			"settings.group.spv": "SPV session",
 			"settings.group.inbox": "Inbox refresh",
 			"settings.group.merge": "Merge handling",
 			"settings.group.injection": "Message injection",
@@ -444,6 +464,16 @@ window.__ModuleLoader__.load({
 			"setting.webui.style.changes": "Fluid adds a visible tonal wash, layered shadows, a hover lift and a staggered arrival; Minimal turns those off and keeps flat cards. Switching changes material and motion, never the layout.",
 			"setting.webui.style.recommended": "Start with Fluid; switch to Minimal if it feels busy or slow.",
 			"setting.webui.style.tech": "Key webui.style, values minimal | fluid; read when the panel loads and applied live after a save, with no restart.",
+			"setting.spv.surface.label": "SPV interaction surface",
+			"setting.spv.surface.desc": "Whether the SPV session runs in the terminal or in an extra browser instance that runs only SPV.",
+			"setting.spv.surface.changes": "Terminal keeps `wheelchair-agent spv` on dsh-tui; Web starts the wca-spv-web instance, prints the tokenised address once and supervises it from the terminal.",
+			"setting.spv.surface.recommended": "Start with Terminal; switch to Web when you want SPV in the browser.",
+			"setting.spv.surface.tech": "Key spv.surface, values tui | web; env WHEELCHAIR_AGENT_SPV_SURFACE wins. Run wheelchair-agent profiles sync after switching so wca-spv-web is rendered.",
+			"setting.spv.webPort.label": "SPV browser port",
+			"setting.spv.webPort.desc": "The local port the browser-shaped SPV instance listens on.",
+			"setting.spv.webPort.changes": "Only the wca-spv-web instance uses it; the panel port and deployment ports stay independent.",
+			"setting.spv.webPort.recommended": "3081 is recommended.",
+			"setting.spv.webPort.tech": "Key spv.webPort, default 3081; env WHEELCHAIR_SPV_WEB_PORT wins.",
 			"setting.inbox.intervalSeconds.label": "Inbox refresh interval (seconds)",
 			"setting.inbox.intervalSeconds.desc": "How often each repository is checked for new letters.",
 			"setting.inbox.intervalSeconds.changes": "Smaller finds new PRs sooner, but costs one gh call per repository per round; 0 stops automatic checks while manual Refresh still works.",
@@ -3728,6 +3758,7 @@ window.__ModuleLoader__.load({
 		/** Display order; the template editors form their own group between injection and work. */
 		const SETTINGS_GROUPS = [
 			{ id: "style", titleKey: "settings.group.style", keys: ["webui.style"] },
+			{ id: "spv", titleKey: "settings.group.spv", keys: ["spv.surface", "spv.webPort"] },
 			{ id: "inbox", titleKey: "settings.group.inbox", keys: ["inbox.intervalSeconds"] },
 			{ id: "merge", titleKey: "settings.group.merge", keys: ["merge.installRepo", "merge.autoMerge"] },
 			{ id: "injection", titleKey: "settings.group.injection", keys: ["injection.intervalMs", "injection.maxBodyChars"] },
@@ -5906,6 +5937,40 @@ window.__ModuleLoader__.load({
 										},
 										"status"
 									),
+									payload?.spv
+										? jsx(
+												"p",
+												{
+													className: "wca-status",
+													children:
+														payload.spv.surface === "web"
+															? [
+																	t("projects.spvWeb", { port: payload.spv.port }),
+																	" · ",
+																	t(payload.spv.running ? "projects.spvRunning" : "projects.spvStopped"),
+																	payload.spv.running
+																		? " · "
+																		: null,
+																	payload.spv.running
+																		? jsx(
+																				"a",
+																				{
+																					href:
+																						payload.spv.url ??
+																						`http://127.0.0.1:${payload.spv.port}/`,
+																					target: "_blank",
+																					rel: "noreferrer",
+																					children: t("projects.openFullUi")
+																				},
+																				"open"
+																			)
+																		: null
+																]
+															: t("projects.spvTui")
+												},
+												"spv"
+											)
+										: null,
 									payload !== null && projects.length === 0
 										? jsx("p", { className: "wca-empty", children: t("projects.empty") }, "empty")
 										: null,

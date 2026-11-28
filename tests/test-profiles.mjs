@@ -26,11 +26,13 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import * as profiles from '../src/spv/profiles.js'
+import * as spvHost from '../src/spv/spv-host.js'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
 const ROOT = join(HERE, '..')
 const TEMPLATE_DIR = join(ROOT, 'preset', 'profiles')
 const PANEL_TEMPLATE = join(ROOT, 'preset', 'panel.patch.yml')
+const SPV_WEB_TEMPLATE = join(ROOT, 'preset', 'spv-web.patch.yml')
 const CLI = join(ROOT, 'src', 'spv', 'profiles.js')
 let PASS = 0
 let FAIL = 0
@@ -172,19 +174,22 @@ function sync(box, extra = {}) {
     port: 3082,
     templateDir: TEMPLATE_DIR,
     panelOverlay: PANEL_TEMPLATE,
+    spvWebOverlay: SPV_WEB_TEMPLATE,
     env: envFor(box),
     ...extra,
   })
 }
 
-function checkProfiles(box) {
+function checkProfiles(box, extra = {}) {
   return profiles.checkProfiles({
     dshHome: box.dsh,
     dataRoot: box.data,
     stateDir: join(box.dsh, 'state', 'superagent'),
     port: 3082,
     templateDir: TEMPLATE_DIR,
+    spvWebOverlay: SPV_WEB_TEMPLATE,
     env: envFor(box),
+    ...extra,
   })
 }
 
@@ -418,8 +423,8 @@ function testTerminalProfileRename() {
     check('both names: the report says the old profile is unused', /profiles\/wca-tui still exists/.test(both), both)
     const status = checkProfiles(box)
     check(
-      'check reports the old terminal profile instead of ignoring it',
-      !status.ok && status.problems.some(problem => /old "wca-tui" profile is still installed/.test(problem.problem)),
+      'check treats the old terminal profile as an unused note',
+      status.ok && status.notes.some(note => /profiles\/wca-tui is unused; it was replaced by wca-spv-tui/.test(note)),
       profiles.formatCheckReport(status),
     )
   } finally {
@@ -443,6 +448,73 @@ function testTerminalProfileRename() {
   } finally {
     rmSync(onlyOld.base, { recursive: true, force: true })
   }
+}
+
+function testSpvWebSurface() {
+  const tui = makeBox()
+  try {
+    sync(tui)
+    check(
+      'tui surface does not render the browser SPV profile',
+      !existsSync(join(tui.dsh, 'profiles', 'wca-spv-web')),
+    )
+    check(
+      'tui surface does not write the SPV browser overlay',
+      !existsSync(join(tui.data, 'deployments', 'spv.yml')),
+    )
+    check('tui check says so', /spv.surface=tui/.test(profiles.formatCheckReport(checkProfiles(tui))))
+  } finally {
+    rmSync(tui.base, { recursive: true, force: true })
+  }
+
+  const web = makeBox()
+  try {
+    const env = { ...envFor(web), WHEELCHAIR_AGENT_SPV_SURFACE: 'web' }
+    const report = sync(web, { env })
+    const text = profiles.formatSyncReport(report)
+    const dir = join(web.dsh, 'profiles', 'wca-spv-web')
+    check('web surface renders the browser SPV profile', existsSync(dir), text)
+    const manifest = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'))
+    check('the profile is named dsh-profile-wca-spv-web', manifest.name === 'dsh-profile-wca-spv-web', manifest.name)
+    check(
+      'the browser SPV profile bundles web-app but no deployment plugins',
+      manifest.dsh.profile.bundles.includes('@deepseek-ai/dsh-web-app') &&
+        !manifest.dsh.profile.bundles.includes('dsh-superagent') &&
+        !manifest.dsh.profile.bundles.includes('wheelchair-agent-webui'), JSON.stringify(manifest.dsh.profile.bundles))
+    const patch = readFileSync(join(dir, 'cordis.patch.yml'), 'utf8')
+    check('the browser SPV patch has the webserver row', /-\s*id:\s*webserver/.test(patch), patch)
+    check('the browser SPV patch has the commandcode row', /-\s*id:\s*llm-commandcode/.test(patch), patch)
+    check('the browser SPV patch has the SPV tools row', /-\s*id:\s*spv-tools/.test(patch), patch)
+    check('the browser SPV patch has no deployment-only dsh-superagent row', !/-\s*id:\s*dsh-superagent\s*$/m.test(patch), patch)
+    const overlay = readFileSync(join(web.data, 'deployments', 'spv.yml'), 'utf8')
+    check('the SPV browser overlay names the default port', /WHEELCHAIR_SPV_WEB_PORT \?\? 3081/.test(overlay), overlay)
+    const status = checkProfiles(web, { env })
+    check(
+      'web check is clean',
+      status.ok && /spv.surface=web/.test(profiles.formatCheckReport(status)),
+      profiles.formatCheckReport(status),
+    )
+    assert.throws(
+      () => sync(web, { env: { ...envFor(web), WHEELCHAIR_AGENT_SPV_SURFACE: 'browser' } }),
+      /invalid spv\.surface "browser"/,
+    )
+  } finally {
+    rmSync(web.base, { recursive: true, force: true })
+  }
+}
+
+function testSpvServiceArgs() {
+  const args = spvHost.spvServiceArgs({
+    action: 'start',
+    overlay: '/data/deployments/spv.yml',
+    port: 3081,
+    stateDir: '/data/spv',
+    log: '/dsh/.artifacts/wca-spv.log',
+  })
+  check('spvServiceArgs selects the spv mode', args[0] === 'start' && args[2] === 'spv', args.join(' '))
+  check('spvServiceArgs selects the browser SPV profile', args[args.indexOf('--profile') + 1] === 'wca-spv-web', args.join(' '))
+  check('spvServiceArgs carries port, state dir and overlay', args.includes('3081') && args.includes('/data/spv') && args.includes('/data/deployments/spv.yml'), args.join(' '))
+  check('spvServiceArgs uses the wca-spv session', args[args.indexOf('--session') + 1] === 'wca-spv', args.join(' '))
 }
 
 function testLauncherProfile() {
@@ -491,8 +563,9 @@ function testLauncherProfile() {
 }
 
 function testTemplateHygiene() {
-  for (const name of ['wca.package.json', 'wca.patch.yml', 'wca-spv-tui.package.json', 'wca-spv-tui.patch.yml']) {
-    const text = readFileSync(join(TEMPLATE_DIR, name), 'utf8')
+  for (const name of ['wca.package.json', 'wca.patch.yml', 'wca-spv-tui.package.json', 'wca-spv-tui.patch.yml', 'wca-spv-web.package.json', 'wca-spv-web.patch.yml', 'spv-web.patch.yml']) {
+    const file = name === 'spv-web.patch.yml' ? join(ROOT, 'preset', name) : join(TEMPLATE_DIR, name)
+    const text = readFileSync(file, 'utf8')
     check(`template ${name} has no machine-specific path`, !text.includes('/home/'), name)
   }
   const wca = JSON.parse(readFileSync(join(TEMPLATE_DIR, 'wca.package.json'), 'utf8'))
@@ -510,6 +583,8 @@ function main() {
   testLinkRecordAndPrune()
   testMissingDshTuiDonor()
   testTerminalProfileRename()
+  testSpvWebSurface()
+  testSpvServiceArgs()
   testLauncherProfile()
   process.stdout.write(`\n${PASS} passed, ${FAIL} failed\n`)
   process.exit(FAIL === 0 ? 0 : 1)

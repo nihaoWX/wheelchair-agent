@@ -56,23 +56,26 @@ The single entry point for the SPV session and the superagent service.
 
 commands:
   spv [dsh-tui args...]
-                               start the one global SPV session (no deployment selector; extra args go
-                               to dsh-tui). It starts no backend: a deployment's instance starts on
-                               demand when a task is dispatched to it
+                               start the one global SPV session: dsh-tui in the terminal, or the
+                               wca-spv-web browser host when settings spv.surface is "web" (no
+                               deployment selector; extra args go to dsh-tui). It starts no backend:
+                               a deployment's instance starts on demand when a task is dispatched
   prepare                      the panel's prepare command: clone the project, install a managed
                                AGENTS.md, give tools/<name> a private GitHub remote
   service <start|stop|restart|status|open> [--all]
                                start, stop, restart or inspect a deployment's instance; without --all
                                the deployment is the project checkout this command runs in, --all does
-                               every registered deployment and also starts/stops the standalone panel,
-                               and "service open" opens only the panel
+                               every registered deployment and also starts/stops the standalone panel
+                               and the SPV browser host when spv.surface is "web"; "service open"
+                               opens only the panel
   panel [start|stop|status|sync] [--port <n>] [--foreground]
                                run the standalone panel (127.0.0.1, default 3080): an instance of
                                the shared "wca" dsh profile plus an overlay that switches off every
                                deployment-only row, so it serves the inbox/settings/hooks/projects
                                routes without an orchestrator or a Source
-  profiles [sync|check]        align the "wca" and "wca-spv-tui" profiles, the deployment registry and
-                               the panel overlay with the install templates; "panel sync" is an alias
+  profiles [sync|check]        align the "wca", "wca-spv-tui" and (on spv.surface=web) "wca-spv-web"
+                               profiles, the deployment registry and the overlays with the install
+                               templates; "panel sync" is an alias
   jobctl <submit|status|log|verify|cancel>
                                hand a long job to systemd so it outlives the worker's turn
   dispatch --project <p> --task <t> [--thread <n>] [--preset <id>]
@@ -227,14 +230,16 @@ A person opens it with "wheelchair-agent service open".`
 
 const PROFILES_USAGE = `usage: wheelchair-agent profiles <sync|check> [--port <n>]
 
-The machine has two self-built dsh profiles, rendered from templates installed with the preset:
+The machine has three self-built dsh profiles, rendered from templates installed with the preset:
   wca           the browser surface: panel + every deployment (dsh-superagent, webui, spv watcher)
   wca-spv-tui   the terminal surface: the SPV session (dsh-tui), no deployments
+  wca-spv-web   the browser-shaped SPV host, rendered only while settings spv.surface is "web"
 
 "sync" migrates a legacy "superagent" profile and the old "wca-tui" terminal profile with whole
-directory moves, aligns both profile package.json files, their cordis.patch.yml rows and their
-node_modules links with the templates, points every deployment at "wca", and writes
-<data root>/deployments/panel.yml. "check" is read-only and exits 1 on drift.
+directory moves, aligns the profile package.json files, their cordis.patch.yml rows and their
+node_modules links with the templates, points every deployment at "wca", writes
+<data root>/deployments/panel.yml, and (on spv.surface=web) writes <data root>/deployments/spv.yml.
+"check" is read-only and exits 1 on drift.
 
 options:
   --port <n>                   service port used by the wca profile rows (default 3082)`
@@ -675,6 +680,39 @@ async function panelAllLine(action) {
 }
 
 /**
+ * The browser-shaped SPV host in `service stop --all` / `service start --all`.
+ *
+ * It is not a deployment: no registry entry, its own overlay and state dir. `stop --all` stops it
+ * whenever it is configured; `start --all` starts it only while `spv.surface` is `web`. Like the
+ * panel line, its failure prints a line and never changes the deployments' exit code.
+ */
+async function spvAllLine(action) {
+  const host = await load('src', 'spv', 'spv-host.js')
+  if (action === 'start' && host.spvSurface({ stateDir: STATE_DIR }) !== 'web') return null
+  const overlay = host.spvOverlayPath({ stateDir: STATE_DIR })
+  if (!existsSync(overlay)) return `spv: not configured (no SPV browser overlay at ${overlay})`
+  let args
+  try {
+    const port = host.spvWebPort({ stateDir: STATE_DIR })
+    args = host.spvServiceArgs({
+      action,
+      overlay,
+      port,
+      stateDir: host.spvStateDir({ stateDir: STATE_DIR }),
+      log: host.spvLogPath({ dshHome: DSH_HOME }),
+    })
+  } catch (error) {
+    return `spv: not configured (${error.message})`
+  }
+  const result = runServiceManagerQuiet(args)
+  if (result.status !== 0) return `spv: ${failureSummary(result)}`
+  if (action === 'start') {
+    return /already running/i.test(result.stdout) ? 'spv: already running' : 'spv: started'
+  }
+  return /not running/i.test(result.stdout) ? 'spv: not running' : 'spv: stopped'
+}
+
+/**
  * 一个部署施加到 service manager 上的参数：profile、实例 overlay、会话/日志/端口与部署身份。
  * 参数形状只实现在 `src/spv/service-instance.js`：`service start` 与 dispatch 的按需启动必须一字不差。
  */
@@ -770,6 +808,8 @@ async function commandService(argv) {
   // registry), and never let its result change the deployments' exit code.
   if (all && (action === 'stop' || action === 'start')) {
     process.stdout.write(`${await panelAllLine(action)}\n`)
+    const spvLine = await spvAllLine(action)
+    if (spvLine !== null) process.stdout.write(`${spvLine}\n`)
   }
   process.exit(status)
 }
@@ -957,6 +997,28 @@ async function commandSpv(argv) {
       )
     }
     rest.push(word)
+  }
+
+  const spvHost = await load('src', 'spv', 'spv-host.js')
+  if (spvHost.spvSurface({ stateDir: STATE_DIR }) === 'web') {
+    const overlay = spvHost.spvOverlayPath({ stateDir: STATE_DIR })
+    if (!existsSync(overlay)) {
+      process.stderr.write(`wheelchair-agent: the SPV browser overlay is missing at ${overlay}\n`)
+      process.stderr.write('fix: run "wheelchair-agent profiles sync" (or "bash install.sh --project <project>")\n')
+      process.exit(1)
+    }
+    const port = spvHost.spvWebPort({ stateDir: STATE_DIR })
+    process.stdout.write(
+      `note: starting the SPV web host on http://127.0.0.1:${port}/ (profile wca-spv-web); the token URL is printed below.\n`,
+    )
+    process.exitCode = await spvHost.runSpvWebForeground({
+      overlay,
+      port,
+      stateDir: spvHost.spvStateDir({ stateDir: STATE_DIR }),
+      log: spvHost.spvLogPath({ dshHome: DSH_HOME }),
+      env: process.env,
+    })
+    return
   }
 
   const configured = String(process.env.WHEELCHAIR_AGENT_LAUNCHER ?? '').trim()

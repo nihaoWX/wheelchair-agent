@@ -12,6 +12,11 @@ import { join } from 'node:path'
 import { deploymentSlug, listDeployments } from '../shared/deployments.js'
 import { listSpvProjects, projectsRootOf, spvProjectsPath } from '../shared/spv-projects.js'
 import { setupProblemText } from './health.js'
+import {
+  spvLogPath,
+  spvSurface,
+  spvWebPort,
+} from './spv-host.js'
 
 /** 单份部署的请求上限；并发发出，所以整张卡最多等这么久。 */
 export const PROJECT_PROBE_TIMEOUT_MS = 2000
@@ -36,6 +41,32 @@ export function deploymentUrl(project, { env = process.env } = {}) {
     return matches.length === 0 ? null : matches[matches.length - 1][0]
   } catch {
     return null
+  }
+}
+
+/** The tokenised SPV browser URL printed at startup, or null. */
+function tokenFromLog(file) {
+  try {
+    const matches = [...readFileSync(file, 'utf8').matchAll(TOKEN_URL)]
+    return matches.length === 0 ? null : matches[matches.length - 1][0]
+  } catch {
+    return null
+  }
+}
+
+/** Whether the loopback SPV host answers on its port; the projects header must never block on it. */
+async function probeSpvHost(port) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), 800)
+  timer.unref?.()
+  try {
+    const response = await fetch(`http://127.0.0.1:${port}/`, { cache: 'no-store', signal: controller.signal })
+    response.body?.cancel?.()
+    return response.status === 200
+  } catch {
+    return false
+  } finally {
+    clearTimeout(timer)
   }
 }
 
@@ -128,6 +159,14 @@ export async function projectCards({ env = process.env, home, stateDir } = {}) {
       probes.set(port, await probeDeployment(port))
     }),
   )
+  const surface = spvSurface({ env, home, stateDir })
+  const spv = { surface }
+  if (surface === 'web') {
+    const port = spvWebPort({ env, home, stateDir })
+    spv.port = port
+    spv.running = await probeSpvHost(port)
+    spv.url = tokenFromLog(spvLogPath({ env }))
+  }
   const spvProjects = registry.spvProjects.map(entry => ({
     root: entry.root,
     exists: true,
@@ -164,6 +203,7 @@ export async function projectCards({ env = process.env, home, stateDir } = {}) {
     }),
   }))
   return {
+    spv,
     spvProjects,
     registry: spvProjectsPath({ env, home, stateDir }),
     ...(deploymentProblem === null ? {} : { problem: deploymentProblem }),

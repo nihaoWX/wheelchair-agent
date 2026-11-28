@@ -1,0 +1,80 @@
+# Machine configuration for the `wca-spv-web` profile (the browser-shaped SPV host).
+#
+# This profile deliberately does NOT mount a dsh native agent preset. The SPV composition (tools,
+# cron, restart, instructions, skills) is injected into this profile as whole-process plugin rows
+# below; the isolation is the dedicated process and profile, not a per-session preset roster.
+#
+# It bundles `dsh-web-app` (the browser surface) but not `dsh-superagent`: the SPV host is not an
+# orchestrator and owns no deployments. The four orchestrator rows that a `wca` deployment carries
+# are therefore absent here rather than disabled.
+#
+# The `@...@` placeholders are rendered by `wheelchair-agent profiles sync` / install.sh: this file
+# is a template, never a machine-specific profile.
+- id: webserver
+  config:
+    host: 127.0.0.1
+    port: @SERVICE_PORT@
+# The SPV session needs a model route. Without this row the profile falls back to deepseek-official
+# and every turn fails with MISSING_CREDENTIAL (no DEEPSEEK_API_KEY on this machine).
+- id: agent-default-model
+  config:
+    provider: commandcode
+    model: deepseek/deepseek-v4.1-flash
+    reasoningEffort: high
+- id: web
+  name: "@deepseek-ai/dsh-web"
+  config:
+    searchProvider: commandcode
+    fetchProvider: http
+- id: ui-settings-general
+  name: "@deepseek-ai/dsh-client-ui-settings-general"
+  config:
+    welcomeNoticeVersion: 2026-09-28.1
+- id: llm-commandcode
+  config:
+    apiKeyEnv: COMMANDCODE_API_KEY
+    # Pin the working account; credentials are referenced by env-var name, never written literally.
+    activeAccount: COMMANDCODE_API_KEY_3
+    transportMaxRetries: 50
+    accounts:
+      - label: zqliangjintaofc31
+        apiKeyEnv: COMMANDCODE_API_KEY_3
+    credentialCleanupRefs: []
+    accountEnrollmentTasks: []
+    modelAccountRules: []
+- id: permission
+  name: "@deepseek-ai/dsh-permission-presets"
+  config:
+    presets:
+      read-only:
+        sandbox: read-only
+        approval: ask
+      workspace-write:
+        sandbox: workspace-write
+        approval: ask
+      danger-full-access:
+        sandbox: danger-full-access
+        approval: never
+    defaultPreset: danger-full-access
+- id: ui-theme
+  name: "@deepseek-ai/dsh-client-ui-theme"
+  config:
+    preference: dark
+# The SPV plugin rows, copied from preset/agent.cordis.yml. `@SPV_PLUGIN@`, `@SPV_CRON_PLUGIN@`
+# and `@SPV_RESTART_COMMAND@` become file: URLs to this install's src/spv/*.js at sync time, for the
+# same reason the preset uses file: URLs: the profile patch layer resolves modules from the profile
+# directory, where the `wheelchair-agent` package is not installed.
+# The local-task Source (`spv`): a plain plugin, not a bundle. Its queue is this host's own
+# `<data root>/spv` root, never a deployment's queue. These rows are new entries, so they go in one
+# `insert:` block; a bare `- id:` row would only try to modify an existing entry.
+- insert:
+    - id: spv-tools
+      name: '@SPV_PLUGIN@'
+    - id: spv-cron
+      name: '@SPV_CRON_PLUGIN@'
+    - id: restart-command
+      name: '@SPV_RESTART_COMMAND@'
+    - id: wheelchair-spv
+      name: 'wheelchair-agent/spv-watch'
+      config:
+        queueDir: '@QUEUE_DIR@'
