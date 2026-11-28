@@ -1,9 +1,9 @@
 /**
  * 「项目」段的数据：把 spv 项目表、部署注册表和每份部署自己的面板 API 拼成一张只读视图。
  *
- * 这个模块不读队列、不写任何文件：worker 卡片里的「正在跑」直接来自每份部署的
+ * 这个模块不读队列、不写任何文件：orchestrator 项目卡片里的「正在跑」直接来自每份部署的
  * `GET /orchestrator/api/{state,overview,tickets}`。任何一份部署失败/超时只影响它自己的
- * worker 卡片（`state.kind = "unavailable"`），不会让整个路由失败或长时间挂住。
+ * 项目卡片（`state.kind = "unavailable"`），不会让整个路由失败或长时间挂住。
  */
 import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
@@ -75,7 +75,7 @@ function runningTickets(tickets) {
 }
 
 /**
- * 探测一份部署。三个请求并发；任一失败都把这个 worker 标成 unavailable，并带上最直接的
+ * 探测一份部署。三个请求并发；任一失败都把这个 orchestrator 项目标成 unavailable，并带上最直接的
  * 原因（连接拒绝/超时/HTTP 状态）。
  */
 export async function probeDeployment(port) {
@@ -139,17 +139,17 @@ export async function projectCards({ env = process.env, home, stateDir } = {}) {
       } else if (deployment === undefined) {
         state = {
           kind: 'unavailable',
-          reason: `no registered deployment reads this worker; run "wheelchair-agent deployment add ${worker}"`,
+          reason: `no registered deployment reads this orchestrator project; run "wheelchair-agent deployment add ${worker}"`,
         }
       } else if (deployment.port === null) {
         state = {
           kind: 'unavailable',
-          reason: `deployment ${worker} has no port; run "wheelchair-agent deployment add ${worker} --port <n>"`,
+          reason: `the deployment for ${worker} has no port; run "wheelchair-agent deployment add ${worker} --port <n>"`,
         }
       } else {
         state = probes.get(deployment.port) ?? {
           kind: 'unavailable',
-          reason: `deployment ${worker} was not probed`,
+          reason: `the deployment for ${worker} was not probed`,
         }
       }
       return {

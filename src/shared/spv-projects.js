@@ -1,14 +1,14 @@
 /**
- * spv 项目：数据根下的 `spv-projects.json`，记录每个 spv 根目录绑定了哪些 worker 项目。
+ * spv 项目：数据根下的 `spv-projects.json`，记录每个 spv 根目录绑定了哪些 orchestrator 项目。
  *
  * 这个文件是操作者的：读取时把每一处不一致都报出来，写的时候只做校验、原子写入和增删改。
  * 坏 JSON、坏版本、重复绑定、嵌套根一律大声报错，并且**一个字节都不改**；模型校验与
  * `deployments.json` 保持同一套语气和同一条路径（读已有文件与写新条目共用 `normalize`）。
  *
  * 约束：
- *   - 一个 spv 根必须存在且是目录，不能是已登记的 worker 项目 checkout，两个 spv 根不能互相嵌套；
- *   - 每个 worker 必须落在该 spv 根之下，且是 `tools/<name>` 或 `research/<name>`；
- *   - 一个 worker 只能属于一个 spv 项目（读取时检测重复，不悄悄取第一个）。
+ *   - 一个 spv 根必须存在且是目录，不能是已登记的 orchestrator 项目 checkout，两个 spv 根不能互相嵌套；
+ *   - 每个 orchestrator 项目必须落在该 spv 根之下，且是 `tools/<name>` 或 `research/<name>`；
+ *   - 一个 orchestrator 项目只能属于一个 spv 项目（读取时检测重复，不悄悄取第一个）。
  */
 import { chmodSync, existsSync, mkdirSync, readFileSync, realpathSync, renameSync, statSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, isAbsolute, join, resolve, sep } from 'node:path'
@@ -20,7 +20,7 @@ import { object, text } from './schema.js'
 export const SPV_PROJECTS_FILE = 'spv-projects.json'
 export const SPV_PROJECTS_VERSION = 1
 
-/** worker 项目的 checkout 根：`$SPV_PROJECTS_ROOT`，默认 `~/bioagentforge`。 */
+/** orchestrator 项目的根目录：`$SPV_PROJECTS_ROOT`，默认 `~/bioagentforge`。 */
 export { projectsRootOf }
 
 /** `root` 字段的类型校验；容器（spvProjects 数组与 workers 数组）手工检查。 */
@@ -34,7 +34,7 @@ export function spvProjectsPath({ env = process.env, home, stateDir } = {}) {
 function registryError(file, detail) {
   return new Error(
     `the spv project registry at ${file} ${detail}. It is the operator's file: fix it by hand; it is never ` +
-      'rewritten automatically, because that would silently unbind workers.',
+      'rewritten automatically, because that would silently unbind orchestrator projects.',
   )
 }
 
@@ -97,7 +97,7 @@ function normalizeEntry(raw, where, { projectsRoot, deployments }) {
     const worker = String(item ?? '').trim().replace(/^\/+|\/+$/g, '')
     if (!PROJECT_PATTERN.test(worker)) {
       throw new Error(
-        `${where}.workers[${index}] is ${JSON.stringify(item ?? null)}, but a worker must be "tools/<name>" or ` +
+        `${where}.workers[${index}] is ${JSON.stringify(item ?? null)}, but an orchestrator project must be "tools/<name>" or ` +
           '"research/<name>" with a plain name.',
       )
     }
@@ -108,7 +108,7 @@ function normalizeEntry(raw, where, { projectsRoot, deployments }) {
     if (!inside(root, resolve(root, worker))) {
       throw new Error(
         `${where}.workers[${index}] is ${JSON.stringify(worker)}, but it does not fall under the spv root ` +
-          `${JSON.stringify(root)}: a worker checkout is always <root>/<worker>.`,
+          `${JSON.stringify(root)}: an orchestrator project checkout is always <root>/<worker>.`,
       )
     }
     workers.push(worker)
@@ -117,15 +117,15 @@ function normalizeEntry(raw, where, { projectsRoot, deployments }) {
   const registered = deployments.find(entry => inside(realOrResolved(join(projectsRoot, entry.project)), rootReal))
   if (registered !== undefined) {
     throw new Error(
-      `${where}.root is ${JSON.stringify(root)}, but that is the checkout of registered worker project ` +
+      `${where}.root is ${JSON.stringify(root)}, but that is the checkout of registered orchestrator project ` +
         `${JSON.stringify(registered.project)} (or a directory inside it). An spv root is the directory that ` +
-        'contains worker projects, not one of them or a subdirectory of one.',
+        'contains orchestrator projects, not one of them or a subdirectory of one.',
     )
   }
   return { root, workers: workers.sort(byWorker) }
 }
 
-/** 把整张表规范化并做跨条目校验：根不重复/不嵌套，worker 不重复绑定。 */
+/** 把整张表规范化并做跨条目校验：根不重复/不嵌套，orchestrator 项目不重复绑定。 */
 function normalizeAll(spvProjects, options) {
   if (spvProjects === null || typeof spvProjects !== 'object' || !Array.isArray(spvProjects.spvProjects)) {
     throw new Error('the spv project registry must hold a "spvProjects" list')
@@ -149,8 +149,8 @@ function normalizeAll(spvProjects, options) {
       const owner = owners.get(worker)
       if (owner !== undefined) {
         throw new Error(
-          `the spv project registry binds worker ${JSON.stringify(worker)} to both ${JSON.stringify(owner)} and ` +
-            `${JSON.stringify(entry.root)}; a worker can belong to only one spv project. Fix it by hand or re-run ` +
+          `the spv project registry binds orchestrator project ${JSON.stringify(worker)} to both ${JSON.stringify(owner)} and ` +
+            `${JSON.stringify(entry.root)}; an orchestrator project can belong to only one spv project. Fix it by hand or re-run ` +
             `"wheelchair-agent spv-project remove" on one of them.`,
         )
       }
@@ -248,7 +248,7 @@ export function listSpvProjects(options = {}) {
   }
 }
 
-/** 找绑定了某个 worker 的 spv 项目；没有时返回 undefined。坏文件照常抛错。 */
+/** 找绑定了某个 orchestrator 项目的 spv 项目；没有时返回 undefined。坏文件照常抛错。 */
 export function findSpvProjectOfWorker(worker, options = {}) {
   const wanted = String(worker ?? '').trim()
   return listSpvProjects(options).spvProjects.find(entry => entry.workers.includes(wanted))
@@ -276,9 +276,9 @@ export function upsertSpvProject(root, workers = [], options = {}) {
     for (const worker of entry.workers) {
       if (candidate.workers.includes(worker)) {
         throw new Error(
-          `worker ${JSON.stringify(worker)} is already bound to spv project ${JSON.stringify(entry.root)}; it cannot ` +
-            `also belong to spv project ${JSON.stringify(candidate.root)}. A worker can belong to only one spv ` +
-            `project. Remove it from ${JSON.stringify(entry.root)} first.`,
+          `orchestrator project ${JSON.stringify(worker)} is already bound to spv project ${JSON.stringify(entry.root)}; it ` +
+            `cannot also belong to spv project ${JSON.stringify(candidate.root)}. An orchestrator project can belong ` +
+            `to only one spv project. Remove it from ${JSON.stringify(entry.root)} first.`,
         )
       }
     }
@@ -297,7 +297,7 @@ export function upsertSpvProject(root, workers = [], options = {}) {
 }
 
 /**
- * 删除一个 spv 项目。还有 worker 时必须 `force`；报错里列出会解绑哪些 worker。
+ * 删除一个 spv 项目。还有 orchestrator 项目时必须 `force`；报错里列出会解绑哪些项目。
  */
 export function removeSpvProject(root, { force = false, ...options } = {}) {
   const registry = listSpvProjects(options)
@@ -306,9 +306,9 @@ export function removeSpvProject(root, { force = false, ...options } = {}) {
   if (entry === undefined) return undefined
   if (entry.workers.length > 0 && !force) {
     throw new Error(
-      `spv project ${JSON.stringify(entry.root)} still binds ${entry.workers.length} worker(s): ` +
-        `${entry.workers.join(', ')}. Re-run with --force to remove it and unbind them, or move them to another spv ` +
-        'project first.',
+      `spv project ${JSON.stringify(entry.root)} still binds ${entry.workers.length} orchestrator ` +
+        `project${entry.workers.length === 1 ? '' : 's'}: ${entry.workers.join(', ')}. Re-run with --force to remove ` +
+        'it and unbind them, or move them to another spv project first.',
     )
   }
   const remaining = registry.spvProjects.filter(item => !sameSpvRoot(item.root, wanted))
@@ -317,8 +317,8 @@ export function removeSpvProject(root, { force = false, ...options } = {}) {
 }
 
 /**
- * 找出一个 worker 应绑定的 spv 根：显式 `root` 必须已登记；否则看已登记的根里哪些是 worker
- * checkout（`<projectsRoot>/<project>`）的祖先。
+ * 找出一个 orchestrator 项目应绑定的 spv 根：显式 `root` 必须已登记；否则看已登记的根里哪些是
+ * orchestrator 项目 checkout（`<projectsRoot>/<project>`）的祖先。
  *
  * 没有 spv 项目文件/空表时返回 `{root:null}`，保持未使用 spv 项目的安装可继续 `deployment add`；
  * 一旦有 spv 项目，0 个候选或 ≥2 个候选都报错并列出候选，由调用方要求显式 `--spv`。
@@ -358,7 +358,7 @@ export function resolveSpvRootForWorker(project, { root, ...options } = {}) {
   )
 }
 
-/** 把一个 worker 记入已解析的 spv 根；根为 null 或已包含它时原样返回。 */
+/** 把一个 orchestrator 项目记入已解析的 spv 根；根为 null 或已包含它时原样返回。 */
 export function bindWorkerToSpvProject(project, binding, options = {}) {
   if (binding === null || binding === undefined || binding.root === null) {
     return { changed: false, root: null }
@@ -367,7 +367,7 @@ export function bindWorkerToSpvProject(project, binding, options = {}) {
   return { changed: result.changed, root: result.entry.root, entry: result.entry }
 }
 
-/** 从所有 spv 项目里摘掉一个 worker；返回被解绑的根。没有变化时不写盘。 */
+/** 从所有 spv 项目里摘掉一个 orchestrator 项目；返回被解绑的根。没有变化时不写盘。 */
 export function unbindWorkerFromSpvProjects(project, options = {}) {
   const registry = listSpvProjects(options)
   const wanted = String(project ?? '').trim()

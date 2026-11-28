@@ -155,11 +155,12 @@ function testAbsentAndIdempotent() {
 
   const root = rootFor(box, 'spv-a')
   mkdirSync(join(root, 'tools', 'alpha'), { recursive: true })
-  // `spv-project add --worker` only binds a project a deployment already owns; seed that registration first.
+  // `spv-project add --worker` (the old flag, still supported) only binds a project a deployment already owns;
+  // seed that registration first.
   registry(box, [deployment('tools/alpha', 3071)])
   const added = cli(box, ['spv-project', 'add', root, '--worker', 'tools/alpha'])
   check('add exit 0', added.status, 0)
-  match('add prints registered', added.stdout, /registered spv-project .*workers=1/)
+  match('add prints registered', added.stdout, /registered spv-project .*orchestratorProjects=1/)
   const entry = readRegistry(box).spvProjects[0]
   check('file root', entry.root, root)
   check('file workers', entry.workers, ['tools/alpha'])
@@ -179,6 +180,37 @@ function testAbsentAndIdempotent() {
   check('json workers', json.spvProjects[0].workers, ['tools/alpha'])
 }
 
+function testFlagAliases() {
+  BOX = makeBox()
+  const box = BOX
+  const root = rootFor(box, 'spv-aliases')
+  for (const project of ['tools/alpha', 'tools/beta']) worker(box, project)
+  registry(box, [deployment('tools/alpha', 3072), deployment('tools/beta', 3073)])
+  const file = spvProjectsPath({ env: envFor(box) })
+
+  const modern = cli(box, ['spv-project', 'add', root, '--orchestrator', 'tools/alpha', '--orchestrator', 'tools/beta'])
+  check('--orchestrator add exit 0', modern.status, 0)
+  const modernBytes = readFileSync(file, 'utf8')
+  check('--orchestrator binds both projects', readRegistry(box).spvProjects[0].workers, ['tools/alpha', 'tools/beta'])
+
+  rmSync(file)
+  const legacy = cli(box, ['spv-project', 'add', root, '--worker', 'tools/alpha', '--worker', 'tools/beta'])
+  check('--worker add exit 0', legacy.status, 0)
+  check('--worker writes the same spv-projects.json as --orchestrator', readFileSync(file, 'utf8'), modernBytes)
+
+  rmSync(file)
+  const mixed = cli(box, ['spv-project', 'add', root, '--orchestrator', 'tools/alpha', '--worker', 'tools/beta'])
+  check('mixed --orchestrator/--worker exit 0', mixed.status, 0)
+  check('mixed flags write the same spv-projects.json', readFileSync(file, 'utf8'), modernBytes)
+
+  const help = cli(box, ['spv-project', 'add', '--help'])
+  check('spv-project help exit 0', help.status, 0)
+  match('help shows the new flag in the usage line', help.stdout, /add <root> \[--orchestrator <project>\]\.\.\./)
+  check('help usage line has no --worker', /\[--worker/.test(help.stdout), false)
+  const helpLines = help.stdout.trimEnd().split('\n')
+  match('help ends by naming --worker as the old flag', helpLines.at(-1), /old flag name --worker is still accepted and is exactly equivalent to --orchestrator/)
+}
+
 function testValidation() {
   const box = makeBox()
   BOX = box
@@ -191,10 +223,10 @@ function testValidation() {
   writeFileSync(fileRoot, 'x')
   assert.throws(() => upsertSpvProject(fileRoot, [], { env }), /not a directory/)
 
-  // 根不能是已登记 worker 项目的 checkout。
+  // 根不能是已登记 orchestrator 项目的 checkout。
   const checkout = worker(box, 'tools/alpha')
   registry(box, [deployment('tools/alpha', 3082)])
-  assert.throws(() => upsertSpvProject(checkout, [], { env }), /registered worker project "tools\/alpha"/)
+  assert.throws(() => upsertSpvProject(checkout, [], { env }), /registered orchestrator project "tools\/alpha"/)
 
   // 根不能嵌套。
   const outer = rootFor(box, 'outer')
@@ -203,7 +235,7 @@ function testValidation() {
   upsertSpvProject(outer, [], { env })
   assert.throws(() => upsertSpvProject(inner, [], { env }), /nested roots/)
 
-  // worker 形态 / 重复绑定。
+  // orchestrator 项目形态 / 重复绑定。
   const first = rootFor(box, 'spv-one')
   const second = rootFor(box, 'spv-two')
   upsertSpvProject(first, ['tools/alpha'], { env })
@@ -215,7 +247,7 @@ function testValidation() {
   const dup = { version: 1, spvProjects: [{ root: first, workers: ['tools/alpha'] }, { root: second, workers: ['tools/alpha'] }] }
   writeFileSync(dupFile, `${JSON.stringify(dup, null, 2)}\n`)
   const dupBytes = readFileSync(dupFile, 'utf8')
-  assert.throws(() => listSpvProjects({ env }), /binds worker "tools\/alpha" to both/)
+  assert.throws(() => listSpvProjects({ env }), /binds orchestrator project "tools\/alpha" to both/)
   check('duplicate read leaves bytes', readFileSync(dupFile, 'utf8'), dupBytes)
 
   // 坏 JSON 一字不改。
@@ -235,12 +267,12 @@ function testRemove() {
   upsertSpvProject(root, ['tools/alpha'], { env })
   const refuse = cli(box, ['spv-project', 'remove', root])
   check('remove with workers exit 1', refuse.status, 1)
-  match('remove lists unbinding', refuse.stderr, /still binds 1 worker/)
+  match('remove lists unbinding', refuse.stderr, /still binds 1 orchestrator project/)
   match('remove names worker', refuse.stderr, /tools\/alpha/)
   assert.ok(listSpvProjects({ env }).spvProjects.some(entry => entry.root === root))
   const forced = cli(box, ['spv-project', 'remove', root, '--force'])
   check('remove --force exit 0', forced.status, 0)
-  match('remove --force says unbound', forced.stdout, /unbound 1 worker/)
+  match('remove --force says unbound', forced.stdout, /unbound 1 orchestrator project/)
   check('remove leaves no root', listSpvProjects({ env }).spvProjects.length, 0)
 }
 
@@ -276,7 +308,7 @@ function testDeploymentBinding() {
 function testInference() {
   const box = makeBox()
   const root = rootFor(box, 'spv-infer')
-  // 让 worker checkout 成为 spv 根的后代关系。
+  // 让 orchestrator 项目 checkout 成为 spv 根的后代关系。
   box.projects = join(root, 'projects')
   worker(box, 'tools/alpha')
   const env = envFor(box)
@@ -385,6 +417,7 @@ async function testSetupProblemShapes() {
 
 async function main() {
   testAbsentAndIdempotent()
+  testFlagAliases()
   testValidation()
   testRemove()
   testDeploymentBinding()

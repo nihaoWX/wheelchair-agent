@@ -69,8 +69,8 @@ export function resolveDeploymentEntry(project, { registry = listDeployments() }
   if (claims.length > 1) {
     const list = claims.map(item => `${item.project} (port ${item.port ?? '-'})`).join(', ')
     throw new Error(
-      `more than one deployment claims the worker project ${JSON.stringify(wanted)}: ${list}. A worker project ` +
-        'belongs to exactly one instance, so nothing was dispatched. Run "wheelchair-agent deployment list" to ' +
+      `more than one deployment claims the orchestrator project ${JSON.stringify(wanted)}: ${list}. An orchestrator ` +
+        'project belongs to exactly one instance, so nothing was dispatched. Run "wheelchair-agent deployment list" to ' +
         'see the conflict and remove all but one deployment.',
     )
   }

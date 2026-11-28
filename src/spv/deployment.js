@@ -56,8 +56,8 @@ commands:
                                defaults: stateDir <base>/<slug>, queueDir <stateDir>/spv,
                                port = first unused from 3082, repo inferred from the
                                project checkout's origin (or pass --repo);
-                               --spv binds the worker to an spv project (inferred when exactly
-                               one registered spv root is its ancestor)
+                               --spv binds the orchestrator project to an spv project (inferred
+                               when exactly one registered spv root is its ancestor)
   setup --project <p>          point that deployment's own dsh-superagent instance at the
                                repository recorded here, through its panel API; run it after
                                "service start" from that checkout (setup waits up to 90s)
@@ -138,7 +138,7 @@ function describe(entry, spvRoot) {
     `repository=${entry.repository ?? '-'} spv=${spvRoot ?? '-'}`
 }
 
-/** worker → spv 根的映射；文件坏了就大声报错（它是操作者的文件）。 */
+/** orchestrator 项目 → spv 根的映射；文件坏了就大声报错（它是操作者的文件）。 */
 function spvRootsByWorker(env) {
   const registry = listSpvProjects({ env })
   const map = new Map()
@@ -267,8 +267,8 @@ function add(positionals, flags, { env, out }) {
     const other = findSpvProjectOfWorker(project, { env })
     if (other !== undefined && other.root !== binding.root) {
       throw new Error(
-        `worker ${JSON.stringify(project)} is already bound to spv project ${JSON.stringify(other.root)}; a worker ` +
-          `can belong to only one spv project. Remove it there with "wheelchair-agent spv-project remove ` +
+        `orchestrator project ${JSON.stringify(project)} is already bound to spv project ${JSON.stringify(other.root)}; ` +
+          `an orchestrator project can belong to only one spv project. Remove it there with "wheelchair-agent spv-project remove ` +
           `${other.root}" (or bind this deployment explicitly with --spv ${binding.root}, after unbinding).`,
       )
     }
@@ -281,7 +281,7 @@ function add(positionals, flags, { env, out }) {
   if (clash !== undefined) {
     throw new Error(
       `${canonical} is already the deployment ${JSON.stringify(deploymentSlug(clash.project))} ` +
-        `(port ${clash.port ?? '-'}); a worker project belongs to exactly one instance. Remove that deployment ` +
+        `(port ${clash.port ?? '-'}); an orchestrator project belongs to exactly one instance. Remove that deployment ` +
         `first ("deployment remove ${clash.project}") if you really mean to move it.`,
     )
   }

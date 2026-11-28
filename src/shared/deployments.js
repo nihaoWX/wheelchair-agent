@@ -237,7 +237,7 @@ export function projectPathConflicts(deployments, options = {}) {
 /** 一句可打印的路径冲突说明，供 `deployment list` 与安装自检共用。 */
 export function describePathConflict(conflict) {
   const claims = conflict.entries.map(entry => `${entry.project} (port ${entry.port ?? '-'})`).join(', ')
-  return `${conflict.path} is claimed by more than one deployment: ${claims}; a worker project belongs to ` +
+  return `${conflict.path} is claimed by more than one deployment: ${claims}; an orchestrator project belongs to ` +
     'exactly one instance. Remove all but one with "wheelchair-agent deployment remove <project>".'
 }
 
