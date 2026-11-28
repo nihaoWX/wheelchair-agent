@@ -51,6 +51,7 @@ import {
 import { formatResult, startResultInjector } from '../src/spv/injector.js'
 import { appendReview, readItem, resolveInboxIntervalSeconds, startInboxWatcher, writeItem } from '../src/spv/inbox.js'
 import { reclaimAtMount } from '../src/superagent/watch.js'
+import { runCore } from '../src/shared/queue.js'
 import { reclaimWork } from '../src/shared/work.js'
 
 const CLI = fileURLToPath(new URL('../bin/wheelchair-agent.mjs', import.meta.url))
@@ -406,7 +407,6 @@ const EXPECTED_DEFAULTS = {
   'panel.port': 3080,
   'spv.surface': 'tui',
   'spv.webPort': 3081,
-  'panel.profileFrom': 'superagent',
   'webui.style': 'fluid',
   'inbox.intervalSeconds': 60,
   'merge.installRepo': 'wheelchair-agent',
@@ -662,6 +662,63 @@ async function testCorruptAndHandEditedFiles() {
   } finally {
     restoreEnv(saved)
   }
+}
+
+/**
+ * #77: `panel.profileFrom` lost its only reader and left the table. An old settings.json may still
+ * carry it: that value must vanish without the "unknown settings key" warning, while a real typo in
+ * the same file must still be named. The next write (fill or save) leaves the key out.
+ */
+async function testRetiredProfileFromKey() {
+  const specs = runCore(['settings'], JSON.stringify({ op: 'specs' })).specs
+  assert.equal(Object.hasOwn(specs, 'panel.profileFrom'), false, 'the specs table no longer advertises the retired key')
+  assert.deepEqual(Object.keys(specs), Object.keys(EXPECTED_DEFAULTS), 'the table is exactly the current defaults')
+
+  // A settings.json written before #77 keeps loading: the stale value is dropped without a warning.
+  const box = await sandbox()
+  const file = settingsPath(box)
+  await writeJson(file, {
+    version: SETTINGS_VERSION,
+    revision: 5,
+    values: {
+      ...EXPECTED_DEFAULTS,
+      'panel.profileFrom': 'superagent',
+      'panel.profilFrom': 'typo',
+    },
+    filled: Object.keys(EXPECTED_DEFAULTS),
+    templates: {},
+  })
+  const snapshot = resolveSettings({ home: box.root, stateDir: box.state, env: {} })
+  assert.equal(snapshot.fileState, 'ok')
+  assert.equal(snapshot.revision, 5)
+  assert.equal(Object.hasOwn(snapshot.values, 'panel.profileFrom'), false, 'the stored value is gone')
+  assert.equal(Object.hasOwn(snapshot.effective, 'panel.profileFrom'), false, 'no effective value appears')
+  assert.deepEqual(snapshot.effective, EXPECTED_DEFAULTS)
+  assert.doesNotMatch(snapshot.warning, /panel\.profileFrom/, 'the retired key is not reported as unknown')
+  assert.match(snapshot.warning, /unknown settings key "panel\.profilFrom"/, 'a genuine typo still warns')
+
+  // The fill rewrite that normally happens on load must not re-introduce the key.
+  const rewritten = await readJson(file)
+  assert.equal(Object.hasOwn(rewritten.values, 'panel.profileFrom'), false)
+  assert.equal(rewritten.filled.includes('panel.profileFrom'), false)
+
+  // A save started from the same kind of legacy file also leaves the key out.
+  const box2 = await sandbox()
+  const file2 = settingsPath(box2)
+  await writeJson(file2, {
+    version: SETTINGS_VERSION,
+    revision: 2,
+    values: { ...EXPECTED_DEFAULTS, 'panel.profileFrom': 'superagent' },
+    filled: [...Object.keys(EXPECTED_DEFAULTS), 'panel.profileFrom'],
+    templates: {},
+  })
+  const saved = saveSettings({ home: box2.root, stateDir: box2.state, env: {}, revision: 2, values: {} })
+  assert.deepEqual(saved.effective, EXPECTED_DEFAULTS)
+  const stored = await readJson(file2)
+  assert.equal(stored.revision, 3)
+  assert.equal(Object.hasOwn(stored.values, 'panel.profileFrom'), false)
+  assert.equal(stored.filled.includes('panel.profileFrom'), false)
+  assert.equal(Object.keys(stored.values).length, Object.keys(EXPECTED_DEFAULTS).length)
 }
 
 /** 模板校验：未知/缺失占位符、未知 id、超长都点名报错；renderTemplate 的缺值替换为空串。 */
@@ -2619,6 +2676,7 @@ try {
   await testSaveMergeAndStaleRevision()
   await testPanelPortAndPartialPut()
   await testCorruptAndHandEditedFiles()
+  await testRetiredProfileFromKey()
   testTemplateValidation()
   await testPresetCrudAndReset()
   await testPrecedence()
