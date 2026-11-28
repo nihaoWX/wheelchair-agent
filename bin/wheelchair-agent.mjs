@@ -78,8 +78,9 @@ commands:
                                show or edit the project -> deployment registry; dispatch uses it to
                                pick the queue of the project's own deployment
   spv-project <list|add|remove>
-                               show or edit the spv project registry (each spv root and the worker
-                               projects it owns); "deployment add --spv" maintains the same binding
+                               show or edit the spv project registry (each spv root and the
+                               orchestrator projects it owns); "deployment add --spv" maintains
+                               the same binding
   inbox                        print where the review inbox lives (the dsh Web UI panel)
   inbox add --title <text> --body <markdown|@file> [--thread <name>]
                                push one SPV decision letter into the inbox and print its id

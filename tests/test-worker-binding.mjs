@@ -1,11 +1,11 @@
 /**
- * 实例-worker项目保护机制：一个 worker 项目路径最多属于一个实例（部署），也只能由那个实例来跑。
+ * 实例-orchestrator 项目保护机制：一个 orchestrator 项目路径最多属于一个实例（部署），也只能由那个实例来跑。
  *
  * 用 `node:test` 固化六条不变量：
  *   ① 同一真实路径不能被第二个项目登记成部署（符号链接别名也一样），错误点名已有实例名与端口；
  *   ② 同一项目重复 add 是幂等的；
- *   ③ `spv-project add --worker` 只接受已登记部署的项目；
- *   ④ 同一个 worker 不能同时属于两个 spv 根，错误同时点名两个根；
+ *   ③ `spv-project add --orchestrator`（旧名 --worker 等价）只接受已登记部署的项目；
+ *   ④ 同一个 orchestrator 项目不能同时属于两个 spv 根，错误同时点名两个根；
  *   ⑤ `spv_dispatch` 找不到或多于一个认领该项目的部署时失败，且 `pending/` 一条都不写；
  *   ⑥ 正常路径仍然写进该项目自己部署的队列。
  *
@@ -217,7 +217,7 @@ test('② re-adding the same project is still idempotent', async () => {
   }
 })
 
-test('③ spv-project add refuses a worker with no registered deployment', async () => {
+test('③ spv-project add refuses an orchestrator project with no registered deployment', async () => {
   const box = makeBox()
   try {
     const root = join(box.home, 'spv-a')
@@ -231,7 +231,7 @@ test('③ spv-project add refuses a worker with no registered deployment', async
   }
 })
 
-test('④ one worker cannot belong to two spv roots, and both roots are named', async () => {
+test('④ one orchestrator project cannot belong to two spv roots, and both roots are named', async () => {
   const box = makeBox()
   try {
     workerDirectory(box, 'tools/alpha')
@@ -281,7 +281,7 @@ test('⑤ dispatch with two deployments claiming one path fails and writes nothi
 
     const result = await dispatch(box, 'tools/alpha')
     assert.notEqual(result.status, 0)
-    assert.match(result.stderr, /more than one deployment claims the worker project "tools\/alpha"/)
+    assert.match(result.stderr, /more than one deployment claims the orchestrator project "tools\/alpha"/)
     assert.match(result.stderr, /deployment list/)
     assert.deepEqual(pendingFiles(alpha.queueDir), [])
     assert.deepEqual(pendingFiles(alias.queueDir), [])

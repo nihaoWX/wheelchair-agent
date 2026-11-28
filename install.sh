@@ -1035,7 +1035,7 @@ check_deployment_settings() {
   done
 }
 
-# A worker project path may belong to only one deployment. `listDeployments()` already rejects duplicate
+# An orchestrator project path may belong to only one deployment. `listDeployments()` already rejects duplicate
 # project names and ports, but two different names can still resolve to the same real checkout (a symlink or
 # a moved directory), and then dispatch cannot know which instance owns it. --check reports each such path as
 # a failure and stays read-only: it never deletes an entry to repair the registry.
@@ -1061,7 +1061,7 @@ try {
 ' "$SELF_DIR" 2>&1)
   status=$?
   if [ "$status" -eq 0 ]; then
-    ok 'every worker project path belongs to exactly one deployment'
+    ok 'every orchestrator project path belongs to exactly one deployment'
     return
   fi
   while IFS= read -r line; do
