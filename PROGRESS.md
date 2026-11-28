@@ -17,17 +17,18 @@ superagent 不耦合；队列归**每份部署**自己（`<stateDir>/spv/`），
 裸 `restart-all`、默认项目的 `spv`、`resolveRoot` 的 legacy 回退、watcher 的全量轮询），见
 `ARCHITECTURE/deployments.md`。
 
-**面板**：两个宿主、同一份 `webui/lib/client.js`。①`wheelchair-agent panel`（`#58`, `aabe316`）是一份
-**自己的 dsh 实例**——profile `panel` 的插件集**镜像**来源 profile（`panel.profileFrom`，默认
-`superagent`）：bundles 按原序复制，只去掉 `dsh-superagent`（否则会再开一份 orchestrator/Sources）；dsh
-装不认识的包从来源 profile 的 `node_modules` 软链，并在 `panel-bundles.json` 记账，`panel sync` 只回收
-自己建的链接。`cordis.patch.yml` 同样整文件由 sync 生成：镜像来源的顶层配置行（`agent-default-model`、
-`llm-commandcode` 等），跳过 `dsh-superagent`/`webserver`/`wheelchair-agent/*` insert，字面 `apiKey`/
-`token`/`password` 不复制并打 note，`wheelchair-webui` 与 `ui-settings-general` 两行固定首末。`panel start`
-前自动 sync（来源 profile 消失时保留现有 bundles/patch 并打 note，不影响启动）；`panel status` 先打
-`plugins:`/`config:`/`drift:` 再打 port/pid/带 token 的 url/`check: http <code>`/state，并说明
-没有 orchestrator 可报。`127.0.0.1:3080`（`panel.port` 可改），overlay 是 `preset/panel.patch.yml`，tmux
-`wca-panel`，stateDir `<data root>/panel`；所以它有完整 harness UI（会话列表/新会话/顶栏），但**不是部署**
+**三份自建 dsh profile**（`ARCHITECTURE/profiles.md`）：`wca`（浏览器面：面板 + 每份 orchestrator 实例）、
+`wca-spv-tui`（终端面，跑 spv，默认形态）、`wca-spv-web`（浏览器面跑 spv，`spv.surface=web` 时由
+`install.sh` 渲染）。三份都由 `preset/profiles/<id>.{package.json,patch.yml}` 模板渲染到
+`~/.dsh/profiles/`（`wheelchair-agent profiles sync`），`superagent` → `wca`、`wca-tui` → `wca-spv-tui`
+各是一次整体 `renameSync` 迁移；不再有"从一个 profile 镜像插件集"的机制（`#63` 那套已随 `#74` 删除，
+`panel.profileFrom` 因此成了无读者的死键，见 issue #77）。
+
+**面板**：`wheelchair-agent panel`（`#58`, `aabe316`）是一份**自己的 dsh 实例**，跑的就是 `wca` profile，
+靠 `deployments/panel.yml` 关掉四行（`dsh-superagent`、两个 superagent preset、`wheelchair-spv`）。tmux
+`wca-panel`，stateDir `<data root>/panel`，`127.0.0.1:3080`（`panel.port` 可改）；`panel status` 打
+`plugins:`/`config:`/`drift:` 与 port/pid/带 token 的 url/`check: http <code>`/state，并说明没有 orchestrator
+可报。所以它有完整 harness UI（会话列表/新会话/顶栏），但**不是部署**
 （不进注册表）。`#62`（`ddb97d0`）起 `service stop --all` 停完部署再停它、`start --all` 起完部署最后起它
 （面板失败不改部署退出码）；`install.sh` 装完与 `--check` 都会认出 `#58` 之前的
 `cli.js panel --foreground` 旧宿主并打印其 pid 与 `kill -INT` 指路（只提醒，绝不 kill）。②dsh 插件宿主不变
@@ -63,6 +64,18 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
 `PITFALLS/`、`setup/`、`agentsmd-examples/`。`INSTRUCTIONS.md`（操作者维护、最高权威）与 `docs/agentsmd-examples/*.md` 已入 git（`4714fb0`、`b1d3d06`）。
 
 # Completed
+
+- **`#76` 合并（`d9e465c`，`feat(profiles): add the browser-shaped SPV host and spv.surface switch`）**：第三种
+  交互形状落地——`wca-spv-web` 自建 profile（`dsh-base` + `dsh-web-app` + commandcode + bili +
+  `wheelchair-agent`，**不挂** `dsh-superagent`/webui）、`spv.surface`（`tui`|`web`，默认 `tui`）与
+  `spv.webPort`（3081）两个 Rust 设置、`src/spv/spv-host.js`（探活三态 + 前台起 + `service --all` 一圈）、
+  `preset/spv-web.patch.yml`（只覆盖端口）、面板「项目」页显示 spv 形态与链接。我审了三轮才合：
+  ①删掉永远挂不上的 `wheelchair-spv` 行（`inject: ['orchestrator']` 而本 profile 无 superagent）；
+  ②给手抄的三行（`spv-tools`/`spv-cron`/`restart-command`）加 parity 断言；③**探活语义写反**——
+  原实现 `response.status === 200`，而真实 dsh web 在 `/` 上无 cookie 回 **401**，会让"host 真在跑"被判成
+  端口被占、`spv.running` 永远 false；改成返回状态码（任何码都算"有人在服务"）+ 日志 token 与
+  `--profile wca-spv-web` cmdline 佐证。我的验证：`bash build/build-core.sh` + `npm test` **EXIT=0、701 行全过**、
+  CI 绿后 squash。同时开 issue #77（`panel.profileFrom` 死键）。
 
 - **`#75` 合并（`fd195dd`，`refactor(profiles): rename the spv terminal profile to wca-spv-tui`）**：只改名
   （`WCA_SPV_TUI_PROFILE_ID`、`preset/profiles/wca-spv-tui.*`、`install.sh` 的 `expected=` 与文案、
@@ -412,6 +425,10 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
   已于 2026-11-27 核实并删除。
 # Known Issues
 
+- **`panel.profileFrom` 是死键**（issue #77）：`#74` 删掉 `src/spv/panel-profile.js` 后没有任何读者，但
+  `crates/wca-core/src/settings.rs:103` 仍定义它、默认 `"superagent"`，安装时会被写进 `settings.json`——
+  迁移之后那个值指向一个不存在的 profile，用户改它既不生效也不报错。等消费票删键（旧值要静默处置，
+  不能变成 unknown-key 警告）。
 - **宿主环境的 systemd 在崩**：`dmesg` 记录 `systemd-logind / systemd-resolved / systemd-timesyncd` 在开机 191 秒
   时 SIGABRT（WSL2 时钟跳变），logind 一崩就销毁 session scope。这是这一夜服务"静默死亡"的宿主级原因；
   `wsl --update` / 避免宿主睡眠是待试项。

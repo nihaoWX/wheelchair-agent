@@ -452,3 +452,29 @@ gh 失败只 warning。
 `dsh-web-app/presets/standard.patch.yml` 那 40 行 persona/tool/skill/command，dsh 每次升级都得手动跟；而
 `--patch` 叠加在已组合好的 profile 上，只有增量、零漂移。所以默认给"整进程隔离 + 零漂移"，把"单会话隔离"
 留成可选路线。命名 `wca` / `wca-spv-tui` 是操作者定的：前者是产品缩写，后者点明"终端面、专跑 spv"。
+
+## `wca-spv-web` 用自建 profile 而不是原生 agent preset（`#76`，2026-11-29）
+
+**问题**：`#74` 只落地了终端形态（`wca-spv-tui`）。"用户只想用浏览器"那种形态要么复用 `preset-spv`、要么自己
+一份 profile。我一开始倾向复用 preset（"单一真源"），核完 dsh 的实现后改了主意。
+
+**证据**：`build/render-preset.mjs` 渲染出的 `~/.dsh/.agent-presets/spv/preset-default.patch.yml` 末尾用
+`- id: dsh-tui-agent-preset-registry` + `config: {default: spv}` 把名册默认指向 spv —— **这个行 id 是 dsh-tui
+专属的**；web 面的名册由 `dsh-web-app/cordis.patch.yml:591` 插入成 `id: agent-preset-registry,
+config: {default: standard}`。同一份渲染文件在 web 面打不中，复用就得为 web 面再写一份 registry 覆盖，
+"单一真源"变成两份文件互相追。
+
+**决定**：`wca-spv-web` 做成第三份自建 profile（`dsh-base` + `dsh-web-app` + commandcode + bili +
+`wheelchair-agent`），SPV 的工具行以**进程级插件行**挂上（`spv-tools`/`spv-cron`/`restart-command`），
+三行从 `preset/agent.cordis.yml` 镜像，由 `tests/test-profiles.mjs` 的 parity 断言逐字钉住。
+`spv.surface`（`tui`|`web`，默认 `tui`）决定 `wheelchair-agent spv` 起哪一份。
+
+**取舍**：镜像三行有漂移风险，但有闸门；而"为 web 面再造一个 preset registry"是持续的认知负担，且
+web-app 自带的 `standard` preset 与我们的 `spv` preset 差别只剩 `agent-instructions maxBytes` 与 compaction
+细节。`wheelchair-spv`（`inject: ['orchestrator']`）**不**挂进这份 profile —— 它不带 dsh-superagent，挂上会
+永远 pending；spv 只发单、不接单。
+
+**顺带定下的契约**：dsh web 在 `/` 上无 cookie 回 **401**，所以"活体"判定必须接受任何状态码
+（`probeSpvWebHost` 与 `probePanelHttp` 同形：返回 `statusCode`，连不上才 `null`）；"是不是我们的 host"靠
+日志里的 token URL + `--profile wca-spv-web` 的 cmdline 佐证。`#76` 第一版写 `status === 200` 把正在跑的
+host 判成"端口被占"，这条写进 `ARCHITECTURE/profiles.md` §4 以免重犯。

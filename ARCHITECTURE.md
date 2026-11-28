@@ -40,6 +40,7 @@
 | SPV preset 怎么装/起/用、标准工具从哪来、模块解析、superagent profile 配置现状 | `ARCHITECTURE/preset.md` |
 | 交付目标：仓库随项目走、受管 `AGENTS.md` 的六条约束 | `ARCHITECTURE/preset.md` |
 | 一仓一部署：注册表、派单路由、安装/服务/收件箱的分阶段改造 | `ARCHITECTURE/deployments.md` |
+| 三份自建 dsh profile（`wca`/`wca-spv-tui`/`wca-spv-web`）：模板与渲染、迁移、`spv.surface`、活体判定契约 | `ARCHITECTURE/profiles.md` |
 | spv 项目（spv 根 → orchestrator 项目的绑定）、四条校验、面板「项目」段 | `ARCHITECTURE/spv-projects.md` |
 | Rust 核心：边界、JSON 契约、为什么不是 `.node`、分发待办 | `ARCHITECTURE/core.md` |
 | 已定型的结论（每条附证据，**勿重新推导**） | `ARCHITECTURE/decisions.md` |
