@@ -1,8 +1,8 @@
-# Machine configuration for the `wca-tui` profile (terminal surface: the SPV session).
+# Machine configuration for the `wca-spv-tui` profile (terminal surface: the SPV session).
 #
 # The profile is the dsh-tui bundle over dsh-base. It is deliberately separate from `wca`: the SPV
 # terminal session must not share the browser surface's profile state, queue or orchestrator rows.
-# `spv` launches dsh-tui with `--profile wca-tui`; if this profile is missing it falls back to the
+# `spv` launches dsh-tui with `--profile wca-spv-tui`; if this profile is missing it falls back to the
 # machine's own `dsh-tui` profile and says so.
 #
 - id: agent-default-model

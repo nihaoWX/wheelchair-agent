@@ -6,7 +6,7 @@
  * instance share this one profile; a deployment only overlays its port/stateDir/queueDir, and the
  * panel overlays the same profile with the deployment-only rows disabled (`deployments/panel.yml`).
  *
- * `wca-tui` is the terminal surface: the dsh-tui bundle over dsh-base, used by the `spv` session.
+ * `wca-spv-tui` is the terminal surface: the dsh-tui bundle over dsh-base, used by the `spv` session.
  * It is separate so SPV never shares state with the browser profile (or with the operator's own
  * dsh-tui profile).
  *
@@ -15,9 +15,10 @@
  * hardcoded. `profiles sync` is idempotent; `profiles check` is read-only and prints copy-paste fixes.
  *
  * The one-time migration is a whole-directory `mv`: `profiles/superagent` becomes `profiles/wca`, so
- * the dsh-superagent link, the wheelchair-agent link and the webui package move with it. Old
- * profiles (`superagent`, `wheelchair-agent`, `panel`) are never deleted here; `check` only reports
- * that no deployment uses them.
+ * the dsh-superagent link, the wheelchair-agent link and the webui package move with it. The terminal
+ * profile's former name `wca-tui` is likewise moved whole to `wca-spv-tui`, carrying
+ * `profile-links.json`. Old profiles (`superagent`, `wca-tui`, `wheelchair-agent`, `panel`) are never
+ * deleted here; `check` only reports that no deployment uses them.
  *
  * Run `node src/spv/profiles.js sync|check --dsh-home ~/.dsh --data-root ~/.wheelchair-agent`.
  */
@@ -40,11 +41,13 @@ import { fileURLToPath } from 'node:url'
 /** The browser-surface profile that every deployment and the panel share. */
 export const WCA_PROFILE_ID = 'wca'
 /** The terminal-surface profile used by the `spv` session. */
-export const WCA_TUI_PROFILE_ID = 'wca-tui'
+export const WCA_SPV_TUI_PROFILE_ID = 'wca-spv-tui'
 /** Both self-built profiles, in migration/sync order. */
-export const PROFILE_IDS = [WCA_PROFILE_ID, WCA_TUI_PROFILE_ID]
+export const PROFILE_IDS = [WCA_PROFILE_ID, WCA_SPV_TUI_PROFILE_ID]
 /** The single-deployment profile that `wca` replaces. */
 export const LEGACY_SUPERAGENT_PROFILE_ID = 'superagent'
+/** The terminal profile's former name, moved to `wca-spv-tui` in one piece. */
+export const LEGACY_WCA_TUI_PROFILE_ID = 'wca-tui'
 /** Profiles that only ever held a mirror/panel and are now unused. */
 export const LEGACY_PANEL_PROFILE_IDS = ['wheelchair-agent', 'panel']
 /** Per-profile patch file. */
@@ -64,7 +67,7 @@ export const PANEL_DISABLED_IDS = [
 /** Template files, keyed by profile id. */
 export const PROFILE_TEMPLATES = {
   [WCA_PROFILE_ID]: { package: 'wca.package.json', patch: 'wca.patch.yml' },
-  [WCA_TUI_PROFILE_ID]: { package: 'wca-tui.package.json', patch: 'wca-tui.patch.yml' },
+  [WCA_SPV_TUI_PROFILE_ID]: { package: 'wca-spv-tui.package.json', patch: 'wca-spv-tui.patch.yml' },
 }
 
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url))
@@ -273,7 +276,7 @@ function readLinkRecord(dir) {
 
 /**
  * The symlinks a profile needs. `wca` links each `link:` dependency (dsh-superagent and, on a
- * migrated profile, wheelchair-agent). `wca-tui` links the dsh-tui scope directory from the dsh-tui
+ * migrated profile, wheelchair-agent). `wca-spv-tui` links the dsh-tui scope directory from the dsh-tui
  * profile (never copied, never network-installed) and borrows the provider/billion-context packages
  * from a donor profile when dsh cannot resolve them from its own node_modules.
  */
@@ -302,7 +305,7 @@ function desiredLinks({ id, dir, dshHome, dependencies }) {
   } else if (!existsSync(join(dir, 'node_modules', '@deepseek-harness-tui'))) {
     critical = true
     problems.push({
-      problem: `profile "wca-tui" cannot load dsh-tui: ${scopeTarget} does not exist`,
+      problem: `profile "wca-spv-tui" cannot load dsh-tui: ${scopeTarget} does not exist`,
       fix: 'install the dsh-tui profile, then run "bash install.sh" (spv falls back to dsh-tui meanwhile)',
     })
   }
@@ -319,7 +322,7 @@ function desiredLinks({ id, dir, dshHome, dependencies }) {
     else {
       critical = true
       problems.push({
-        problem: `profile "wca-tui" is missing ${name}`,
+        problem: `profile "wca-spv-tui" is missing ${name}`,
         fix: 'install the wca profile first, then rerun "bash wheelchair-agent profiles sync"',
       })
     }
@@ -447,6 +450,31 @@ function migrateLegacySuperagent({ dshHome, report }) {
 }
 
 /**
+ * One-time move of the renamed terminal profile: `profiles/wca-tui` becomes
+ * `profiles/wca-spv-tui` whole, so `profile-links.json` moves with it. Both present is not an
+ * error: the new profile is used and the old one is only reported.
+ */
+function migrateLegacyWcaTui({ dshHome, report }) {
+  const target = join(dshHome, 'profiles', WCA_SPV_TUI_PROFILE_ID)
+  const legacy = join(dshHome, 'profiles', LEGACY_WCA_TUI_PROFILE_ID)
+  if (existsSync(target)) {
+    if (existsSync(legacy)) {
+      report.notes.push(
+        `profiles/${LEGACY_WCA_TUI_PROFILE_ID} still exists; the spv session now uses "wca-spv-tui" and the ` +
+          'old profile is unused (it can be deleted by hand)',
+      )
+    }
+    return
+  }
+  if (!existsSync(legacy)) return
+  renameSync(legacy, target)
+  report.tuiMigrated = true
+  report.notes.push(
+    `moved the spv terminal profile from ${LEGACY_WCA_TUI_PROFILE_ID} to ${WCA_SPV_TUI_PROFILE_ID}`,
+  )
+}
+
+/**
  * Align both profiles, the deployment registry and the panel overlay with the templates.
  * Always writes; the CLI and install.sh are the only callers.
  */
@@ -466,6 +494,7 @@ export function syncProfiles(options = {}) {
     stateDir,
     port,
     migratedFrom: null,
+    tuiMigrated: false,
     profiles: {},
     registry: null,
     panelOverlay: null,
@@ -474,6 +503,7 @@ export function syncProfiles(options = {}) {
     changed: false,
   }
   migrateLegacySuperagent({ dshHome, report })
+  migrateLegacyWcaTui({ dshHome, report })
   for (const id of PROFILE_IDS) {
     report.profiles[id] = syncOneProfile({
       id,
@@ -492,18 +522,19 @@ export function syncProfiles(options = {}) {
   report.panelOverlay = writePanelOverlay({ dataRoot, source: panelSource })
   report.changed =
     report.migratedFrom !== null ||
+    report.tuiMigrated ||
     report.registry.changed ||
     report.panelOverlay.changed ||
     report.profiles[WCA_PROFILE_ID].created ||
-    report.profiles[WCA_TUI_PROFILE_ID].created ||
+    report.profiles[WCA_SPV_TUI_PROFILE_ID].created ||
     report.profiles[WCA_PROFILE_ID].packageChanged ||
     report.profiles[WCA_PROFILE_ID].patchChanged ||
-    report.profiles[WCA_TUI_PROFILE_ID].packageChanged ||
-    report.profiles[WCA_TUI_PROFILE_ID].patchChanged ||
+    report.profiles[WCA_SPV_TUI_PROFILE_ID].packageChanged ||
+    report.profiles[WCA_SPV_TUI_PROFILE_ID].patchChanged ||
     report.profiles[WCA_PROFILE_ID].links?.linked.length > 0 ||
-    report.profiles[WCA_TUI_PROFILE_ID].links?.linked.length > 0 ||
+    report.profiles[WCA_SPV_TUI_PROFILE_ID].links?.linked.length > 0 ||
     report.profiles[WCA_PROFILE_ID].links?.pruned.length > 0 ||
-    report.profiles[WCA_TUI_PROFILE_ID].links?.pruned.length > 0
+    report.profiles[WCA_SPV_TUI_PROFILE_ID].links?.pruned.length > 0
   return report
 }
 
@@ -697,8 +728,9 @@ export function checkProfiles(options = {}) {
   const problems = []
   const notes = []
   const wcaDir = join(dshHome, 'profiles', WCA_PROFILE_ID)
-  const tuiDir = join(dshHome, 'profiles', WCA_TUI_PROFILE_ID)
+  const tuiDir = join(dshHome, 'profiles', WCA_SPV_TUI_PROFILE_ID)
   const legacy = join(dshHome, 'profiles', LEGACY_SUPERAGENT_PROFILE_ID)
+  const legacyTui = join(dshHome, 'profiles', LEGACY_WCA_TUI_PROFILE_ID)
 
   if (!existsSync(wcaDir) && existsSync(legacy)) {
     problems.push({
@@ -713,15 +745,26 @@ export function checkProfiles(options = {}) {
   } else {
     problems.push(...compareProfile({ id: WCA_PROFILE_ID, dir: wcaDir, dshHome, template: templates.profiles[WCA_PROFILE_ID], stateDir, port }))
   }
-  if (!existsSync(tuiDir)) {
+  if (!existsSync(tuiDir) && existsSync(legacyTui)) {
     problems.push({
-      problem: 'profile "wca-tui" is missing',
+      problem: `profile "${WCA_SPV_TUI_PROFILE_ID}" is missing; the old "${LEGACY_WCA_TUI_PROFILE_ID}" profile is still installed`,
+      fix: 'run "bash install.sh" from the wheelchair-agent checkout to move it',
+    })
+  } else if (!existsSync(tuiDir)) {
+    problems.push({
+      problem: `profile "${WCA_SPV_TUI_PROFILE_ID}" is missing`,
       fix: 'run "bash install.sh" from the wheelchair-agent checkout',
     })
   } else {
     problems.push(
-      ...compareProfile({ id: WCA_TUI_PROFILE_ID, dir: tuiDir, dshHome, template: templates.profiles[WCA_TUI_PROFILE_ID], stateDir, port }),
+      ...compareProfile({ id: WCA_SPV_TUI_PROFILE_ID, dir: tuiDir, dshHome, template: templates.profiles[WCA_SPV_TUI_PROFILE_ID], stateDir, port }),
     )
+    if (existsSync(legacyTui)) {
+      problems.push({
+        problem: `the old "${LEGACY_WCA_TUI_PROFILE_ID}" profile is still installed at ${legacyTui}`,
+        fix: `run "wheelchair-agent profiles sync" to move it to "${WCA_SPV_TUI_PROFILE_ID}"`,
+      })
+    }
   }
 
   if (existsSync(legacy) && existsSync(wcaDir)) {
@@ -734,8 +777,8 @@ export function checkProfiles(options = {}) {
   }
   if (existsSync(join(dshHome, 'profiles', 'dsh-tui'))) {
     notes.push(
-      'profiles/dsh-tui is not used by any deployment, but wca-tui links its dsh-tui package; keep it ' +
-        'while wca-tui exists',
+      'profiles/dsh-tui is not used by any deployment, but wca-spv-tui links its dsh-tui package; keep it ' +
+        'while wca-spv-tui exists',
     )
     const leftover = join(dshHome, 'profiles', 'dsh-tui', 'node_modules', 'wheelchair-agent')
     if (existsSync(leftover)) {
@@ -780,7 +823,7 @@ export function formatCheckReport(report) {
   const lines = []
   for (const problem of report.problems) lines.push(`problem: ${problem.problem}\n  fix: ${problem.fix}`)
   for (const note of report.notes) lines.push(`note: ${note}`)
-  if (report.ok) lines.unshift('ok: the wca and wca-tui profiles, deployments and panel overlay match')
+  if (report.ok) lines.unshift('ok: the wca and wca-spv-tui profiles, deployments and panel overlay match')
   return lines.join('\n')
 }
 

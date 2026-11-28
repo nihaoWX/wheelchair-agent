@@ -1,5 +1,5 @@
 {
-  "name": "dsh-profile-wca-tui",
+  "name": "dsh-profile-wca-spv-tui",
   "private": true,
   "dependencies": {
     "@mars-sea/dsh-commandcode-provider": "0.17.7",

@@ -1,7 +1,7 @@
 /**
  * Two self-built profiles, one shared implementation.
  *
- * `src/spv/profiles.js` owns both profiles (`wca` for the browser surface, `wca-tui` for the SPV
+ * `src/spv/profiles.js` owns both profiles (`wca` for the browser surface, `wca-spv-tui` for the SPV
  * session), the one-time move of `profiles/superagent`, the deployment registry profile field and the
  * panel overlay. This test runs it against throwaway DSH_HOME/data-root pairs only: it never reads or
  * writes the machine's real `~/.dsh`, never starts dsh, and never deletes a profile.
@@ -17,6 +17,7 @@ import {
   mkdtempSync,
   readFileSync,
   readlinkSync,
+  renameSync,
   rmSync,
   symlinkSync,
   writeFileSync,
@@ -225,9 +226,9 @@ function testMigration() {
     check('the account row is in the wca patch', /activeAccount:\s*COMMANDCODE_API_KEY_3/.test(patch), patch)
     check('the model row is in the wca patch', /model:\s*deepseek\/deepseek-v4.1-flash/.test(patch), patch)
 
-    const tui = join(box.dsh, 'profiles', 'wca-tui')
+    const tui = join(box.dsh, 'profiles', 'wca-spv-tui')
     const tuiManifest = JSON.parse(readFileSync(join(tui, 'package.json'), 'utf8'))
-    check('the terminal profile is named dsh-profile-wca-tui', tuiManifest.name === 'dsh-profile-wca-tui', tuiManifest.name)
+    check('the terminal profile is named dsh-profile-wca-spv-tui', tuiManifest.name === 'dsh-profile-wca-spv-tui', tuiManifest.name)
     check('the terminal bundle order matches the template', JSON.stringify(tuiManifest.dsh.profile.bundles) === JSON.stringify(TUI_BUNDLES), JSON.stringify(tuiManifest.dsh.profile.bundles))
     check(
       'the terminal profile links the dsh-tui package from the dsh-tui profile',
@@ -280,7 +281,7 @@ function testBothProfilesAndLeftovers() {
     check('the check note says the old profile is deletable', /profiles\/superagent is unused by any deployment and can be deleted by hand/.test(notes), notes)
     check('the check note says the old panel profile is deletable', /profiles\/wheelchair-agent is unused/.test(notes), notes)
     check('the check note says the legacy panel profile is deletable', /profiles\/panel is unused/.test(notes), notes)
-    check('the check note keeps dsh-tui for wca-tui', /profiles\/dsh-tui is not used by any deployment, but wca-tui links/.test(notes), notes)
+    check('the check note keeps dsh-tui for wca-spv-tui', /profiles\/dsh-tui is not used by any deployment, but wca-spv-tui links/.test(notes), notes)
     check('the leftover dsh-tui wheelchair-agent copy is reported', /profiles\/dsh-tui\/node_modules\/wheelchair-agent is an early leftover/.test(notes), notes)
     check('no leftover directory is deleted', existsSync(join(box.dsh, 'profiles', 'wheelchair-agent', 'keep-me')) && existsSync(join(box.dsh, 'profiles', 'panel', 'keep-me')))
   } finally {
@@ -317,12 +318,12 @@ function testDriftRepair() {
     const manifest = JSON.parse(readFileSync(manifestFile, 'utf8'))
     manifest.dsh.profile.bundles = manifest.dsh.profile.bundles.filter(name => name !== 'dsh-context')
     writeJson(manifestFile, manifest)
-    rmSync(join(box.dsh, 'profiles', 'wca-tui', 'node_modules', '@deepseek-harness-tui'), { recursive: true, force: true })
+    rmSync(join(box.dsh, 'profiles', 'wca-spv-tui', 'node_modules', '@deepseek-harness-tui'), { recursive: true, force: true })
     const overlayFile = join(box.data, 'deployments', 'panel.yml')
     writeFileSync(overlayFile, readFileSync(overlayFile, 'utf8').replace(/\n\s+disabled: true/, '\n      enabled: true'))
     const status = checkProfiles(box)
     check('check reports the drifted bundle list', status.problems.some(problem => /bundles/.test(problem.problem)), profiles.formatCheckReport(status))
-    check('check reports the missing dsh-tui link', status.problems.some(problem => /wca-tui/.test(problem.problem)), profiles.formatCheckReport(status))
+    check('check reports the missing dsh-tui link', status.problems.some(problem => /wca-spv-tui/.test(problem.problem)), profiles.formatCheckReport(status))
     check('check reports the overlay drift', status.problems.some(problem => /panel overlay/.test(problem.problem)), profiles.formatCheckReport(status))
     const report = sync(box)
     check('sync repairs the drift', report.problems.length === 0, profiles.formatSyncReport(report))
@@ -330,7 +331,7 @@ function testDriftRepair() {
     check('sync restored the template bundles', JSON.stringify(repaired.dsh.profile.bundles) === JSON.stringify(WCA_BUNDLES))
     check(
       'sync restored the dsh-tui link',
-      existsSync(join(box.dsh, 'profiles', 'wca-tui', 'node_modules', '@deepseek-harness-tui')),
+      existsSync(join(box.dsh, 'profiles', 'wca-spv-tui', 'node_modules', '@deepseek-harness-tui')),
     )
     check('sync restored the overlay', checkProfiles(box).ok, profiles.formatCheckReport(checkProfiles(box)))
   } finally {
@@ -370,10 +371,77 @@ function testMissingDshTuiDonor() {
     const text = profiles.formatSyncReport(report)
     check('a missing dsh-tui profile is a reported problem', report.problems.some(problem => /cannot load dsh-tui/.test(problem.problem)), text)
     check('the browser profile is still created', existsSync(join(box.dsh, 'profiles', 'wca')))
-    check('wca-tui is not created from nothing', !existsSync(join(box.dsh, 'profiles', 'wca-tui')))
-    check('sync carries the fallback note', /profile "wca-tui" was not created/.test(text), text)
+    check('wca-spv-tui is not created from nothing', !existsSync(join(box.dsh, 'profiles', 'wca-spv-tui')))
+    check('sync carries the fallback note', /profile "wca-spv-tui" was not created/.test(text), text)
   } finally {
     rmSync(box.base, { recursive: true, force: true })
+  }
+}
+
+function testTerminalProfileRename() {
+  const oldName = 'wca-tui'
+  const newName = 'wca-spv-tui'
+  const box = makeBox()
+  try {
+    const old = join(box.dsh, 'profiles', oldName)
+    writeJson(join(old, 'package.json'), {
+      name: 'dsh-profile-wca-tui',
+      private: true,
+      dependencies: { '@mars-sea/dsh-commandcode-provider': '0.17.7', 'billion-context': '^0.1.216' },
+      dsh: { profile: { bundles: [...TUI_BUNDLES] } },
+    })
+    writeJson(join(old, 'profile-links.json'), { profile: oldName, linked: [] })
+    const report = sync(box)
+    const text = profiles.formatSyncReport(report)
+    const moved = join(box.dsh, 'profiles', newName)
+    check('the old terminal profile is moved whole', !existsSync(old) && existsSync(moved), text)
+    check(
+      'sync prints the one-line rename note',
+      /note: moved the spv terminal profile from wca-tui to wca-spv-tui/.test(text),
+      text,
+    )
+    check('the link record moved with the directory', existsSync(join(moved, 'profile-links.json')))
+    check(
+      'the moved terminal profile is named dsh-profile-wca-spv-tui',
+      JSON.parse(readFileSync(join(moved, 'package.json'), 'utf8')).name === 'dsh-profile-wca-spv-tui',
+    )
+    check(
+      'the second sync does not move the profile again',
+      !/moved the spv terminal profile/.test(profiles.formatSyncReport(sync(box))),
+    )
+
+    mkdirSync(join(box.dsh, 'profiles', oldName), { recursive: true })
+    writeFileSync(join(box.dsh, 'profiles', oldName, 'keep-me'), 'old\n')
+    const both = profiles.formatSyncReport(sync(box))
+    check('both names: the new terminal profile is used', existsSync(moved))
+    check('both names: the old terminal profile is kept', existsSync(join(box.dsh, 'profiles', oldName, 'keep-me')))
+    check('both names: the report says the old profile is unused', /profiles\/wca-tui still exists/.test(both), both)
+    const status = checkProfiles(box)
+    check(
+      'check reports the old terminal profile instead of ignoring it',
+      !status.ok && status.problems.some(problem => /old "wca-tui" profile is still installed/.test(problem.problem)),
+      profiles.formatCheckReport(status),
+    )
+  } finally {
+    rmSync(box.base, { recursive: true, force: true })
+  }
+
+  const onlyOld = makeBox()
+  try {
+    sync(onlyOld)
+    const current = join(onlyOld.dsh, 'profiles', newName)
+    const legacy = join(onlyOld.dsh, 'profiles', oldName)
+    renameSync(current, legacy)
+    const status = checkProfiles(onlyOld)
+    const text = profiles.formatCheckReport(status)
+    check(
+      'check names the missing terminal profile and the old directory',
+      status.problems.some(problem => /profile "wca-spv-tui" is missing; the old "wca-tui" profile is still installed/.test(problem.problem)),
+      text,
+    )
+    check('check does not silently rewrite the old directory', existsSync(legacy) && !existsSync(current), text)
+  } finally {
+    rmSync(onlyOld.base, { recursive: true, force: true })
   }
 }
 
@@ -407,23 +475,23 @@ function testLauncherProfile() {
         encoding: 'utf8',
       })
     const present = run({})
-    check('the launcher succeeds with wca-tui installed', present.status === 0, present.stderr)
+    check('the launcher succeeds with wca-spv-tui installed', present.status === 0, present.stderr)
     const record = readFileSync(out, 'utf8')
-    check('the launcher exports DSH_TUI_PROFILE=wca-tui', /^profile=wca-tui$/m.test(record), record)
+    check('the launcher exports DSH_TUI_PROFILE=wca-spv-tui', /^profile=wca-spv-tui$/m.test(record), record)
     check('the launcher keeps DSH_TUI_PRESET=spv', /^preset=spv$/m.test(record), record)
     check('the launcher keeps the preset patch argument', /^argv=--patch .*preset-default\.patch\.yml$/m.test(record), record)
-    rmSync(join(box.dsh, 'profiles', 'wca-tui'), { recursive: true, force: true })
+    rmSync(join(box.dsh, 'profiles', 'wca-spv-tui'), { recursive: true, force: true })
     const absent = run({})
-    check('the launcher still starts without wca-tui', absent.status === 0, absent.stderr)
+    check('the launcher still starts without wca-spv-tui', absent.status === 0, absent.stderr)
     check('the fallback leaves DSH_TUI_PROFILE unset', /^profile=<unset>$/m.test(readFileSync(out, 'utf8')), readFileSync(out, 'utf8'))
-    check('the fallback prints one note', /note: profile wca-tui is missing; falling back to the dsh-tui profile/.test(absent.stderr), absent.stderr)
+    check('the fallback prints one note', /note: profile wca-spv-tui is missing; falling back to the dsh-tui profile/.test(absent.stderr), absent.stderr)
   } finally {
     rmSync(box.base, { recursive: true, force: true })
   }
 }
 
 function testTemplateHygiene() {
-  for (const name of ['wca.package.json', 'wca.patch.yml', 'wca-tui.package.json', 'wca-tui.patch.yml']) {
+  for (const name of ['wca.package.json', 'wca.patch.yml', 'wca-spv-tui.package.json', 'wca-spv-tui.patch.yml']) {
     const text = readFileSync(join(TEMPLATE_DIR, name), 'utf8')
     check(`template ${name} has no machine-specific path`, !text.includes('/home/'), name)
   }
@@ -441,6 +509,7 @@ function main() {
   testDriftRepair()
   testLinkRecordAndPrune()
   testMissingDshTuiDonor()
+  testTerminalProfileRename()
   testLauncherProfile()
   process.stdout.write(`\n${PASS} passed, ${FAIL} failed\n`)
   process.exit(FAIL === 0 ? 0 : 1)

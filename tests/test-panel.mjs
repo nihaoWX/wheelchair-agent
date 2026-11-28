@@ -234,10 +234,10 @@ async function testProfile() {
     check('the legacy superagent profile was moved, not copied', !existsSync(join(box.dsh, 'profiles', 'superagent')))
     check('the browser profile bundles dsh-web-app', bundles.includes('@deepseek-ai/dsh-web-app'), bundles.join(','))
     check('the browser profile bundles dsh-superagent', bundles.includes('dsh-superagent'), bundles.join(','))
-    check('the terminal profile exists', existsSync(join(box.dsh, 'profiles', 'wca-tui')))
+    check('the terminal profile exists', existsSync(join(box.dsh, 'profiles', 'wca-spv-tui')))
     check(
       'the terminal profile links the installed dsh-tui package',
-      existsSync(join(box.dsh, 'profiles', 'wca-tui', 'node_modules', '@deepseek-harness-tui')),
+      existsSync(join(box.dsh, 'profiles', 'wca-spv-tui', 'node_modules', '@deepseek-harness-tui')),
     )
     const patch = readFileSync(join(profile, 'cordis.patch.yml'), 'utf8')
     check('the browser patch mounts dsh-superagent', /id:\s*dsh-superagent\s*$/m.test(patch), patch)
