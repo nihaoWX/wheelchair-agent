@@ -64,6 +64,14 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
 
 # Completed
 
+- **`#75` 合并（`fd195dd`，`refactor(profiles): rename the spv terminal profile to wca-spv-tui`）**：只改名
+  （`WCA_SPV_TUI_PROFILE_ID`、`preset/profiles/wca-spv-tui.*`、`install.sh` 的 `expected=` 与文案、
+  `preset/spv-launcher.sh`、`bin` usage、`deployment-restart.js`），加一次整体 `renameSync` 迁移
+  （`migrateLegacyWcaTui()`：新目录在就不动只 note、旧目录在而新目录缺才搬）与 `LEGACY_WCA_TUI_PROFILE_ID`。
+  我的验证：`/tmp/wca-pr75` 里 build + `npm test` **EXIT=0、648 项全过**；`grep -rn wca-tui` 只剩旧名与本单
+  改动的必要引用；CI 绿；`gh pr merge 75 --squash --delete-branch`。
+  留一个小坑给下一单（已写进 step 2 工单）：`checkProfiles()` 在"新旧目录并存"时报的是 problem，但 fix
+  写的是"跑 profiles sync"——sync 在新目录已存在时故意不搬，所以那个 fix 永远无效，`--check` 会一直红。
 - **`#74` 合并（`c6c71b4`，`refactor(profiles): split into the wca and wca-tui dsh profiles`）**：两个自建
   profile 从 `preset/profiles/` 渲染（新增 `src/spv/profiles.js`，827 行；删掉 `src/spv/panel-profile.js`
   1111 行与 `panel sync`），`superagent` 整体搬成 `wca`、注册表 `profile` 字段迁移、面板改跑
