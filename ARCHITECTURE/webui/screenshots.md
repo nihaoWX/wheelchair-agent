@@ -76,7 +76,8 @@ viewport and the same signed-out state, so only the panel's plugin set and mirro
 - `webui/docs/before-panel-plugins.png` — the panel profile as the previous `install.sh` left it:
   `@deepseek-ai/dsh-base` + `@deepseek-ai/dsh-web-app`, the `wheelchair-agent-webui` loader row and the
   managed `ui-settings-general` row only; light default theme.
-- `webui/docs/after-panel-plugins-dark.png` — after `wheelchair-agent panel sync` against a source
+- `webui/docs/after-panel-plugins-dark.png` —（历史截图：`#63` 时代「面板镜像来源 profile」的做法；`#74` 起面板跑的是
+  `wca` + `deployments/panel.yml`，画面不变但机制已不是镜像）after `wheelchair-agent panel sync` against a source
   `superagent` profile with `dsh-context`, `billion-context` and `@mars-sea/dsh-commandcode-provider`:
   **Context Insights** appears from `dsh-context`, and the dark theme comes from the mirrored
   `ui-theme` row. The signed-out dialog is expected in both boxes: the temp `DSH_HOME` has no account.

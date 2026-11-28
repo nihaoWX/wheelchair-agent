@@ -11,7 +11,8 @@ active feature panel (the review inbox, 收件箱, is the first one; Settings, �
 specifiers** of the host Loader's rows for a `dsh.client` declaration. A package inside another
 package (`wheelchair-agent/webui`) is not a row of its own and is never scanned, so the panel
 would simply not appear. Hence a real package, installed into the profile's `node_modules` with
-its own loader row in `~/.dsh/profiles/superagent/cordis.patch.yml` (written by `install.sh`).
+its own loader row in `~/.dsh/profiles/wca/cordis.patch.yml` (written by `install.sh`; `#74` renamed the profile
+from `superagent`, and every profile is now rendered from `preset/profiles/*` — see `ARCHITECTURE/profiles.md`).
 
 ## How it loads
 

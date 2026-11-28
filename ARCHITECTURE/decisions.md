@@ -326,6 +326,10 @@ gh 失败只 warning。
 
 ## 面板 profile 镜像来源 profile，而不是维护自己的清单（`#63`，2026-11-26）
 
+> **已被 `#74` 取代**：镜像机制（`src/spv/panel-profile.js`、`panel sync`、设置键 `panel.profileFrom`）整体删除，
+> 改为每份 profile 都由 `preset/profiles/*` 模板渲染、面板跑 `wca` + `deployments/panel.yml`。保留本条是因为
+> 它记着三条排除规则与「文本行镜像而非解析对象」的理由，那两条结论仍然成立（见 `ARCHITECTURE/profiles.md`）。
+
 **问题**：面板是独立 profile，之前在 3082 的 web 端交互装的插件与改的配置只写进 `superagent` profile，面板连包都不
 存在；即使补齐插件，缺 `agent-default-model` 也会让对话回落到 `deepseek-official` 并因没有 `DEEPSEEK_API_KEY` 报
 `MISSING_CREDENTIAL`——看起来像"面板坏了"，实际是一行配置。

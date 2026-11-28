@@ -46,8 +46,10 @@ commandcode + bili（**不带** `dsh-superagent`/`dsh-context`/我们的 webui�
 | `profiles/wca-tui` | `profiles/wca-spv-tui` | 整体 `renameSync`；两个都在时只用新的 |
 | `profiles/wheelchair-agent`、`profiles/panel` | — | 只在 `--check` 打 note"可手删"，**从不自动删** |
 
-`deployments.json` 里坏掉的 JSON 不重写（宁可报 problem 也不猜）。迁移之后 `panel.profileFrom` 这类指向旧
-profile 名的残留键不再有读者（见 issue #77）。
+`deployments.json` 里坏掉的 JSON 不重写（宁可报 problem 也不猜）。迁移之后指向旧 profile 名的设置键就成了死键——
+`panel.profileFrom` 已按这条路径删掉（issue #77 / PR #78）：`crates/wca-core/src/settings.rs` 的 `RETIRED_KEYS`
+让旧 `settings.json` 里的残留值**静默丢弃**（不当成拼写错误告警），下一次写盘不再带它。以后每删一个键都往这个
+列表里加一行。
 
 ## 3. `spv.surface` / `spv.webPort`
 

@@ -65,6 +65,20 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
 
 # Completed
 
+- **`#78` 合并（`11c3b5a`，`fix(settings): drop the retired panel.profileFrom key`，issue #77 / 账本
+  `wheelchair-agent:R8`）**：`SPECS` 从 13 键回到 12 键，`panel.profileFrom` 的 Spec、`normalize` 里针对它的
+  profile-id 分支与 `is_profile_id` 一并删除；新增 `RETIRED_KEYS`（`crates/wca-core/src/settings.rs`）让旧
+  `settings.json` 里的残留值**静默丢弃**（读 `values`/`filled` 两处都过一遍，`fill_missing_defaults` 写盘时顺手
+  丢掉），真正拼错的键仍按原文案告警。我的复核（autoMerge 先合，故为合并后审计）：`bash build/build-core.sh` +
+  `npm test` **EXIT=0、701 行全过**；产物二进制 `settings specs` = **12 键、无 `panel.profileFrom`**；
+  `python3 docs/PITFALLS/round-data/wheelchair-agent:R8/test.py` 两条 PASS（0.02s）；`pitfalls-manager check --repo .`
+  exit 0 零输出；`pitfalls-manager query --repo . crates/wca-core/src/settings.rs` 命中 `[R8-F1]` 并指向 issue #77。
+  测试里那条「真错键 `panel.profilFrom` 仍然告警」是这次的关键约束——防止用"关掉告警"糊过去。
+  顺带修掉三处 HARNESS 漂移（`#74` 没扫到的）：`webui/settings.md` 的该键行、`layout.md` 的「第五种安装目标/
+  `panel-profile.js`/`panel-bundles.json`」段与 `profiles/superagent` 路径、`cli.md` 的 `panel` 行（仍写着镜像与
+  `panel-profile.js`）；`decisions.md` 的 `#63` 条加「已被 `#74` 取代」注记；`webui/screenshots.md` 的旧截图注明是
+  `#63` 时代。`ARCHITECTURE/profiles.md` §2 补了 `RETIRED_KEYS` 的约定。
+
 - **`#76` 合并（`d9e465c`，`feat(profiles): add the browser-shaped SPV host and spv.surface switch`）**：第三种
   交互形状落地——`wca-spv-web` 自建 profile（`dsh-base` + `dsh-web-app` + commandcode + bili +
   `wheelchair-agent`，**不挂** `dsh-superagent`/webui）、`spv.surface`（`tui`|`web`，默认 `tui`）与
@@ -425,10 +439,6 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
   已于 2026-11-27 核实并删除。
 # Known Issues
 
-- **`panel.profileFrom` 是死键**（issue #77）：`#74` 删掉 `src/spv/panel-profile.js` 后没有任何读者，但
-  `crates/wca-core/src/settings.rs:103` 仍定义它、默认 `"superagent"`，安装时会被写进 `settings.json`——
-  迁移之后那个值指向一个不存在的 profile，用户改它既不生效也不报错。等消费票删键（旧值要静默处置，
-  不能变成 unknown-key 警告）。
 - **宿主环境的 systemd 在崩**：`dmesg` 记录 `systemd-logind / systemd-resolved / systemd-timesyncd` 在开机 191 秒
   时 SIGABRT（WSL2 时钟跳变），logind 一崩就销毁 session scope。这是这一夜服务"静默死亡"的宿主级原因；
   `wsl --update` / 避免宿主睡眠是待试项。

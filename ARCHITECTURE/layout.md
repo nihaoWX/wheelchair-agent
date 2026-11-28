@@ -69,7 +69,7 @@ wheelchair-agent/
 
 ## `package.json` 的 exports 键保持不变
 
-`~/.dsh/profiles/superagent/cordis.patch.yml` 用 bare specifier `wheelchair-agent/spv-watch` 引用插件，
+`~/.dsh/profiles/wca/cordis.patch.yml`（`#74` 前叫 `superagent`）用 bare specifier `wheelchair-agent/spv-watch` 引用插件，
 那是**仓库外的操作者状态**。所以 exports 的**键**是公开 API，只改它指向的文件：
 
 | 键 | 现在 | 之后 |
@@ -96,7 +96,7 @@ wheelchair-agent/
 | preset（`preset.yml`、`agent.cordis.yml`、`preset-default.patch.yml`、`package.json`） | `~/.dsh/.agent-presets/spv/` |
 | SPV 侧 JS（`src/spv/*`、`src/shared/*`）+ `cli.js` + `agentsmd-examples/` + `prepare.sh` + `commands/` | `~/.dsh/.agent-presets/spv/` |
 | **webui 包**（`package.json`、`lib/index.js`、`lib/client.js` + 拷进去的 inbox core） | **`~/.dsh/profiles/superagent/node_modules/wheelchair-agent-webui/`（新增）** |
-| **webui loader 行**（`- insert: id: wheelchair-webui`） | **`~/.dsh/profiles/superagent/cordis.patch.yml`（append-only）** |
+| **webui loader 行**（`- insert: id: wheelchair-webui`） | **`~/.dsh/profiles/wca/cordis.patch.yml`（append-only）** |
 | **`wheelchair-agent` CLI 薄壳** | **`~/.local/bin/wheelchair-agent`（新增）** |
 | `spv` 启动器 | `~/.local/bin/spv` |
 | `superagent-service` | `~/.local/bin/superagent-service` |
@@ -164,7 +164,8 @@ wheelchair-agent/
 ├── src/superagent/               # 只被 superagent profile 加载（spv.js 定义 Source kind，watch.js 跑轮询）
 ├── src/spv/                      # 只被 SPV preset 与 CLI 加载（paths, dispatch, outbox, injector, health,
 │                                 #   inbox, cron, tools, cron-plugin, check, hook, restart, restart-ux,
-│                                 #   restart-command, session, panel-instance, panel-profile）
+│                                 #   restart-command, session, panel-instance, profiles, spv-host,
+│                                 #   deployment-policy, service-instance, archive-effect, auto-merge-effect）
 ├── preset/                       # 装到 ~/.dsh/.agent-presets/spv/（preset.yml, agent.cordis.yml, spv-launcher.sh）；
 │                                 #   panel.patch.yml 是独立面板实例的 --patch overlay
 ├── commands/                     # 会被装成独立命令的实现（prepare.sh, jobctl.py, superagent-service.py）
@@ -180,13 +181,11 @@ wheelchair-agent/
 安装布局：preset 目录是「SPV 侧的已安装包」（含 `cli.js`、`src/{shared,spv}/`、`commands/`、`prepare.sh`），
 `~/.local/bin/wheelchair-agent` 是薄壳，`spv` / `superagent-service` / `jobctl` 是它的兼容名。
 superagent 侧的 `src/superagent/` **从不进 preset 目录**：那个 profile 用自己的 `node_modules` 软链加载它。
-`webui/` 是**第四种安装目标**：`install.sh` 把包拷进 `~/.dsh/profiles/superagent/node_modules/wheelchair-agent-webui/`，
-并往该 profile 的 `cordis.patch.yml` 追加一行 loader（见下）。`#58` 又加了**第五种**：`$DSH_HOME/profiles/wheelchair-agent/`（`#65` 前叫 `panel`）
-（`package.json`、`cordis.yml`、`panel-instance.json`、`panel-bundles.json` + 同一份 webui 包），只给独立面板用，
-与任何部署无关；其中 `package.json` 的 `dsh.profile.bundles` 镜像来源 profile（`panel.profileFrom`，默认
-`superagent`，只去掉 `dsh-superagent`）；`cordis.patch.yml` 也由 sync 整文件生成，镜像来源 profile 的顶层行（跳过
-`webserver`/`dsh-superagent`/`wheelchair-agent/*` insert，面板自己的 loader 与 `ui-settings-general` 固定首末）；
-`panel-bundles.json` 记下 `src/spv/panel-profile.js` 建过的软链，下次 sync 只回收这些。
+`webui/` 是**第四种安装目标**：`install.sh` 把包拷进 `~/.dsh/profiles/wca/node_modules/wheelchair-agent-webui/`（`#74` 前叫 `superagent`），
+并往该 profile 的 `cordis.patch.yml` 追加一行 loader（见下）。`#74` 改成**每份 profile 都从模板渲染**：`preset/profiles/<id>.{package.json,patch.yml}` →
+`~/.dsh/profiles/<id>/`（`wheelchair-agent profiles sync`，`install.sh` 也做），三份 profile 与各自的 overlay 见
+`ARCHITECTURE/profiles.md`；`profile-links.json` 记下我们建过的 `node_modules` 软链，回收只看这些。
+面板不再是「镜像来源 profile」的独立目录：它跑的是 `wca` + `deployments/panel.yml`（关四行）。
 
 **`install.sh` 的契约在 `ARCHITECTURE/layout.md`**：只做冷安装（服务或活着的 SPV 会话占着目标就 `exit 3` 并写一条
 notice）、`--check` 只读地比"装进去的 == checkout"（过期 `exit 2`）、**拷贝不软链**、暂存后原子替换、幂等。
