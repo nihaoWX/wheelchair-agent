@@ -83,7 +83,7 @@ superagent 的原设计就是「一份部署 = 一个仓库」——`deployment.
   `allowed` 会被补、`prepare` 不会（真机上 3083/3085 就是这么躺在"能接单但不 clone"的状态里的）。
   根因在 dsh-superagent 的 `validatePolicy()` 只对已存在的 `policy.sources.<id>` 套默认值，所以新部署的默认值
   永远不会自己出现；`deployment add` 只复刻端口/stateDir/queueDir，不管这些。
-- **一个 worker 项目路径只能归一份部署**（`#66`）：注册表本身已拒绝重复的项目名/端口/实例名，但两个不同的
+- **一个 orchestrator 项目路径只能归一份部署**（`#66`，术语在 `#73` 改成 orchestrator）：注册表本身已拒绝重复的项目名/端口/实例名，但两个不同的
   项目名仍可能通过符号链接或目录别名指向同一份 checkout。判定一律先拼成 `<projectsRoot>/<project>` 再
   `realpathSync`（`canonicalProjectPath()`），所以 `tools/alpha` 与指向它的 `tools/alpha-link` 是同一份。
   四处行为：`deployment add` 遇到别的名字认领同一路径就报错并点名现有 slug 与端口（同一个项目重复 add 仍然幂等，

@@ -390,9 +390,9 @@ gh 失败只 warning。
 `cli.js panel --foreground` 旧宿主识别保持不变，而"另一个 `dsh --profile panel` 实例"不属于那个形状——它由
 端口占用检查拦住并报出 pid，代价是操作者要自己 `kill -INT`。
 
-## 一个 worker 项目路径只归一份部署，判等用 realpath 而不是项目名（`#66`，2026-11-26）
+## 一个 orchestrator 项目路径只归一份部署，判等用 realpath 而不是项目名（`#66`，2026-11-26）
 
-**问题**：`INSTRUCTIONS.md` 要求"一个 worker 项目路径只能绑定一个实例"。注册表原先只拒绝重复的项目名/端口/
+**问题**：`INSTRUCTIONS.md` 要求"一个 orchestrator 项目路径只能绑定一个实例"（`#73` 之前称 worker 项目）。注册表原先只拒绝重复的项目名/端口/
 实例名，两个不同的项目名照样能指向同一份 checkout（符号链接、目录改名、`tools/x` 与 `tools/x-link`）——
 那种情况下 `spv_dispatch` 按项目名能找到唯一一条，但"这份 checkout 到底归哪个实例"没有答案，同一个仓库会被
 两份实例同时 clone、两份 worker 同时提交。
@@ -400,7 +400,7 @@ gh 失败只 warning。
 **决定**：所有"这两个项目是不是同一处"的判定都先拼 `<projectsRoot>/<project>` 再 `realpathSync`，然后比较规范
 路径（`canonicalProjectPath()` / `deploymentsAtProjectPath()` / `projectPathConflicts()`，全在
 `src/shared/deployments.js`）。三条入口各有明确行为：`deployment add` 拒绝新增（点名现有 slug 与端口，并给出
-`deployment remove <project>`），`spv-project add --worker` 要求该 worker 已有部署，`resolveDeploymentEntry()`
+`deployment remove <project>`），`spv-project add --orchestrator`（旧名 `--worker`）要求该项目已有部署，`resolveDeploymentEntry()`
 发现多于一份认领同一路径时失败而不是取第一个。读取侧（`deployment list`、`install.sh --check`）只报告，不修
 注册表——那是操作者的文件。
 
@@ -410,3 +410,23 @@ gh 失败只 warning。
 **取舍**：`realpathSync` 对不存在的路径会抛，所以退化用 `resolve()` 的绝对路径（还没 clone 的部署照样能登记）。
 同一个项目重复 `deployment add` 保持幂等（只在**别的**名字认领同一路径时才拒绝），否则改端口/改仓库这类正常
 重复调用会被自己的保护挡住。
+
+## 术语按 `INSTRUCTIONS.md` 的三种 agent 收紧：spv / orchestrator / worker（`#73`，2026-11-28）
+
+**问题**：旧文档与 CLI 把每个小仓叫"worker 项目"，于是"worker"同时指**项目**（`tools/x`）和**一线 agent**
+（clone 到 `<stateDir>/work/<ticket>/` 里干活的那个）。两个东西混在一个词里，讲"一个 worker 只能提交 PR"和
+"一个 worker 路径只归一份部署"时读者要靠上下文猜。
+
+**决定**：`INSTRUCTIONS.md` 定的三层命名成为唯一口径——**spv**（入口会话，位于 `~/bioagentforge` 这类顶层
+目录，该目录是 spv 项目、**不部署** superagent）、**orchestrator**（每个小仓各自部署的 superagent 实例，它的
+项目叫 **orchestrator 项目**）、**worker**（每张工单真正干活的一线 agent）。代码侧只改**用户能看见的词**：
+`spv-project add --orchestrator`（`--worker` 仍等价可用，帮助里点明），文案与面板 i18n 值、`install.sh --check`
+的判语都改成 orchestrator project。
+
+**不改的部分**：`spv-projects.json` 的键名仍是 `workers`（操作者手改这份文件，改键名等于破坏它）；内部标识
+（`resolveDeploymentEntry`、`checkDeploymentRegistry`、`projects.workerCount` 这类 i18n 键、`worker-<ticketId>`
+会话名）一律不动——它们不是给用户读的句子，改名只增加回归面。`describe()` 的 `workers=` 计数换成
+`orchestratorProjects=` 是唯一动到的机器可读输出，仓库内没有任何解析方（我 grep 过）。
+
+**取舍**：保留 `--worker` 别名而不是直接删——`docs/` 与历史工单里到处是这个旗标，硬删会让旧命令突然报错，
+而别名成本是一行 `parse(rest, { repeat: ['--orchestrator', '--worker'] })`。

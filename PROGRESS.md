@@ -64,7 +64,14 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
 
 # Completed
 
-- **`#66` 合并（`5430d0f`，`feat(spv): bind each worker project path to one deployment`）**：一个 worker 项目路径
+- **`#73` 合并（`4abd36b`，`refactor(spv): rename worker projects to orchestrator projects`）**：按
+  `INSTRUCTIONS.md` 新定的三种 agent（spv / orchestrator / worker）把用户可见的词统一——`spv-project add
+  --orchestrator`（`--worker` 仍等价可用）、"worker project" → "orchestrator project"（全仓 grep 归零）、
+  面板「项目」段文案、`install.sh --check` 判语。**没动的**：`spv-projects.json` 的 `workers` 键、内部标识、
+  `worker-<ticketId>` 会话名。我的验证：`npm test` **505 PASS / EXIT=0**、CI 绿、diff 里没有
+  `src/spv/panel-*.js`（面板 profile 名按操作者要求未改）、别名测试断言 `--worker` 与 `--orchestrator` 写出
+  字节相同的 `spv-projects.json`。
+- **`#66` 合并（`5430d0f`，`feat(spv): bind each worker project path to one deployment`——提交标题是当时的叫法，`#73` 起统一称 orchestrator 项目）**：一个 orchestrator 项目路径
   只归一份部署，判等走 `canonicalProjectPath()`（`<projectsRoot>/<project>` 再 `realpathSync`）。`deployment add`
   拒绝另一个名字认领同一份 checkout（报现有 slug 与端口），同一项目重复 add 仍幂等；`spv-project add --worker`
   要求已有部署；新增 `resolveDeploymentEntry()`——多于一份认领同一路径就**不猜**、报错列全部认领者；
@@ -72,7 +79,7 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
   我验的：worktree `bash build/build-core.sh` + `npm test` **EXIT=0 全绿**（`test-worker-binding.mjs` 7 条全过，
   其余同基线 49/40/7/4/101/200/28/39/63）、两次 `ci pass`（`BEHIND` → `update-branch --rebase`）；沙箱真跑三条
   行为（`ln -s alpha alpha-link` 后同名路径被拒、同项目重复 add 回 `nothing changed`、`--worker tools/nope` 被拒）；
-  真机 `install.sh --check` 打出 `OK: every worker project path belongs to exactly one deployment`。这次也是
+  真机 `install.sh --check` 那时打出 `OK: every worker project path belongs to exactly one deployment`（`#73` 起判语里的词已换成 orchestrator）。这次也是
   `merge.autoMerge` 自己合的（我去合时回 `already merged`）。
 - **`#65` 合并（`cd5012b`，`Rename the panel's dsh profile to wheelchair-agent`）**：面板 profile id
   `panel` → `wheelchair-agent`，只改 id（overlay `preset/panel.patch.yml`、设置键 `panel.port`/`panel.profileFrom`、
@@ -203,8 +210,8 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
 - **spv 项目 + 面板「项目」段（`#53`, `16d0a97`）**：`<data root>/spv-projects.json`
   （`{version:1,spvProjects:[{root,workers}]}`，坏 JSON 报错且一字不改、相同内容不写盘）+
   `spv-project list|add|remove` + `deployment add --spv`（唯一祖先可推断才自动）+
-  `deployment remove` 同步解绑。四条校验都有测试：spv 根不能是已登记 worker 项目、两个 spv 根不能嵌套、
-  worker 必须在根之下、一个 worker 只绑一个 spv。面板第四个 section「项目」只读：
+  `deployment remove` 同步解绑。四条校验都有测试：spv 根不能是已登记 orchestrator 项目、两个 spv 根不能嵌套、
+  orchestrator 项目必须在根之下、一个项目只绑一个 spv。面板第四个 section「项目」只读：
   core 路由 `GET /wheelchair-projects`（两宿主都有）+ `src/spv/projects-view.js` 并发探测每份部署
   `GET /orchestrator/api/{state,overview,tickets?state=working}`，**单份 2s 超时**、失败只把那一行标
   `unavailable`、30s 刷新。自验：`npm test` 全绿；临时数据根手验 `add`/幂等/嵌套/worker 当根/`--force`
@@ -379,8 +386,8 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
   `wheelchair-agent service start --all` → `wheelchair-agent spv`。装前先 `install.sh --check`；
   当前唯一差异是 `preset (1 file: agentsmd-examples/proj-dev-agentsmd.md)`（`c7795a8` 的模板修正）。
 - **`INSTRUCTIONS.md` 已对齐，没有待派的产品票**：`### spv_dispatch`（相同 superagent profile、不同实例）、
-  spv/worker 项目、profile 与实例、实例-worker 保护机制由 `#64`–`#66` 落成；「项目」页要看的三样
-  （spv 路径 / 绑定的 worker / 正在跑的工单）在 `#53` 就已全部渲染——`webui/lib/client.js` 的
+  spv/orchestrator 项目、profile 与实例、实例-orchestrator 项目保护机制由 `#64`–`#66` 落成；「项目」页要看的三样
+  （spv 路径 / 绑定的 orchestrator 项目 / 正在跑的工单）在 `#53` 就已全部渲染——`webui/lib/client.js` 的
   `wca-project-running` 列表逐条打印 `ticket.title`（缺标题时退回 `ticket.id`），数据来自
   `src/spv/projects-view.js:67 runningTickets()`。我曾在 Known Issues 里记过"只显示数量"，那是看错旧截图，
   已于 2026-11-27 核实并删除。

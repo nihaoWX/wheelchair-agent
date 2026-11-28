@@ -107,7 +107,7 @@ Adding a feature is exactly one array entry plus its React component:
 ### Projects (read-only, `#53`)
 
 The fourth section is the only one with no write path: one card per **spv project**, each listing the
-worker projects bound to it, the port of the deployment that owns each worker (or "not deployed"),
+orchestrator projects bound to it, the port of the deployment that owns each project (or "not deployed"),
 and what is running there. Data comes from one core route, `GET /wheelchair-projects`, so both hosts
 have it; per-deployment probes are concurrent with a **2s** cap and a failure only marks that worker's
 row `unavailable`. It refreshes every 30s. The registry, the four validation rules and the CLI are in

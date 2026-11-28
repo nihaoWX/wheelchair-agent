@@ -1,8 +1,12 @@
-# spv 项目（spv 项目 → worker 项目的绑定）
+# spv 项目（spv 项目 → orchestrator 项目的绑定）
 
-`INSTRUCTIONS.md` 的「spv项目和worker项目」段：`~/bioagentforge` 这样的目录**是**一个 spv 项目（spv 的工作
-目录），它下面的小仓（`tools/<a tool>`、`research/<a task>`）是 worker 项目，**不能**再当 spv 项目。
+`INSTRUCTIONS.md` 的「spv项目和orchestrator项目」段：`~/bioagentforge` 这样的目录**是**一个 spv 项目（spv 的工作
+目录），它下面的小仓（`tools/<a tool>`、`research/<a task>`）是 **orchestrator 项目**，**不能**再当 spv 项目。
 这份文档记的是这条规则怎么落成数据、命令与面板。
+
+> 术语（`#73`）：`INSTRUCTIONS.md` 现在把三种 agent 分成 **spv / orchestrator / worker**，所以本文里
+> 早先叫"worker 项目 / 小仓"的东西一律叫 **orchestrator 项目**。命令旗标是 `--orchestrator`（`#73` 之前的
+> `--worker` 仍然等价可用）；`spv-projects.json` 里的键名保持 `workers`（改键名会破坏操作者手改的文件）。
 
 ## 数据形状（`<data root>/spv-projects.json`）
 
@@ -11,8 +15,8 @@
                                "workers": ["tools/wheelchair-agent", "tools/pitfalls-manager"]}]}
 ```
 
-- 与 `deployments.json` 平级、互不内嵌：**部署**回答"这个 worker 项目跑在哪份 superagent 实例上"，
-  **spv 项目**回答"这个 worker 项目归哪个 spv 管"。一个 worker 项目现在只能绑定**一个** spv 项目
+- 与 `deployments.json` 平级、互不内嵌：**部署**回答"这个 orchestrator 项目跑在哪份 superagent 实例上"，
+  **spv 项目**回答"这个 orchestrator 项目归哪个 spv 管"。一个 orchestrator 项目现在只能绑定**一个** spv 项目
   （`INSTRUCTIONS.md` 把这标为待定；真要放开时把 `workers` 换成带 `spvProject` 字段的记录即可）。
 - 读：文件不存在 = 没有登记（`{exists:false}`）；坏 JSON **报错且一字不改**（与注册表同一套措辞：
   `... is not valid JSON ... It is never rewritten automatically`）。
@@ -20,7 +24,7 @@
 
 ## 四条校验（都有测试）
 
-1. spv 根必须存在，且**不是**已登记 worker 项目的 checkout —— 那两种目录的角色不同，混用会让面板把
+1. spv 根必须存在，且**不是**已登记 orchestrator 项目的 checkout —— 那两种目录的角色不同，混用会让面板把
    一个 project 同时说成"根"和"worker"。
 2. 两个 spv 根**不能互相嵌套**（`bioagentforge` 与 `bioagentforge/tools/svg_grid` 不能同时登记）——
    这正是 `INSTRUCTIONS.md` 要防的"随意嵌套"。
