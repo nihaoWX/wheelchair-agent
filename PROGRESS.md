@@ -64,6 +64,17 @@ dsh 插件宿主**——没开面板也照常合并与提醒。`#58` 删掉了�
 
 # Completed
 
+- **`#74` 合并（`c6c71b4`，`refactor(profiles): split into the wca and wca-tui dsh profiles`）**：两个自建
+  profile 从 `preset/profiles/` 渲染（新增 `src/spv/profiles.js`，827 行；删掉 `src/spv/panel-profile.js`
+  1111 行与 `panel sync`），`superagent` 整体搬成 `wca`、注册表 `profile` 字段迁移、面板改跑
+  `wca + deployments/panel.yml`（关 `dsh-superagent`、两个 superagent preset、`wheelchair-spv` 四行）、
+  `wca-tui` 靠 `profile-links.json` 软链 dsh-tui 的包。**这次是 `merge.autoMerge` 先合掉的**（我打开 PR
+  时已 MERGED，45 文件、删 1111 行都过了），所以我做的是合并后审计：`npm test` EXIT=0、9 套件 **602 项全过**、
+  新文件里 `/home/nihao` 零命中、面板关的四行与 `dsh-superagent/cordis.patch.yml:5/24/133` 的真实 entry id
+  一致、`renameSync` 保 `node_modules`、坏 `deployments.json` 一律不重写。真机只读体检（`node
+  src/spv/profiles.js check`）给出四条待办（`wca` 缺失、`wca-tui` 缺失、注册表仍是 `superagent`、缺
+  `deployments/panel.yml`）与三条 note（`profiles/wheelchair-agent` 可删、`profiles/dsh-tui` 要留、`dsh-tui`
+  里 `wheelchair-agent 0.1.0` 是早期残留可删），全部只由 `install.sh` 处理。
 - **`#73` 合并（`4abd36b`，`refactor(spv): rename worker projects to orchestrator projects`）**：按
   `INSTRUCTIONS.md` 新定的三种 agent（spv / orchestrator / worker）把用户可见的词统一——`spv-project add
   --orchestrator`（`--worker` 仍等价可用）、"worker project" → "orchestrator project"（全仓 grep 归零）、

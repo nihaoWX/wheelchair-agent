@@ -430,3 +430,25 @@ gh 失败只 warning。
 
 **取舍**：保留 `--worker` 别名而不是直接删——`docs/` 与历史工单里到处是这个旗标，硬删会让旧命令突然报错，
 而别名成本是一行 `parse(rest, { repeat: ['--orchestrator', '--worker'] })`。
+
+## 两个 profile 对应两种交互形状：终端跑 spv，或纯浏览器（`#74`，2026-11-28）
+
+**问题**：`INSTRUCTIONS.md` 要求 spv 用自己那个 profile、面板与 orchestrator 实例用另一个；但"用户喜欢在终端
+跟 spv 说话"和"用户只想用浏览器"是两种真实形态，profile 集合要能同时表达，而 dsh 的 profile 是整进程粒度。
+
+**决定**（操作者 m05635）：profile 集合固定为两份，按交互形状选装。
+
+- **终端形态**（默认、已实现）：`wca` = 浏览器面（面板 + 四份 orchestrator 实例，靠 `deployments/<slug>.yml`
+  与 `deployments/panel.yml` 覆盖同一份 profile）；`wca-spv-tui` = 终端面（`dsh-base` + `dsh-tui` +
+  commandcode + bili），spv 会话跑在它上面（`preset/spv-launcher.sh` 设 `DSH_TUI_PROFILE`，目录缺失时回落
+  dsh 自带的 `dsh-tui` 并打一行 note，绝不因此起不来）。
+- **纯浏览器形态**（未实现）：只装 `wca`，把 spv 当一个额外会话跑在里面。这条路要用 dsh 原生 agent preset
+  （`@deepseek-ai/dsh-agent-preset` 的 `config.plugins` roster；registry 已由 `dsh-web-app` 的 patch 插入，
+  `config.default: standard`），因为 **CLI 与 dsh-tui 都没有"选 preset"的入口**（`dsh --help` 只有
+  `--profile`/`--patch`/`--from-default-profile`；dsh-tui 里 `preset` 零命中），preset 只在建会话时由
+  api-session-controller 解析，目前只有 web 面能指定。
+
+**取舍**：没有先做纯浏览器形态，是因为 preset 是**自包含的整张工具表**——要复刻
+`dsh-web-app/presets/standard.patch.yml` 那 40 行 persona/tool/skill/command，dsh 每次升级都得手动跟；而
+`--patch` 叠加在已组合好的 profile 上，只有增量、零漂移。所以默认给"整进程隔离 + 零漂移"，把"单会话隔离"
+留成可选路线。命名 `wca` / `wca-spv-tui` 是操作者定的：前者是产品缩写，后者点明"终端面、专跑 spv"。
