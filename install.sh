@@ -93,13 +93,13 @@ TARGET_CRON_URL="file://$PRESET_DIR/src/spv/cron-plugin.js"
 TARGET_RESTART_URL="file://$PRESET_DIR/src/spv/restart-command.js"
 # Two self-built profiles, rendered from preset/profiles/ by src/spv/profiles.js:
 #   wca      the browser surface: every deployment and the panel (dsh-web-app + dsh-superagent)
-#   wca-tui  the terminal surface: the SPV session (dsh-tui), no deployments
+#   wca-spv-tui  the terminal surface: the SPV session (dsh-tui), no deployments
 # A legacy "superagent" profile is moved to "wca" whole (src/spv/profiles.js migrateLegacySuperagent).
 PROFILE_ID=wca
 PROFILE_DIR=$DSH_HOME_DIR/profiles/$PROFILE_ID
 WEBUI_TARGET=$PROFILE_DIR/node_modules/wheelchair-agent-webui
-WCA_TUI_PROFILE_ID=wca-tui
-WCA_TUI_PROFILE_DIR=$DSH_HOME_DIR/profiles/$WCA_TUI_PROFILE_ID
+WCA_SPV_TUI_PROFILE_ID=wca-spv-tui
+WCA_SPV_TUI_PROFILE_DIR=$DSH_HOME_DIR/profiles/$WCA_SPV_TUI_PROFILE_ID
 SERVICE_PROFILE=$PROFILE_ID
 SERVICE_PORT=${SPV_SERVICE_PORT:-3082}
 SERVICE_URL=${DSH_SUPERAGENT_URL:-http://127.0.0.1:$SERVICE_PORT}
@@ -490,7 +490,7 @@ render_into() {
     fi
     chmod 0755 "$dest/commands/$file" || { fail "cannot make $dest/commands/$file executable"; return 1; }
   done
-  for file in wca.package.json wca.patch.yml wca-tui.package.json wca-tui.patch.yml; do
+  for file in wca.package.json wca.patch.yml wca-spv-tui.package.json wca-spv-tui.patch.yml; do
     if ! cp "$SELF_DIR/preset/profiles/$file" "$dest/profiles/$file"; then
       fail "cannot copy preset/profiles/$file from this checkout"
       fix "check that $SELF_DIR/preset/profiles/$file exists and is readable, then rerun this script"
@@ -660,7 +660,7 @@ check_preset() {
     fix 'run: bash tools/wheelchair-agent/install.sh'
   fi
   actual=$(find "$PRESET_DIR" -type f | sed "s|^$PRESET_DIR/||" | sort | tr '\n' ' ')
-  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md panel.patch.yml agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh profiles/wca.package.json profiles/wca.patch.yml profiles/wca-tui.package.json profiles/wca-tui.patch.yml src/shared/core-stamp.js src/shared/deployments.js src/shared/home.js src/shared/hook-events.js src/shared/hooks.js src/shared/install-stamp.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/spv-projects.js src/shared/work.js src/spv/auto-merge-effect.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/deployment-policy.js src/spv/deployment-restart.js src/spv/deployment-setup.js src/spv/deployment.js src/spv/dispatch.js src/spv/health.js src/spv/hook.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/ownership.js src/spv/projects-view.js src/spv/panel-routes.js src/spv/panel-instance.js src/spv/profiles.js src/spv/spv-project.js src/spv/paths.js src/spv/restart-command.js src/spv/restart-ux.js src/spv/restart.js src/spv/service-instance.js src/spv/session.js src/spv/tools.js "
+  local expected="agent.cordis.yml agentsmd-examples/proj-dev-agentsmd.md panel.patch.yml agentsmd-examples/research-task-agentsmd.md cli.js commands/jobctl.py commands/superagent-service.py package.json prepare.sh preset-default.patch.yml preset.yml spv-launcher.sh profiles/wca.package.json profiles/wca.patch.yml profiles/wca-spv-tui.package.json profiles/wca-spv-tui.patch.yml src/shared/core-stamp.js src/shared/deployments.js src/shared/home.js src/shared/hook-events.js src/shared/hooks.js src/shared/install-stamp.js src/shared/queue.js src/shared/schema.js src/shared/settings.js src/shared/spv-projects.js src/shared/work.js src/spv/auto-merge-effect.js src/spv/check.js src/spv/cron-plugin.js src/spv/cron.js src/spv/deployment-policy.js src/spv/deployment-restart.js src/spv/deployment-setup.js src/spv/deployment.js src/spv/dispatch.js src/spv/health.js src/spv/hook.js src/spv/inbox.js src/spv/injector.js src/spv/outbox.js src/spv/ownership.js src/spv/projects-view.js src/spv/panel-routes.js src/spv/panel-instance.js src/spv/profiles.js src/spv/spv-project.js src/spv/paths.js src/spv/restart-command.js src/spv/restart-ux.js src/spv/restart.js src/spv/service-instance.js src/spv/session.js src/spv/tools.js "
   local missing extras
   missing=$(comm -23 <(printf '%s' "$expected" | tr ' ' '\n' | sort) <(printf '%s' "$actual" | tr ' ' '\n' | sort) | tr '\n' ' ')
   extras=$(comm -13 <(printf '%s' "$expected" | tr ' ' '\n' | sort) <(printf '%s' "$actual" | tr ' ' '\n' | sort) | tr '\n' ' ')
@@ -797,7 +797,7 @@ check_profiles() {
   if report=$(node "$SELF_DIR/src/spv/profiles.js" check \
     --dsh-home "$DSH_HOME_DIR" --data-root "$DATA_ROOT" \
     --state-dir "$LEGACY_STATE_DIR" --port "$SERVICE_PORT" 2>&1); then
-    ok "profiles: wca and wca-tui match their templates ($DSH_HOME_DIR/profiles)"
+    ok "profiles: wca and wca-spv-tui match their templates ($DSH_HOME_DIR/profiles)"
     printf '%s\n' "$report" | while IFS= read -r line; do
       case $line in
         note:*) note "${line#note: }" ;;
@@ -805,7 +805,7 @@ check_profiles() {
     done
     return
   fi
-  fail 'the wca/wca-tui profiles, the deployment registry or the panel overlay do not match this checkout'
+  fail 'the wca/wca-spv-tui profiles, the deployment registry or the panel overlay do not match this checkout'
   printf '%s\n' "$report" | sed 's/^/     /'
   fix 'run: bash install.sh from the wheelchair-agent checkout (after install: wheelchair-agent profiles sync)'
 }
@@ -1308,7 +1308,7 @@ sync_profiles() {
     esac
   done <<< "$report"
   if [ "$status" -ne 0 ]; then
-    fail 'the wca/wca-tui profiles could not be aligned with the installed preset'
+    fail 'the wca/wca-spv-tui profiles could not be aligned with the installed preset'
     fix 'fix the problem(s) above, then rerun: bash install.sh'
     return 1
   fi
@@ -1380,7 +1380,7 @@ install_webui() {
 }
 
 # Install the webui package into one dsh profile. The browser surface (`wca`) mounts it; the terminal
-# surface (`wca-tui`) does not need it.
+# surface (`wca-spv-tui`) does not need it.
 install_webui_package() {
   local profile_dir=$1 target=$2 label=$3 staged backup
   if [ ! -d "$profile_dir" ]; then

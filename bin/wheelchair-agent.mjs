@@ -71,7 +71,7 @@ commands:
                                the shared "wca" dsh profile plus an overlay that switches off every
                                deployment-only row, so it serves the inbox/settings/hooks/projects
                                routes without an orchestrator or a Source
-  profiles [sync|check]        align the "wca" and "wca-tui" profiles, the deployment registry and
+  profiles [sync|check]        align the "wca" and "wca-spv-tui" profiles, the deployment registry and
                                the panel overlay with the install templates; "panel sync" is an alias
   jobctl <submit|status|log|verify|cancel>
                                hand a long job to systemd so it outlives the worker's turn
@@ -228,12 +228,13 @@ A person opens it with "wheelchair-agent service open".`
 const PROFILES_USAGE = `usage: wheelchair-agent profiles <sync|check> [--port <n>]
 
 The machine has two self-built dsh profiles, rendered from templates installed with the preset:
-  wca       the browser surface: panel + every deployment (dsh-superagent, webui, spv watcher)
-  wca-tui   the terminal surface: the SPV session (dsh-tui), no deployments
+  wca           the browser surface: panel + every deployment (dsh-superagent, webui, spv watcher)
+  wca-spv-tui   the terminal surface: the SPV session (dsh-tui), no deployments
 
-"sync" migrates a legacy "superagent" profile with a whole mv, aligns both profile package.json files,
-their cordis.patch.yml rows and their node_modules links with the templates, points every deployment
-at "wca", and writes <data root>/deployments/panel.yml. "check" is read-only and exits 1 on drift.
+"sync" migrates a legacy "superagent" profile and the old "wca-tui" terminal profile with whole
+directory moves, aligns both profile package.json files, their cordis.patch.yml rows and their
+node_modules links with the templates, points every deployment at "wca", and writes
+<data root>/deployments/panel.yml. "check" is read-only and exits 1 on drift.
 
 options:
   --port <n>                   service port used by the wca profile rows (default 3082)`
@@ -803,7 +804,7 @@ async function syncProfilesBeforeStart(profiles) {
     return report
   }
   if (report.changed) {
-    process.stdout.write('note: synced the wca and wca-tui profiles, the deployment registry and the panel overlay\n')
+    process.stdout.write('note: synced the wca and wca-spv-tui profiles, the deployment registry and the panel overlay\n')
   }
   return report
 }

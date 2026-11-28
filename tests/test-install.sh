@@ -52,7 +52,7 @@ trap on_signal INT TERM
 # ---------------------------------------------------------------- fixtures
 
 mkdir -p "$SB/home" "$SB/tools" "$SB/dsh/profiles/superagent"
-# The two-profile sync needs the plugin checkout it links into `wca` and, for `wca-tui`, the dsh-tui
+# The two-profile sync needs the plugin checkout it links into `wca` and, for `wca-spv-tui`, the dsh-tui
 # package plus the donor packages it borrows. They are empty markers: install only resolves and links
 # paths, it never imports the packages.
 mkdir -p "$SB/home/opt/dsh-plugins/dsh-superagent"

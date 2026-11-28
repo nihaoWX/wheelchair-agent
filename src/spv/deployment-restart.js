@@ -240,7 +240,7 @@ function spawnDetached(file, argv, env, fd) {
  *
  * `options.dryRun` prints the plan and stops; nothing is written or signalled. A live TUI that still holds
  * the session lease is left in place (it survives a service restart); when the lease is gone, the TUI is
- * brought back in a deployment-specific tmux session `wca-tui-<slug>` so it cannot be confused with another
+ * brought back in a deployment-specific tmux session `wca-spv-tui-<slug>` so it cannot be confused with another
  * deployment. The caller passes `--session` from `/restart-wheelchair-agent`; a plain CLI call falls back to
  * the record and otherwise only restarts the service.
  */
@@ -338,7 +338,7 @@ export async function runProjectRestart(context, options = {}) {
     }
   }
   const resumed = launchTui({ env, entry, session, context, slug })
-  if (resumed === 0) out.write(`OK: ${entry.project} is back; resumed session ${session.id} in tmux session wca-tui-${slug}\n`)
+  if (resumed === 0) out.write(`OK: ${entry.project} is back; resumed session ${session.id} in tmux session wca-spv-tui-${slug}\n`)
   else out.write(
     `OK: ${entry.project} is back; could not open the TUI automatically (${resumed}).\n` +
       `fix: run "wheelchair-agent spv --resume ${session.id}" in that deployment's terminal.\n`,
@@ -384,7 +384,7 @@ function sleep(ms) {
 
 /** Bring the TUI back in a per-deployment tmux session; returns 0 on success, otherwise a short reason. */
 function launchTui({ env, entry, session, context, slug }) {
-  const sessionName = `wca-tui-${slug}`
+  const sessionName = `wca-spv-tui-${slug}`
   const cli = context.cliPath ?? process.argv[1]
   const result = spawnSync(
     'tmux',
