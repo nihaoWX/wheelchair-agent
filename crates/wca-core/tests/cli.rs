@@ -204,7 +204,6 @@ fn settings_defaults_are_ordered_and_complete() {
             "panel.port",
             "spv.surface",
             "spv.webPort",
-            "panel.profileFrom",
             "webui.style",
             "inbox.intervalSeconds",
             "merge.installRepo",
@@ -216,7 +215,6 @@ fn settings_defaults_are_ordered_and_complete() {
             "work.sweepOnMount",
         ]
     );
-    assert_eq!(values["panel.profileFrom"], "superagent");
     assert_eq!(values["webui.style"], "fluid");
     assert_eq!(values["inbox.intervalSeconds"], 60);
     assert_eq!(values["work.sweepOnMount"], true);

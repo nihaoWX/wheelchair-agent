@@ -1,0 +1,19 @@
+# R8 的 round-data —— “panel.profileFrom 已无读者却仍留在设置表里”这一轮实际跑过的入口。
+# 字段含义见 pitfalls-manager references/02_consume.md §4.3；本文件不复述。
+id = "wheelchair-agent:R8"
+verdict = "新领土"
+family = ["设置键退休：panel.profileFrom 已无读者却仍在校验表里，旧文件残留值被当成未知键告警",
+          "settings 表不再宣传已退休键，旧文件残留值静默丢弃而真错键仍告警"]
+closures = [ { finding = "R8-F1", tier = "代码" },
+             { finding = "R8-F2", tier = "代码" },
+             { finding = "R8-F3", tier = "检查" } ]
+run_before = []
+touched = []
+note = """
+为什么认定同类：账本里 crates/wca-core/src/settings.rs 与 tests/test-settings.mjs 此前 0 条记录；#74 删除唯一读者时也没有入账，故本轮在账本上是首次可断言记录，记“新领土”。族名按“设置键退休”起，下一轮遇到同类残留键直接归入。
+根因与建议修法：已证——SPECS 仍定义 panel.profileFrom（默认 superagent，is_profile_id 校验），但唯一读者 src/spv/panel-profile.js 已在 #74 删除；旧值因此仍进 specs/新 settings.json，加载旧文件时又被 read_stored_values 当未知键告警。修法：从 SPECS 删除该键与 is_profile_id，并在 read_stored_filled/read_stored_values/fill_missing_defaults 里按“已退休”静默丢弃；其他未知键仍走原告警。
+怎么修才不弄坏前面：只维护 RETIRED_KEYS 名单，不放松未知键告警；文件 version/revision/filled 语义与其他键默认值不变；补齐默认值的重写会把旧值一并清掉，不留迁移脚本。#74 之后该键已无读者，面板 profile 固定走 WCA_PROFILE_ID，不依赖它。
+"""
+how_to_run = """
+cd docs/PITFALLS/round-data/wheelchair-agent:R8 && python3 test.py   # rc=0 = 两族全过；失败会打出族名与实测差异
+"""

@@ -100,17 +100,6 @@ const SPECS: &[Spec] = &[
         label_en: "SPV browser port",
     },
     Spec {
-        key: "panel.profileFrom",
-        kind: Kind::String,
-        default: Default::Text("superagent"),
-        env: None,
-        min: None,
-        max: None,
-        options: None,
-        label_zh: "面板复制哪个 profile 的插件",
-        label_en: "Panel plugin source profile",
-    },
-    Spec {
         key: "webui.style",
         kind: Kind::String,
         default: Default::Text("fluid"),
@@ -213,6 +202,16 @@ const SPECS: &[Spec] = &[
 
 fn spec_for(key: &str) -> Option<&'static Spec> {
     SPECS.iter().find(|spec| spec.key == key)
+}
+
+/// Keys that used to live in the table but are gone now. An existing `settings.json` may still
+/// carry them, so reads drop them silently (no "unknown settings key" warning) and a fill/save
+/// write leaves them out. A retired key must never appear in [`SPECS`] as well: the warning is
+/// reserved for genuine typos.
+const RETIRED_KEYS: &[&str] = &["panel.profileFrom"];
+
+fn is_retired(key: &str) -> bool {
+    RETIRED_KEYS.contains(&key)
 }
 
 fn default_value(spec: &Spec) -> Value {
@@ -639,6 +638,8 @@ fn read_stored_filled(raw: Option<&Value>, warnings: &mut Vec<String>) -> HashSe
     };
     for key in entries {
         match key {
+            // A retired key in "filled" is stale bookkeeping, not a typo: drop it silently.
+            Value::String(key) if is_retired(key) => {}
             Value::String(key) if spec_for(key).is_some() => {
                 filled.insert(key.clone());
             }
@@ -673,6 +674,10 @@ fn read_stored_values(
         return values;
     };
     for (key, value) in object {
+        if is_retired(key) {
+            // A key this project removed: ignore the stale value without pretending it is a typo.
+            continue;
+        }
         let Some(spec) = spec_for(key) else {
             warnings.push(format!(
                 "ignoring unknown settings key {} in the file.",
@@ -700,6 +705,12 @@ fn fill_missing_defaults(raw: Option<&Value>, filled: &mut HashSet<String>) -> O
         None => Map::new(),
     };
     let mut missing = false;
+    for key in RETIRED_KEYS {
+        // Rewriting the file is the moment to forget a value the table no longer owns.
+        if values.remove(*key).is_some() {
+            missing = true;
+        }
+    }
     for spec in SPECS {
         if values.contains_key(spec.key) {
             continue;
@@ -854,13 +865,6 @@ fn normalize(key: &str, raw: &Value, strict: bool) -> Result<Value, SettingsErro
                     )));
                 }
             }
-            if key == "panel.profileFrom" && !value.is_empty() && !is_profile_id(value) {
-                return Err(invalid(format!(
-                    "{} must be a profile id using lowercase letters, digits and dash, got {}.",
-                    key,
-                    quote(text)
-                )));
-            }
             if key == "merge.installRepo" && !is_install_repo(value) {
                 return Err(invalid(format!(
                     "{} must be \"name\" or \"owner/name\" using letters, digits, dot, dash and underscore, got {}.",
@@ -935,17 +939,6 @@ fn normalize(key: &str, raw: &Value, strict: bool) -> Result<Value, SettingsErro
 }
 
 /// `^[A-Za-z0-9][A-Za-z0-9_.-]*(?:/[A-Za-z0-9][A-Za-z0-9_.-]*)?$` without a regex dependency.
-fn is_profile_id(value: &str) -> bool {
-    let mut characters = value.chars();
-    match characters.next() {
-        Some(character) if character.is_ascii_lowercase() || character.is_ascii_digit() => {}
-        _ => return false,
-    }
-    characters.all(|character| {
-        character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
-    })
-}
-
 fn is_install_repo(value: &str) -> bool {
     let mut parts = value.split('/');
     let Some(first) = parts.next() else {
@@ -992,7 +985,6 @@ mod tests {
                 "panel.port",
                 "spv.surface",
                 "spv.webPort",
-                "panel.profileFrom",
                 "webui.style",
                 "inbox.intervalSeconds",
                 "merge.installRepo",
@@ -1007,11 +999,10 @@ mod tests {
         assert_eq!(default_value(&SPECS[0]), json("3080"));
         assert_eq!(default_value(&SPECS[1]), json("\"tui\""));
         assert_eq!(default_value(&SPECS[2]), json("3081"));
-        assert_eq!(default_value(&SPECS[3]), json("\"superagent\""));
-        assert_eq!(default_value(&SPECS[4]), json("\"fluid\""));
-        assert_eq!(default_value(&SPECS[5]), json("60"));
-        assert_eq!(default_value(&SPECS[11]), json("0"));
-        assert_eq!(default_value(&SPECS[12]), json("true"));
+        assert_eq!(default_value(&SPECS[3]), json("\"fluid\""));
+        assert_eq!(default_value(&SPECS[4]), json("60"));
+        assert_eq!(default_value(&SPECS[9]), json("0"));
+        assert_eq!(default_value(&SPECS[11]), json("true"));
     }
 
     #[test]
@@ -1040,13 +1031,13 @@ mod tests {
         assert_eq!(
             data["values"],
             json(
-                "{\"panel.port\":3080,\"spv.surface\":\"tui\",\"spv.webPort\":3081,\"panel.profileFrom\":\"superagent\",\"webui.style\":\"fluid\",\"inbox.intervalSeconds\":60,\"merge.installRepo\":\"wheelchair-agent\",\"merge.autoMerge\":false,\"injection.intervalMs\":1000,\"injection.maxBodyChars\":12000,\"work.keep\":0,\"work.keepDays\":0,\"work.sweepOnMount\":true}"
+                "{\"panel.port\":3080,\"spv.surface\":\"tui\",\"spv.webPort\":3081,\"webui.style\":\"fluid\",\"inbox.intervalSeconds\":60,\"merge.installRepo\":\"wheelchair-agent\",\"merge.autoMerge\":false,\"injection.intervalMs\":1000,\"injection.maxBodyChars\":12000,\"work.keep\":0,\"work.keepDays\":0,\"work.sweepOnMount\":true}"
             )
         );
         assert_eq!(
             data["filled"],
             json(
-                "[\"panel.port\",\"spv.surface\",\"spv.webPort\",\"panel.profileFrom\",\"webui.style\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.keep\",\"work.keepDays\",\"work.sweepOnMount\"]"
+                "[\"panel.port\",\"spv.surface\",\"spv.webPort\",\"webui.style\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.keep\",\"work.keepDays\",\"work.sweepOnMount\"]"
             )
         );
     }
@@ -1102,18 +1093,6 @@ mod tests {
             "webui.style must be one of \"minimal\", \"fluid\", got \"fancy\"."
         );
         assert_eq!(
-            normalize("panel.profileFrom", &json("\" ops \""), true).expect("trimmed profile"),
-            json("\"ops\"")
-        );
-        assert_eq!(
-            normalize("panel.profileFrom", &json("\"\""), true).expect("empty means default"),
-            json("\"\"")
-        );
-        assert_eq!(
-            error_message(normalize("panel.profileFrom", &json("\"../ops\""), true)),
-            "panel.profileFrom must be a profile id using lowercase letters, digits and dash, got \"../ops\"."
-        );
-        assert_eq!(
             error_message(normalize("merge.installRepo", &json("\"bad repo\""), true)),
             "merge.installRepo must be \"name\" or \"owner/name\" using letters, digits, dot, dash and underscore, got \"bad repo\"."
         );
@@ -1145,6 +1124,36 @@ mod tests {
     }
 
     #[test]
+    fn retired_keys_are_dropped_silently() {
+        let data = run(&SettingsRequest::Read {
+            values: Some(json(
+                "{\"panel.profileFrom\":\"superagent\",\"panel.profilFrom\":\"typo\"}",
+            )),
+            filled: Some(json("[\"panel.profileFrom\"]")),
+            fill_missing: true,
+        })
+        .expect("read");
+        // The retired key leaves no trace and raises no warning; the typo still does.
+        assert_eq!(data["values"], json("{}"));
+        assert!(!data["filled"]
+            .as_array()
+            .expect("filled")
+            .iter()
+            .any(|key| key == "panel.profileFrom"));
+        assert_eq!(data["filledWarnings"], json("[]"));
+        assert_eq!(
+            data["valuesWarnings"],
+            json("[\"ignoring unknown settings key \\\"panel.profilFrom\\\" in the file.\"]")
+        );
+        assert!(data["fill"]["values"].get("panel.profileFrom").is_none());
+        assert!(!data["fill"]["filled"]
+            .as_array()
+            .expect("filled")
+            .iter()
+            .any(|key| key == "panel.profileFrom"));
+    }
+
+    #[test]
     fn fill_missing_defaults_only_adds_missing_keys() {
         let data = run(&SettingsRequest::Read {
             values: Some(json("{\"work.keep\":3}")),
@@ -1157,7 +1166,7 @@ mod tests {
         assert_eq!(
             data["fill"]["filled"],
             json(
-                "[\"panel.port\",\"spv.surface\",\"spv.webPort\",\"panel.profileFrom\",\"webui.style\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.keepDays\",\"work.sweepOnMount\"]"
+                "[\"panel.port\",\"spv.surface\",\"spv.webPort\",\"webui.style\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.keepDays\",\"work.sweepOnMount\"]"
             )
         );
         assert_eq!(data["values"], json("{\"work.keep\":3}"));
@@ -1237,7 +1246,7 @@ mod tests {
         assert_eq!(
             data["filled"],
             json(
-                "[\"panel.port\",\"spv.surface\",\"spv.webPort\",\"panel.profileFrom\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.sweepOnMount\"]"
+                "[\"panel.port\",\"spv.surface\",\"spv.webPort\",\"inbox.intervalSeconds\",\"merge.installRepo\",\"merge.autoMerge\",\"injection.intervalMs\",\"injection.maxBodyChars\",\"work.sweepOnMount\"]"
             )
         );
     }
